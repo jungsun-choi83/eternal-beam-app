@@ -1,0 +1,16 @@
+# 환경 변수
+.env
+.env.local
+.env.production
+.env.*.local
+
+# 의존성
+node_modules
+
+# 빌드
+dist
+build
+
+# 기타
+.DS_Store
+*.log

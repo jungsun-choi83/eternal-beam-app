@@ -1,0 +1,58 @@
+@import 'tailwindcss';
+
+@layer utilities {
+  .gradient-eternal {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #00d4ff 100%);
+  }
+  
+  /* 글래스모피즘 - 투명·미래지향 */
+  .glass {
+    background: rgba(255, 255, 255, 0.12);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+  }
+  .glass-strong {
+    background: rgba(255, 255, 255, 0.2);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid rgba(255, 255, 255, 0.35);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255,255,255,0.3);
+  }
+  .glass-dark {
+    background: rgba(15, 15, 35, 0.6);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+  }
+  /* 로고용 글래스모피즘 - 앱 기존색(보라·라벤더) 유지, 강한 블러, 얇은 밝은 테두리 */
+  .glass-logo {
+    background: rgba(184, 164, 212, 0.06);
+    backdrop-filter: blur(40px);
+    -webkit-backdrop-filter: blur(40px);
+    border: 1px solid rgba(184, 164, 212, 0.5);
+    box-shadow:
+      0 8px 32px rgba(45, 38, 64, 0.08),
+      inset 0 1px 0 rgba(201, 168, 212, 0.45);
+  }
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  html, body, #root {
+    height: 100%;
+  }
+}

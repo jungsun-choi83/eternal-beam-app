@@ -1,0 +1,11 @@
+name: eternal_beam_nfc_writer
+description: NFC 영상 ID 기록기 - 이터널빔 슬롯 사전 등록용
+version: 1.0.0
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  nfc_manager: ^3.3.0

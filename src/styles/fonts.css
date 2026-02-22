@@ -1,0 +1,8 @@
+/* Outfit - 세련된 제목/헤드라인 폰트 (기하학적, 모던) */
+/* Noto Sans KR - 본문 폰트 (깔끔, 읽기 편함) */
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700&display=swap');
+
+/* Letter Spacing 기본값 */
+* {
+  letter-spacing: -0.02em;
+}

@@ -1,0 +1,163 @@
+:root {
+  /* 폰트 패밀리 - 세련된 느낌 */
+  --font-body: 'Noto Sans KR', -apple-system, BlinkMacSystemFont, system-ui,
+    'Segoe UI', 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif;
+  --font-headline: 'Outfit', 'Noto Sans KR', -apple-system, sans-serif;
+
+  /* Letter Spacing */
+  --letter-spacing-tight: -0.5px;
+  --letter-spacing-normal: 0px;
+  --letter-spacing-wide: 0.5px;
+}
+
+/* 기본 폰트 적용 */
+body {
+  font-family: var(--font-body);
+  letter-spacing: var(--letter-spacing-tight);
+}
+
+/* 제목 폰트 (h1 ~ h6) */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-headline);
+  letter-spacing: var(--letter-spacing-tight);
+  font-weight: 700;
+}
+
+h1 {
+  font-size: 2.5rem; /* 40px */
+  line-height: 1.2;
+}
+
+h2 {
+  font-size: 2rem; /* 32px */
+  line-height: 1.3;
+}
+
+h3 {
+  font-size: 1.75rem; /* 28px */
+  line-height: 1.4;
+}
+
+h4 {
+  font-size: 1.5rem; /* 24px */
+  line-height: 1.4;
+}
+
+h5 {
+  font-size: 1.25rem; /* 20px */
+  line-height: 1.5;
+}
+
+h6 {
+  font-size: 1rem; /* 16px */
+  line-height: 1.5;
+}
+
+/* 본문 텍스트 */
+p {
+  font-family: var(--font-body);
+  letter-spacing: var(--letter-spacing-tight);
+}
+
+/* 버튼 텍스트 */
+button {
+  font-family: var(--font-body);
+  letter-spacing: var(--letter-spacing-tight);
+  font-weight: 500;
+}
+
+/* Input 텍스트 */
+input,
+textarea,
+select {
+  font-family: var(--font-body);
+  letter-spacing: var(--letter-spacing-tight);
+}
+
+/* 폰트 유틸리티 클래스 */
+.font-body {
+  font-family: var(--font-body);
+}
+
+.font-headline {
+  font-family: var(--font-headline);
+}
+
+/* Letter Spacing 유틸리티 */
+.tracking-tighter {
+  letter-spacing: -0.5px;
+}
+
+.tracking-tight {
+  letter-spacing: -0.3px;
+}
+
+.tracking-normal {
+  letter-spacing: 0px;
+}
+
+.tracking-wide {
+  letter-spacing: 0.5px;
+}
+
+/* 텍스트 스타일 프리셋 */
+.text-headline-1 {
+  font-family: var(--font-headline);
+  font-size: 2.5rem;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  line-height: 1.2;
+}
+
+.text-headline-2 {
+  font-family: var(--font-headline);
+  font-size: 2rem;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  line-height: 1.3;
+}
+
+.text-headline-3 {
+  font-family: var(--font-headline);
+  font-size: 1.75rem;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  line-height: 1.4;
+}
+
+.text-body-large {
+  font-family: var(--font-body);
+  font-size: 1.125rem;
+  font-weight: 400;
+  letter-spacing: -0.5px;
+  line-height: 1.6;
+}
+
+.text-body {
+  font-family: var(--font-body);
+  font-size: 1rem;
+  font-weight: 400;
+  letter-spacing: -0.5px;
+  line-height: 1.5;
+}
+
+.text-body-small {
+  font-family: var(--font-body);
+  font-size: 0.875rem;
+  font-weight: 400;
+  letter-spacing: -0.5px;
+  line-height: 1.5;
+}
+
+.text-caption {
+  font-family: var(--font-body);
+  font-size: 0.75rem;
+  font-weight: 400;
+  letter-spacing: -0.3px;
+  line-height: 1.4;
+}

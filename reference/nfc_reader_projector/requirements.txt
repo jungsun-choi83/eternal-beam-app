@@ -1,0 +1,4 @@
+# NFC 리더 (PN532) - 라즈베리파이 I2C
+# 설치: pip install -r requirements.txt
+# pn532pi는 PN532 하드웨어 연결 시 필요 (선택)
+# pn532pi>=0.1.0
