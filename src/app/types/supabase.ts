@@ -4,10 +4,14 @@ export interface SupabaseContent {
   user_id: string
   main_photo_url: string | null
   hologram_video_id: string | null
+  /** ZoeDepth 깊이맵 - 메인/슬롯 3D 재생용 */
+  main_depth_url?: string | null
   video_url: string | null
   background_image_url: string | null
   background_theme_id: string | null
   background_theme_name: string | null
+  /** 배경 3D용 깊이맵 (BytePlus 생성 배경도 ZoeDepth 적용 예정) */
+  background_depth_url?: string | null
   composed_preview_url: string | null
   mixed_audio_url: string | null
   payment_id: string | null
@@ -25,5 +29,7 @@ export interface PlaybackBySlot {
   video_url: string | null
   mixed_audio_url: string | null
   composed_preview_url: string | null
+  main_depth_url?: string | null
+  background_depth_url?: string | null
   background_theme_name: string | null
 }

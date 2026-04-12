@@ -1,0 +1,277 @@
+/**
+ * Eternal Beam - 홀로그램 배경 효과 (CSS only)
+ * 스캔라인, Aurora 빛 물결, 로고 펄스
+ */
+
+/* ---- 1. 홀로그램 스캔라인 ---- */
+@keyframes hologram-scanline-move {
+  0% {
+    top: 0;
+  }
+  100% {
+    top: 100%;
+  }
+}
+
+@keyframes hologram-scanline-opacity {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.6;
+  }
+}
+
+.hologram-scanline {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
+  height: 3px;
+  z-index: 1;
+  pointer-events: none;
+  will-change: top;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(212, 175, 55, 0.2) 20%,
+    rgba(212, 175, 55, 0.6) 50%,
+    rgba(212, 175, 55, 0.2) 80%,
+    transparent 100%
+  );
+  box-shadow:
+    0 0 12px rgba(212, 175, 55, 0.4),
+    0 0 24px rgba(212, 175, 55, 0.2);
+  animation:
+    hologram-scanline-move 8s linear infinite,
+    hologram-scanline-opacity 8s ease-in-out infinite;
+}
+
+/* 미세한 수평 스캔라인 패턴 */
+.hologram-scanline-pattern {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent 0px,
+    transparent 1px,
+    rgba(212, 175, 55, 0.03) 1px,
+    rgba(212, 175, 55, 0.03) 2px
+  );
+  background-size: 100% 2px;
+}
+
+/* ---- 2. Aurora 미세 빛 물결 ---- */
+@keyframes hologram-aurora-1 {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(1);
+    opacity: 0.04;
+  }
+  33% {
+    transform: translate3d(5%, -3%, 0) rotate(120deg) scale(1.1);
+    opacity: 0.07;
+  }
+  66% {
+    transform: translate3d(-4%, 4%, 0) rotate(240deg) scale(0.95);
+    opacity: 0.05;
+  }
+  100% {
+    transform: translate3d(0, 0, 0) rotate(360deg) scale(1);
+    opacity: 0.04;
+  }
+}
+
+@keyframes hologram-aurora-2 {
+  0% {
+    transform: translate3d(0, 0, 0) rotate(0deg) scale(1.1);
+    opacity: 0.03;
+  }
+  50% {
+    transform: translate3d(-6%, 2%, 0) rotate(180deg) scale(1);
+    opacity: 0.08;
+  }
+  100% {
+    transform: translate3d(0, 0, 0) rotate(360deg) scale(1.1);
+    opacity: 0.03;
+  }
+}
+
+.hologram-aurora-1 {
+  position: absolute;
+  left: -20%;
+  top: -20%;
+  width: 140%;
+  height: 140%;
+  z-index: 0;
+  pointer-events: none;
+  will-change: transform, opacity;
+  background: radial-gradient(
+    ellipse 60% 40% at 50% 50%,
+    rgba(212, 175, 55, 0.08) 0%,
+    rgba(244, 208, 63, 0.04) 30%,
+    transparent 70%
+  );
+  animation: hologram-aurora-1 22s ease-in-out infinite;
+}
+
+.hologram-aurora-2 {
+  position: absolute;
+  left: -20%;
+  top: -20%;
+  width: 140%;
+  height: 140%;
+  z-index: 0;
+  pointer-events: none;
+  will-change: transform, opacity;
+  background: radial-gradient(
+    ellipse 50% 60% at 70% 30%,
+    rgba(244, 208, 63, 0.06) 0%,
+    rgba(212, 175, 55, 0.03) 40%,
+    transparent 70%
+  );
+  animation: hologram-aurora-2 25s ease-in-out infinite;
+}
+
+/* ---- 3. 로고 펄스 (Eternal Beam glow) ---- */
+@keyframes logo-pulse {
+  0%,
+  100% {
+    text-shadow:
+      0 0 10px rgba(212, 175, 55, 0.5),
+      0 0 20px rgba(212, 175, 55, 0.3);
+  }
+  50% {
+    text-shadow:
+      0 0 20px rgba(212, 175, 55, 0.7),
+      0 0 40px rgba(212, 175, 55, 0.4),
+      0 0 60px rgba(212, 175, 55, 0.2);
+  }
+}
+
+/* 로고 펄스 적용 (홈 등, --auth가 아닐 때만) */
+.hologram-bg-active .logo-title:not(.logo-title--auth) {
+  animation: logo-pulse 3s ease-in-out infinite;
+}
+
+/* ---- 4. 회원가입 화면 Eternal Beam 전용: Shimmer + Letter spacing + Gradient shift ---- */
+@keyframes logo-shimmer {
+  0% {
+    transform: translate3d(-100%, 0, 0);
+  }
+  100% {
+    transform: translate3d(350%, 0, 0);
+  }
+}
+
+@keyframes logo-letter-spacing {
+  0%,
+  100% {
+    letter-spacing: 1px;
+  }
+  50% {
+    letter-spacing: 3px;
+  }
+}
+
+@keyframes logo-gradient-shift {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 200% 50%;
+  }
+}
+
+.logo-title--auth {
+  /* B. Letter spacing 애니메이션 */
+  animation: logo-letter-spacing 5s ease-in-out infinite;
+  /* C. Gradient shift - 골드 그라데이션 텍스트 */
+  background: linear-gradient(
+    90deg,
+    #c9a227 0%,
+    #e8d48b 15%,
+    #f4d03f 35%,
+    #d4af37 50%,
+    #f4d03f 65%,
+    #e8d48b 85%,
+    #c9a227 100%
+  );
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation:
+    logo-letter-spacing 5s ease-in-out infinite,
+    logo-gradient-shift 8s linear infinite;
+  position: relative;
+  /* Shimmer을 위한 overflow는 부모에서 처리 */
+}
+
+/* A. Shimmer - 골드 빛 좌→우 흐름 (매우 서브틀) */
+.logo-title--auth::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 40%;
+  height: 100%;
+  pointer-events: none;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(244, 208, 63, 0.2) 50%,
+    transparent 100%
+  );
+  animation: logo-shimmer 3.5s ease-in-out infinite;
+  mix-blend-mode: plus-lighter;
+}
+
+/* ---- 래퍼: 배경 레이어 통합 ---- */
+.hologram-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* 배경 그라데이션 제거 (각 화면이 자체 배경 사용) */
+.hologram-bg::before {
+  display: none;
+}
+
+/* ---- prefers-reduced-motion: 애니메이션 축소/비활성화 ---- */
+@media (prefers-reduced-motion: reduce) {
+  .hologram-scanline,
+  .hologram-aurora-1,
+  .hologram-aurora-2 {
+    animation: none !important;
+  }
+
+  .hologram-scanline {
+    opacity: 0.2;
+  }
+
+  .hologram-aurora-1,
+  .hologram-aurora-2 {
+    opacity: 0.04;
+  }
+
+  .hologram-bg-active .logo-title {
+    animation: none !important;
+  }
+  .logo-title--auth {
+    animation: none !important;
+  }
+}
+
+/* 모바일: 스캔라인 주기만 약간 단축 (선택) */
+@media (max-width: 480px) {
+  .hologram-scanline {
+    animation-duration: 10s, 10s;
+  }
+}

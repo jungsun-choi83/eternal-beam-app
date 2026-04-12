@@ -15,7 +15,30 @@ import fs from 'fs'
 import multer from 'multer'
 import { synthesizeVideo } from './ffmpegSynthesizer.js'
 import { uploadToSupabase, updateUserQuota, insertUserMedia } from './supabaseStorage.js'
+import { getSlotsForDevice } from './deviceSlots.js'
 
+
+function runZoeDepthCli(inputPath, outputPath) {
+  return new Promise((resolve, reject) => {
+    const scriptPath = path.join(__dirname, '..', 'python', 'zoe_hologram_cli.py')
+    const proc = spawn(PYTHON_EXE, [
+      scriptPath,
+      '--input',
+      inputPath,
+      '--output',
+      outputPath,
+    ], {
+      stdio: 'inherit',
+    })
+
+    proc.on('close', (code) => {
+      if (code === 0) resolve()
+      else reject(new Error(`zoe_hologram_cli exit code ${code}`))
+    })
+
+    proc.on('error', (err) => reject(err))
+  })
+}
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 const app = express()
@@ -199,6 +222,25 @@ app.post('/api/device/:deviceId/play', async (req, res) => {
   // TODO: Firebase/Supabase 등으로 Pi에 재생 트리거
   console.log('[Play Trigger]', deviceId)
   res.json({ success: true, message: '재생 명령이 전송되었습니다.' })
+})
+
+// 라즈베리 파이: 슬롯별 영상 URL 조회 (부팅 시 다운로드·NFC 시 재생용)
+app.get('/api/device/:deviceId/slots', async (req, res) => {
+  const { deviceId } = req.params
+  const { slots, error } = await getSlotsForDevice(deviceId)
+  if (error) {
+    return res.status(500).json({ error: error.message, slots: {} })
+  }
+  res.json({ slots })
+})
+
+// Pi에서 슬롯 영상 다운로드 완료 보고 (선택, 로깅/캐시 정책용)
+app.post('/api/device/:deviceId/confirm-download', express.json(), (req, res) => {
+  const { deviceId } = req.params
+  const { slotNumbers } = req.body || {}
+  const list = Array.isArray(slotNumbers) ? slotNumbers : []
+  console.log('[Confirm Download]', deviceId, list)
+  res.json({ success: true })
 })
 
 app.listen(PORT, () => {

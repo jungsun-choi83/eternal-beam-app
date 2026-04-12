@@ -1,0 +1,39 @@
+# Eternal Beam - 영상 처리 백엔드 (서버 사이드 렌더링)
+# Python 3.10+
+
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+python-multipart==0.0.9
+
+# 배경 제거 + 알파 매팅 (머리카락 한 올까지)
+rembg[gpu]==2.0.57
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# 알파 경계 정제 (선택, 머리카락 품질 향상)
+# opencv-python-headless==4.9.0.80
+opencv-python-headless>=4.8.0
+
+# 영상 합성
+ffmpeg-python==0.2.0
+
+# 강아지 bbox 검출 (COCO class 16) → 크롭 후 rembg
+ultralytics>=8.1.0
+
+# Supabase
+supabase>=2.3.0
+
+# env
+python-dotenv==1.0.1
+
+# Luma API HTTP
+requests>=2.31.0
+
+# AWS S3 (선택, STORAGE_BACKEND=s3 또는 auto)
+# boto3>=1.34.0
+
+# Firebase Storage (선택, STORAGE_BACKEND=firebase)
+# firebase-admin>=6.4.0
+
+# Modal (GPU 원격 호출, 선택)
+modal>=0.64.0

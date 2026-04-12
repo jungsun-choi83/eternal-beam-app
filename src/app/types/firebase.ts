@@ -38,10 +38,14 @@ export interface FinalContent {
 
   main_photo_url: string
   hologram_video_id: string
+  /** ZoeDepth 깊이맵 URL - 메인 사진/슬롯 배경 3D 재생용 */
+  main_depth_url?: string | null
 
   background_image_url: string
   background_theme_id: string
   background_theme_name?: string
+  /** 배경 이미지 3D용 깊이맵 (추후 BytePlus 생성 배경도 ZoeDepth 적용) */
+  background_depth_url?: string | null
 
   composed_preview_url: string
 

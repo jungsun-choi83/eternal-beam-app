@@ -9,6 +9,10 @@ export interface LayerOptions {
   mainImageScale?: number
   hologramEffect?: boolean
   overlayOpacity?: number
+  /** 배경 레이어 불투명도 (0~1). 테마 그라데이션일 때 낮추면 틴트 완화. 기본 1 */
+  backgroundOpacity?: number
+  /** 누끼(투명 배경 PNG)일 때 true — 라운드 클립 없이 알파 합성 */
+  useCutout?: boolean
 }
 
 export interface ComposedResult {
@@ -77,6 +81,7 @@ function drawMainPhotoLayer(
   width: number,
   height: number,
   scale: number,
+  useCutout?: boolean,
 ) {
   const size = Math.min(width, height) * scale
   const x = (width - size) / 2
@@ -84,9 +89,14 @@ function drawMainPhotoLayer(
   const radius = size * 0.1
 
   ctx.save()
-  roundRect(ctx, x, y, size, size, radius)
-  ctx.clip()
-  ctx.drawImage(img, x, y, size, size)
+  if (useCutout) {
+    // 누끼: 라운드 클립 없이 알파 합성 (배경 투명 → 테마가 비침)
+    ctx.drawImage(img, x, y, size, size)
+  } else {
+    roundRect(ctx, x, y, size, size, radius)
+    ctx.clip()
+    ctx.drawImage(img, x, y, size, size)
+  }
   ctx.restore()
 }
 
@@ -162,6 +172,8 @@ export function composeImageLayers(
     mainImageScale = MAIN_SCALE,
     hologramEffect = true,
     overlayOpacity = 0.2,
+    backgroundOpacity = 1,
+    useCutout = false,
   } = options
 
   return new Promise((resolve, reject) => {
@@ -185,8 +197,14 @@ export function composeImageLayers(
         return
       }
 
+      if (backgroundOpacity < 1) {
+        ctx.fillStyle = '#f8f9fa'
+        ctx.fillRect(0, 0, DEFAULT_SIZE, DEFAULT_SIZE)
+        ctx.globalAlpha = backgroundOpacity
+      }
       drawBackgroundLayer(ctx, bgImg, DEFAULT_SIZE, DEFAULT_SIZE)
-      drawMainPhotoLayer(ctx, mainImg, DEFAULT_SIZE, DEFAULT_SIZE, mainImageScale)
+      if (backgroundOpacity < 1) ctx.globalAlpha = 1
+      drawMainPhotoLayer(ctx, mainImg, DEFAULT_SIZE, DEFAULT_SIZE, mainImageScale, useCutout)
 
       if (hologramEffect) {
         drawHologramEffect(ctx, DEFAULT_SIZE, DEFAULT_SIZE, overlayOpacity)

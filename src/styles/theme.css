@@ -14,6 +14,9 @@
 body {
   font-family: var(--font-body);
   letter-spacing: var(--letter-spacing-tight);
+  margin: 0;
+  min-height: 100vh;
+  background: #000;
 }
 
 /* 제목 폰트 (h1 ~ h6) */
@@ -160,4 +163,125 @@ select {
   font-weight: 400;
   letter-spacing: -0.3px;
   line-height: 1.4;
+}
+
+/* 로고 스타일 - Connect Device와 동일 폰트, 버튼과 비슷한 두께(600) */
+.logo-title {
+  font-family: var(--font-headline);
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: #FFFFFF;
+  text-shadow:
+    0 0 10px rgba(212, 175, 55, 0.5),
+    0 0 20px rgba(212, 175, 55, 0.3);
+  white-space: nowrap;
+}
+
+.logo-subtitle {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 3px;
+  color: rgba(255, 255, 255, 0.5);
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+
+/* Safe area - Dynamic Island / 노치 영역 여백 */
+.safe-area-top {
+  padding-top: max(60px, env(safe-area-inset-top, 60px));
+}
+
+/* 화면 제목 - 한 줄에 맞춤 */
+.screen-title {
+  font-size: 18px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+
+/* 업로드 화면 스타일 */
+.upload-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: #FFFFFF;
+  margin-bottom: 8px;
+  letter-spacing: 0.5px;
+}
+
+.upload-subtitle {
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.6);
+  margin-bottom: 24px;
+}
+
+/* 업로드 카드 */
+.upload-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 2px dashed rgba(212, 175, 55, 0.3);
+  border-radius: 24px;
+  padding: 64px 48px;
+  text-align: center;
+  cursor: pointer;
+  transition: all 0.3s ease;
+  position: relative;
+  overflow: hidden;
+}
+
+.upload-card:hover {
+  background: rgba(212, 175, 55, 0.05);
+  border-color: #D4AF37;
+  transform: translateY(-4px);
+  box-shadow: 0 12px 32px rgba(212, 175, 55, 0.2);
+}
+
+.upload-card.drag-over {
+  background: rgba(212, 175, 55, 0.1);
+  border-color: #F4D03F;
+  border-style: solid;
+}
+
+.upload-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-image:
+    repeating-linear-gradient(
+      45deg,
+      transparent,
+      transparent 20px,
+      rgba(212, 175, 55, 0.02) 20px,
+      rgba(212, 175, 55, 0.02) 40px
+    );
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  pointer-events: none;
+}
+
+.upload-card:hover::before {
+  opacity: 1;
+}
+
+/* 드래그 힌트 추가 */
+.upload-hint {
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.4);
+  margin-top: 16px;
+  display: none;
+}
+
+.upload-card:hover .upload-hint {
+  display: block;
+  animation: fadeIn 0.3s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-10px); }
+  to { opacity: 1; transform: translateY(0); }
 }

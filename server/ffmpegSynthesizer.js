@@ -3,14 +3,24 @@
  * - 3D 영상(무음) + 음성 + 배경 음악
  * - Pi Zero 2W 최적화: H.264 baseline, AAC, 720p 이하
  * - 오디오 페이드아웃
+ *
+ * [하드웨어 사양] True Black + DLP 프로젝터 최적화
+ * - Pixel Clamping: 흑레벨 0~10 → Pure Black(#000000)
+ * - DLP 프로젝터: 검은색 = 빛 없음 = 투명 처리용 인코딩 프로파일
  */
 
 import fs from 'fs'
 import path from 'path'
 import { spawn } from 'child_process'
+import ffmpegStatic from 'ffmpeg-static'
 
-const FFMPEG = 'ffmpeg'
+const FFMPEG = ffmpegStatic || 'ffmpeg'
 const DURATION_SEC = 10
+
+/** True Black: 0~10 범위 픽셀을 Pure Black으로 클램핑 (0.04 ≈ 10/255) */
+const TRUE_BLACK_CURVES = "curves=all='0/0 0.04/0 1/1'"
+/** DLP 프로젝터: Full range, 검은색=빛없음(투명) 인식 */
+const DLP_ENCODE_OPTS = ['-color_range', 'pc', '-movflags', '+faststart']
 
 function runFfmpeg(args, opts = {}) {
   return new Promise((resolve, reject) => {
@@ -111,9 +121,10 @@ export async function synthesizeVideo({
     const imgVideo = path.join(outputDir, `img_${Date.now()}.mp4`)
     await runFfmpeg([
       '-y', '-loop', '1', '-i', imagePath,
+      '-vf', TRUE_BLACK_CURVES,
       '-c:v', 'libx264', '-t', String(duration),
-      '-pix_fmt', 'yuv420p',
-      '-profile:v', 'baseline', '-level', '3.0',
+      '-pix_fmt', 'yuv420p', '-profile:v', 'baseline', '-level', '3.0',
+      ...DLP_ENCODE_OPTS,
       imgVideo,
     ], { silent: true })
     videoInput = imgVideo
@@ -125,12 +136,15 @@ export async function synthesizeVideo({
       '-y', '-f', 'lavfi', '-i', `color=c=black:s=1280x720:d=${duration}`,
       '-c:v', 'libx264', '-pix_fmt', 'yuv420p',
       '-profile:v', 'baseline', '-level', '3.0',
+      ...DLP_ENCODE_OPTS,
       blackVideo,
     ], { silent: true })
     videoInput = blackVideo
   }
 
-  // 4) 최종 합성: H.264 + AAC, Pi Zero 2W 최적화
+  // 4) 최종 합성: H.264 + AAC, Pi Zero 2W 최적화 + True Black + DLP 프로젝터
+  const scaleVf = `scale=trunc(iw/2)*2:min(${maxHeight},trunc(ih/2)*2)`
+  const vfChain = `${scaleVf},${TRUE_BLACK_CURVES}`
   await runFfmpeg([
     '-y', '-i', videoInput,
     '-i', mixedWav,
@@ -138,9 +152,10 @@ export async function synthesizeVideo({
     '-profile:v', 'baseline', '-level', '3.0',
     '-preset', 'ultrafast',
     '-b:v', '1M', '-maxrate', '1.5M', '-bufsize', '2M',
-    '-vf', `scale=trunc(iw/2)*2:min(${maxHeight},trunc(ih/2)*2)`,
+    '-vf', vfChain,
     '-c:a', 'aac', '-b:a', '128k', '-ar', '44100', '-ac', '2',
     '-shortest',
+    ...DLP_ENCODE_OPTS,
     outputPath,
   ], { silent: true })
 

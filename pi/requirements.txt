@@ -1,0 +1,5 @@
+supabase
+python-dotenv
+opencv-python
+adafruit-circuitpython-pn532
+

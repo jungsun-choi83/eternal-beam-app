@@ -12,7 +12,9 @@ import {
   Volume2,
   ChevronRight,
   Square,
+  Lock,
 } from 'lucide-react'
+import { useSubjectSlot } from '../../contexts/SubjectSlotContext'
 import { composeImageLayers } from '../../utils/imageComposer'
 import {
   mixAudioFiles,
@@ -24,6 +26,7 @@ import { isVideoUrl } from '../../utils/mediaType'
 
 interface ThemeSelectionScreenProps {
   onNavigate?: (screen: string) => void
+  onBack?: () => void
 }
 
 function gradientToDataUrl(gradient: string, size = 512): string {
@@ -57,7 +60,9 @@ function gradientToDataUrl(gradient: string, size = 512): string {
 
 export function ThemeSelectionScreen({
   onNavigate,
+  onBack,
 }: ThemeSelectionScreenProps) {
+  const { canUseTheme } = useSubjectSlot()
   const [backgroundImage, setBackgroundImage] = useState<string | null>(null)
   const [selectedTheme, setSelectedTheme] = useState<BGMPreset | null>(null)
   const [composedPreview, setComposedPreview] = useState<string | null>(null)
@@ -90,17 +95,25 @@ export function ThemeSelectionScreen({
   }, [onNavigate, editThemeOnly])
 
   const handleComposeLayers = async () => {
+    // 메인 = 누끼(배경 제거된 이미지) 우선, 없으면 원본 (플로우: AI 누끼 → 테마 위 합성)
+    const cutoutUrl = localStorage.getItem('eternal_beam_cutout_url')
+    const cutoutBase64 = localStorage.getItem('eternal_beam_cutout_base64')
     const mainPhoto = localStorage.getItem('eternal_beam_main_photo')
-    if (!backgroundImage || !mainPhoto || mainPhoto.includes('blob:')) return
+    const mainImage = cutoutUrl || (cutoutBase64 ? `data:image/png;base64,${cutoutBase64}` : null) || mainPhoto
+
+    if (!backgroundImage || !mainImage || mainImage.includes('blob:')) return
 
     setIsComposing(true)
     try {
       const result = await composeImageLayers({
         backgroundImage,
-        mainImage: mainPhoto,
+        mainImage,
         mainImageScale: 0.6,
         hologramEffect: true,
         overlayOpacity: 0.2,
+        useCutout: !!(cutoutUrl || cutoutBase64), // 누끼일 때 투명 배경 유지
+        // 테마 그라데이션일 때 배경 틴트 완화 (직접 업로드 시 1로 전체 노출)
+        backgroundOpacity: selectedTheme ? 0.78 : 1,
       })
       setComposedPreview(result.dataUrl)
       localStorage.setItem('eternal_beam_composed_preview', result.dataUrl)
@@ -114,6 +127,11 @@ export function ThemeSelectionScreen({
   const mainMedia = localStorage.getItem('eternal_beam_main_photo') || localStorage.getItem('eternal_beam_main_video_url')
   const isVideoContent = mainMedia ? isVideoUrl(mainMedia) : false
 
+  // 누끼 결과 (배경 제거된 메인 피사체) — 배경 선택 전 먼저 보여주기용
+  const cutoutUrl = localStorage.getItem('eternal_beam_cutout_url')
+  const cutoutBase64 = localStorage.getItem('eternal_beam_cutout_base64')
+  const cutoutImage = cutoutUrl || (cutoutBase64 ? `data:image/png;base64,${cutoutBase64}` : null)
+
   useEffect(() => {
     if (isVideoContent && mainMedia) {
       setComposedPreview(mainMedia)
@@ -125,9 +143,16 @@ export function ThemeSelectionScreen({
     } else {
       setComposedPreview(null)
     }
-  }, [backgroundImage, isVideoContent, mainMedia])
+  }, [backgroundImage, isVideoContent, mainMedia, selectedTheme])
 
   const handleThemeSelect = (theme: BGMPreset) => {
+    const isPremium = theme.price > 0
+    const owned = canUseTheme(theme.id)
+    if (isPremium && !owned) {
+      localStorage.setItem('eternal_beam_pending_theme_id', theme.id)
+      onNavigate?.('checkout')
+      return
+    }
     setSelectedTheme(theme)
     const dataUrl = gradientToDataUrl(theme.gradient)
     setBackgroundImage(dataUrl)
@@ -233,11 +258,15 @@ export function ThemeSelectionScreen({
             </h1>
             <button
               onClick={() => {
+                if (onBack) {
+                  onBack()
+                  return
+                }
                 if (editThemeOnly) {
                   localStorage.removeItem('eternal_beam_edit_theme_only')
                   onNavigate?.('preview')
                 } else {
-                  onNavigate?.('checkout')
+                  onNavigate?.('preview')
                 }
               }}
               className="glass-strong flex h-10 w-10 items-center justify-center rounded-full shrink-0"
@@ -260,17 +289,28 @@ export function ThemeSelectionScreen({
                 <span className="text-white text-xs font-medium">합성 중...</span>
               </div>
             )}
-            {composedPreview ? (
-              isVideoContent ? (
-                <video src={composedPreview} className="w-full h-full object-cover" muted loop playsInline />
-              ) : (
-                <img src={composedPreview} alt="미리보기" className="w-full h-full object-cover" />
+            {(() => {
+              const previewImage = composedPreview || cutoutImage
+              if (previewImage) {
+                if (isVideoContent && composedPreview && previewImage === composedPreview) {
+                  return (
+                    <video
+                      src={previewImage}
+                      className="w-full h-full object-cover"
+                      muted
+                      loop
+                      playsInline
+                    />
+                  )
+                }
+                return <img src={previewImage} alt="미리보기" className="w-full h-full object-cover" />
+              }
+              return (
+                <div className="w-full h-full flex items-center justify-center text-gray-400 text-xs text-center p-2">
+                  배경 선택 전에는 누끼 결과(피사체), 배경 선택 후에는 최종 합성이 표시됩니다
+                </div>
               )
-              ) : (
-              <div className="w-full h-full flex items-center justify-center text-gray-400 text-xs text-center p-2">
-                배경 선택 시 표시
-              </div>
-            )}
+            })()}
           </div>
         </div>
 
@@ -311,12 +351,16 @@ export function ThemeSelectionScreen({
           ✨ 추천 테마 선택
         </p>
         <div className="grid grid-cols-2 gap-4">
-          {BGM_PRESETS.map((theme) => (
+          {BGM_PRESETS.map((theme) => {
+            const isPremium = theme.price > 0
+            const owned = canUseTheme(theme.id)
+            const locked = isPremium && !owned
+            return (
             <button
               key={theme.id}
               onClick={() => handleThemeSelect(theme)}
               type="button"
-              className={`rounded-3xl overflow-hidden transition-all text-left ${
+              className={`rounded-3xl overflow-hidden transition-all text-left relative ${
                 selectedTheme?.id === theme.id
                   ? 'ring-4 ring-purple-500 shadow-xl'
                   : 'shadow-md hover:shadow-lg'
@@ -326,7 +370,12 @@ export function ThemeSelectionScreen({
                 className="aspect-square relative"
                 style={{ background: theme.gradient }}
               >
-                {selectedTheme?.id === theme.id && (
+                {locked && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+                    <Lock className="w-8 h-8 text-white" />
+                  </div>
+                )}
+                {selectedTheme?.id === theme.id && !locked && (
                   <div className="absolute top-2 right-2 w-8 h-8 bg-white rounded-full flex items-center justify-center shadow">
                     <Check className="w-5 h-5 text-purple-600" />
                   </div>
@@ -335,11 +384,12 @@ export function ThemeSelectionScreen({
               <div className="glass p-3">
                 <p className="font-semibold text-sm text-gray-800">{theme.name}</p>
                 <p className="text-xs text-gray-500">
-                  {theme.price === 0 ? '무료' : `₩${theme.price.toLocaleString()}`}
+                  {theme.price === 0 ? '무료' : owned ? '보유' : `₩${theme.price.toLocaleString()}`}
                 </p>
               </div>
             </button>
-          ))}
+            )
+          })}
         </div>
         </div>
 
@@ -433,14 +483,20 @@ export function ThemeSelectionScreen({
                 localStorage.removeItem('eternal_beam_edit_theme_only')
                 onNavigate?.('preview')
               } else {
-                onNavigate?.('aiProcessing')
+                const themeId = selectedTheme?.id
+                if (themeId && selectedTheme && selectedTheme.price > 0 && !canUseTheme(themeId)) {
+                  localStorage.setItem('eternal_beam_pending_theme_id', themeId)
+                  onNavigate?.('checkout')
+                } else {
+                  onNavigate?.('preview')
+                }
               }
             }}
             disabled={!canProceed}
             type="button"
             className="w-full flex items-center justify-center gap-2 rounded-2xl py-4 font-bold text-white bg-gradient-to-r from-[#667eea] to-[#764ba2] shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {editThemeOnly ? '테마 변경 완료' : '다음: AI 변환'}
+            {editThemeOnly ? '테마 변경 완료' : (selectedTheme && selectedTheme.price > 0 && !canUseTheme(selectedTheme.id) ? '결제하고 계속하기' : '다음: 미리보기')}
             <ChevronRight className="h-5 w-5" />
           </button>
         </div>
@@ -457,21 +513,34 @@ export function ThemeSelectionScreen({
               <span className="text-white text-sm font-medium">합성 중...</span>
             </div>
           )}
-          {composedPreview ? (
-            isVideoContent ? (
-              <video src={composedPreview} className="w-full h-full object-cover" muted loop playsInline />
-            ) : (
-              <img
-                src={composedPreview}
-                alt="합성 미리보기"
-                className="w-full h-full object-cover"
-              />
+          {(() => {
+            const previewImage = composedPreview || cutoutImage
+            if (previewImage) {
+              if (isVideoContent && composedPreview && previewImage === composedPreview) {
+                return (
+                  <video
+                    src={previewImage}
+                    className="w-full h-full object-cover"
+                    muted
+                    loop
+                    playsInline
+                  />
+                )
+              }
+              return (
+                <img
+                  src={previewImage}
+                  alt="합성 미리보기"
+                  className="w-full h-full object-cover"
+                />
+              )
+            }
+            return (
+              <div className="w-full h-full flex items-center justify-center text-gray-400 text-sm text-center px-4">
+                배경 선택 전에는 누끼 결과(피사체), 배경 선택 후에는 최종 합성이 여기에 표시됩니다
+              </div>
             )
-          ) : (
-            <div className="w-full h-full flex items-center justify-center text-gray-400 text-sm text-center px-4">
-              배경을 선택하면 미리보기가 여기에 표시됩니다
-            </div>
-          )}
+          })()}
         </div>
       </aside>
     </div>

@@ -12,11 +12,13 @@ export interface NFCWriteResult {
 
 /**
  * NFC 쓰기 (권한 체크 포함)
+ * payload: 서버에서 받은 nfc_payload(unique_url 등)가 있으면 해당 JSON 기록
  */
 export const writeToNFCSlot = async (
   contentId: string,
   videoId: string,
   slotNumber: number,
+  payload?: { unique_url?: string; content_id?: string; theme_id?: string; slot_number?: number },
 ): Promise<NFCWriteResult> => {
   try {
     console.log('🔒 NFC 쓰기 권한 확인 중...')
@@ -26,6 +28,13 @@ export const writeToNFCSlot = async (
       throw new Error('이 기기는 NFC를 지원하지 않습니다.')
     }
 
+    // Content_ID만 기록 (레이어 시스템): version, content_id, slot_number
+    const dataToWrite = payload?.content_id != null
+      ? { version: 1, content_id: payload.content_id, slot_number: payload.slot_number ?? slotNumber }
+      : payload?.unique_url
+        ? { version: 1, content_id: payload.content_id || contentId, unique_url: payload.unique_url, theme_id: payload.theme_id ?? '', slot_number: payload.slot_number ?? slotNumber }
+        : { video_id: videoId, content_id: contentId, slot: slotNumber, timestamp: new Date().toISOString() }
+
     console.log('📡 NFC 쓰기 시작...')
     const ndef = new (window as unknown as { NDEFReader: new () => NDEFReader }).NDEFReader()
 
@@ -33,12 +42,7 @@ export const writeToNFCSlot = async (
       records: [
         {
           recordType: 'text',
-          data: JSON.stringify({
-            video_id: videoId,
-            content_id: contentId,
-            slot: slotNumber,
-            timestamp: new Date().toISOString(),
-          }),
+          data: JSON.stringify(dataToWrite),
         },
       ],
     })

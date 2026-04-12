@@ -1,0 +1,18 @@
+{
+  "1": {
+    "bg_video": "../background11.mp4.mp4",
+    "theme": "무지개들판"
+  },
+  "2": {
+    "bg_video": "../background1.mp4.mp4",
+    "theme": "배경2"
+  },
+  "3": {
+    "bg_video": "../background.mp4",
+    "theme": "슬롯3"
+  },
+  "4": {
+    "bg_video": "../background.mp4",
+    "theme": "슬롯4"
+  }
+}

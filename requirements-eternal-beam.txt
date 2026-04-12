@@ -1,0 +1,24 @@
+# Eternal Beam – 감정 극대화 영상 생성 (eternal_beam.py) 전용
+# Python 3.8+ 권장. GPU 사용 시 CUDA 설치 후 pip install 시 자동 인식.
+
+# 필수 (이미지/비디오)
+numpy>=1.21.0
+opencv-python>=4.5.0
+Pillow>=9.0.0
+
+# Segmentation (U2-Net)
+rembg>=2.0.50
+
+# Depth (MiDaS) + Inpainting (Stable Diffusion)
+torch>=1.9.0
+torchvision>=0.10.0
+timm>=0.9.0
+diffusers>=0.21.0
+transformers>=4.25.0
+accelerate>=0.20.0
+
+# 전체 화면 재생
+PyQt5>=5.15.0
+
+# 참고: ffmpeg는 시스템에 별도 설치 필요 (PATH에 추가)
+# Windows: choco install ffmpeg / Mac: brew install ffmpeg

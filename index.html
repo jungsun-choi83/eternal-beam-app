@@ -1,12 +1,21 @@
 <!doctype html>
 <html lang="ko">
   <head>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Playfair+Display:wght@700;800&display=swap" rel="stylesheet" />
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Eternal Beam - 당신의 영원한 순간을 빛으로</title>
+    <style>
+      html, body { margin: 0; min-height: 100%; background: #000; }
+      #root { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #000; }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div style="color: rgba(255,255,255,0.8); font-family: sans-serif; text-align: center; padding: 2rem;">로딩 중...</div>
+    </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

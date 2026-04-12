@@ -7,8 +7,10 @@ import {
   Check,
   Globe,
   Rocket,
+  ExternalLink,
 } from 'lucide-react'
 import { useLanguage } from '../../contexts/LanguageContext'
+import { useSubjectSlot } from '../../contexts/SubjectSlotContext'
 import { useEffect, useState } from 'react'
 import { createContentPermission, saveFinalContent } from '../../services/firebaseService'
 import { ensureUserQuota } from '../../services/quotaService'
@@ -17,6 +19,7 @@ import { auth } from '../../config/firebase'
 
 interface CheckoutScreenProps {
   onNavigate?: (screen: string) => void
+  onBack?: () => void
 }
 
 declare global {
@@ -45,13 +48,25 @@ const PLANS = [
 
 type PaymentMethod = 'tosspay' | 'card' | 'transfer'
 
-export function CheckoutScreen({ onNavigate }: CheckoutScreenProps) {
+const getAppOrigin = () =>
+  typeof window !== 'undefined'
+    ? (import.meta.env.VITE_APP_URL as string | undefined) || window.location.origin
+    : ''
+
+const isTelegramWebView = () =>
+  typeof window !== 'undefined' &&
+  !!(window as unknown as { Telegram?: { WebApp?: unknown } }).Telegram?.WebApp
+
+export function CheckoutScreen({ onNavigate, onBack }: CheckoutScreenProps) {
   const { t } = useLanguage()
+  const { setThemePaid } = useSubjectSlot()
   const [selectedPlan, setSelectedPlan] = useState<(typeof PLANS)[number]>(PLANS[1])
   const [selectedMethod, setSelectedMethod] = useState<PaymentMethod>('tosspay')
 
   const VAT = Math.floor(selectedPlan.price * 0.1)
   const TOTAL_AMOUNT = selectedPlan.price + VAT
+  const appOrigin = getAppOrigin()
+  const inTelegram = isTelegramWebView()
 
   useEffect(() => {
     const script = document.createElement('script')
@@ -79,6 +94,7 @@ export function CheckoutScreen({ onNavigate }: CheckoutScreenProps) {
       const backgroundThemeId = localStorage.getItem('eternal_beam_background_theme_id') ?? ''
       const backgroundThemeName = localStorage.getItem('eternal_beam_background_theme_name') ?? undefined
       const composedPreview = localStorage.getItem('eternal_beam_composed_preview') ?? ''
+      const mainDepthUrl = localStorage.getItem('eternal_beam_depth_url') ?? null
       const mixedAudioBase64 = localStorage.getItem('eternal_beam_mixed_audio')
       const mixedAudioUrl = mixedAudioBase64
         ? `data:audio/wav;base64,${mixedAudioBase64}`
@@ -99,6 +115,7 @@ export function CheckoutScreen({ onNavigate }: CheckoutScreenProps) {
           user_id: userId,
           main_photo_url: mainPhoto,
           hologram_video_id: hologramVideoId,
+          main_depth_url: mainDepthUrl || null,
           background_image_url: backgroundImage,
           background_theme_id: backgroundThemeId,
           background_theme_name: backgroundThemeName,
@@ -118,6 +135,7 @@ export function CheckoutScreen({ onNavigate }: CheckoutScreenProps) {
           user_id: userId,
           main_photo_url: mainPhoto || null,
           hologram_video_id: hologramVideoId,
+          main_depth_url: mainDepthUrl || null,
           video_url: null,
           background_image_url: backgroundImage || null,
           background_theme_id: backgroundThemeId || null,
@@ -139,6 +157,7 @@ export function CheckoutScreen({ onNavigate }: CheckoutScreenProps) {
           user_id: 'anonymous',
           main_photo_url: mainPhoto || null,
           hologram_video_id: hologramVideoId,
+          main_depth_url: mainDepthUrl || null,
           video_url: null,
           background_image_url: backgroundImage || null,
           background_theme_id: backgroundThemeId || null,
@@ -158,7 +177,14 @@ export function CheckoutScreen({ onNavigate }: CheckoutScreenProps) {
         localStorage.setItem('eternal_beam_composed_preview', composedPreview)
       }
 
-      onNavigate?.('nfc')
+      setThemePaid(backgroundThemeId || '')
+      const pendingThemeId = localStorage.getItem('eternal_beam_pending_theme_id')
+      if (pendingThemeId) {
+        setThemePaid(pendingThemeId)
+        localStorage.removeItem('eternal_beam_pending_theme_id')
+      }
+
+      onNavigate?.('nfcPlayback')
     } catch (error: unknown) {
       const err = error as Error
       console.error('❌ 결제 후 처리 실패:', error)
@@ -183,13 +209,15 @@ export function CheckoutScreen({ onNavigate }: CheckoutScreenProps) {
           'test_ck_D5GePWvyJnrK0W0k6q8gLzN97Eoq',
       )
 
+      const successUrl = `${appOrigin}/payment/success`
+      const failUrl = `${appOrigin}/payment/fail`
       await tossPayments.requestPayment(methodMap[selectedMethod], {
         amount: TOTAL_AMOUNT,
         orderId,
         orderName: selectedPlan.name + ' 플랜',
         customerName: '김지수',
-        successUrl: window.location.origin + '/payment/success',
-        failUrl: window.location.origin + '/payment/fail',
+        successUrl,
+        failUrl,
       })
 
       await handlePaymentSuccess(orderId, TOTAL_AMOUNT)
@@ -219,7 +247,7 @@ export function CheckoutScreen({ onNavigate }: CheckoutScreenProps) {
             플랜 결제
           </h1>
           <button
-            onClick={() => onNavigate?.('preview')}
+            onClick={() => (onBack ? onBack() : onNavigate?.('preview'))}
             type="button"
             className="glass-strong flex h-10 w-10 items-center justify-center rounded-full shrink-0"
             title="뒤로"
@@ -379,6 +407,25 @@ export function CheckoutScreen({ onNavigate }: CheckoutScreenProps) {
           borderTop: '1px solid rgba(0, 0, 0, 0.05)',
         }}
       >
+        {inTelegram && (
+          <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            <p className="font-medium">텔레그램 앱에서는 결제창이 열리지 않을 수 있습니다.</p>
+            <p className="mt-1 text-xs text-amber-700">
+              아래 &quot;외부 브라우저에서 열기&quot;로 Safari/Chrome에서 열어 결제해 주세요.
+            </p>
+            <button
+              type="button"
+              onClick={() => {
+                const openLink = (window as unknown as { Telegram?: { WebApp?: { openLink: (url: string) => void } } }).Telegram?.WebApp?.openLink
+                if (openLink) openLink(window.location.href)
+              }}
+              className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg border border-amber-300 bg-white py-2.5 text-sm font-medium text-amber-800"
+            >
+              <ExternalLink className="h-4 w-4" />
+              외부 브라우저에서 열기
+            </button>
+          </div>
+        )}
         <button
           onClick={handlePayment}
           type="button"

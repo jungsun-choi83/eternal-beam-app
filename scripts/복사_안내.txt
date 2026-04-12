@@ -1,0 +1,29 @@
+=== action11 비디오를 EternalBeam에 넣는 방법 ===
+
+1단계: Unity 완전히 종료
+   - Unity 에디터를 닫아주세요.
+
+2단계: 파일 복사 (둘 중 하나 선택)
+
+[방법 A - 탐색기로 복사]
+  ① 바탕화면 → eternal-beam-app → python → output 폴더 열기
+  ② action11_h264.mp4 파일을 복사 (Ctrl+C)
+  ③ 바탕화면 → EternalBeam → Assets → Videos 폴더 열기
+  ④ action11.mp4 파일이 있으면 삭제 후, 복사한 action11_h264.mp4를 붙여넣기 (Ctrl+V)
+  ⑤ 이름을 "action11.mp4"로 변경
+
+  ⑥ 다시 eternal-beam-app → python → output 폴더로 가서
+  ⑦ action11_alpha_h264.mp4 파일을 복사 (Ctrl+C)
+  ⑧ EternalBeam → Assets → Videos 폴더로 가서
+  ⑨ action11_alpha.mp4가 있으면 삭제 후, 복사한 action11_alpha_h264.mp4를 붙여넣기
+  ⑩ 이름을 "action11_alpha.mp4"로 변경
+
+[방법 B - 명령어로 복사]
+  Unity를 종료한 뒤, PowerShell 또는 명령 프롬프트에서 아래를 한 줄씩 실행:
+
+  copy /Y "C:\Users\choi jungsun\Desktop\eternal-beam-app\python\output\action11_h264.mp4" "C:\Users\choi jungsun\EternalBeam\Assets\Videos\action11.mp4"
+
+  copy /Y "C:\Users\choi jungsun\Desktop\eternal-beam-app\python\output\action11_alpha_h264.mp4" "C:\Users\choi jungsun\EternalBeam\Assets\Videos\action11_alpha.mp4"
+
+3단계: Unity 다시 열기
+   - EternalBeam 프로젝트를 열고 Play로 확인하세요.

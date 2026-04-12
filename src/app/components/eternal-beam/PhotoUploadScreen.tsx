@@ -8,9 +8,10 @@ const ACCEPT_MEDIA = 'image/*,video/mp4,video/webm,video/quicktime'
 
 interface PhotoUploadScreenProps {
   onNavigate?: (screen: string) => void
+  onBack?: () => void
 }
 
-export function PhotoUploadScreen({ onNavigate }: PhotoUploadScreenProps) {
+export function PhotoUploadScreen({ onNavigate, onBack }: PhotoUploadScreenProps) {
   const { t } = useLanguage()
   const { selectedImage, setSelectedImage, setMediaType } = useImage()
   const [isDragging, setIsDragging] = useState(false)
@@ -102,7 +103,8 @@ export function PhotoUploadScreen({ onNavigate }: PhotoUploadScreenProps) {
           <button
             onClick={() => {
               localStorage.removeItem('eternal_beam_edit_photo_only')
-              onNavigate?.(editPhotoOnly ? 'preview' : 'home')
+              if (onBack) onBack()
+              else onNavigate?.(editPhotoOnly ? 'preview' : 'home')
             }}
             className="glass-strong flex h-10 w-10 items-center justify-center rounded-full shrink-0"
           >

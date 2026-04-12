@@ -7,13 +7,18 @@ interface PlaybackScreenProps {
   onNavigate?: (screen: string) => void
 }
 
+const DEPTH_INTENSITY = 1.5
+
 export function PlaybackScreen({ onNavigate }: PlaybackScreenProps) {
   const { selectedImage } = useImage()
   const [composedPreview, setComposedPreview] = useState<string | null>(null)
+  const [depthUrl, setDepthUrl] = useState<string | null>(null)
 
   useEffect(() => {
     const preview = localStorage.getItem('eternal_beam_composed_preview') || localStorage.getItem('eternal_beam_main_video_url')
     setComposedPreview(preview)
+    const depth = localStorage.getItem('eternal_beam_depth_url')
+    if (depth) setDepthUrl(depth)
   }, [])
 
   const displaySrc = composedPreview ?? selectedImage ?? null
@@ -59,11 +64,36 @@ export function PlaybackScreen({ onNavigate }: PlaybackScreenProps) {
                 autoPlay
               />
             ) : (
-              <img
-                src={displaySrc}
-                alt="합성된 미리보기"
-                className="h-full w-full object-cover"
-              />
+              <div className="relative h-full w-full">
+                <img
+                  src={displaySrc}
+                  alt="합성된 미리보기"
+                  className="h-full w-full object-cover"
+                  style={{
+                    filter: `brightness(${0.7 + DEPTH_INTENSITY * 0.1}) contrast(1.1)`,
+                    mixBlendMode: 'screen',
+                  }}
+                />
+                {depthUrl && (
+                  <div
+                    className="pointer-events-none absolute inset-0"
+                    style={{
+                      WebkitMaskImage: `url(${depthUrl})`,
+                      maskImage: `url(${depthUrl})`,
+                      WebkitMaskSize: 'cover',
+                      maskSize: 'cover',
+                      WebkitMaskRepeat: 'no-repeat',
+                      maskRepeat: 'no-repeat',
+                      background:
+                        'linear-gradient(135deg, rgba(0, 212, 255, 0.9), rgba(118, 75, 162, 0.9))',
+                      backgroundSize: '200% 200%',
+                      opacity: Math.min(0.2 + DEPTH_INTENSITY * 0.2, 0.85),
+                      mixBlendMode: 'screen',
+                      animation: 'depthGlow 6s ease-in-out infinite',
+                    }}
+                  />
+                )}
+              </div>
             )
           ) : (
             <div className="text-7xl">✨</div>
@@ -114,6 +144,23 @@ export function PlaybackScreen({ onNavigate }: PlaybackScreenProps) {
           </button>
         </div>
       </div>
+
+      <style>{`
+        @keyframes depthGlow {
+          0% {
+            transform: translate3d(-10%, -10%, 0) scale(1.03);
+            background-position: 0% 0%;
+          }
+          50% {
+            transform: translate3d(10%, 10%, 0) scale(1.06);
+            background-position: 100% 100%;
+          }
+          100% {
+            transform: translate3d(-10%, -10%, 0) scale(1.03);
+            background-position: 0% 0%;
+          }
+        }
+      `}</style>
     </div>
   )
 }

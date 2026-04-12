@@ -1,0 +1,62 @@
+{
+  "no_slot_idle": {
+    "head_nx": 0.4366,
+    "head_ny": 0.3609,
+    "mouth_nx": 0.4496,
+    "mouth_ny": 0.4454
+  },
+  "no_slot_action": {
+    "head_nx": 0.4567,
+    "head_ny": 0.3056,
+    "mouth_nx": 0.4676,
+    "mouth_ny": 0.3999
+  },
+  "slot1_idle": {
+    "head_nx": 0.4587,
+    "head_ny": 0.2878,
+    "mouth_nx": 0.4671,
+    "mouth_ny": 0.3427
+  },
+  "slot1_action": {
+    "head_nx": 0.4713,
+    "head_ny": 0.2494,
+    "mouth_nx": 0.4782,
+    "mouth_ny": 0.3094
+  },
+  "slot2_idle": {
+    "head_nx": 0.4931,
+    "head_ny": 0.2856,
+    "mouth_nx": 0.5054,
+    "mouth_ny": 0.3396
+  },
+  "slot2_action": {
+    "head_nx": 0.4944,
+    "head_ny": 0.2493,
+    "mouth_nx": 0.5056,
+    "mouth_ny": 0.3093
+  },
+  "slot3_idle": {
+    "head_nx": 0.4547,
+    "head_ny": 0.2877,
+    "mouth_nx": 0.4631,
+    "mouth_ny": 0.3417
+  },
+  "slot3_action": {
+    "head_nx": 0.4734,
+    "head_ny": 0.2539,
+    "mouth_nx": 0.4804,
+    "mouth_ny": 0.3143
+  },
+  "slot4_idle": {
+    "head_nx": 0.4547,
+    "head_ny": 0.2877,
+    "mouth_nx": 0.4631,
+    "mouth_ny": 0.3417
+  },
+  "slot4_action": {
+    "head_nx": 0.4734,
+    "head_ny": 0.2539,
+    "mouth_nx": 0.4804,
+    "mouth_ny": 0.3143
+  }
+}

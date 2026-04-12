@@ -1,16 +1,52 @@
 # 환경 변수
 .env
+env.local
 .env.local
 .env.production
 .env.*.local
 
 # 의존성
 node_modules
+.venv/
+**/.venv/
+python/.venv/
 
 # 빌드
 dist
 build
 
+# Python
+__pycache__/
+*.pyc
+*.pt
+
 # 기타
 .DS_Store
 *.log
+
+# 로컬 생성물·대용량 미디어 (GitHub/Vercel에 불필요)
+dist/
+output/
+outputs/
+server/output/
+media/
+*.mp4
+__pycache__/
+*.rtf
+KakaoTalk_*
+/test_*.png
+/composited_output.png
+/cutout.png
+/input.jpg
+/idle1_mp4.png
+v0-design/
+.cursorignore
+
+# 로컬 샘플·개인 자산 (저장소에 올리지 않음)
+python/dog.jpg.jpg
+python/dog.jpg_nobg.png
+python/idle1.png
+python/out_depth.png
+고야사진.jpg
+제우스포카.jpg
+새 폴더/

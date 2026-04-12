@@ -13,6 +13,8 @@ export async function saveContentToSupabase(row: {
   user_id: string
   main_photo_url?: string | null
   hologram_video_id?: string | null
+  main_depth_url?: string | null
+  background_depth_url?: string | null
   video_url?: string | null
   background_image_url?: string | null
   background_theme_id?: string | null
@@ -36,6 +38,8 @@ export async function saveContentToSupabase(row: {
       user_id: row.user_id,
       main_photo_url: row.main_photo_url ?? null,
       hologram_video_id: row.hologram_video_id ?? null,
+      main_depth_url: row.main_depth_url ?? null,
+      background_depth_url: row.background_depth_url ?? null,
       video_url: row.video_url ?? null,
       background_image_url: row.background_image_url ?? null,
       background_theme_id: row.background_theme_id ?? null,

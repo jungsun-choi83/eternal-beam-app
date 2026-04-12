@@ -1,0 +1,16 @@
+# Eternal Beam MVP 단일 스크립트 (eternal_beam_mvp.py) 의존성
+# 사용: pip install -r requirements-mvp.txt
+
+# 피사체 분리 (U2-Net + Alpha Matting)
+rembg[gpu]>=2.0.50
+Pillow>=10.0.0
+numpy>=1.24.0
+opencv-python-headless>=4.8.0
+
+# 깊이 추정 (ZoeDepth, 선택)
+torch>=2.0.0
+transformers>=4.30.0
+
+# 시스템 요구: ffmpeg (PATH에 설치)
+# Windows: choco install ffmpeg
+# Mac: brew install ffmpeg
