@@ -31,6 +31,9 @@ outputs/
 server/output/
 media/
 *.mp4
+# Theme backgrounds (tracked; run scripts/sync_theme_backgrounds.py)
+!backend/themes/*.mp4
+!EternalBeam/Assets/Backgrounds/*.mp4
 __pycache__/
 *.rtf
 KakaoTalk_*

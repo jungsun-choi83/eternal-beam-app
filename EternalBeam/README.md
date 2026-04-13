@@ -13,6 +13,7 @@ EternalBeam/
 │   ├── Scripts/
 │   │   ├── VideoLayer.cs       ← RGBA / RGB+Alpha 비디오 렌더링
 │   │   └── HologramController.cs ← Z-Depth 140/75/20mm, subjectOnly
+│   ├── Backgrounds/            ← 배경 테스트용 MP4 (영문 파일명, sync 스크립트로 복사)
 │   └── Videos/                 ← subject_only.mp4 넣기
 ```
 
