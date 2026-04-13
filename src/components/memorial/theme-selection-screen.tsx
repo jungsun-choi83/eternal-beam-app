@@ -16,12 +16,12 @@ interface ThemeSelectionScreenProps {
 }
 
 const themes = [
-  { id: 1, name: "Celestial", gradient: "from-indigo-900 via-purple-900 to-black", accent: "#8b5cf6", premium: false, price: "" },
-  { id: 2, name: "Golden Meadow", gradient: "from-amber-900 via-yellow-900 to-black", accent: "#f59e0b", premium: false, price: "" },
-  { id: 3, name: "Starlight", gradient: "from-slate-900 via-zinc-800 to-black", accent: "#e4e4e7", premium: false, price: "" },
-  { id: 4, name: "Aurora", gradient: "from-emerald-900 via-teal-900 to-black", accent: "#10b981", premium: true, price: "$2.99" },
-  { id: 5, name: "Sunset", gradient: "from-rose-900 via-orange-900 to-black", accent: "#f43f5e", premium: true, price: "$2.99" },
-  { id: 6, name: "Ocean Deep", gradient: "from-blue-900 via-cyan-900 to-black", accent: "#06b6d4", premium: true, price: "$2.99" },
+  { id: 1, name: "Celestial", gradient: "from-indigo-900 via-purple-900 to-black", accent: "#8b5cf6", premium: false, price: "", thumb: "/theme-thumbs/celestial.jpg" },
+  { id: 2, name: "Golden Meadow", gradient: "from-amber-900 via-yellow-900 to-black", accent: "#f59e0b", premium: false, price: "", thumb: "/theme-thumbs/golden_meadow.jpg" },
+  { id: 3, name: "Starlight", gradient: "from-slate-900 via-zinc-800 to-black", accent: "#e4e4e7", premium: false, price: "", thumb: "/theme-thumbs/starlight.jpg" },
+  { id: 4, name: "Aurora", gradient: "from-emerald-900 via-teal-900 to-black", accent: "#10b981", premium: true, price: "$2.99", thumb: "/theme-thumbs/aurora.jpg" },
+  { id: 5, name: "Sunset", gradient: "from-rose-900 via-orange-900 to-black", accent: "#f43f5e", premium: true, price: "$2.99", thumb: "/theme-thumbs/sunset.jpg" },
+  { id: 6, name: "Ocean Deep", gradient: "from-blue-900 via-cyan-900 to-black", accent: "#06b6d4", premium: true, price: "$2.99", thumb: "/theme-thumbs/ocean_deep.jpg" },
 ];
 
 export function ThemeSelectionScreen({ 
@@ -382,7 +382,11 @@ export function ThemeSelectionScreen({
               <div className="absolute top-0 left-2 right-2 h-px bg-gradient-to-r from-white/15 via-white/10 to-transparent" />
               <div className="absolute top-2 bottom-2 left-0 w-px bg-gradient-to-b from-white/15 via-white/10 to-transparent" />
               
-              <div className={`absolute inset-0 bg-gradient-to-b ${theme.gradient} opacity-70`} />
+              <div
+                className="absolute inset-0 bg-center bg-cover"
+                style={{ backgroundImage: `url(${theme.thumb})` }}
+              />
+              <div className={`absolute inset-0 bg-gradient-to-b ${theme.gradient} opacity-45`} />
               
               <div 
                 className="absolute bottom-0 left-0 right-0 h-1/2"
