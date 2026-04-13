@@ -4,8 +4,20 @@
  * - 합성: POST /api/compose-video (결제 Gate + FFmpeg) → unique_url, nfc_payload
  */
 
-const getBaseUrl = () =>
-  import.meta.env.VITE_VIDEO_API_URL || import.meta.env.VITE_API_URL || 'http://localhost:8000'
+/** API base (no trailing slash). Dev: '' → same-origin so Vite proxies /api → :8000 */
+const getBaseUrl = (): string => {
+  const explicit = import.meta.env.VITE_VIDEO_API_URL || import.meta.env.VITE_API_URL
+  if (explicit) return String(explicit).replace(/\/$/, '')
+  if (import.meta.env.DEV) return ''
+  return 'http://localhost:8000'
+}
+
+function wrapNetworkError(err: unknown, hint: string): Error {
+  if (err instanceof TypeError || (err instanceof Error && err.message === 'Failed to fetch')) {
+    return new Error(hint)
+  }
+  return err instanceof Error ? err : new Error(String(err))
+}
 
 function formatHttpErrorDetail(err: Record<string, unknown>, fallback: string): string {
   const d = err.detail
@@ -61,10 +73,18 @@ export async function cutoutImage(
   form.append('save_to_storage', String(options.saveToStorage !== false))
   if (options.model) form.append('model', options.model)
 
-  const res = await fetch(`${getBaseUrl()}/api/cutout`, {
-    method: 'POST',
-    body: form,
-  })
+  let res: Response
+  try {
+    res = await fetch(`${getBaseUrl()}/api/cutout`, {
+      method: 'POST',
+      body: form,
+    })
+  } catch (e) {
+    throw wrapNetworkError(
+      e,
+      '누끼 서버에 연결할 수 없습니다. 새 터미널에서 `npm run video-api`로 백엔드(포트 8000)를 실행한 뒤 다시 시도하세요.',
+    )
+  }
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as Record<string, unknown>
     throw new Error(formatHttpErrorDetail(err, '배경 제거 요청 실패'))

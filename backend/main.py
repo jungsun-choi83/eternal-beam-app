@@ -12,27 +12,46 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 _root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-load_dotenv()
+# cwd와 무관하게 프로젝트 루트 .env를 먼저 읽음 (npm run video-api 시 cwd=루트)
+load_dotenv(os.path.join(_root, ".env"))
 for _p in (
     os.path.join(_root, "env.local"),
     os.path.join(_root, ".env.local"),
 ):
     if os.path.isfile(_p):
-        load_dotenv(_p)
+        load_dotenv(_p, override=True)
 # 폴더 .env.local 안의 env.local (사용자가 폴더로 만든 경우)
 _env_in_folder = os.path.join(_root, ".env.local", "env.local")
 if os.path.isfile(_env_in_folder):
-    load_dotenv(_env_in_folder)
+    load_dotenv(_env_in_folder, override=True)
 
-# backend/env.local — use when AnySign4PC locks ".env"; plain text, same KEY=value format
+
+def _merge_dotenv_nonempty(path: str) -> None:
+    """빈 값은 기존 환경 변수를 덮어쓰지 않음 (빈 SUPABASE_URL= 로 인한 getaddrinfo 방지)."""
+    if not os.path.isfile(path):
+        return
+    try:
+        from dotenv import dotenv_values
+    except ImportError:
+        load_dotenv(path, override=True)
+        return
+    for key, val in dotenv_values(path).items():
+        if val is None:
+            continue
+        s = str(val).strip().strip('"').strip("'")
+        if s == "":
+            continue
+        os.environ[key] = s
+
+
+# backend/env.local — AnySign 등으로 루트 .env를 못 쓸 때. 빈 줄은 루트 값 유지.
 _backend_dir = os.path.dirname(os.path.abspath(__file__))
 for _p in (
     os.path.join(_backend_dir, "env.local"),
     os.path.join(_backend_dir, ".env.local"),
     os.path.join(_backend_dir, ".env"),
 ):
-    if os.path.isfile(_p):
-        load_dotenv(_p, override=True)
+    _merge_dotenv_nonempty(_p)
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
