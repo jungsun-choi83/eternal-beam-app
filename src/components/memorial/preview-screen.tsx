@@ -7,7 +7,7 @@ import {
   ETERNAL_BEAM_PIPELINE_KEY,
   type StoredPipeline,
 } from "@/components/memorial/ai-processing-screen";
-import { generatePreview } from "@/app/services/videoProcessingApi";
+import { generatePreview, getVideoApiBaseUrl } from "@/app/services/videoProcessingApi";
 
 interface PreviewScreenProps {
   cutoutImage: string | null;
@@ -36,6 +36,11 @@ const THEME_PREVIEW_IDS: Record<number, string> = {
   5: "sunset",
   6: "ocean_deep",
 };
+
+function isLikelyVideoUrl(url: string): boolean {
+  const u = url.toLowerCase();
+  return u.endsWith(".mp4") || u.endsWith(".webm") || u.endsWith(".mov");
+}
 
 export function PreviewScreen({
   cutoutImage,
@@ -82,7 +87,6 @@ export function PreviewScreen({
       const r = await fetch(cutoutImage);
       const blob = await r.blob();
       const file = new File([blob], "cutout.png", { type: blob.type || "image/png" });
-      const base = import.meta.env.VITE_VIDEO_API_URL || import.meta.env.VITE_API_URL || "http://localhost:8000";
       const { preview_url } = await generatePreview({
         background_id: bgId,
         cutoutFile: file,
@@ -90,7 +94,10 @@ export function PreviewScreen({
         position_x: settings.posX,
         position_y: settings.posY,
       });
-      setFfPreviewUrl(`${base}${preview_url}`);
+      const base = getVideoApiBaseUrl();
+      setFfPreviewUrl(
+        preview_url.startsWith("http") ? preview_url : `${base}${preview_url}`
+      );
     } catch (e) {
       setFfError(e instanceof Error ? e.message : "Preview failed (add theme MP4 under backend/themes?)");
     } finally {
@@ -330,14 +337,22 @@ export function PreviewScreen({
                   <span className="text-[9px] uppercase tracking-wider" style={{ color: "#888" }}>
                     Idle
                   </span>
-                  <video
-                    src={pipeline.idle_video_url}
-                    className="w-full rounded-lg border border-white/10 max-h-[88px] object-cover bg-black"
-                    controls
-                    muted
-                    playsInline
-                    loop
-                  />
+                  {isLikelyVideoUrl(pipeline.idle_video_url) ? (
+                    <video
+                      src={pipeline.idle_video_url}
+                      className="w-full rounded-lg border border-white/10 max-h-[88px] object-cover bg-black"
+                      controls
+                      muted
+                      playsInline
+                      loop
+                    />
+                  ) : (
+                    <img
+                      src={pipeline.idle_video_url}
+                      alt="Idle fallback"
+                      className="w-full rounded-lg border border-white/10 max-h-[88px] object-cover bg-black"
+                    />
+                  )}
                 </div>
               ) : null}
               {pipeline.action_video_url ? (
@@ -345,14 +360,22 @@ export function PreviewScreen({
                   <span className="text-[9px] uppercase tracking-wider" style={{ color: "#888" }}>
                     Action
                   </span>
-                  <video
-                    src={pipeline.action_video_url}
-                    className="w-full rounded-lg border border-white/10 max-h-[88px] object-cover bg-black"
-                    controls
-                    muted
-                    playsInline
-                    loop
-                  />
+                  {isLikelyVideoUrl(pipeline.action_video_url) ? (
+                    <video
+                      src={pipeline.action_video_url}
+                      className="w-full rounded-lg border border-white/10 max-h-[88px] object-cover bg-black"
+                      controls
+                      muted
+                      playsInline
+                      loop
+                    />
+                  ) : (
+                    <img
+                      src={pipeline.action_video_url}
+                      alt="Action fallback"
+                      className="w-full rounded-lg border border-white/10 max-h-[88px] object-cover bg-black"
+                    />
+                  )}
                 </div>
               ) : null}
             </div>

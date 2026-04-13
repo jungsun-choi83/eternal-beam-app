@@ -206,10 +206,7 @@ import { useImage } from '../../contexts/ImageContext'
 import { useSubjectSlot } from '../../contexts/SubjectSlotContext'
 import { useState, useEffect, useCallback } from 'react'
 import { isVideoUrl } from '../../utils/mediaType'
-import { generatePreview, composeFinal } from '../../services/videoProcessingApi'
-
-const getBaseUrl = () =>
-  import.meta.env.VITE_VIDEO_API_URL || import.meta.env.VITE_API_URL || 'http://localhost:8000'
+import { generatePreview, composeFinal, getVideoApiBaseUrl } from '../../services/videoProcessingApi'
 
 interface PreviewScreenProps {
   onNavigate?: (screen: string) => void
@@ -303,7 +300,7 @@ export function PreviewScreen({ onNavigate, onBack }: PreviewScreenProps) {
           position_x: previewControls.positionX,
           position_y: previewControls.positionY,
         })
-        const fullUrl = preview_url.startsWith('http') ? preview_url : `${getBaseUrl()}${preview_url}`
+        const fullUrl = preview_url.startsWith('http') ? preview_url : `${getVideoApiBaseUrl()}${preview_url}`
         setPreviewVideoUrl(fullUrl)
       } catch (e) {
         console.warn('프리뷰 생성 실패:', e)

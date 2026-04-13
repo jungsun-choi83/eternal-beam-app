@@ -9,7 +9,20 @@ const getBaseUrl = (): string => {
   const explicit = import.meta.env.VITE_VIDEO_API_URL || import.meta.env.VITE_API_URL
   if (explicit) return String(explicit).replace(/\/$/, '')
   if (import.meta.env.DEV) return ''
-  return 'http://localhost:8000'
+  // 배포(프리뷰 포함): localhost 백엔드는 방문자 브라우저에 없음 — 반드시 VITE_VIDEO_API_URL 설정
+  return ''
+}
+
+/** 프리뷰/정적 URL을 절대 주소로 붙일 때 사용 (내부 로직과 동일). */
+export const getVideoApiBaseUrl = getBaseUrl
+
+function requireVideoApiBase(): void {
+  const hasExplicit = !!(import.meta.env.VITE_VIDEO_API_URL || import.meta.env.VITE_API_URL)
+  if (import.meta.env.PROD && !hasExplicit) {
+    throw new Error(
+      '배포 사이트에는 영상 API 주소가 필요합니다. Vercel 등에 VITE_VIDEO_API_URL(예: 배포한 Python 서버 https URL)을 설정한 뒤 다시 빌드하세요.'
+    )
+  }
 }
 
 function wrapNetworkError(err: unknown, hint: string): Error {
@@ -66,6 +79,7 @@ export async function cutoutImage(
     model?: string
   } = {}
 ): Promise<CutoutResult> {
+  requireVideoApiBase()
   const form = new FormData()
   form.append('file', file)
   form.append('user_id', options.userId ?? 'anonymous')
@@ -109,6 +123,7 @@ export async function composeVideo(
     subjectOnly?: boolean
   }
 ): Promise<ComposeVideoResult> {
+  requireVideoApiBase()
   const form = new FormData()
   form.append('cutout_file', cutoutFile)
   form.append('user_id', options.userId ?? 'anonymous')
@@ -148,6 +163,7 @@ export async function generatePreview(params: {
   position_x: number
   position_y: number
 }): Promise<{ preview_url: string; preview_id: string }> {
+  requireVideoApiBase()
   const form = new FormData()
   form.append('cutout_file', params.cutoutFile)
   form.append('background_id', params.background_id)
@@ -226,6 +242,7 @@ export async function generatePetVideo(
     skipPreprocessing?: boolean
   } = {}
 ): Promise<GeneratePetVideoResult> {
+  requireVideoApiBase()
   const form = new FormData()
   form.append('file', file)
   form.append('user_id', options.userId ?? 'anonymous')

@@ -41,6 +41,22 @@ function cutoutDisplayUrl(result: CutoutResult): string {
   return "";
 }
 
+function isInsufficientCreditsError(message: string): boolean {
+  const m = message.toLowerCase();
+  return m.includes("insufficient credit") || m.includes("크레딧");
+}
+
+function isCutoutMemoryError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("bad alloc") ||
+    m.includes("allocation") ||
+    m.includes("out of memory") ||
+    m.includes("onnxruntimeerror") ||
+    m.includes("메모리")
+  );
+}
+
 async function cutoutResultToFile(result: CutoutResult): Promise<File> {
   if (result.cutout_url) {
     const ctrl = new AbortController();
@@ -140,32 +156,46 @@ export function AIProcessingScreen({ uploadedImage, onComplete }: AIProcessingSc
 
         if (cancelled || myToken !== runTokenRef.current) return;
 
-        if (cut.error && !cut.cutout_url && !cut.cutout_png_base64) {
-          throw new Error(cut.error || "Cutout failed");
+        let display = cutoutDisplayUrl(cut);
+        let cutFile: File;
+        if (!display) {
+          if (cut.error && isCutoutMemoryError(cut.error)) {
+            // rembg OOM이면 원본으로 계속 진행해 Luma/후속 플로우 테스트를 막지 않는다.
+            setStatusLine("Cutout memory limit hit. Continuing with original image.");
+            display = uploadedImage;
+            cutFile = file;
+          } else {
+            throw new Error(cut.error || "Cutout failed");
+          }
+        } else {
+          cutFile = await cutoutResultToFile(cut);
         }
-
-        const display = cutoutDisplayUrl(cut);
-        if (!display) throw new Error("No cutout image returned");
 
         setProgress(35);
         setCurrentStep(1);
         setStatusLine("Luma: generating videos (this can take several minutes)…");
-
-        const cutFile = await cutoutResultToFile(cut);
-        const pet = await generatePetVideo(cutFile, {
-          userId: "anonymous",
-          contentId: cut.content_id || undefined,
-          skipPreprocessing: true,
-        });
+        let pet: Awaited<ReturnType<typeof generatePetVideo>> | null = null;
+        try {
+          pet = await generatePetVideo(cutFile, {
+            userId: "anonymous",
+            contentId: cut.content_id || undefined,
+            skipPreprocessing: true,
+          });
+        } catch (e) {
+          const msg =
+            e instanceof Error ? e.message : typeof e === "string" ? e : "Luma generation failed";
+          if (!isInsufficientCreditsError(msg)) throw e;
+          setStatusLine("Luma credits unavailable. Using cutout fallback so you can continue testing.");
+        }
 
         if (cancelled || myToken !== runTokenRef.current) return;
 
         const stored: StoredPipeline = {
-          content_id: pet.content_id,
+          content_id: pet?.content_id || cut.content_id || `fallback_${Date.now()}`,
           cutout_display_url: display,
-          dog_only_nobg_url: pet.dog_only_nobg_url,
-          idle_video_url: pet.idle_video_url,
-          action_video_url: pet.action_video_url,
+          dog_only_nobg_url: pet?.dog_only_nobg_url || display,
+          idle_video_url: pet?.idle_video_url || display,
+          action_video_url: pet?.action_video_url || display,
         };
         try {
           sessionStorage.setItem(ETERNAL_BEAM_PIPELINE_KEY, JSON.stringify(stored));

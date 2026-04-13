@@ -146,10 +146,19 @@ def remove_background(
         use_am = False
 
     session = new_session(model_name, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+    cpu_session = None
 
     def _oomish(err: BaseException) -> bool:
         s = str(err).lower()
-        return isinstance(err, MemoryError) or "allocate" in s or "memory" in s
+        return (
+            isinstance(err, MemoryError)
+            or "allocate" in s
+            or "allocation" in s
+            or "bad alloc" in s
+            or "out of memory" in s
+            or "cuda oom" in s
+            or "memory" in s
+        )
 
     try:
         out_img = _rembg_call(
@@ -164,11 +173,13 @@ def remove_background(
     except Exception as first_err:
         if not _oomish(first_err):
             raise
+        # CUDA/provider 메모리 이슈일 때 CPU 세션으로 재시도
+        cpu_session = new_session(model_name, providers=["CPUExecutionProvider"])
         input_img = _downscale_for_rembg(input_img, max(512, max_side // 2))
         try:
             out_img = _rembg_call(
                 input_img,
-                session,
+                cpu_session,
                 use_alpha_matting=False,
                 foreground_threshold=foreground_threshold,
                 background_threshold=background_threshold,
@@ -181,7 +192,7 @@ def remove_background(
             input_img = _downscale_for_rembg(input_img, 512)
             out_img = _rembg_call(
                 input_img,
-                session,
+                cpu_session,
                 use_alpha_matting=False,
                 foreground_threshold=foreground_threshold,
                 background_threshold=background_threshold,
