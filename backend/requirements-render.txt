@@ -6,7 +6,8 @@ fastapi==0.109.2
 uvicorn[standard]==0.27.1
 python-multipart==0.0.9
 
-rembg==2.0.57
+# Render 최신 Python에서는 2.0.57 휠이 없을 수 있음 → PyPI에 있는 최신 라인 사용
+rembg>=2.0.68,<3
 Pillow>=10.0.0
 numpy>=1.24.0
 opencv-python-headless>=4.8.0

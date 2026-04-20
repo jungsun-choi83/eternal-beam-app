@@ -1,0 +1,17 @@
+# Docker / 클라우드 CPU 배포용 (rembg는 CPU onnxruntime; GPU 패키지 제외)
+# 로컬 GPU: backend/requirements.txt 의 rembg[gpu] 사용
+
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+python-multipart==0.0.9
+
+rembg>=2.0.68,<3
+Pillow>=10.0.0
+numpy>=1.24.0
+opencv-python-headless>=4.8.0
+ffmpeg-python==0.2.0
+ultralytics>=8.1.0
+supabase>=2.3.0
+python-dotenv==1.0.1
+requests>=2.31.0
+modal>=0.64.0
