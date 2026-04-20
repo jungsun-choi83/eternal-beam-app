@@ -1,13 +1,8 @@
-# Render Blueprint — Git 연결 시 자동 설정 (선택)
+# Render Blueprint — Docker만 사용 (루트 package.json 때문에 Node로 잡히는 문제 회피)
 # https://render.com/docs/blueprint-spec
 services:
   - type: web
-    name: eternal-beam-app
-    runtime: python
+    name: eternal-beam-api
     region: singapore
     plan: free
-    buildCommand: pip install --upgrade pip setuptools wheel && pip install -r backend/requirements-render.txt
-    startCommand: bash scripts/render_start.sh
-    envVars:
-      - key: PYTHON_VERSION
-        value: "3.11.9"
+    dockerfilePath: ./Dockerfile

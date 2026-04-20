@@ -1,0 +1,2 @@
+# Windows에서 만든 셸 스크립트가 Render(Linux)에서 ^M 오류 나지 않게
+*.sh text eol=lf

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Render Web Service 시작 — repo 루트에서 PYTHONPATH 고정, python3 사용
+# Render Native Python 시작 (Docker가 아닐 때만 사용)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
