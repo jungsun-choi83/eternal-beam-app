@@ -100,6 +100,12 @@ if os.path.exists(_output_path):
     app.mount("/outputs", StaticFiles(directory=_output_path), name="outputs")
 
 
+@app.get("/")
+def root():
+    """헬스/루트 프로브용(일부 호스팅은 GET / 로 검사)."""
+    return {"service": "eternal-beam-api", "health": "/health", "docs": "/docs"}
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}

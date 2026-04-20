@@ -7,7 +7,7 @@ services:
     region: singapore
     plan: free
     buildCommand: pip install --upgrade pip setuptools wheel && pip install -r backend/requirements-render.txt
-    startCommand: PYTHONPATH=. python -m uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    startCommand: bash scripts/render_start.sh
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.9"
