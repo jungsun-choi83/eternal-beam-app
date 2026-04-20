@@ -1,0 +1,16 @@
+# Render 무료 플랜용 — pip 가볍게 (torch/ultralytics/modal 제외)
+# 누끼(/api/cutout)·FFmpeg 프리뷰·합성에 충분합니다.
+# Luma 강아지 전처리(YOLO)가 필요하면 나중에 ultralytics 를 추가하세요.
+
+fastapi==0.109.2
+uvicorn[standard]==0.27.1
+python-multipart==0.0.9
+
+rembg==2.0.57
+Pillow>=10.0.0
+numpy>=1.24.0
+opencv-python-headless>=4.8.0
+ffmpeg-python==0.2.0
+supabase>=2.3.0
+python-dotenv==1.0.1
+requests>=2.31.0
