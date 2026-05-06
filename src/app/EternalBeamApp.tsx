@@ -73,6 +73,49 @@ export function EternalBeamApp() {
     setUploadedImage(imageUrl)
   }
 
+  const handleQuickUploadFromHome = () => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = 'image/*,video/mp4,video/webm,video/quicktime'
+    input.onchange = (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0]
+      if (!file) return
+      const isImage = file.type.startsWith('image/')
+      const isVideo = file.type.startsWith('video/')
+      if (!isImage && !isVideo) {
+        alert('이미지(JPG, PNG) 또는 동영상(MP4, WebM) 파일만 업로드 가능합니다.')
+        return
+      }
+      if (isVideo && file.size > 100 * 1024 * 1024) {
+        alert('동영상은 100MB 이하로 선택해주세요.')
+        return
+      }
+
+      const mediaType = isVideo ? 'video' : 'image'
+      localStorage.setItem('eternal_beam_media_type', mediaType)
+
+      if (isImage) {
+        const reader = new FileReader()
+        reader.onload = (ev) => {
+          const result = String(ev.target?.result || '')
+          if (!result) return
+          setUploadedImage(result)
+          localStorage.setItem('eternal_beam_main_photo', result)
+          localStorage.removeItem('eternal_beam_main_video_url')
+          navigateTo('aiProcessing')
+        }
+        reader.readAsDataURL(file)
+      } else {
+        const url = URL.createObjectURL(file)
+        setUploadedImage(url)
+        localStorage.setItem('eternal_beam_main_video_url', url)
+        localStorage.removeItem('eternal_beam_main_photo')
+        navigateTo('themeSelection')
+      }
+    }
+    input.click()
+  }
+
   const handleAIProcessingComplete = (cutoutUrl: string) => {
     setCutoutImage(cutoutUrl)
     navigateTo('themeSelection')
@@ -240,11 +283,11 @@ export function EternalBeamApp() {
                 userName={userName ?? undefined}
                 language={language}
                 onLanguageChange={setLanguage}
-                onUploadPhoto={() => navigateTo('photoUpload')}
+                onUploadPhoto={handleQuickUploadFromHome}
                 onGallery={() => navigateTo('gallery')}
                 onSettings={() => navigateTo('settings')}
                 onSaveToNFC={() =>
-                  cutoutImage ? navigateTo('preview') : navigateTo('photoUpload')
+                  cutoutImage ? navigateTo('preview') : handleQuickUploadFromHome()
                 }
               />
             </motion.div>

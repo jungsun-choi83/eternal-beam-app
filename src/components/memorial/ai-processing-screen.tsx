@@ -46,6 +46,19 @@ function isInsufficientCreditsError(message: string): boolean {
   return m.includes("insufficient credit") || m.includes("크레딧");
 }
 
+function isSkippableLumaError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
+    m.includes("insufficient credit") ||
+    m.includes("크레딧") ||
+    m.includes("not found") ||
+    m.includes("404") ||
+    m.includes("luma_api_key") ||
+    m.includes("luma api") ||
+    m.includes("generate-pet-video")
+  );
+}
+
 function isCutoutMemoryError(message: string): boolean {
   const m = message.toLowerCase();
   return (
@@ -184,8 +197,8 @@ export function AIProcessingScreen({ uploadedImage, onComplete }: AIProcessingSc
         } catch (e) {
           const msg =
             e instanceof Error ? e.message : typeof e === "string" ? e : "Luma generation failed";
-          if (!isInsufficientCreditsError(msg)) throw e;
-          setStatusLine("Luma credits unavailable. Using cutout fallback so you can continue testing.");
+          if (!isSkippableLumaError(msg)) throw e;
+          setStatusLine("Luma unavailable. Continuing with cutout-only flow.");
         }
 
         if (cancelled || myToken !== runTokenRef.current) return;
