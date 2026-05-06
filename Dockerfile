@@ -2,7 +2,7 @@
 # 빌드: docker build -t eternal-beam-api .
 # 실행: docker run -p 8000:8000 --env-file .env eternal-beam-api
 
-FROM python:3.11-bookworm-slim
+FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
