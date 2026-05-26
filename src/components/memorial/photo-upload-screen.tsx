@@ -8,6 +8,7 @@ import { isLiteUI } from "@/lib/ui-performance";
 import { createDisplayImageUrl } from "@/lib/display-image";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { MediaFileTrigger } from "@/components/memorial/media-file-trigger";
+import { PhotoUploadGuide } from "@/components/memorial/photo-upload-guide";
 import { inferMediaKind } from "@/lib/media-file-kind";
 
 interface PhotoUploadScreenProps {
@@ -160,18 +161,21 @@ export function PhotoUploadScreen({
         <div className="w-10" />
       </header>
 
-      <div className="flex-1 flex flex-col items-center justify-center px-8 relative z-10">
+      <div className="flex-1 min-h-0 overflow-y-auto px-6 py-2 relative z-10">
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.2 }}
-          className="w-full max-w-[280px]"
+          className="w-full max-w-[320px] mx-auto"
         >
           <h2 className="upload-title text-center">{u.heading}</h2>
           <p className="upload-subtitle text-center">{u.subtitle}</p>
+
+          <PhotoUploadGuide language={language} />
+
           <MediaFileTrigger
             onFile={ingestFile}
-            className="block mt-6 touch-manipulation"
+            className="block mt-4 touch-manipulation"
           >
             <motion.div
               onDragOver={handleDragOver}

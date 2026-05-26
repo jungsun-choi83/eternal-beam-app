@@ -25,7 +25,16 @@ const STRINGS = {
       drop: "놓으면 업로드",
       tapBrowse: "탭하여 찾기",
       formats: "JPG, PNG, MP4, MOV",
-      hint: "정면·중앙에 선명한 사진이 가장 잘 됩니다.",
+      hint: "정면·선명한 사진이 가장 잘 살아납니다.",
+      guide: {
+        title: "사진 업로드 필수 가이드",
+        leashQuote: "무거운 목줄과 하네스는 잠시 내려놔 주세요.",
+        body: "조이거나 가려진 곳이 없을 때, 우리 아이의 가장 순수한 모습이 3D 홀로그램으로 완벽하게 되살아납니다.",
+        goodLabel: "추천",
+        good: "아무 장식 없는 자연스러운 상태의 사진",
+        badLabel: "피해주세요",
+        bad: "두꺼운 목줄, 하네스, 옷을 입고 있는 사진",
+      },
     },
     processing: {
       titles: [
@@ -230,7 +239,16 @@ const STRINGS = {
       drop: "Drop to upload",
       tapBrowse: "Tap to browse",
       formats: "JPG, PNG, MP4, MOV",
-      hint: "Clear, centered photos work best.",
+      hint: "Front-facing, sharp photos work best.",
+      guide: {
+        title: "Photo upload guide",
+        leashQuote: "Please remove heavy leashes and harnesses for a moment.",
+        body: "When nothing is tight or covering your pet, their purest form comes back perfectly in 3D hologram.",
+        goodLabel: "Recommended",
+        good: "Natural photos with no accessories",
+        badLabel: "Please avoid",
+        bad: "Thick leashes, harnesses, or clothing",
+      },
     },
     processing: {
       titles: [

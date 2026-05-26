@@ -251,7 +251,98 @@ select {
   font-weight: 400;
   line-height: var(--leading-relaxed);
   color: rgba(255, 255, 255, 0.62);
-  margin-bottom: 20px;
+  margin-bottom: 12px;
+}
+
+/* 사진 업로드 필수 가이드 */
+.upload-guide {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(212, 175, 55, 0.22);
+  text-align: left;
+}
+
+.upload-guide-title {
+  font-family: var(--font-headline);
+  font-size: var(--text-sm);
+  font-weight: 600;
+  line-height: var(--leading-tight);
+  color: #f5f5f7;
+  margin-bottom: 10px;
+}
+
+.upload-guide-quote {
+  font-size: var(--text-sm);
+  font-weight: 500;
+  line-height: var(--leading-relaxed);
+  color: #e8c96a;
+  margin-bottom: 8px;
+}
+
+.upload-guide-body {
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  color: rgba(255, 255, 255, 0.72);
+  margin-bottom: 12px;
+}
+
+.upload-guide-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.upload-guide-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  font-size: var(--text-xs);
+  line-height: 1.45;
+}
+
+.upload-guide-badge {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+}
+
+.upload-guide-badge--good {
+  background: rgba(52, 199, 89, 0.15);
+  color: #5dd879;
+  border: 1px solid rgba(52, 199, 89, 0.35);
+}
+
+.upload-guide-badge--bad {
+  background: rgba(255, 69, 58, 0.12);
+  color: #ff6b6b;
+  border: 1px solid rgba(255, 69, 58, 0.28);
+}
+
+.upload-guide-label {
+  display: block;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.upload-guide-label--good {
+  color: #5dd879;
+}
+
+.upload-guide-label--bad {
+  color: #ff8a80;
+}
+
+.upload-guide-text {
+  color: rgba(255, 255, 255, 0.78);
 }
 
 .memorial-body {
