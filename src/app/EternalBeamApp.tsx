@@ -19,7 +19,8 @@ import { NFCPlaybackScreen } from '@/components/memorial/nfc-playback-screen'
 import { DeviceScreen } from '@/components/memorial/device-screen'
 import { SettingsScreen } from '@/components/memorial/settings-screen'
 import { memorialT } from '@/components/memorial/memorial-i18n'
-import { pickMediaFile, type PickedMedia } from '@/lib/pick-media-file'
+import { inferMediaKind } from '@/lib/media-file-kind'
+import type { PickedMedia } from '@/lib/pick-media-file'
 
 type Screen =
   | 'onboarding'
@@ -113,10 +114,13 @@ export function EternalBeamApp() {
     navigateTo('themeSelection')
   }
 
-  const handleQuickUploadFromHome = async () => {
-    const picked = await pickMediaFile()
-    if (!picked) return
-    applyPickedMedia(picked)
+  const handleMediaFile = (file: File) => {
+    const kind = inferMediaKind(file)
+    if (!kind) {
+      alert(memorialT(language).alerts.fileType)
+      return
+    }
+    applyPickedMedia({ file, kind })
   }
 
   const handleAIProcessingComplete = async (cutoutUrl: string) => {
@@ -281,11 +285,11 @@ export function EternalBeamApp() {
                 userName={userName ?? undefined}
                 language={language}
                 onLanguageChange={setLanguage}
-                onUploadPhoto={handleQuickUploadFromHome}
+                onMediaFile={handleMediaFile}
                 onGallery={() => navigateTo('gallery')}
                 onSettings={() => navigateTo('settings')}
                 onSaveToNFC={() =>
-                  cutoutImage ? navigateTo('preview') : handleQuickUploadFromHome()
+                  cutoutImage ? navigateTo('preview') : navigateTo('photoUpload')
                 }
               />
             </motion.div>
@@ -303,7 +307,7 @@ export function EternalBeamApp() {
             >
               <GalleryScreen
                 onSelectItem={(id: number) => console.log('Selected item', id)}
-                onAddNew={handleQuickUploadFromHome}
+                onAddNew={() => navigateTo('photoUpload')}
                 onBack={() => navigateTo('home')}
               />
             </motion.div>

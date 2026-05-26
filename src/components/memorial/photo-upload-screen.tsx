@@ -7,6 +7,8 @@ import { HologramEffects } from "./hologram-effects";
 import { isLiteUI } from "@/lib/ui-performance";
 import { createDisplayImageUrl } from "@/lib/display-image";
 import { memorialT } from "@/components/memorial/memorial-i18n";
+import { MediaFileTrigger } from "@/components/memorial/media-file-trigger";
+import { inferMediaKind } from "@/lib/media-file-kind";
 
 interface PhotoUploadScreenProps {
   uploadedImage: string | null;
@@ -33,7 +35,6 @@ export function PhotoUploadScreen({
   const [mediaType, setMediaType] = useState<"image" | "video" | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -49,17 +50,12 @@ export function PhotoUploadScreen({
 
   const ingestFile = useCallback(
     (file: File) => {
-      const type = (file.type || "").toLowerCase();
-      const name = (file.name || "").toLowerCase();
-      const isImage =
-        type.startsWith("image/") || /\.(jpe?g|png|gif|webp|heic|heif)$/i.test(name);
-      const isVideo =
-        type.startsWith("video/") || /\.(mp4|webm|mov|m4v)$/i.test(name);
+      const kind = inferMediaKind(file);
+      if (!kind) return;
 
-      if (!isImage && !isVideo) return;
-
-      if (isImage) {
+      if (kind === "image") {
         setMediaType("image");
+        localStorage.setItem("eternal_beam_media_type", "image");
         const reader = new FileReader();
         reader.onload = () => onImageUpload(reader.result as string);
         reader.readAsDataURL(file);
@@ -67,6 +63,7 @@ export function PhotoUploadScreen({
       }
 
       setMediaType("video");
+      localStorage.setItem("eternal_beam_media_type", "video");
       if (file.size > 100 * 1024 * 1024) return;
       onImageUpload(URL.createObjectURL(file));
     },
@@ -82,21 +79,16 @@ export function PhotoUploadScreen({
       const file = e.dataTransfer.files[0];
       if (file) ingestFile(file);
     },
-    [ingestFile]
-  );
-
-  const handleFileSelect = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (file) ingestFile(file);
-      e.target.value = "";
-    },
     [ingestFile],
   );
 
-  const openFilePicker = useCallback(() => {
-    fileInputRef.current?.click();
-  }, []);
+  useEffect(() => {
+    if (!uploadedImage) return;
+    const stored = localStorage.getItem("eternal_beam_media_type");
+    if (stored === "image" || stored === "video") setMediaType(stored);
+    else if (uploadedImage.startsWith("blob:")) setMediaType("video");
+    else if (uploadedImage.startsWith("data:image/")) setMediaType("image");
+  }, [uploadedImage]);
 
   useEffect(() => {
     if (!uploadedImage?.startsWith("data:image/")) {
@@ -177,37 +169,14 @@ export function PhotoUploadScreen({
         >
           <h2 className="upload-title text-center">{u.heading}</h2>
           <p className="upload-subtitle text-center">{u.subtitle}</p>
-          <input
-            ref={fileInputRef}
-            type="file"
-            id="media-upload"
-            accept="image/*,image/heic,image/heif,video/*,.heic,.heif"
-            onChange={handleFileSelect}
-            className="sr-only"
-            style={{
-              position: "absolute",
-              width: 1,
-              height: 1,
-              opacity: 0,
-              overflow: "hidden",
-            }}
-          />
-          <div
-            role="button"
-            tabIndex={0}
-            onClick={openFilePicker}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" || e.key === " ") {
-                e.preventDefault();
-                openFilePicker();
-              }
-            }}
-            onDragOver={handleDragOver}
-            onDragLeave={handleDragLeave}
-            onDrop={handleDrop}
-            className="block mt-6 cursor-pointer touch-manipulation"
+          <MediaFileTrigger
+            onFile={ingestFile}
+            className="block mt-6 touch-manipulation"
           >
             <motion.div
+              onDragOver={handleDragOver}
+              onDragLeave={handleDragLeave}
+              onDrop={handleDrop}
               className={`upload-card relative overflow-hidden aspect-square ${
                 isDragging ? "drag-over scale-[1.02]" : ""
               } ${uploadedImage ? "rounded-[28px]" : ""}`}
@@ -276,7 +245,7 @@ export function PhotoUploadScreen({
                 </div>
               )}
             </motion.div>
-          </div>
+          </MediaFileTrigger>
 
           <motion.p
             initial={{ opacity: 0 }}
