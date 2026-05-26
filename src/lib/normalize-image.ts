@@ -49,13 +49,30 @@ export async function normalizeImageToJpegFile(
   return new File([jpeg], "upload.jpg", { type: "image/jpeg" });
 }
 
+function dataUrlToBlob(dataUrl: string): Blob {
+  const comma = dataUrl.indexOf(",");
+  if (comma < 0) throw new Error("Invalid data URL");
+  const header = dataUrl.slice(0, comma);
+  const b64 = dataUrl.slice(comma + 1);
+  const mime = header.match(/:(.*?);/)?.[1] || "image/jpeg";
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return new Blob([bytes], { type: mime });
+}
+
 async function loadAsDecodableBlob(source: File | string): Promise<Blob> {
   if (typeof source === "string") {
     if (source.startsWith("data:")) {
+      return dataUrlToBlob(source);
+    }
+    if (source.startsWith("blob:")) {
       const res = await fetch(source);
+      if (!res.ok) throw new Error("사진을 불러올 수 없습니다.");
       return res.blob();
     }
     const res = await fetch(source);
+    if (!res.ok) throw new Error("사진을 불러올 수 없습니다.");
     return res.blob();
   }
   return source;
@@ -93,10 +110,18 @@ export function friendlyCutoutError(message: string, language = "ko"): string {
       ? "사진 형식을 읽지 못했습니다. JPG·PNG 사진으로 다시 선택해 주세요."
       : "Could not read this photo. Please choose a JPG or PNG image.";
   }
-  if (m.includes("failed to fetch") || m.includes("network")) {
+  if (
+    m.includes("failed to fetch") ||
+    m.includes("network") ||
+    m.includes("load failed") ||
+    m.includes("aborterror")
+  ) {
     return language === "ko"
-      ? "네트워크 오류입니다. 연결을 확인한 뒤 다시 시도해 주세요."
-      : "Network error. Check your connection and try again.";
+      ? "서버 연결이 느리거나 끊겼습니다. Wi‑Fi에서 다시 시도하거나, 1분 후 재시도해 주세요. (첫 실행은 AI 모델 다운로드로 시간이 걸릴 수 있습니다)"
+      : "Connection failed or timed out. Try Wi‑Fi and retry in a minute.";
+  }
+  if (m.includes("누끼 서버")) {
+    return message;
   }
   return message;
 }

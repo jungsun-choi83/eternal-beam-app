@@ -12,7 +12,7 @@ export async function isServerCutoutAvailable(): Promise<boolean> {
   }
 
   const base = getVideoApiBaseUrl();
-  const healthUrl = `${base}/api/health`;
+  const healthUrl = base ? `${base}/api/health` : "/api/health";
 
   try {
     const ctrl = new AbortController();

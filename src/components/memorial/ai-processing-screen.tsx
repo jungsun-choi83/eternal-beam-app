@@ -45,11 +45,10 @@ async function runCutoutWithFallback(
   t: ProcessingCopy,
   language: string
 ): Promise<{ display: string; cutFile: File; contentId: string }> {
-  // 프로덕션: Render 없음 → 서버 404만 반복하지 않고 바로 기기 누끼
-  const tryServer = !CLIENT_CUTOUT_FIRST && import.meta.env.DEV;
-
-  if (tryServer) {
+  // 기본: Render 서버 누끼 (폰에서 AI 모델 다운로드 방지). VITE_CLIENT_CUTOUT=1 이면 기기만.
+  if (!CLIENT_CUTOUT_FIRST) {
     try {
+      onStatus(t.serverCutout);
       const cut = await cutoutImage(file, {
         userId: "anonymous",
         saveToStorage: false,
@@ -64,7 +63,11 @@ async function runCutoutWithFallback(
         };
       }
       if (cut.error) {
-        onStatus(isCutoutMemoryError(cut.error) ? t.serverThenClient : `${t.serverThenClient} (${cut.error})`);
+        onStatus(
+          isCutoutMemoryError(cut.error)
+            ? t.serverThenClient
+            : `${t.serverThenClient} (${cut.error})`
+        );
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);

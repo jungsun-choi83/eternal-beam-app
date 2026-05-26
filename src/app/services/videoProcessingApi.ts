@@ -152,14 +152,19 @@ export async function cutoutImage(
   form.append('save_to_storage', String(options.saveToStorage !== false))
   if (options.model) form.append('model', options.model)
 
+  const ctrl = new AbortController()
+  const tid = setTimeout(() => ctrl.abort(), 120_000)
   let res: Response
   try {
     res = await fetch(`${getBaseUrl()}/api/cutout`, {
       method: 'POST',
       body: form,
+      signal: ctrl.signal,
     })
   } catch (e) {
     throw wrapNetworkError(e, cutoutFetchFailedMessage())
+  } finally {
+    clearTimeout(tid)
   }
   if (!res.ok) {
     if (import.meta.env.PROD && getBaseUrl() === '' && res.status === 404) {

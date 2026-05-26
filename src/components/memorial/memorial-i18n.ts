@@ -56,8 +56,9 @@ const STRINGS = {
       convertingHint: "움직임을 만드는 중",
       done: "처리 완료",
       lumaSkip: "잠시만 기다려 주세요…",
-      clientCutout: "이 기기에서 배경을 지우는 중…",
-      serverThenClient: "기기에서 다시 처리 중…",
+      clientCutout: "이 기기에서 배경을 지우는 중… (Wi‑Fi·첫 실행 시 1~3분)",
+      serverCutout: "서버에서 배경을 지우는 중…",
+      serverThenClient: "서버 연결 실패 — 이 기기에서 다시 처리 중…",
     },
     theme: {
       title: "배경 선택",
@@ -260,8 +261,9 @@ const STRINGS = {
       convertingHint: "Preparing motion",
       done: "Complete",
       lumaSkip: "Please wait…",
-      clientCutout: "Removing background on this device…",
-      serverThenClient: "Retrying on device…",
+      clientCutout: "Removing background on this device… (Wi‑Fi, first run 1–3 min)",
+      serverCutout: "Removing background on server…",
+      serverThenClient: "Server unavailable — retrying on device…",
     },
     theme: {
       title: "Choose Background",
