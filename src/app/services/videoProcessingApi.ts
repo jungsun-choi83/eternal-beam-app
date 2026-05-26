@@ -356,3 +356,62 @@ export async function generatePetVideo(
   }
   return res.json()
 }
+
+/** 구독 크레딧 지갑 */
+export interface WalletBalance {
+  user_id: string
+  current_credits: number
+}
+
+export async function getWalletBalance(userId: string): Promise<WalletBalance> {
+  validateVideoApiBase()
+  const res = await fetch(
+    `${getBaseUrl()}/api/v1/pet/wallet/${encodeURIComponent(userId)}`
+  )
+  if (!res.ok) {
+    const err = await safeJson(res)
+    throw new Error(formatHttpErrorDetail(err, '지갑 조회 실패'))
+  }
+  return res.json()
+}
+
+/** 장소 1곳 × IDLE/TOUCH/VOICE/NFC — 크레딧 4개 차감 후 Luma 비동기 제출 */
+export interface GenerateWithCreditResult {
+  session_id: string
+  user_id: string
+  pet_id: string
+  place_id: string
+  credits_charged: number
+  credits_remaining: number
+  submitted: number
+  submit_errors: Array<{ action_id?: string; ok?: boolean; error?: string }>
+  status: string
+  webhook_path: string
+}
+
+export async function generateWithCredit(body: {
+  user_id: string
+  pet_image_url: string
+  selected_place_id: string
+  pet_id?: string
+}): Promise<GenerateWithCreditResult> {
+  validateVideoApiBase()
+  const res = await fetch(`${getBaseUrl()}/api/v1/pet/generate-with-credit`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (res.status === 403) {
+    const err = await safeJson(res)
+    throw new Error(
+      typeof err.detail === 'string'
+        ? err.detail
+        : '크레딧이 부족합니다. 구독 플랜을 업그레이드하세요.'
+    )
+  }
+  if (!res.ok) {
+    const err = await safeJson(res)
+    throw new Error(formatHttpErrorDetail(err, '영상 생성(크레딧) 요청 실패'))
+  }
+  return res.json() as Promise<GenerateWithCreditResult>
+}

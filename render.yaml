@@ -22,6 +22,8 @@ services:
         value: "1"
       - key: CREDIT_COST_PER_PLACE
         value: "4"
+      - key: STARTER_CREDITS
+        value: "4"
       - key: LUMA_CREDIT_CONCURRENCY
         value: "3"
       - key: SUPABASE_STORAGE_BUCKET

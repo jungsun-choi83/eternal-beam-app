@@ -6,6 +6,7 @@ import { Mail, Lock, User, Eye, EyeOff, ArrowRight } from "lucide-react";
 import { HolographicBackground } from "./holographic-background";
 import { HologramEffects } from "./hologram-effects";
 import { memorialT } from "@/components/memorial/memorial-i18n";
+import { setEternalBeamUserId } from "@/lib/eternal-beam-user";
 
 interface AuthScreenProps {
   initialMode?: "login" | "signup";
@@ -27,7 +28,13 @@ export function AuthScreen({ initialMode = "login", language = "ko", onAuthCompl
     setIsLoading(true);
     await new Promise((resolve) => setTimeout(resolve, 1500));
     setIsLoading(false);
-    onAuthComplete(name || email.split("@")[0]);
+    const label = (name || email.split("@")[0] || "").trim();
+    if (email.trim()) {
+      setEternalBeamUserId(email.trim().toLowerCase());
+    } else if (label) {
+      setEternalBeamUserId(label);
+    }
+    onAuthComplete(label || undefined);
   };
 
   // Stagger animation for form elements

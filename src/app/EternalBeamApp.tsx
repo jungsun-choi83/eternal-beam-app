@@ -1,4 +1,11 @@
-import { useState } from 'react'
+import { useState, useEffect, useCallback } from 'react'
+import { getWalletBalance } from '@/app/services/videoProcessingApi'
+import { getEternalBeamUserId } from '@/lib/eternal-beam-user'
+import {
+  runCreditMotionGeneration,
+  isInsufficientCreditsError,
+} from '@/lib/credit-pipeline'
+import { saveCreditSession } from '@/lib/credit-session'
 import { createDisplayCutoutUrl } from '@/lib/display-image'
 import { AnimatePresence, motion } from 'framer-motion'
 import { MobileFrame } from '@/components/memorial/mobile-frame'
@@ -61,6 +68,9 @@ const pageTransition = {
 const filmSkipOnboarding =
   import.meta.env.VITE_FILM_SKIP_ONBOARDING === '1'
 
+const CREDIT_COST = Number(import.meta.env.VITE_CREDIT_COST_PER_PLACE || '4')
+const CREDITS_ENABLED = import.meta.env.VITE_ENABLE_CREDITS !== '0'
+
 export function EternalBeamApp() {
   const [screen, setScreen] = useState<Screen>(
     filmSkipOnboarding ? 'home' : 'onboarding'
@@ -81,6 +91,22 @@ export function EternalBeamApp() {
   }
   const [userName, setUserName] = useState<string | null>(null)
   const [, setIsFirstTime] = useState(true)
+  const [walletCredits, setWalletCredits] = useState<number | null>(null)
+  const [creditBusy, setCreditBusy] = useState(false)
+
+  const refreshWallet = useCallback(async () => {
+    if (!CREDITS_ENABLED) return
+    try {
+      const w = await getWalletBalance(getEternalBeamUserId(userName))
+      setWalletCredits(w.current_credits)
+    } catch {
+      setWalletCredits(null)
+    }
+  }, [userName])
+
+  useEffect(() => {
+    if (screen === 'themeSelection') void refreshWallet()
+  }, [screen, refreshWallet])
 
   const navigateTo = (nextScreen: Screen) => {
     setScreen(nextScreen)
@@ -153,6 +179,68 @@ export function EternalBeamApp() {
       setPendingPremiumTheme(null)
     }
     navigateTo('preview')
+  }
+
+  const handleThemeContinueWithCredit = async () => {
+    const tc = memorialT(language).theme
+    if (!selectedTheme) return
+    if (!cutoutImage) {
+      alert(tc.cutoutMissing)
+      return
+    }
+    if (!CREDITS_ENABLED) {
+      navigateTo('preview')
+      return
+    }
+
+    setCreditBusy(true)
+    try {
+      let contentId: string | undefined
+      try {
+        const raw = sessionStorage.getItem(ETERNAL_BEAM_PIPELINE_KEY)
+        if (raw) contentId = JSON.parse(raw).content_id
+      } catch {
+        /* ignore */
+      }
+
+      const userId = getEternalBeamUserId(userName)
+      const { result, petImageUrl } = await runCreditMotionGeneration({
+        userId,
+        cutoutDisplay: cutoutImage,
+        themeId: selectedTheme,
+        contentId,
+      })
+
+      saveCreditSession(result, petImageUrl)
+      setWalletCredits(result.credits_remaining)
+
+      try {
+        const raw = sessionStorage.getItem(ETERNAL_BEAM_PIPELINE_KEY)
+        if (raw) {
+          const p = JSON.parse(raw)
+          p.dog_only_nobg_url = petImageUrl
+          sessionStorage.setItem(ETERNAL_BEAM_PIPELINE_KEY, JSON.stringify(p))
+        }
+      } catch {
+        /* ignore */
+      }
+
+      navigateTo('preview')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (isInsufficientCreditsError(e)) {
+        const skip = window.confirm(`${msg}\n\n${tc.skipWithoutCredit}?`)
+        if (!skip) {
+          setCreditBusy(false)
+          return
+        }
+      } else {
+        alert(`${tc.creditFailed}: ${msg}`)
+      }
+      navigateTo('preview')
+    } finally {
+      setCreditBusy(false)
+    }
   }
 
   const handlePaymentSkip = () => {
@@ -379,9 +467,12 @@ export function EternalBeamApp() {
                 cutoutImage={cutoutImage}
                 selectedTheme={selectedTheme}
                 language={language}
+                walletCredits={walletCredits}
+                creditCost={CREDIT_COST}
+                creditBusy={creditBusy}
                 onSelectTheme={handleThemeSelect}
                 onSelectPremiumTheme={handlePremiumThemeSelect}
-                onContinue={() => navigateTo('preview')}
+                onContinue={() => void handleThemeContinueWithCredit()}
                 onSkip={() => navigateTo('preview')}
                 onBack={() => navigateTo('home')}
               />

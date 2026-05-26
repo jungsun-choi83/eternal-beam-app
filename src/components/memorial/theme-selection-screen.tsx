@@ -12,6 +12,9 @@ interface ThemeSelectionScreenProps {
   cutoutImage: string | null;
   selectedTheme: number | null;
   language?: string;
+  walletCredits?: number | null;
+  creditCost?: number;
+  creditBusy?: boolean;
   onSelectTheme: (themeId: number) => void;
   onSelectPremiumTheme: (themeId: number) => void;
   onContinue: () => void;
@@ -25,6 +28,9 @@ export function ThemeSelectionScreen({
   cutoutImage,
   selectedTheme,
   language = "ko",
+  walletCredits = null,
+  creditCost = 4,
+  creditBusy = false,
   onSelectTheme, 
   onSelectPremiumTheme,
   onContinue, 
@@ -209,16 +215,24 @@ export function ThemeSelectionScreen({
           <ArrowLeft className="w-4 h-4" style={{ color: "#E2E2E2" }} strokeWidth={1.5} />
         </motion.button>
 
-        <motion.h1
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-xl font-light absolute left-1/2 -translate-x-1/2"
-          style={{ color: "#F1E5D1" }}
-        >
-          {/* Bloom effect */}
-          <span className="absolute inset-0 blur-[8px] opacity-30" style={{ color: "#F1E5D1" }}>{tc.title}</span>
-          <span className="relative">{tc.title}</span>
-        </motion.h1>
+        <div className="absolute left-1/2 -translate-x-1/2 text-center">
+          <motion.h1
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-xl font-light"
+            style={{ color: "#F1E5D1" }}
+          >
+            <span className="absolute inset-0 blur-[8px] opacity-30" style={{ color: "#F1E5D1" }}>
+              {tc.title}
+            </span>
+            <span className="relative">{tc.title}</span>
+          </motion.h1>
+          {walletCredits !== null ? (
+            <p className="text-[11px] mt-1 font-light relative" style={{ color: "#c9a227" }}>
+              {tc.creditsBalance(walletCredits)}
+            </p>
+          ) : null}
+        </div>
 
         <div className="w-10" />
       </header>
@@ -541,12 +555,17 @@ export function ThemeSelectionScreen({
 
       {/* Actions */}
       <div className="px-8 py-6 space-y-3">
+        {selectedTheme && walletCredits !== null ? (
+          <p className="text-center text-[11px] font-light" style={{ color: "#A1A1A6" }}>
+            {tc.creditsCost(creditCost)}
+          </p>
+        ) : null}
         <motion.button
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.4 }}
           onClick={handleContinue}
-          disabled={!selectedTheme}
+          disabled={!selectedTheme || creditBusy}
           className="w-full py-4 rounded-2xl font-normal text-[15px] transition-all duration-300 relative overflow-hidden"
           style={{
             background: selectedTheme
@@ -572,7 +591,11 @@ export function ThemeSelectionScreen({
           {selectedTheme && (
             <div className="absolute top-0 left-8 right-8 h-px bg-gradient-to-r from-transparent via-white/40 to-transparent" />
           )}
-          {selectedTheme ? tc.continue : tc.selectFirst}
+          {creditBusy
+            ? tc.generatingMotions
+            : selectedTheme
+              ? tc.continue
+              : tc.selectFirst}
         </motion.button>
 
         <motion.button

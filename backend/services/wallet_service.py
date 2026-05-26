@@ -73,9 +73,14 @@ async def get_wallet(user_id: str, *, create_if_missing: bool = False) -> Option
         updated_at=row.get("updated_at"),
       )
     if create_if_missing:
-      w = UserWallet(user_id=uid, current_credits=0, updated_at=datetime.utcnow())
+      starter = max(0, int(os.getenv("STARTER_CREDITS", "0")))
+      w = UserWallet(user_id=uid, current_credits=starter, updated_at=datetime.utcnow())
       sb.table(_table()).insert(
-        {"user_id": uid, "current_credits": 0, "updated_at": w.updated_at.isoformat()}
+        {
+          "user_id": uid,
+          "current_credits": starter,
+          "updated_at": w.updated_at.isoformat(),
+        }
       ).execute()
       return w
     return None
@@ -83,7 +88,8 @@ async def get_wallet(user_id: str, *, create_if_missing: bool = False) -> Option
   if uid in _MOCK_WALLETS:
     return _MOCK_WALLETS[uid]
   if create_if_missing:
-    w = UserWallet(user_id=uid, current_credits=0, updated_at=datetime.utcnow())
+    starter = max(0, int(os.getenv("STARTER_CREDITS", "0")))
+    w = UserWallet(user_id=uid, current_credits=starter, updated_at=datetime.utcnow())
     _MOCK_WALLETS[uid] = w
     return w
   return None
