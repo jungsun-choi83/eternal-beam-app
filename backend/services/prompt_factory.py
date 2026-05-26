@@ -6,7 +6,8 @@
 
 from __future__ import annotations
 
-from ..scenarios.pet_scenarios import ACTIONS_EN, PLACES
+from ..scenarios.pet_scenarios import ACTIONS, ACTIONS_EN, PLACES
+from .luma_prompts import build_scenario_luma_prompt
 
 
 def build_scenario_prompt(
@@ -16,33 +17,20 @@ def build_scenario_prompt(
     *,
     use_korean_motion: bool = False,
 ) -> str:
-  """
-  최종 Luma 프롬프트 한 줄을 만든다.
+    """
+    최종 Luma 프롬프트 한 줄 (강아지만, 사람·목줄 금지).
+    """
+    if place_key not in PLACES:
+        raise KeyError(f"Unknown place_key: {place_key}")
+    if action_key not in ACTIONS_EN:
+        raise KeyError(f"Unknown action_key: {action_key}")
 
-  Args:
-    image_url: 공개 접근 가능한 메인 피사체(누끼/원본) 이미지 URL
-    place_key: PLACES 딕셔너리 키 (예: "01_snow_forest")
-    action_key: ACTIONS 키 (IDLE | TOUCH | VOICE | NFC)
-    use_korean_motion: True면 한국어 행동 설명도 프롬프트에 포함
-  """
-  if place_key not in PLACES:
-    raise KeyError(f"Unknown place_key: {place_key}")
-  if action_key not in ACTIONS_EN:
-    raise KeyError(f"Unknown action_key: {action_key}")
+    place = PLACES[place_key]
+    motion_ko = ACTIONS[action_key] if use_korean_motion else ""
 
-  place = PLACES[place_key]
-  motion_en = ACTIONS_EN[action_key]
-
-  motion_extra = ""
-  if use_korean_motion:
-    from ..scenarios.pet_scenarios import ACTIONS
-
-    motion_extra = f" ({ACTIONS[action_key]})"
-
-  return (
-    f"3D Luma generation of the pet from {image_url}. "
-    f"Location: {place['prompt']}. "
-    f"Motion: {motion_en}{motion_extra}. "
-    "High-end minimalist cinematic lighting, hyper-realistic 3D environment depth, "
-    "photorealistic fur detail, stable camera, no text, no watermark."
-  )
+    return build_scenario_luma_prompt(
+        image_url,
+        place["prompt"],
+        action_key,
+        motion_ko_suffix=motion_ko,
+    )

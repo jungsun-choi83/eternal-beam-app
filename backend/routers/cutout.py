@@ -6,6 +6,20 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from ..services.cutout_service import remove_background
 from ..services import supabase_assets
 
+def _run_cutout(raw: bytes, model_name: str, pet_only: bool) -> bytes:
+    if pet_only:
+        try:
+            from ..services.dog_image_preprocessing import build_dog_only_nobg_png_bytes
+
+            return build_dog_only_nobg_png_bytes(
+                raw,
+                bbox_pad_frac=0.15,
+                rembg_model=model_name,
+            )
+        except Exception:
+            pass
+    return remove_background(raw, model_name=model_name)
+
 router = APIRouter()
 
 
@@ -16,6 +30,7 @@ async def post_cutout(
     content_id: str | None = Form(None),
     save_to_storage: str = Form("true"),
     model: str | None = Form(None),
+    pet_only: str = Form("false"),
 ):
     raw = await file.read()
     if not raw:
@@ -24,9 +39,10 @@ async def post_cutout(
     cid = (content_id or "").strip() or str(uuid.uuid4())
     model_name = (model or "isnet-general-use").strip() or "isnet-general-use"
     save = str(save_to_storage).lower() in ("1", "true", "yes")
+    only_pet = str(pet_only).lower() in ("1", "true", "yes")
 
     try:
-        png = remove_background(raw, model_name=model_name)
+        png = _run_cutout(raw, model_name, only_pet)
     except Exception as e:
         return {
             "content_id": cid,

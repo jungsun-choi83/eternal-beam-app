@@ -144,16 +144,17 @@ ACTIONS: dict[str, str] = {
 # English motion text for Luma (API works best in English)
 ACTIONS_EN: dict[str, str] = {
   "IDLE": (
-    "sitting calmly, only blinking eyes, natural breathing, minimal subtle motion"
+    "dog alone, sitting calmly, blinking, natural breathing, no person, no leash"
   ),
   "TOUCH": (
-    "reacting happily to being petted, nuzzling head, gentle tail wag"
+    "dog alone reacting happily as if petted, nuzzle and tail wag, "
+    "no visible human hand or arm, no leash"
   ),
   "VOICE": (
-    "perking ears toward owner's voice, turning head to listen, attentive expression"
+    "dog alone perking ears toward off-camera voice, turning head, no person in frame"
   ),
   "NFC": (
-    "noticing a familiar place, looking around curiously, sniffing the air gently"
+    "dog alone in familiar place, looking around, gentle sniffing, no owner, no leash"
   ),
 }
 

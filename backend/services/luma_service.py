@@ -14,14 +14,8 @@ from typing import Optional, Tuple
 LUMA_API_KEY = os.getenv("LUMA_API_KEY")
 LUMA_API_BASE = "https://api.lumalabs.ai/dream-machine/v1"
 
-# Dual I2V prompts (same keyframe URL; used by /generate-pet-video)
-LUMA_PROMPT_IDLE = (
-    "The dog is sitting calmly, looking at the camera, breathing naturally, "
-    "subtle motion only."
-)
-LUMA_PROMPT_ACTION = (
-    "The dog suddenly gets up and runs playfully towards the camera."
-)
+# Dual I2V prompts — luma_prompts.py (사람·목줄 제외)
+from .luma_prompts import LUMA_PROMPT_ACTION, LUMA_PROMPT_IDLE  # noqa: E402
 
 # 배경 결정 임계값: 평균 luminance < 이 값이면 블랙탄(검정색 강아지) → 흰 배경
 LUMINANCE_THRESHOLD_BLACK_DOG = 80
@@ -81,21 +75,14 @@ def build_luma_prompt(
     dog_breed: str = "dog",
 ) -> str:
     """
-    업로드 이미지 색상 분석 → 배경 결정 → 최종 Luma API용 프롬프트 생성.
-
-    - Case A (일반/밝은색): "on a solid black background"
-    - Case B (블랙탄/검정색): "on a solid white background"
+    업로드 이미지 색상 분석 → 배경 결정 → Luma I2V 프롬프트 (강아지만, 사람·목줄 금지).
     """
-    base_prompt = (
-        f"A photorealistic {dog_breed} from the uploaded photo, "
-        "breathing naturally, wagging its tail gently, looking at the camera, "
-        "cinematic 3D depth, extreme detail on fur, studio lighting, high contrast"
+    from .luma_prompts import build_luma_pet_video_prompt
+
+    return build_luma_pet_video_prompt(
+        dog_breed,
+        on_white_bg=is_black_tan_dog(image_bytes),
     )
-    if is_black_tan_dog(image_bytes):
-        background_suffix = "on a solid white background"
-    else:
-        background_suffix = "on a solid black background"
-    return f"{base_prompt}, {background_suffix}"
 
 
 async def create_generation(
