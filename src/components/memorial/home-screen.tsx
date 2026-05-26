@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import { memorialLang, memorialT } from "@/components/memorial/memorial-i18n";
-import { motion, AnimatePresence } from "framer-motion";
-import { Plus, Globe, ChevronDown, Check, Settings, Grid3X3 } from "lucide-react";
+import { motion } from "framer-motion";
+import { Plus, Settings, Grid3X3 } from "lucide-react";
 import { HolographicBackground } from "./holographic-background";
 import { HologramEffects } from "./hologram-effects";
 import { MediaFileTrigger } from "./media-file-trigger";
+import { LanguageToggle } from "./language-toggle";
 
 interface HomeScreenProps {
   cutoutImage: string | null;
@@ -18,13 +18,6 @@ interface HomeScreenProps {
   onSettings?: () => void;
   onSaveToNFC: () => void;
 }
-
-const languages = [
-  { code: "en", name: "English", native: "English" },
-  { code: "ko", name: "Korean", native: "한국어" },
-  { code: "zh", name: "Chinese", native: "中文" },
-  { code: "ja", name: "Japanese", native: "日本語" },
-];
 
 export function HomeScreen({
   cutoutImage,
@@ -38,20 +31,9 @@ export function HomeScreen({
 }: HomeScreenProps) {
   const lang = memorialLang(language);
   const texts = memorialT(language).home;
-  const [selectedLanguage, setSelectedLanguage] = useState(lang);
-  const [showLanguageMenu, setShowLanguageMenu] = useState(false);
 
-  useEffect(() => {
-    setSelectedLanguage(memorialLang(language));
-  }, [language]);
-
-  const currentLang = languages.find((l) => l.code === selectedLanguage) || languages[0];
-
-  const handleLanguageSelect = (code: string) => {
-    const next = memorialLang(code);
-    setSelectedLanguage(next);
-    onLanguageChange?.(next);
-    setShowLanguageMenu(false);
+  const handleLanguageSelect = (code: "ko" | "en") => {
+    onLanguageChange?.(code);
   };
 
   return (
@@ -63,11 +45,11 @@ export function HomeScreen({
       {/* Header with Brand */}
       <header className="px-6 pt-8 pb-4 relative z-10 shrink-0">
         {/* Top Row - Gallery, Brand, Settings */}
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between gap-2 mb-4">
           {/* Gallery Button */}
           <motion.button
             onClick={onGallery}
-            className="p-2.5 rounded-xl relative"
+            className="p-2.5 rounded-xl relative shrink-0"
             style={{
               background: "rgba(255, 255, 255, 0.06)",
               backdropFilter: "blur(20px)",
@@ -80,10 +62,16 @@ export function HomeScreen({
             <Grid3X3 className="w-5 h-5" style={{ color: "#E2E2E2" }} />
           </motion.button>
 
+          <LanguageToggle
+            language={language}
+            onChange={handleLanguageSelect}
+            className="relative z-20"
+          />
+
           {/* Settings Button */}
           <motion.button
             onClick={onSettings}
-            className="p-2.5 rounded-xl relative"
+            className="p-2.5 rounded-xl relative shrink-0"
             style={{
               background: "rgba(255, 255, 255, 0.06)",
               backdropFilter: "blur(20px)",
@@ -106,7 +94,7 @@ export function HomeScreen({
         >
           {/* Bloom Effect behind title */}
           <div
-            className="absolute inset-0 blur-[40px] opacity-50"
+            className="absolute inset-0 blur-[40px] opacity-50 pointer-events-none"
             style={{
               background: "radial-gradient(ellipse at center, rgba(212, 175, 55, 0.4) 0%, rgba(241, 229, 209, 0.1) 40%, transparent 70%)",
             }}
@@ -128,73 +116,14 @@ export function HomeScreen({
               className="text-sm mt-4 font-light relative"
               style={{ color: "#F1E5D1" }}
             >
-              <span className="absolute inset-0 blur-[6px] opacity-30">
-                {userName}{selectedLanguage === "ko" ? "님, " : ", "}{texts.welcome}
+              <span className="absolute inset-0 blur-[6px] opacity-30 pointer-events-none">
+                {userName}{lang === "ko" ? "님, " : ", "}{texts.welcome}
               </span>
               <span className="relative">
-                {selectedLanguage === "ko" ? `${userName}님, ${texts.welcome}` : `${texts.welcome}, ${userName}`}
+                {lang === "ko" ? `${userName}님, ${texts.welcome}` : `${texts.welcome}, ${userName}`}
               </span>
             </motion.p>
           )}
-
-          {/* Language Selector - Positioned below brand */}
-          <div className="relative inline-block mt-4">
-            <motion.button
-              onClick={() => setShowLanguageMenu(!showLanguageMenu)}
-              className="flex items-center gap-2 px-4 py-2 rounded-xl relative mx-auto"
-              style={{
-                background: "rgba(255, 255, 255, 0.06)",
-                backdropFilter: "blur(20px)",
-              }}
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-            >
-              <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-white/20 via-white/10 to-transparent" />
-              <div className="absolute top-0 left-0 bottom-0 w-px bg-gradient-to-b from-white/20 via-white/10 to-transparent" />
-              <Globe className="w-4 h-4" style={{ color: "#E2E2E2" }} />
-              <span className="text-xs font-light" style={{ color: "#F1E5D1" }}>
-                {currentLang.native}
-              </span>
-              <ChevronDown
-                className={`w-3 h-3 transition-transform duration-200 ${showLanguageMenu ? "rotate-180" : ""}`}
-                style={{ color: "#E2E2E2" }}
-              />
-            </motion.button>
-
-            <AnimatePresence>
-              {showLanguageMenu && (
-                <motion.div
-                  initial={{ opacity: 0, y: -10, scale: 0.95 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: -10, scale: 0.95 }}
-                  transition={{ duration: 0.2 }}
-                  className="absolute left-1/2 -translate-x-1/2 mt-2 w-40 rounded-xl overflow-hidden z-50"
-                  style={{
-                    background: "rgba(20, 20, 22, 0.95)",
-                    backdropFilter: "blur(40px)",
-                    boxShadow: "0 20px 50px rgba(0, 0, 0, 0.5)",
-                  }}
-                >
-                  <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-white/15 via-white/10 to-transparent" />
-                  <div className="absolute top-0 left-0 bottom-0 w-px bg-gradient-to-b from-white/15 via-white/10 to-transparent" />
-                  {languages.map((lang) => (
-                    <button
-                      key={lang.code}
-                      onClick={() => handleLanguageSelect(lang.code)}
-                      className="w-full px-4 py-3 flex items-center justify-between hover:bg-white/5 transition-colors"
-                    >
-                      <span className="text-sm font-light" style={{ color: "#F1E5D1" }}>
-                        {lang.native}
-                      </span>
-                      {selectedLanguage === lang.code && (
-                        <Check className="w-4 h-4" style={{ color: "#d4af37" }} />
-                      )}
-                    </button>
-                  ))}
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
         </motion.div>
       </header>
 
