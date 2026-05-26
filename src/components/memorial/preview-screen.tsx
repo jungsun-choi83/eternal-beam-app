@@ -38,6 +38,10 @@ function isLikelyVideoUrl(url: string): boolean {
   return u.endsWith(".mp4") || u.endsWith(".webm") || u.endsWith(".mov");
 }
 
+/** 개발·QA 전용. 프로덕션에서는 조정 화면에 Luma/FFmpeg 패널 숨김 */
+const SHOW_PIPELINE_DEBUG =
+  import.meta.env.DEV || import.meta.env.VITE_SHOW_PIPELINE_DEBUG === "1";
+
 export function PreviewScreen({
   cutoutImage,
   selectedTheme,
@@ -296,7 +300,7 @@ export function PreviewScreen({
           ))}
         </motion.div>
 
-        {/* Pipeline: Luma clips + Unity placeholder + optional FFmpeg composite */}
+        {SHOW_PIPELINE_DEBUG ? (
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
@@ -398,6 +402,7 @@ export function PreviewScreen({
             ) : null}
           </div>
         </motion.div>
+        ) : null}
       </div>
 
       {/* Controls + Complete - 하단 고정 */}
