@@ -18,11 +18,7 @@ export function LanguageToggle({
 
   return (
     <div
-      className={`flex items-center rounded-xl p-0.5 shrink-0 ${className}`}
-      style={{
-        background: "rgba(255, 255, 255, 0.08)",
-        border: "1px solid rgba(255, 255, 255, 0.1)",
-      }}
+      className={`glass-panel flex items-center rounded-xl p-0.5 shrink-0 ${className}`}
       role="group"
       aria-label="Language"
     >

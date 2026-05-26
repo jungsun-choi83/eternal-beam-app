@@ -245,13 +245,9 @@ export function PreviewScreen({
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="relative w-full aspect-[3/4] max-h-[320px] rounded-3xl overflow-hidden"
-          style={{
-            background: "#1C1C1E",
-            border: "1px solid #333333",
-            boxShadow: `0 0 60px ${currentTheme.accent}08`,
-          }}
+          className="theme-preview-frame relative w-full aspect-[3/4] max-h-[320px]"
         >
+          <div className="memory-cta-card__shine" />
           {currentTheme.bgVideo ? (
             <ThemeBackgroundVideo
               src={currentTheme.bgVideo}
@@ -276,9 +272,9 @@ export function PreviewScreen({
               <img
                 src={cutoutImage}
                 alt="Subject"
-                className="max-h-[60%] max-w-[90%] object-contain drop-shadow-2xl"
+                className="cutout-stage__subject max-h-[62%] max-w-[92%]"
                 style={{
-                  filter: `drop-shadow(0 0 24px ${currentTheme.accent}80)`,
+                  filter: `drop-shadow(0 16px 32px ${currentTheme.accent}66)`,
                 }}
                 decoding="async"
               />

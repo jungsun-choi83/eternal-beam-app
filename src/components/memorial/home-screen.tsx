@@ -173,60 +173,18 @@ export function HomeScreen({
             </div>
           ) : (
             <div className="relative">
-              {/* Double Glass Layer Container */}
-              {/* Back Glass Layer - slightly offset */}
-              <div
-                className="absolute -inset-2 rounded-[36px]"
-                style={{
-                  background: "linear-gradient(145deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0.02) 100%)",
-                  backdropFilter: "blur(30px)",
-                  WebkitBackdropFilter: "blur(30px)",
-                  border: "1px solid rgba(255, 255, 255, 0.08)",
-                }}
-              />
-              
-              {/* Front Glass Layer - Main Button */}
               <MediaFileTrigger
                 onFile={onMediaFile}
-                className="relative w-56 h-56 rounded-[32px] touch-manipulation"
+                className="relative w-56 h-[15.5rem] touch-manipulation block"
               >
                 <motion.div
-                  className="relative w-full h-full rounded-[32px] flex flex-col items-center justify-center gap-4"
-                  style={{
-                    background: "linear-gradient(145deg, rgba(60, 60, 65, 0.6) 0%, rgba(40, 40, 45, 0.7) 50%, rgba(28, 28, 30, 0.8) 100%)",
-                    backdropFilter: "blur(60px)",
-                    WebkitBackdropFilter: "blur(60px)",
-                    boxShadow: `
-                    0 8px 32px rgba(0, 0, 0, 0.4),
-                    0 0 0 1px rgba(255, 255, 255, 0.06) inset,
-                    0 32px 64px -12px rgba(0, 0, 0, 0.5),
-                    inset 0 -2px 6px rgba(0, 0, 0, 0.2)
-                  `,
-                  }}
+                  className="memory-cta-card relative w-full h-full flex flex-col items-center justify-center gap-4 px-6"
                 >
-                {/* Glass Border - Bright top edge */}
-                <div 
-                  className="absolute top-0 left-6 right-6 h-px"
-                  style={{
-                    background: "linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.4) 20%, rgba(255,255,255,0.5) 50%, rgba(255,255,255,0.4) 80%, transparent 100%)",
-                  }}
-                />
-                {/* Left edge highlight */}
-                <div 
-                  className="absolute top-6 bottom-6 left-0 w-px"
-                  style={{
-                    background: "linear-gradient(180deg, rgba(255,255,255,0.4), rgba(255,255,255,0.2) 50%, transparent)",
-                  }}
-                />
-                {/* Inner glow effect */}
-                <div 
-                  className="absolute inset-0 rounded-[32px] pointer-events-none"
-                  style={{
-                    background: "radial-gradient(ellipse at 30% 20%, rgba(255,255,255,0.08) 0%, transparent 50%)",
-                  }}
-                />
+                <div className="memory-cta-card__shine" />
 
-                <Plus className="w-8 h-8" style={{ color: "#d4af37" }} strokeWidth={1.5} />
+                <div className="upload-card__empty-icon">
+                  <Plus className="w-6 h-6 text-[#e8d5a3]" strokeWidth={1.25} />
+                </div>
 
                 <div className="text-center relative">
                   <span 
@@ -243,19 +201,11 @@ export function HomeScreen({
                   </span>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  {["JPG", "PNG", "MP4"].map((format) => (
-                    <div
-                      key={format}
-                      className="px-2.5 py-1 rounded-full text-[10px] font-medium relative"
-                      style={{
-                        background: "rgba(201, 162, 39, 0.12)",
-                        color: "#d4af37",
-                        border: "1px solid rgba(201, 162, 39, 0.2)",
-                      }}
-                    >
+                <div className="upload-formats">
+                  {["HEIC", "JPG", "PNG"].map((format) => (
+                    <span key={format} className="upload-format-pill">
                       {format}
-                    </div>
+                    </span>
                   ))}
                 </div>
                 </motion.div>

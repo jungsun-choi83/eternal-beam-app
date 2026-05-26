@@ -2,13 +2,14 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Upload, ArrowLeft, Check, Image as ImageIcon, Video, Play, Pause } from "lucide-react";
+import { Upload, Check, Video, Play, Pause } from "lucide-react";
 import { HologramEffects } from "./hologram-effects";
-import { isLiteUI } from "@/lib/ui-performance";
 import { createDisplayImageUrl } from "@/lib/display-image";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { MediaFileTrigger } from "@/components/memorial/media-file-trigger";
 import { PhotoUploadGuide } from "@/components/memorial/photo-upload-guide";
+import { CutoutStage } from "@/components/memorial/cutout-stage";
+import { MemorialIconButton, MemorialPrimaryButton } from "@/components/memorial/memorial-chrome";
 import { inferMediaKind } from "@/lib/media-file-kind";
 
 interface PhotoUploadScreenProps {
@@ -29,10 +30,8 @@ export function PhotoUploadScreen({
   const m = memorialT(language);
   const u = m.upload;
   const c = m.common;
-  const lite = isLiteUI();
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
-  const [isGlowing, setIsGlowing] = useState(false);
   const [mediaType, setMediaType] = useState<"image" | "video" | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -40,13 +39,11 @@ export function PhotoUploadScreen({
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(true);
-    setIsGlowing(true);
   }, []);
 
   const handleDragLeave = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    setIsGlowing(false);
   }, []);
 
   const ingestFile = useCallback(
@@ -75,7 +72,6 @@ export function PhotoUploadScreen({
     (e: React.DragEvent) => {
       e.preventDefault();
       setIsDragging(false);
-      setIsGlowing(false);
 
       const file = e.dataTransfer.files[0];
       if (file) ingestFile(file);
@@ -118,36 +114,23 @@ export function PhotoUploadScreen({
     }
   };
 
+  const formatPills = ["HEIC", "JPG", "PNG", "MP4"];
+
   return (
-    <div className="h-full flex flex-col bg-[#0a0a0a] relative overflow-hidden">
+    <div className="memorial-screen h-full flex flex-col relative overflow-hidden">
       <HologramEffects />
-      {!lite ? (
-        <div
-          className="absolute inset-0 pointer-events-none opacity-60"
-          style={{
-            background:
-              "radial-gradient(circle at 70% 20%, rgba(244,114,106,0.12) 0%, transparent 50%), radial-gradient(circle at 20% 80%, rgba(201,162,39,0.08) 0%, transparent 45%)",
-          }}
-        />
-      ) : null}
 
       <header className="px-6 pt-8 pb-4 flex items-center justify-between relative z-10">
-        <motion.button
+        <MemorialIconButton
           initial={{ opacity: 0, x: -10 }}
           animate={{ opacity: 1, x: 0 }}
           onClick={onBack}
-          className="w-10 h-10 rounded-full flex items-center justify-center"
-          style={{
-            background: "rgba(255, 255, 255, 0.08)",
-            backdropFilter: "blur(20px)",
-            border: "1px solid rgba(255, 255, 255, 0.1)",
-          }}
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
           aria-label={c.back}
         >
-          <ArrowLeft className="w-4 h-4" style={{ color: "#F5F5F7" }} strokeWidth={1.5} />
-        </motion.button>
+          <span className="text-lg leading-none" aria-hidden>
+            ←
+          </span>
+        </MemorialIconButton>
 
         <motion.h1
           initial={{ opacity: 0, y: -10 }}
@@ -166,10 +149,11 @@ export function PhotoUploadScreen({
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.2 }}
-          className="w-full max-w-[320px] mx-auto"
+          className="w-full max-w-[320px] mx-auto relative z-10"
         >
+          <p className="memorial-eyebrow text-center mb-2">01 · Photo</p>
           <h2 className="upload-title text-center">{u.heading}</h2>
-          <p className="upload-subtitle text-center">{u.subtitle}</p>
+          <p className="upload-subtitle text-center mt-1">{u.subtitle}</p>
 
           <PhotoUploadGuide language={language} />
 
@@ -181,23 +165,18 @@ export function PhotoUploadScreen({
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
-              className={`upload-card relative overflow-hidden aspect-square ${
-                isDragging ? "drag-over scale-[1.02]" : ""
-              } ${uploadedImage ? "rounded-[28px]" : ""}`}
-              style={
-                uploadedImage
-                  ? { borderColor: "rgba(255, 255, 255, 0.2)" }
-                  : undefined
-              }
+              className={`upload-card relative overflow-hidden aspect-[4/5] ${
+                isDragging ? "drag-over" : ""
+              }`}
             >
               {uploadedImage ? (
                 <>
                   {mediaType === "video" ? (
-                    <div className="relative w-full h-full">
+                    <div className="relative w-full h-full cutout-stage cutout-stage--fill">
                       <video
                         ref={videoRef}
                         src={uploadedImage}
-                        className="w-full h-full object-cover"
+                        className="cutout-stage__subject"
                         loop
                         muted
                         playsInline
@@ -220,14 +199,21 @@ export function PhotoUploadScreen({
                       </button>
                     </div>
                   ) : (
-                    <img
-                      src={imageForDisplay || uploadedImage}
-                      alt=""
-                      className="w-full h-full object-cover"
-                      decoding="async"
-                    />
+                    <CutoutStage className="w-full h-full" fit="cover">
+                      <img
+                        src={imageForDisplay || uploadedImage}
+                        alt=""
+                        className="cutout-stage__subject"
+                        decoding="async"
+                      />
+                    </CutoutStage>
                   )}
-                  <div className="absolute top-3 right-3 w-8 h-8 rounded-full bg-[#c9a227] flex items-center justify-center">
+                  <div className="absolute top-3 right-3 w-8 h-8 rounded-full flex items-center justify-center z-10"
+                    style={{
+                      background: "linear-gradient(135deg, #c9a227, #e8d5a3)",
+                      boxShadow: "0 4px 12px rgba(0,0,0,0.35)",
+                    }}
+                  >
                     <Check className="w-4 h-4 text-[#0a0a0a]" strokeWidth={3} />
                   </div>
                   <div className="absolute bottom-3 left-3 px-2 py-1 rounded-full bg-black/50 text-[10px] text-white">
@@ -235,17 +221,23 @@ export function PhotoUploadScreen({
                   </div>
                 </>
               ) : (
-                <div className="absolute inset-0 flex flex-col items-center justify-center gap-5">
-                  <div className="w-16 h-16 rounded-2xl flex items-center justify-center bg-[#c9a227]/10 border border-[#c9a227]/20">
-                    <Upload className="w-7 h-7 text-[#c9a227]/70" strokeWidth={1.5} />
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-6 py-8">
+                  <div className="upload-card__empty-icon">
+                    <Upload className="w-6 h-6 text-[#e8d5a3]" strokeWidth={1.25} />
                   </div>
                   <div className="text-center">
-                    <p className="text-sm font-medium text-[#F5F5F7] leading-snug">
+                    <p className="text-[15px] font-light text-[#f1e5d1] leading-snug">
                       {isDragging ? u.drop : u.drag}
                     </p>
-                    <p className="memorial-caption mt-1.5">{u.tapBrowse}</p>
+                    <p className="memorial-caption mt-2 opacity-80">{u.tapBrowse}</p>
                   </div>
-                  <p className="upload-hint text-center text-[#A1A1A6]">{u.formats}</p>
+                  <div className="upload-formats">
+                    {formatPills.map((f) => (
+                      <span key={f} className="upload-format-pill">
+                        {f}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               )}
             </motion.div>
@@ -255,7 +247,7 @@ export function PhotoUploadScreen({
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 0.4 }}
-            className="text-center text-[12px] mt-7 font-light leading-relaxed text-[#A1A1A6]"
+            className="text-center text-[11px] mt-6 font-light leading-relaxed memorial-body"
           >
             {u.hint}
           </motion.p>
@@ -263,23 +255,15 @@ export function PhotoUploadScreen({
       </div>
 
       <div className="px-8 pb-10 relative z-10">
-        <motion.button
+        <MemorialPrimaryButton
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.5 }}
           onClick={onContinue}
           disabled={!uploadedImage}
-          className="w-full py-4 rounded-2xl memorial-btn-label transition-all duration-300"
-          style={{
-            background: uploadedImage
-              ? "linear-gradient(135deg, #b8860b 0%, #c9a227 30%, #d4af37 50%, #f5d77a 70%, #d4af37 100%)"
-              : "rgba(255, 255, 255, 0.06)",
-            color: uploadedImage ? "#0a0a0a" : "#A1A1A6",
-            cursor: uploadedImage ? "pointer" : "not-allowed",
-          }}
         >
           {u.continue}
-        </motion.button>
+        </MemorialPrimaryButton>
       </div>
     </div>
   );

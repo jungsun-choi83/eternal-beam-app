@@ -1,9 +1,9 @@
 :root {
-  /* 모바일 한국어 UI */
   --font-body: 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic',
     -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-headline: 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic',
     -apple-system, sans-serif;
+  --font-display: 'Playfair Display', 'Noto Serif KR', Georgia, serif;
 
   --letter-spacing-tight: 0;
   --letter-spacing-normal: 0;
@@ -48,7 +48,7 @@ h5,
 h6 {
   font-family: var(--font-headline);
   letter-spacing: 0;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 h1 {

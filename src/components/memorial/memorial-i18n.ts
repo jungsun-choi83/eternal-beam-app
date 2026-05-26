@@ -24,8 +24,8 @@ const STRINGS = {
       drag: "여기에 놓거나 탭하여 선택",
       drop: "놓으면 업로드",
       tapBrowse: "탭하여 찾기",
-      formats: "JPG, PNG, MP4, MOV",
-      hint: "정면·선명한 사진이 가장 잘 살아납니다.",
+      formats: "갤러리 · HEIC · JPG · PNG",
+      hint: "정면·선명한 사진이 홀로그램에 가장 잘 담깁니다.",
       guide: {
         title: "사진 업로드 필수 가이드",
         leashQuote: "무거운 목줄과 하네스는 잠시 내려놔 주세요.",
@@ -244,8 +244,8 @@ const STRINGS = {
       drag: "Drag here or tap to choose",
       drop: "Drop to upload",
       tapBrowse: "Tap to browse",
-      formats: "JPG, PNG, MP4, MOV",
-      hint: "Front-facing, sharp photos work best.",
+      formats: "Gallery · HEIC · JPG · PNG",
+      hint: "Front-facing, sharp photos preserve best in hologram.",
       guide: {
         title: "Photo upload guide",
         leashQuote: "Please remove heavy leashes and harnesses for a moment.",

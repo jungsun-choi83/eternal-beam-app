@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, memo } from "react";
 import { Sparkles, Check } from "lucide-react";
+import { CutoutStage } from "@/components/memorial/cutout-stage";
 import {
   cutoutImage,
   generatePetVideo,
@@ -183,11 +184,11 @@ const CompareImages = memo(function CompareImages({
   showCheck: boolean;
 }) {
   return (
-    <div className="w-full max-w-[320px] mb-5">
+    <div className="w-full max-w-[320px] mb-5 relative z-10">
       <div className="grid grid-cols-2 gap-3">
-        <div className="rounded-2xl overflow-hidden border border-white/10 bg-[#141416]">
-          <p className="text-[10px] tracking-wider px-3 py-2 text-center text-[#888]">{beforeLabel}</p>
-          <div className="aspect-square relative">
+        <div className="compare-panel">
+          <p className="compare-panel__label">{beforeLabel}</p>
+          <div className="aspect-square relative overflow-hidden">
             <img
               src={original}
               alt={beforeLabel}
@@ -196,23 +197,26 @@ const CompareImages = memo(function CompareImages({
             />
           </div>
         </div>
-        <div className="rounded-2xl overflow-hidden border border-[#c9a227]/40 bg-[#0d0d0f]">
-          <p className="text-[10px] tracking-wider px-3 py-2 text-center text-[#c9a227]">{afterLabel}</p>
-          <div className="aspect-square relative flex items-center justify-center p-2">
+        <div className="compare-panel compare-panel--cutout">
+          <p className="compare-panel__label">{afterLabel}</p>
+          <CutoutStage className="aspect-square relative">
             <img
               src={cutout}
               alt={afterLabel}
-              className="max-w-full max-h-full object-contain"
+              className="cutout-stage__subject"
               decoding="async"
             />
             {showCheck ? (
               <div
-                className="absolute bottom-2 right-2 w-6 h-6 rounded-full flex items-center justify-center bg-[#c9a227]"
+                className="absolute bottom-2 right-2 z-10 w-6 h-6 rounded-full flex items-center justify-center"
+                style={{
+                  background: "linear-gradient(135deg, #c9a227, #e8d5a3)",
+                }}
               >
                 <Check className="w-3.5 h-3.5 text-[#0a0a0a]" strokeWidth={3} />
               </div>
             ) : null}
-          </div>
+          </CutoutStage>
         </div>
       </div>
     </div>

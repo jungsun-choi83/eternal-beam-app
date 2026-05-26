@@ -1,7 +1,5 @@
-/* Eternal Beam — 한국어 모바일 UI (Noto Sans KR) */
-@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600&family=Playfair+Display:ital,wght@0,400;0,500;0,600;1,400&display=swap');
 
-/* 한글에는 음수 자간을 쓰지 않음 (가독성·깨짐 방지) */
 .memorial-ui,
 .memorial-ui * {
   letter-spacing: 0;
@@ -9,6 +7,9 @@
   overflow-wrap: break-word;
 }
 
-.memorial-ui :lang(en) {
-  letter-spacing: -0.01em;
+.memorial-ui :lang(en),
+.memorial-ui .logo-title,
+.memorial-ui .upload-title,
+.memorial-ui .upload-guide-title {
+  letter-spacing: 0.02em;
 }

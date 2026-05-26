@@ -1,0 +1,352 @@
+/* Eternal Beam — premium memorial UI tokens & surfaces */
+
+.memorial-ui {
+  --eb-ink: #050506;
+  --eb-ink-elevated: #0c0c0e;
+  --eb-ink-card: #121214;
+  --eb-champagne: #f1e5d1;
+  --eb-mist: rgba(245, 245, 247, 0.72);
+  --eb-muted: #8e8e93;
+  --eb-gold: #c9a227;
+  --eb-gold-soft: #e8d5a3;
+  --eb-gold-glow: rgba(201, 162, 39, 0.35);
+  --eb-radius-sm: 12px;
+  --eb-radius-md: 18px;
+  --eb-radius-lg: 24px;
+  --eb-radius-xl: 28px;
+  --eb-glass: rgba(255, 255, 255, 0.06);
+  --eb-glass-border: rgba(255, 255, 255, 0.1);
+  --eb-shadow-soft: 0 24px 48px -12px rgba(0, 0, 0, 0.55);
+  --eb-shadow-gold: 0 16px 40px -8px rgba(201, 162, 39, 0.22);
+}
+
+.memorial-screen {
+  background: var(--eb-ink);
+  color: var(--eb-champagne);
+}
+
+.memorial-screen::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(201, 162, 39, 0.09), transparent 55%),
+    radial-gradient(ellipse 60% 40% at 100% 100%, rgba(120, 90, 40, 0.06), transparent 50%);
+  z-index: 0;
+}
+
+/* Typography */
+.logo-title {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-size: clamp(1.125rem, 4.8vw, 1.375rem);
+  text-shadow: 0 0 32px var(--eb-gold-glow);
+}
+
+.logo-subtitle {
+  font-weight: 300;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  font-size: 0.6875rem;
+  color: var(--eb-mist);
+  opacity: 0.85;
+}
+
+.screen-title {
+  font-weight: 500;
+  letter-spacing: 0.06em;
+}
+
+.upload-title {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 1.375rem;
+  letter-spacing: 0.04em;
+}
+
+.upload-subtitle {
+  font-weight: 300;
+  color: var(--eb-mist);
+}
+
+.memorial-eyebrow {
+  font-size: 0.6875rem;
+  font-weight: 500;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--eb-gold-soft);
+}
+
+/* Glass surfaces */
+.glass-panel {
+  background: linear-gradient(
+    145deg,
+    rgba(255, 255, 255, 0.07) 0%,
+    rgba(255, 255, 255, 0.02) 100%
+  );
+  border: 1px solid var(--eb-glass-border);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  box-shadow: var(--eb-shadow-soft), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+}
+
+.glass-panel--gold {
+  border-color: rgba(201, 162, 39, 0.22);
+  box-shadow: var(--eb-shadow-soft), inset 0 1px 0 rgba(201, 162, 39, 0.12);
+}
+
+/* Icon button */
+.mem-icon-btn {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--eb-glass);
+  border: 1px solid var(--eb-glass-border);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  color: var(--eb-champagne);
+  transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+
+.mem-icon-btn:active {
+  transform: scale(0.96);
+}
+
+/* Primary CTA */
+.mem-btn-primary {
+  width: 100%;
+  padding: 1rem 1.25rem;
+  border-radius: var(--eb-radius-md);
+  font-size: var(--text-base);
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  border: none;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.25s ease, opacity 0.2s ease;
+}
+
+.mem-btn-primary:not(:disabled) {
+  background: linear-gradient(
+    160deg,
+    #a67c00 0%,
+    #c9a227 28%,
+    #e8d5a3 52%,
+    #c9a227 78%,
+    #8b6914 100%
+  );
+  color: #0a0804;
+  box-shadow: var(--eb-shadow-gold), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+}
+
+.mem-btn-primary:not(:disabled):active {
+  transform: scale(0.98);
+}
+
+.mem-btn-primary:disabled {
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--eb-muted);
+  cursor: not-allowed;
+}
+
+/* Upload zone — gallery-forward */
+.upload-card {
+  background: linear-gradient(
+    165deg,
+    rgba(28, 28, 32, 0.9) 0%,
+    rgba(12, 12, 14, 0.95) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: var(--eb-radius-xl);
+  padding: 0;
+  box-shadow: var(--eb-shadow-soft), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  transition: border-color 0.35s ease, box-shadow 0.35s ease, transform 0.35s ease;
+}
+
+.upload-card::before {
+  display: none;
+}
+
+.upload-card:hover,
+.upload-card.drag-over {
+  border-color: rgba(201, 162, 39, 0.45);
+  box-shadow: var(--eb-shadow-gold), inset 0 1px 0 rgba(201, 162, 39, 0.15);
+  transform: translateY(-2px);
+  background: linear-gradient(
+    165deg,
+    rgba(36, 32, 28, 0.95) 0%,
+    rgba(14, 12, 10, 0.98) 100%
+  );
+}
+
+.upload-card__empty-icon {
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: 999px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at 30% 20%, rgba(232, 213, 163, 0.2), rgba(201, 162, 39, 0.06));
+  border: 1px solid rgba(201, 162, 39, 0.25);
+  box-shadow: 0 0 24px rgba(201, 162, 39, 0.12);
+}
+
+.upload-formats {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.375rem;
+  margin-top: 0.75rem;
+}
+
+.upload-format-pill {
+  padding: 0.25rem 0.625rem;
+  border-radius: 999px;
+  font-size: 0.625rem;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--eb-gold-soft);
+  background: rgba(201, 162, 39, 0.1);
+  border: 1px solid rgba(201, 162, 39, 0.18);
+}
+
+/* Guide card */
+.upload-guide {
+  padding: 1rem 1.125rem;
+  border-radius: var(--eb-radius-md);
+  background: linear-gradient(
+    160deg,
+    rgba(255, 255, 255, 0.05) 0%,
+    rgba(255, 255, 255, 0.02) 100%
+  );
+  border: 1px solid rgba(201, 162, 39, 0.18);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.upload-guide-title {
+  font-family: var(--font-display);
+  font-weight: 500;
+  letter-spacing: 0.06em;
+}
+
+.upload-guide-quote {
+  font-weight: 400;
+  font-style: italic;
+  color: var(--eb-gold-soft);
+}
+
+/* Cutout / alpha preview stage */
+.cutout-stage {
+  position: relative;
+  overflow: hidden;
+  border-radius: inherit;
+  background-color: #0a0a0c;
+  background-image:
+    linear-gradient(45deg, #161618 25%, transparent 25%),
+    linear-gradient(-45deg, #161618 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #161618 75%),
+    linear-gradient(-45deg, transparent 75%, #161618 75%);
+  background-size: 12px 12px;
+  background-position: 0 0, 0 6px, 6px -6px, -6px 0;
+}
+
+.cutout-stage__glow {
+  position: absolute;
+  inset: 10%;
+  pointer-events: none;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(201, 162, 39, 0.15) 0%, transparent 70%);
+  filter: blur(20px);
+}
+
+.cutout-stage__subject {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center bottom;
+  filter: drop-shadow(0 12px 28px rgba(0, 0, 0, 0.45));
+}
+
+.cutout-stage--fill .cutout-stage__subject {
+  object-fit: cover;
+  object-position: center;
+}
+
+/* Compare panels (AI processing) */
+.compare-panel {
+  border-radius: var(--eb-radius-md);
+  overflow: hidden;
+  border: 1px solid var(--eb-glass-border);
+  background: var(--eb-ink-card);
+}
+
+.compare-panel--cutout {
+  border-color: rgba(201, 162, 39, 0.28);
+}
+
+.compare-panel__label {
+  font-size: 0.625rem;
+  font-weight: 500;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  text-align: center;
+  padding: 0.5rem 0.75rem;
+  color: var(--eb-muted);
+}
+
+.compare-panel--cutout .compare-panel__label {
+  color: var(--eb-gold-soft);
+}
+
+/* Theme preview frame */
+.theme-preview-frame {
+  border-radius: var(--eb-radius-xl);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: var(--eb-shadow-soft);
+}
+
+.theme-preview-frame__subject {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 8%;
+  pointer-events: none;
+}
+
+/* Home — add memory card */
+.memory-cta-card {
+  border-radius: var(--eb-radius-xl);
+  background: linear-gradient(
+    165deg,
+    rgba(42, 40, 38, 0.85) 0%,
+    rgba(18, 17, 16, 0.95) 55%,
+    rgba(8, 8, 9, 1) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  box-shadow: var(--eb-shadow-soft), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.memory-cta-card__shine {
+  position: absolute;
+  top: 0;
+  left: 15%;
+  right: 15%;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.35),
+    transparent
+  );
+}

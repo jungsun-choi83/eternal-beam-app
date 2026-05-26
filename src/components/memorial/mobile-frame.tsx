@@ -19,13 +19,12 @@ export function MobileFrame({ children }: MobileFrameProps) {
       <div
         className="relative w-full max-w-[430px] h-[100dvh] max-h-[100dvh] overflow-hidden md:w-[375px] md:h-[812px] md:max-h-[812px] md:rounded-[55px]"
         style={{
-          background: "linear-gradient(180deg, #0f0f0f 0%, #0a0a0a 100%)",
-          border: "1px solid rgba(255,255,255,0.08)",
+          background: "linear-gradient(180deg, #0a0a0b 0%, #050506 100%)",
+          border: "1px solid rgba(255,255,255,0.06)",
           boxShadow: `
-            0 50px 100px -20px rgba(0,0,0,0.8),
-            0 30px 60px -15px rgba(0,0,0,0.6),
-            inset 0 1px 0 rgba(255,255,255,0.05),
-            0 0 80px rgba(201, 162, 39, 0.08)
+            0 48px 96px -24px rgba(0,0,0,0.85),
+            inset 0 1px 0 rgba(255,255,255,0.04),
+            0 0 120px rgba(201, 162, 39, 0.06)
           `,
         }}
       >

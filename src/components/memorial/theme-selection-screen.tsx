@@ -248,14 +248,9 @@ export function ThemeSelectionScreen({
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="relative aspect-[4/3] rounded-3xl overflow-hidden"
-          style={{
-            background: "rgba(28, 28, 30, 0.6)",
-          }}
+          className="theme-preview-frame relative aspect-[4/3]"
         >
-          {/* Glass Border */}
-          <div className="absolute top-0 left-4 right-4 h-px bg-gradient-to-r from-white/20 via-white/15 to-transparent" />
-          <div className="absolute top-4 bottom-4 left-0 w-px bg-gradient-to-b from-white/20 via-white/15 to-transparent" />
+          <div className="memory-cta-card__shine" />
           
           {currentTheme && (
             <>
@@ -290,12 +285,11 @@ export function ThemeSelectionScreen({
                 animate={{ opacity: 1, scale: 1 }}
                 src={cutoutImage}
                 alt=""
-                className="max-h-[58%] max-w-[88%] object-contain pointer-events-none"
+                className="cutout-stage__subject max-h-[58%] max-w-[88%] pointer-events-none"
                 style={{
-                  background: "transparent",
                   filter: currentTheme
-                    ? `drop-shadow(0 8px 24px ${currentTheme.accent}99) drop-shadow(0 0 12px rgba(0,0,0,0.35))`
-                    : "drop-shadow(0 8px 20px rgba(201,162,39,0.45))",
+                    ? `drop-shadow(0 12px 28px ${currentTheme.accent}aa)`
+                    : "drop-shadow(0 12px 28px rgba(201,162,39,0.5))",
                 }}
               />
             ) : (
