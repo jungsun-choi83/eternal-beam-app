@@ -190,7 +190,17 @@ select {
 
 /* Safe area - Dynamic Island / 노치 영역 여백 */
 .safe-area-top {
-  padding-top: max(60px, env(safe-area-inset-top, 60px));
+  padding-top: max(48px, env(safe-area-inset-top, 48px));
+}
+
+.safe-area-bottom {
+  padding-bottom: max(12px, env(safe-area-inset-bottom, 12px));
+}
+
+@media (min-width: 768px) {
+  .safe-area-top {
+    padding-top: max(60px, env(safe-area-inset-top, 60px));
+  }
 }
 
 /* 화면 제목 - 한 줄에 맞춤 */

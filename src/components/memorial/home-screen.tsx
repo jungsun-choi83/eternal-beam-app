@@ -6,7 +6,6 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Plus, Globe, ChevronDown, Check, Settings, Grid3X3 } from "lucide-react";
 import { HolographicBackground } from "./holographic-background";
 import { HologramEffects } from "./hologram-effects";
-import { memorialLang, memorialT } from "@/components/memorial/memorial-i18n";
 
 interface HomeScreenProps {
   cutoutImage: string | null;
@@ -207,23 +206,44 @@ export function HomeScreen({
           className="relative"
         >
           {cutoutImage ? (
-            <div className="relative">
-              <motion.div
-                className="absolute -inset-4 rounded-full"
-                style={{
-                  background: "conic-gradient(from 0deg, transparent, rgba(201, 162, 39, 0.4), transparent)",
-                }}
-                animate={{ rotate: 360 }}
-                transition={{ duration: 8, repeat: Infinity, ease: "linear" }}
-              />
-              <div
-                className="relative w-56 h-56 rounded-full overflow-hidden"
-                style={{
-                  boxShadow: "0 0 60px rgba(201, 162, 39, 0.3), inset 0 0 30px rgba(201, 162, 39, 0.1)",
-                }}
+            <div className="relative flex flex-col items-center gap-4">
+              <motion.button
+                type="button"
+                onClick={onUploadPhoto}
+                className="relative touch-manipulation"
+                whileTap={{ scale: 0.97 }}
+                aria-label={texts.addMedia}
               >
-                <img src={cutoutImage} alt="Your companion" className="w-full h-full object-cover" />
-              </div>
+                <motion.div
+                  className="absolute -inset-4 rounded-full pointer-events-none"
+                  style={{
+                    background: "conic-gradient(from 0deg, transparent, rgba(201, 162, 39, 0.4), transparent)",
+                  }}
+                  animate={{ rotate: 360 }}
+                  transition={{ duration: 8, repeat: Infinity, ease: "linear" }}
+                />
+                <div
+                  className="relative w-56 h-56 rounded-full overflow-hidden"
+                  style={{
+                    boxShadow: "0 0 60px rgba(201, 162, 39, 0.3), inset 0 0 30px rgba(201, 162, 39, 0.1)",
+                  }}
+                >
+                  <img src={cutoutImage} alt="" className="w-full h-full object-cover" />
+                </div>
+              </motion.button>
+              <motion.button
+                type="button"
+                onClick={onUploadPhoto}
+                className="px-5 py-2.5 rounded-full text-sm font-light touch-manipulation"
+                style={{
+                  background: "rgba(255, 255, 255, 0.08)",
+                  border: "1px solid rgba(201, 162, 39, 0.25)",
+                  color: "#d4af37",
+                }}
+                whileTap={{ scale: 0.97 }}
+              >
+                {texts.addMedia}
+              </motion.button>
             </div>
           ) : (
             <div className="relative">
@@ -241,8 +261,9 @@ export function HomeScreen({
               
               {/* Front Glass Layer - Main Button */}
               <motion.button
+                type="button"
                 onClick={onUploadPhoto}
-                className="relative w-56 h-56 rounded-[32px] flex flex-col items-center justify-center gap-4"
+                className="relative w-56 h-56 rounded-[32px] flex flex-col items-center justify-center gap-4 touch-manipulation"
                 style={{
                   background: "linear-gradient(145deg, rgba(60, 60, 65, 0.6) 0%, rgba(40, 40, 45, 0.7) 50%, rgba(28, 28, 30, 0.8) 100%)",
                   backdropFilter: "blur(60px)",

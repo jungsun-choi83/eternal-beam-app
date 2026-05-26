@@ -16,8 +16,8 @@ export function MobileFrame({ children }: MobileFrameProps) {
       transition={{ duration: 0.8, ease: [0.25, 0.46, 0.45, 0.94] }}
     >
       {/* Phone Frame - Apple-style minimal bezel */}
-      <div 
-        className="relative w-[375px] h-[812px] rounded-[55px] overflow-hidden"
+      <div
+        className="relative w-full max-w-[430px] h-[100dvh] max-h-[100dvh] overflow-hidden md:w-[375px] md:h-[812px] md:max-h-[812px] md:rounded-[55px]"
         style={{
           background: "linear-gradient(180deg, #0f0f0f 0%, #0a0a0a 100%)",
           border: "1px solid rgba(255,255,255,0.08)",
@@ -29,31 +29,29 @@ export function MobileFrame({ children }: MobileFrameProps) {
           `,
         }}
       >
-        {/* Dynamic Island - True Apple style */}
-        <div 
-          className="absolute top-3 left-1/2 -translate-x-1/2 w-[126px] h-[37px] rounded-full z-50"
-          style={{ 
+        {/* Dynamic Island — 데스크톱 미리보기용 */}
+        <div
+          className="absolute top-3 left-1/2 -translate-x-1/2 w-[126px] h-[37px] rounded-full z-50 hidden md:block"
+          style={{
             background: "#000",
             boxShadow: "inset 0 0 0 1px rgba(255,255,255,0.05)",
           }}
         >
-          {/* Camera & Sensors */}
           <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-2">
             <div className="w-3 h-3 rounded-full bg-[#1a1a1a]" />
             <div className="w-[6px] h-[6px] rounded-full bg-[#0a84ff]" />
           </div>
         </div>
 
-        {/* Screen Content - safe area for Dynamic Island */}
-        <div className="w-full h-full overflow-hidden safe-area-top">
+        <div className="w-full h-full overflow-hidden safe-area-top safe-area-bottom">
           {children}
         </div>
 
-        {/* Home Indicator - Subtle gold tint */}
-        <div 
-          className="absolute bottom-2 left-1/2 -translate-x-1/2 w-[134px] h-[5px] rounded-full"
-          style={{ 
-            background: "linear-gradient(90deg, rgba(201,162,39,0.2) 0%, rgba(201,162,39,0.4) 50%, rgba(201,162,39,0.2) 100%)" 
+        <div
+          className="absolute bottom-2 left-1/2 -translate-x-1/2 w-[134px] h-[5px] rounded-full hidden md:block"
+          style={{
+            background:
+              "linear-gradient(90deg, rgba(201,162,39,0.2) 0%, rgba(201,162,39,0.4) 50%, rgba(201,162,39,0.2) 100%)",
           }}
         />
       </div>

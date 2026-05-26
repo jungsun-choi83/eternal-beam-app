@@ -33,6 +33,7 @@ export function PhotoUploadScreen({
   const [mediaType, setMediaType] = useState<"image" | "video" | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -46,6 +47,32 @@ export function PhotoUploadScreen({
     setIsGlowing(false);
   }, []);
 
+  const ingestFile = useCallback(
+    (file: File) => {
+      const type = (file.type || "").toLowerCase();
+      const name = (file.name || "").toLowerCase();
+      const isImage =
+        type.startsWith("image/") || /\.(jpe?g|png|gif|webp|heic|heif)$/i.test(name);
+      const isVideo =
+        type.startsWith("video/") || /\.(mp4|webm|mov|m4v)$/i.test(name);
+
+      if (!isImage && !isVideo) return;
+
+      if (isImage) {
+        setMediaType("image");
+        const reader = new FileReader();
+        reader.onload = () => onImageUpload(reader.result as string);
+        reader.readAsDataURL(file);
+        return;
+      }
+
+      setMediaType("video");
+      if (file.size > 100 * 1024 * 1024) return;
+      onImageUpload(URL.createObjectURL(file));
+    },
+    [onImageUpload],
+  );
+
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
@@ -53,45 +80,23 @@ export function PhotoUploadScreen({
       setIsGlowing(false);
 
       const file = e.dataTransfer.files[0];
-      if (file) {
-        if (file.type.startsWith("image/")) {
-          setMediaType("image");
-          const reader = new FileReader();
-          reader.onload = () => {
-            onImageUpload(reader.result as string);
-          };
-          reader.readAsDataURL(file);
-        } else if (file.type.startsWith("video/")) {
-          setMediaType("video");
-          const reader = new FileReader();
-          reader.onload = () => {
-            onImageUpload(reader.result as string);
-          };
-          reader.readAsDataURL(file);
-        }
-      }
+      if (file) ingestFile(file);
     },
-    [onImageUpload]
+    [ingestFile]
   );
 
   const handleFileSelect = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
-      if (file) {
-        if (file.type.startsWith("image/")) {
-          setMediaType("image");
-        } else if (file.type.startsWith("video/")) {
-          setMediaType("video");
-        }
-        const reader = new FileReader();
-        reader.onload = () => {
-          onImageUpload(reader.result as string);
-        };
-        reader.readAsDataURL(file);
-      }
+      if (file) ingestFile(file);
+      e.target.value = "";
     },
-    [onImageUpload]
+    [ingestFile],
   );
+
+  const openFilePicker = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
 
   useEffect(() => {
     if (!uploadedImage?.startsWith("data:image/")) {
@@ -173,18 +178,34 @@ export function PhotoUploadScreen({
           <h2 className="upload-title text-center">{u.heading}</h2>
           <p className="upload-subtitle text-center">{u.subtitle}</p>
           <input
+            ref={fileInputRef}
             type="file"
             id="media-upload"
-            accept="image/*,video/*"
+            accept="image/*,image/heic,image/heif,video/*,.heic,.heif"
             onChange={handleFileSelect}
-            className="hidden"
+            className="sr-only"
+            style={{
+              position: "absolute",
+              width: 1,
+              height: 1,
+              opacity: 0,
+              overflow: "hidden",
+            }}
           />
-          <label
-            htmlFor="media-upload"
+          <div
+            role="button"
+            tabIndex={0}
+            onClick={openFilePicker}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                openFilePicker();
+              }
+            }}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
-            className="block mt-6 cursor-pointer"
+            className="block mt-6 cursor-pointer touch-manipulation"
           >
             <motion.div
               className={`upload-card relative overflow-hidden aspect-square ${
@@ -255,7 +276,7 @@ export function PhotoUploadScreen({
                 </div>
               )}
             </motion.div>
-          </label>
+          </div>
 
           <motion.p
             initial={{ opacity: 0 }}

@@ -19,6 +19,7 @@ import { NFCPlaybackScreen } from '@/components/memorial/nfc-playback-screen'
 import { DeviceScreen } from '@/components/memorial/device-screen'
 import { SettingsScreen } from '@/components/memorial/settings-screen'
 import { memorialT } from '@/components/memorial/memorial-i18n'
+import { pickMediaFile, type PickedMedia } from '@/lib/pick-media-file'
 
 type Screen =
   | 'onboarding'
@@ -80,48 +81,42 @@ export function EternalBeamApp() {
     setUploadedImage(imageUrl)
   }
 
-  const handleQuickUploadFromHome = () => {
-    const input = document.createElement('input')
-    input.type = 'file'
-    input.accept = 'image/*,video/mp4,video/webm,video/quicktime'
-    input.onchange = (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0]
-      if (!file) return
-      const isImage = file.type.startsWith('image/')
-      const isVideo = file.type.startsWith('video/')
-      const alerts = memorialT(language).alerts
-      if (!isImage && !isVideo) {
-        alert(alerts.fileType)
-        return
-      }
-      if (isVideo && file.size > 100 * 1024 * 1024) {
-        alert(alerts.videoSize)
-        return
-      }
-
-      const mediaType = isVideo ? 'video' : 'image'
-      localStorage.setItem('eternal_beam_media_type', mediaType)
-
-      if (isImage) {
-        const reader = new FileReader()
-        reader.onload = (ev) => {
-          const result = String(ev.target?.result || '')
-          if (!result) return
-          setUploadedImage(result)
-          localStorage.setItem('eternal_beam_main_photo', result)
-          localStorage.removeItem('eternal_beam_main_video_url')
-          navigateTo('photoUpload')
-        }
-        reader.readAsDataURL(file)
-      } else {
-        const url = URL.createObjectURL(file)
-        setUploadedImage(url)
-        localStorage.setItem('eternal_beam_main_video_url', url)
-        localStorage.removeItem('eternal_beam_main_photo')
-        navigateTo('themeSelection')
-      }
+  const applyPickedMedia = (picked: PickedMedia) => {
+    const { file, kind } = picked
+    const alerts = memorialT(language).alerts
+    if (kind === 'video' && file.size > 100 * 1024 * 1024) {
+      alert(alerts.videoSize)
+      return
     }
-    input.click()
+
+    localStorage.setItem('eternal_beam_media_type', kind)
+
+    if (kind === 'image') {
+      const reader = new FileReader()
+      reader.onload = (ev) => {
+        const result = String(ev.target?.result || '')
+        if (!result) return
+        setUploadedImage(result)
+        localStorage.setItem('eternal_beam_main_photo', result)
+        localStorage.removeItem('eternal_beam_main_video_url')
+        navigateTo('photoUpload')
+      }
+      reader.onerror = () => alert(alerts.fileType)
+      reader.readAsDataURL(file)
+      return
+    }
+
+    const url = URL.createObjectURL(file)
+    setUploadedImage(url)
+    localStorage.setItem('eternal_beam_main_video_url', url)
+    localStorage.removeItem('eternal_beam_main_photo')
+    navigateTo('themeSelection')
+  }
+
+  const handleQuickUploadFromHome = async () => {
+    const picked = await pickMediaFile()
+    if (!picked) return
+    applyPickedMedia(picked)
   }
 
   const handleAIProcessingComplete = async (cutoutUrl: string) => {
@@ -187,7 +182,7 @@ export function EternalBeamApp() {
   }
 
   return (
-    <main className="min-h-screen bg-[#0a0a0a] flex items-center justify-center p-4 overflow-hidden">
+    <main className="min-h-[100dvh] bg-[#0a0a0a] flex items-stretch md:items-center justify-center p-0 md:p-4 overflow-hidden">
       <div
         className="fixed inset-0 pointer-events-none overflow-hidden"
         style={{
@@ -308,7 +303,7 @@ export function EternalBeamApp() {
             >
               <GalleryScreen
                 onSelectItem={(id: number) => console.log('Selected item', id)}
-                onAddNew={() => navigateTo('photoUpload')}
+                onAddNew={handleQuickUploadFromHome}
                 onBack={() => navigateTo('home')}
               />
             </motion.div>
