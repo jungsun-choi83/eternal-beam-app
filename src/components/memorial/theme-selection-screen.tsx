@@ -275,12 +275,13 @@ export function ThemeSelectionScreen({
                 initial={{ opacity: 0, scale: 0.9 }}
                 animate={{ opacity: 1, scale: 1 }}
                 src={cutoutImage}
-                alt="Subject"
-                className="max-h-[55%] max-w-[85%] object-contain drop-shadow-2xl"
+                alt=""
+                className="max-h-[58%] max-w-[88%] object-contain pointer-events-none"
                 style={{
+                  background: "transparent",
                   filter: currentTheme
-                    ? `drop-shadow(0 0 24px ${currentTheme.accent}80)`
-                    : "drop-shadow(0 0 20px rgba(201,162,39,0.35))",
+                    ? `drop-shadow(0 8px 24px ${currentTheme.accent}99) drop-shadow(0 0 12px rgba(0,0,0,0.35))`
+                    : "drop-shadow(0 8px 20px rgba(201,162,39,0.45))",
                 }}
               />
             ) : (

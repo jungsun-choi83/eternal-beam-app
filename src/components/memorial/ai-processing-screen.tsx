@@ -9,7 +9,7 @@ import {
   type CutoutResult,
 } from "@/app/services/videoProcessingApi";
 import { clientCutoutFromFile } from "@/lib/client-cutout";
-import { createDisplayImageUrl } from "@/lib/display-image";
+import { createDisplayImageUrl, createDisplayCutoutUrl } from "@/lib/display-image";
 import { friendlyCutoutError, normalizeImageToJpegFile } from "@/lib/normalize-image";
 import { markServerCutoutDisabled } from "@/lib/server-cutout-available";
 import { memorialT } from "@/components/memorial/memorial-i18n";
@@ -293,7 +293,7 @@ export function AIProcessingScreen({
 
         if (cancelled || myToken !== runTokenRef.current) return;
 
-        const cutThumb = await createDisplayImageUrl(display, 480);
+        const cutThumb = await createDisplayCutoutUrl(display, 480);
         if (cancelled || myToken !== runTokenRef.current) return;
 
         setCutoutPreview(cutThumb);

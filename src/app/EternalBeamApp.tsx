@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { createDisplayImageUrl } from '@/lib/display-image'
+import { createDisplayCutoutUrl } from '@/lib/display-image'
 import { AnimatePresence, motion } from 'framer-motion'
 import { MobileFrame } from '@/components/memorial/mobile-frame'
 import { OnboardingScreen } from '@/components/memorial/onboarding-screen'
@@ -132,7 +132,7 @@ export function EternalBeamApp() {
   }
 
   const handleAIProcessingComplete = async (cutoutUrl: string) => {
-    const thumb = await createDisplayImageUrl(cutoutUrl, 512)
+    const thumb = await createDisplayCutoutUrl(cutoutUrl, 512)
     setCutoutImage(thumb)
     navigateTo('themeSelection')
   }
