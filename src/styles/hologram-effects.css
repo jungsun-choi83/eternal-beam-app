@@ -244,6 +244,24 @@
   display: none;
 }
 
+/* ---- ui-lite / 저사양: 홀로그램 CSS 애니메이션 끔 ---- */
+html.ui-lite .hologram-scanline,
+html.ui-lite .hologram-aurora-1,
+html.ui-lite .hologram-aurora-2,
+html.ui-lite .hologram-bg-active .logo-title,
+html.ui-lite .logo-title--auth {
+  animation: none !important;
+}
+
+html.ui-lite .hologram-scanline {
+  opacity: 0.15;
+}
+
+html.ui-lite .hologram-aurora-1,
+html.ui-lite .hologram-aurora-2 {
+  opacity: 0.03;
+}
+
 /* ---- prefers-reduced-motion: 애니메이션 축소/비활성화 ---- */
 @media (prefers-reduced-motion: reduce) {
   .hologram-scanline,
@@ -269,9 +287,49 @@
   }
 }
 
-/* 모바일: 스캔라인 주기만 약간 단축 (선택) */
-@media (max-width: 480px) {
-  .hologram-scanline {
-    animation-duration: 10s, 10s;
+/* AI 처리 — CSS 스캔라인 (Framer 대신) */
+@keyframes processing-scan {
+  0% {
+    transform: translateY(-100%);
   }
+  100% {
+    transform: translateY(400px);
+  }
+}
+
+.processing-scanline::after {
+  content: "";
+  display: block;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, #c9a227, transparent);
+  animation: processing-scan 2s linear infinite;
+}
+
+html.ui-lite .processing-scanline::after {
+  animation: none;
+  opacity: 0.4;
+}
+
+/* AI 처리 — 프로그레스 바 (JS 막혀도 움직임) */
+@keyframes processing-bar-pulse {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+.processing-bar-active {
+  position: relative;
+  overflow: hidden;
+}
+
+.processing-bar-active::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, #f5d77a, transparent);
+  animation: processing-bar-pulse 1.8s ease-in-out infinite;
 }

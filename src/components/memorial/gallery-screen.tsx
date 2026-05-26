@@ -3,8 +3,10 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { ChevronLeft, Plus, Play, MoreHorizontal, Trash2 } from "lucide-react";
+import { memorialT } from "@/components/memorial/memorial-i18n";
 
 interface GalleryScreenProps {
+  language?: string;
   onSelectItem: (id: number) => void;
   onAddNew: () => void;
   onBack: () => void;
@@ -25,7 +27,13 @@ const mockGalleryItems: GalleryItem[] = [
   { id: 3, thumbnail: "", name: "Bella", date: "Oct 10, 2024", isVideo: false, theme: "Starlight" },
 ];
 
-export function GalleryScreen({ onSelectItem, onAddNew, onBack }: GalleryScreenProps) {
+export function GalleryScreen({
+  language = "ko",
+  onSelectItem,
+  onAddNew,
+  onBack,
+}: GalleryScreenProps) {
+  const g = memorialT(language).gallery;
   const [selectedItem, setSelectedItem] = useState<number | null>(null);
   const [showOptions, setShowOptions] = useState<number | null>(null);
 
@@ -37,7 +45,7 @@ export function GalleryScreen({ onSelectItem, onAddNew, onBack }: GalleryScreenP
           <ChevronLeft className="w-5 h-5" style={{ color: "#F5F5F7" }} />
         </button>
         <h1 className="text-xl font-light absolute left-1/2 -translate-x-1/2" style={{ color: "#F5F5F7" }}>
-          Gallery
+          {g.title}
         </h1>
         <button onClick={onAddNew} className="p-2 -mr-2">
           <Plus className="w-5 h-5" style={{ color: "#d4af37" }} />
@@ -128,7 +136,7 @@ export function GalleryScreen({ onSelectItem, onAddNew, onBack }: GalleryScreenP
                       onClick={() => setShowOptions(null)}
                     >
                       <Trash2 className="w-4 h-4 text-red-400" />
-                      <span className="text-sm text-red-400">Delete</span>
+                      <span className="text-sm text-red-400">{g.delete}</span>
                     </button>
                   </motion.div>
                 )}
@@ -149,9 +157,9 @@ export function GalleryScreen({ onSelectItem, onAddNew, onBack }: GalleryScreenP
             >
               <Plus className="w-8 h-8" style={{ color: "#A1A1A6" }} />
             </div>
-            <p className="text-sm mb-1" style={{ color: "#F5F5F7" }}>No memories yet</p>
+            <p className="text-sm mb-1" style={{ color: "#F5F5F7" }}>{g.emptyTitle}</p>
             <p className="text-xs" style={{ color: "#A1A1A6" }}>
-              Create your first holographic memory
+              {g.emptyHint}
             </p>
           </div>
         )}

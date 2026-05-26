@@ -56,14 +56,15 @@ for _p in (
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 
-from .routers import cutout, compose, assets, preview, content, generate
+from .routers import cutout, compose, assets, preview, content, pet_v1, device_v1
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # startup: rembg 모델 로드 등
+    if os.getenv("PET_HYBRID_SEED", "1").strip().lower() in ("1", "true", "yes"):
+        from .services.wallet_service import seed_dummy_wallets
+
+        seed_dummy_wallets()
     yield
-    # shutdown
-    pass
 
 app = FastAPI(
     title="Eternal Beam Video API",
@@ -85,7 +86,14 @@ app.include_router(compose.router, prefix="/api", tags=["compose"])
 app.include_router(assets.router, prefix="/api", tags=["assets"])
 app.include_router(preview.router, prefix="/api", tags=["preview"])
 app.include_router(content.router, prefix="/api", tags=["content"])
-app.include_router(generate.router, prefix="/api", tags=["generate"])
+app.include_router(pet_v1.router, prefix="/api", tags=["pet-v1"])
+app.include_router(device_v1.router, prefix="/api", tags=["device-v1"])
+
+# Optional heavy pipeline endpoints (Luma/generate). Disable by default on lightweight deployments.
+_enable_generate = os.getenv("ENABLE_GENERATE_API", "0").strip().lower() in ("1", "true", "yes")
+if _enable_generate:
+    from .routers import generate
+    app.include_router(generate.router, prefix="/api", tags=["generate"])
 
 # 프리뷰 출력 디렉토리 (main.py와 같은 위치 기준)
 _output_dir = os.path.join(os.path.dirname(__file__), "..", "outputs")

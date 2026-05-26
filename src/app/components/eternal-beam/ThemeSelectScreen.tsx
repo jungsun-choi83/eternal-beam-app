@@ -74,7 +74,11 @@ export function ThemeSelectScreen({ onNavigate }: ThemeSelectScreenProps) {
     setSelectedTheme(themeId)
   }
 
-  const handleVoiceComplete = async (blob: Blob) => {
+  const handleVoiceComplete = async (blob: Blob | null) => {
+    if (!blob) {
+      setShowVoiceRecord(false)
+      return
+    }
     setIsMixing(true)
     setShowVoiceRecord(false)
 

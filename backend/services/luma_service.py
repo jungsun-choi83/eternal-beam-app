@@ -103,6 +103,7 @@ async def create_generation(
     prompt: str = "A cute dog sitting calmly, gentle breathing, subtle movement, natural pose, cinematic lighting",
     model: str = "ray-2",
     resolution: str = "720p",
+    callback_url: Optional[str] = None,
 ) -> str:
     """
     Luma Dream Machine Image-to-Video 생성 요청.
@@ -112,9 +113,10 @@ async def create_generation(
         prompt: 모션 설명
         model: ray-2 | ray-flash-2
         resolution: 540p | 720p | 1080p | 4k
+        callback_url: 완료 시 Luma가 POST 하는 웹훅 URL (선택)
 
     Returns:
-        generation_id (폴링용)
+        generation_id (폴링·웹훅 매핑용)
     """
     key = (os.getenv("LUMA_API_KEY") or "").strip()
     if not key:
@@ -133,6 +135,8 @@ async def create_generation(
             }
         },
     }
+    if callback_url:
+        payload["callback_url"] = callback_url
 
     def _post():
         r = requests.post(

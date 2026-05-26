@@ -1,10 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { memorialLang, memorialT } from "@/components/memorial/memorial-i18n";
 import { motion, AnimatePresence } from "framer-motion";
 import { Plus, Globe, ChevronDown, Check, Settings, Grid3X3 } from "lucide-react";
 import { HolographicBackground } from "./holographic-background";
 import { HologramEffects } from "./hologram-effects";
+import { memorialLang, memorialT } from "@/components/memorial/memorial-i18n";
 
 interface HomeScreenProps {
   cutoutImage: string | null;
@@ -24,56 +26,31 @@ const languages = [
   { code: "ja", name: "Japanese", native: "日本語" },
 ];
 
-const translations = {
-  en: {
-    subtitle: "Holographic Memorial",
-    addMedia: "Add Media",
-    photoOrVideo: "Photo or Video",
-    saveToMemory: "Save to Memory",
-    welcome: "Welcome",
-  },
-  ko: {
-    subtitle: "홀로그램 메모리얼",
-    addMedia: "미디어 추가",
-    photoOrVideo: "사진 또는 동영상",
-    saveToMemory: "메모리에 저장",
-    welcome: "환영합니다",
-  },
-  zh: {
-    subtitle: "全息纪念",
-    addMedia: "添加媒体",
-    photoOrVideo: "照片或视频",
-    saveToMemory: "保存到记忆",
-    welcome: "欢迎",
-  },
-  ja: {
-    subtitle: "ホログラムメモリアル",
-    addMedia: "メディア追加",
-    photoOrVideo: "写真または動画",
-    saveToMemory: "メモリーに保存",
-    welcome: "ようこそ",
-  },
-};
-
 export function HomeScreen({
   cutoutImage,
   userName,
-  language = "en",
+  language = "ko",
   onLanguageChange,
   onUploadPhoto,
   onGallery,
   onSettings,
   onSaveToNFC,
 }: HomeScreenProps) {
-  const [selectedLanguage, setSelectedLanguage] = useState(language);
+  const lang = memorialLang(language);
+  const texts = memorialT(language).home;
+  const [selectedLanguage, setSelectedLanguage] = useState(lang);
   const [showLanguageMenu, setShowLanguageMenu] = useState(false);
 
-  const currentLang = languages.find(l => l.code === selectedLanguage) || languages[0];
-  const texts = translations[selectedLanguage as keyof typeof translations] || translations.en;
+  useEffect(() => {
+    setSelectedLanguage(memorialLang(language));
+  }, [language]);
+
+  const currentLang = languages.find((l) => l.code === selectedLanguage) || languages[0];
 
   const handleLanguageSelect = (code: string) => {
-    setSelectedLanguage(code);
-    onLanguageChange?.(code);
+    const next = memorialLang(code);
+    setSelectedLanguage(next);
+    onLanguageChange?.(next);
     setShowLanguageMenu(false);
   };
 

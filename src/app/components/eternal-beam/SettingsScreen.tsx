@@ -1,9 +1,38 @@
-import { ArrowRight, User, Globe, Bell, Shield, FileText, HelpCircle, LogOut, Trash2, ChevronRight, Mail, MessageSquare, CreditCard } from 'lucide-react';
-import { useLanguage } from '../../contexts/LanguageContext';
-import { useState } from 'react';
+import {
+  ArrowRight,
+  User,
+  Globe,
+  Bell,
+  Shield,
+  FileText,
+  HelpCircle,
+  LogOut,
+  Trash2,
+  ChevronRight,
+  Mail,
+  MessageSquare,
+  CreditCard,
+} from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
+import { useLanguage } from '../../contexts/LanguageContext'
+import { useState } from 'react'
 
 interface SettingsScreenProps {
-  onNavigate?: (screen: string) => void;
+  onNavigate?: (screen: string) => void
+}
+
+type SettingsRowBase = { icon: LucideIcon; label: string; action?: () => void }
+type SettingsRowValue = SettingsRowBase & { value: string }
+type SettingsRowToggle = SettingsRowBase & { toggle: true; value: boolean }
+type SettingsRowNav = SettingsRowBase
+type SettingsRow = SettingsRowValue | SettingsRowToggle | SettingsRowNav
+
+function isToggleRow(item: SettingsRow): item is SettingsRowToggle {
+  return 'toggle' in item && item.toggle === true
+}
+
+function isStringValueRow(item: SettingsRow): item is SettingsRowValue {
+  return 'value' in item && typeof item.value === 'string'
 }
 
 export function SettingsScreen({ onNavigate }: SettingsScreenProps) {
@@ -14,7 +43,7 @@ export function SettingsScreen({ onNavigate }: SettingsScreenProps) {
   const planLabel = language === 'ko' ? '베이직 플랜' : language === 'en' ? 'Basic Plan' : '基础版';
   const langLabel = language === 'ko' ? '한국어' : language === 'en' ? 'English' : '中文';
 
-  const settingsSections = [
+  const settingsSections: { title: string; items: SettingsRow[] }[] = [
     {
       title: t('settings.account'),
       items: [
@@ -191,14 +220,14 @@ export function SettingsScreen({ onNavigate }: SettingsScreenProps) {
                       <h4 className="font-semibold" style={{ color: '#2d3748' }}>
                         {item.label}
                       </h4>
-                      {item.value !== undefined && !item.toggle && (
+                      {isStringValueRow(item) && (
                         <p className="text-xs mt-1" style={{ color: '#718096' }}>
                           {item.value}
                         </p>
                       )}
                     </div>
 
-                    {item.toggle !== undefined ? (
+                    {isToggleRow(item) ? (
                       <div
                         role="switch"
                         tabIndex={0}

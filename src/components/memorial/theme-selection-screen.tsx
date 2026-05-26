@@ -2,12 +2,16 @@
 
 import { useState, useRef, useEffect } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, Lock, Sparkles, Mic, Square, Play, Pause, Trash2, ChevronDown, ChevronUp } from "lucide-react";
+import { ArrowLeft, ArrowRight, Lock, Sparkles, Mic, Square, Play, Pause, Trash2, ChevronDown, ChevronUp } from "lucide-react";
 import { mixAudioFiles } from "@/app/services/audioMixer";
+import { memorialT, themeDisplayName } from "@/components/memorial/memorial-i18n";
+import { memorialThemes, type MemorialTheme } from "@/components/memorial/themes";
+import { ThemeBackgroundVideo } from "@/components/memorial/theme-background-video";
 
 interface ThemeSelectionScreenProps {
   cutoutImage: string | null;
   selectedTheme: number | null;
+  language?: string;
   onSelectTheme: (themeId: number) => void;
   onSelectPremiumTheme: (themeId: number) => void;
   onContinue: () => void;
@@ -15,25 +19,21 @@ interface ThemeSelectionScreenProps {
   onBack: () => void;
 }
 
-const themes = [
-  { id: 1, name: "Celestial", gradient: "from-indigo-900 via-purple-900 to-black", accent: "#8b5cf6", premium: false, price: "", thumb: "/theme-thumbs/celestial.jpg" },
-  { id: 2, name: "Golden Meadow", gradient: "from-amber-900 via-yellow-900 to-black", accent: "#f59e0b", premium: false, price: "", thumb: "/theme-thumbs/golden_meadow.jpg" },
-  { id: 3, name: "Starlight", gradient: "from-slate-900 via-zinc-800 to-black", accent: "#e4e4e7", premium: false, price: "", thumb: "/theme-thumbs/starlight.jpg" },
-  { id: 4, name: "Aurora", gradient: "from-emerald-900 via-teal-900 to-black", accent: "#10b981", premium: true, price: "$2.99", thumb: "/theme-thumbs/aurora.jpg" },
-  { id: 5, name: "Sunset", gradient: "from-rose-900 via-orange-900 to-black", accent: "#f43f5e", premium: true, price: "$2.99", thumb: "/theme-thumbs/sunset.jpg" },
-  { id: 6, name: "Ocean Deep", gradient: "from-blue-900 via-cyan-900 to-black", accent: "#06b6d4", premium: true, price: "$2.99", thumb: "/theme-thumbs/ocean_deep.jpg" },
-];
+const themes = memorialThemes;
 
 export function ThemeSelectionScreen({ 
   cutoutImage,
-  selectedTheme, 
+  selectedTheme,
+  language = "ko",
   onSelectTheme, 
   onSelectPremiumTheme,
   onContinue, 
   onSkip,
   onBack 
 }: ThemeSelectionScreenProps) {
+  const tc = memorialT(language).theme;
   const currentTheme = themes.find(t => t.id === selectedTheme);
+  const themeLabel = (th: MemorialTheme) => themeDisplayName(language === "ko" ? "ko" : "en", th);
 
   /* 음성 녹음 — 하드웨어(블루투스) 재생용 mixed_audio 저장 */
   const [showVoiceSection, setShowVoiceSection] = useState(false);
@@ -46,6 +46,10 @@ export function ThemeSelectionScreen({
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const carouselRef = useRef<HTMLDivElement | null>(null);
+  const draggingRef = useRef(false);
+  const dragStartXRef = useRef(0);
+  const dragStartScrollLeftRef = useRef(0);
 
   useEffect(() => {
     return () => {
@@ -53,6 +57,18 @@ export function ThemeSelectionScreen({
       if (audioPreviewUrl) URL.revokeObjectURL(audioPreviewUrl);
     };
   }, [audioPreviewUrl]);
+
+  useEffect(() => {
+    const el = carouselRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (Math.abs(e.deltaY) <= Math.abs(e.deltaX)) return;
+      el.scrollLeft += e.deltaY;
+      e.preventDefault();
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
 
   const startRecording = async () => {
     try {
@@ -72,7 +88,7 @@ export function ThemeSelectionScreen({
       setRecordingTime(0);
       timerRef.current = setInterval(() => setRecordingTime((s) => Math.min(s + 1, 60)), 1000);
     } catch {
-      alert("마이크 권한이 필요합니다.");
+      alert(tc.micPermission);
     }
   };
 
@@ -127,7 +143,13 @@ export function ThemeSelectionScreen({
     onContinue();
   };
 
-  const handleThemeClick = (theme: typeof themes[0]) => {
+  const handleThemeClick = (theme: MemorialTheme) => {
+    try {
+      localStorage.setItem("eternal_beam_theme_key", theme.themeKey);
+      localStorage.setItem("eternal_beam_theme_id", String(theme.id));
+    } catch {
+      /* ignore */
+    }
     if (theme.premium) {
       onSelectPremiumTheme(theme.id);
     } else {
@@ -135,8 +157,39 @@ export function ThemeSelectionScreen({
     }
   };
 
+  const onCarouselPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    const el = carouselRef.current;
+    if (!el) return;
+    draggingRef.current = true;
+    dragStartXRef.current = e.clientX;
+    dragStartScrollLeftRef.current = el.scrollLeft;
+    el.setPointerCapture(e.pointerId);
+  };
+
+  const onCarouselPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const el = carouselRef.current;
+    if (!el || !draggingRef.current) return;
+    const dx = e.clientX - dragStartXRef.current;
+    el.scrollLeft = dragStartScrollLeftRef.current - dx;
+  };
+
+  const onCarouselPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const el = carouselRef.current;
+    draggingRef.current = false;
+    if (el?.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+  };
+
+  const scrollCarouselByCards = (direction: -1 | 1) => {
+    const el = carouselRef.current;
+    if (!el) return;
+    const cardStep = Math.max(160, Math.round(el.clientWidth * 0.72));
+    el.scrollBy({ left: direction * cardStep, behavior: "smooth" });
+  };
+
   return (
-    <div className="h-full flex flex-col bg-[#0a0a0a]">
+    <div className="flex h-full flex-col overflow-hidden bg-[#0a0a0a]">
+      {/* 스크롤은 테마 줄 옆이 아니라 화면 전체 한 줄로만 (중첩 세로 스크롤바 방지) */}
+      <div className="hide-scrollbar min-h-0 flex-1 overflow-y-auto">
       {/* Header */}
       <header className="px-6 pt-14 pb-4 flex items-center relative">
         <motion.button
@@ -163,12 +216,18 @@ export function ThemeSelectionScreen({
           style={{ color: "#F1E5D1" }}
         >
           {/* Bloom effect */}
-          <span className="absolute inset-0 blur-[8px] opacity-30" style={{ color: "#F1E5D1" }}>Theme</span>
-          <span className="relative">Theme</span>
+          <span className="absolute inset-0 blur-[8px] opacity-30" style={{ color: "#F1E5D1" }}>{tc.title}</span>
+          <span className="relative">{tc.title}</span>
         </motion.h1>
 
         <div className="w-10" />
       </header>
+
+      {!cutoutImage ? (
+        <div className="mx-6 mb-2 px-4 py-3 rounded-xl text-[11px] leading-relaxed" style={{ background: "rgba(120, 80, 20, 0.25)", color: "#e8c97a", border: "1px solid rgba(201,162,39,0.35)" }}>
+          {tc.cutoutMissing}
+        </div>
+      ) : null}
 
       {/* Preview Area */}
       <div className="px-8 py-6">
@@ -185,61 +244,50 @@ export function ThemeSelectionScreen({
           <div className="absolute top-4 bottom-4 left-0 w-px bg-gradient-to-b from-white/20 via-white/15 to-transparent" />
           
           {currentTheme && (
-            <div className={`absolute inset-0 bg-gradient-to-b ${currentTheme.gradient} opacity-80`} />
+            <>
+              {currentTheme.bgVideo ? (
+                <ThemeBackgroundVideo
+                  src={currentTheme.bgVideo}
+                  poster={currentTheme.thumb}
+                />
+              ) : (
+                <div
+                  className="absolute inset-0 bg-center bg-cover"
+                  style={{ backgroundImage: `url(${currentTheme.thumb})` }}
+                />
+              )}
+              <div className={`absolute inset-0 bg-gradient-to-b ${currentTheme.gradient} opacity-30`} />
+            </>
           )}
-          
           {currentTheme && (
-            <motion.div
-              className="absolute inset-0"
+            <div
+              className="absolute inset-0 pointer-events-none opacity-40"
               style={{
                 background: `radial-gradient(circle at center, ${currentTheme.accent}20 0%, transparent 60%)`,
               }}
-              animate={{ opacity: [0.3, 0.6, 0.3] }}
-              transition={{ duration: 3, repeat: Infinity }}
             />
           )}
 
-          <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <div className="absolute inset-0 flex flex-col items-center justify-center p-4">
             {cutoutImage ? (
-              <motion.div
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                className="relative w-24 h-24 rounded-full overflow-hidden"
+              <motion.img
+                key={cutoutImage}
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                src={cutoutImage}
+                alt="Subject"
+                className="max-h-[55%] max-w-[85%] object-contain drop-shadow-2xl"
                 style={{
-                  boxShadow: currentTheme 
-                    ? `0 0 40px ${currentTheme.accent}40, 0 0 80px ${currentTheme.accent}20`
-                    : "0 0 40px rgba(201, 162, 39, 0.2)",
+                  filter: currentTheme
+                    ? `drop-shadow(0 0 24px ${currentTheme.accent}80)`
+                    : "drop-shadow(0 0 20px rgba(201,162,39,0.35))",
                 }}
-              >
-                <img src={cutoutImage} alt="Subject" className="w-full h-full object-cover" />
-              </motion.div>
+              />
             ) : (
-              <p className="text-sm font-light text-center" style={{ color: "#E2E2E2" }}>Subject</p>
+              <p className="text-sm font-light text-center" style={{ color: "#E2E2E2" }}>{tc.subject}</p>
             )}
           </div>
 
-          {/* Hologram Effect Lines */}
-          <div className="absolute inset-0 opacity-20 pointer-events-none">
-            {[...Array(8)].map((_, i) => (
-              <motion.div
-                key={i}
-                className="absolute left-0 right-0 h-[1px]"
-                style={{
-                  top: `${12 + i * 12}%`,
-                  background: "linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent)",
-                }}
-                animate={{
-                  opacity: [0.1, 0.4, 0.1],
-                  scaleX: [0.8, 1, 0.8],
-                }}
-                transition={{
-                  duration: 2,
-                  delay: i * 0.2,
-                  repeat: Infinity,
-                }}
-              />
-            ))}
-          </div>
         </motion.div>
       </div>
 
@@ -341,25 +389,62 @@ export function ThemeSelectionScreen({
                 )}
               </div>
               <p className="text-[11px] font-light" style={{ color: "#A1A1A6" }}>
-                녹음한 목소리는 기기에서 재생됩니다 (최대 60초)
+                {tc.voiceHint}
               </p>
             </div>
           </motion.div>
         )}
       </div>
 
-      {/* Theme Grid */}
-      <div className="flex-1 px-6 overflow-auto">
+      {/* Theme Carousel (Swipe) */}
+      <div className="px-6 pb-2">
         <p 
           className="text-[11px] uppercase font-light mb-4 px-2 relative"
           style={{ color: "#E2E2E2", letterSpacing: "0.2em" }}
         >
           {/* Bloom effect */}
-          <span className="absolute inset-0 blur-[4px] opacity-30">Select Environment</span>
-          <span className="relative">Select Environment</span>
+          <span className="absolute inset-0 blur-[4px] opacity-30">{tc.subtitle}</span>
+          <span className="relative">{tc.subtitle}</span>
         </p>
         
-        <div className="grid grid-cols-3 gap-3">
+        <div className="relative">
+          <button
+            type="button"
+            aria-label={tc.prevTheme}
+            onClick={() => scrollCarouselByCards(-1)}
+            className="absolute left-1 top-1/2 z-10 -translate-y-1/2 rounded-full p-2"
+            style={{
+              background: "rgba(255,255,255,0.18)",
+              backdropFilter: "blur(6px)",
+              border: "1px solid rgba(255,255,255,0.35)",
+            }}
+          >
+            <ArrowLeft className="h-4 w-4 text-white" />
+          </button>
+
+          <button
+            type="button"
+            aria-label={tc.nextTheme}
+            onClick={() => scrollCarouselByCards(1)}
+            className="absolute right-1 top-1/2 z-10 -translate-y-1/2 rounded-full p-2"
+            style={{
+              background: "rgba(255,255,255,0.18)",
+              backdropFilter: "blur(6px)",
+              border: "1px solid rgba(255,255,255,0.35)",
+            }}
+          >
+            <ArrowRight className="h-4 w-4 text-white" />
+          </button>
+
+          <div
+            ref={carouselRef}
+            className="hide-scrollbar flex snap-x snap-proximity gap-4 overflow-x-auto overflow-y-hidden px-9 pb-2 cursor-grab active:cursor-grabbing [scroll-behavior:smooth] [-webkit-overflow-scrolling:touch] [overscroll-behavior-x:contain]"
+            style={{ touchAction: "pan-x" }}
+            onPointerDown={onCarouselPointerDown}
+            onPointerMove={onCarouselPointerMove}
+            onPointerUp={onCarouselPointerUp}
+            onPointerCancel={onCarouselPointerUp}
+          >
           {themes.map((theme, index) => (
             <motion.button
               key={theme.id}
@@ -367,7 +452,7 @@ export function ThemeSelectionScreen({
               animate={{ opacity: 1, scale: 1 }}
               transition={{ delay: 0.2 + index * 0.05 }}
               onClick={() => handleThemeClick(theme)}
-              className={`relative aspect-[3/4] rounded-2xl overflow-hidden transition-all duration-300 ${
+              className={`relative aspect-[3/4] w-[42vw] min-w-[140px] max-w-[220px] shrink-0 snap-center rounded-2xl overflow-hidden transition-all duration-300 ${
                 selectedTheme === theme.id 
                   ? "ring-2 ring-[#c9a227] ring-offset-2 ring-offset-[#0a0a0a]" 
                   : ""
@@ -375,8 +460,7 @@ export function ThemeSelectionScreen({
               style={{
                 background: "rgba(28, 28, 30, 0.6)",
               }}
-              whileHover={{ scale: 1.03, y: -2 }}
-              whileTap={{ scale: 0.97 }}
+              whileTap={{ scale: 0.98 }}
             >
               {/* Glass Border */}
               <div className="absolute top-0 left-2 right-2 h-px bg-gradient-to-r from-white/15 via-white/10 to-transparent" />
@@ -441,12 +525,17 @@ export function ThemeSelectionScreen({
                   className="text-[9px] font-light"
                   style={{ color: "#F1E5D1", letterSpacing: "0.05em" }}
                 >
-                  {theme.name}
+                  {themeLabel(theme)}
                 </span>
               </div>
             </motion.button>
           ))}
+          </div>
         </div>
+        <p className="mt-2 px-1 text-[10px] font-light" style={{ color: "#A1A1A6" }}>
+          {tc.swipeHint}
+        </p>
+      </div>
       </div>
 
       {/* Actions */}
@@ -482,7 +571,7 @@ export function ThemeSelectionScreen({
           {selectedTheme && (
             <div className="absolute top-0 left-8 right-8 h-px bg-gradient-to-r from-transparent via-white/40 to-transparent" />
           )}
-          Preview
+          {selectedTheme ? tc.continue : tc.selectFirst}
         </motion.button>
 
         <motion.button
@@ -497,11 +586,22 @@ export function ThemeSelectionScreen({
             style={{ color: "#E2E2E2" }}
           >
             {/* Bloom effect */}
-            <span className="absolute inset-0 blur-[4px] opacity-30">Skip theme selection</span>
-            <span className="relative">Skip theme selection</span>
+            <span className="absolute inset-0 blur-[4px] opacity-30">{tc.skip}</span>
+            <span className="relative">{tc.skip}</span>
           </span>
         </motion.button>
       </div>
+      <style>{`
+        .hide-scrollbar {
+          -ms-overflow-style: none;
+          scrollbar-width: none;
+        }
+        .hide-scrollbar::-webkit-scrollbar {
+          display: none;
+          width: 0;
+          height: 0;
+        }
+      `}</style>
     </div>
   );
 }

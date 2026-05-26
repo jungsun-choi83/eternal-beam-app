@@ -1,0 +1,11 @@
+EternalBeam/**
+backend/**
+python/**
+pi/**
+outputs/**
+scripts/**
+reference/**
+docs/**
+supabase/**
+*.mp4
+*.zip

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { createDisplayImageUrl } from '@/lib/display-image'
 import { AnimatePresence, motion } from 'framer-motion'
 import { MobileFrame } from '@/components/memorial/mobile-frame'
 import { OnboardingScreen } from '@/components/memorial/onboarding-screen'
@@ -17,6 +18,7 @@ import { PreviewScreen } from '@/components/memorial/preview-screen'
 import { NFCPlaybackScreen } from '@/components/memorial/nfc-playback-screen'
 import { DeviceScreen } from '@/components/memorial/device-screen'
 import { SettingsScreen } from '@/components/memorial/settings-screen'
+import { memorialT } from '@/components/memorial/memorial-i18n'
 
 type Screen =
   | 'onboarding'
@@ -44,24 +46,29 @@ const themes = [
 ]
 
 const pageVariants = {
-  initial: { opacity: 0, y: 20 },
-  animate: { opacity: 1, y: 0 },
-  exit: { opacity: 0, y: -20 },
+  initial: { opacity: 0 },
+  animate: { opacity: 1 },
+  exit: { opacity: 0 },
 }
 
 const pageTransition = {
-  duration: 0.4,
-  ease: [0.25, 0.46, 0.45, 0.94],
+  duration: 0.15,
+  ease: 'easeOut' as const,
 }
 
+const filmSkipOnboarding =
+  import.meta.env.VITE_FILM_SKIP_ONBOARDING === '1'
+
 export function EternalBeamApp() {
-  const [screen, setScreen] = useState<Screen>('onboarding')
+  const [screen, setScreen] = useState<Screen>(
+    filmSkipOnboarding ? 'home' : 'onboarding'
+  )
   const [uploadedImage, setUploadedImage] = useState<string | null>(null)
   const [cutoutImage, setCutoutImage] = useState<string | null>(null)
   const [selectedTheme, setSelectedTheme] = useState<number | null>(null)
   const [pendingPremiumTheme, setPendingPremiumTheme] = useState<number | null>(null)
   const [previewSettings, setPreviewSettings] = useState({ scale: 1, posX: 0, posY: 0 })
-  const [language, setLanguage] = useState('en')
+  const [language, setLanguage] = useState('ko')
   const [userName, setUserName] = useState<string | null>(null)
   const [, setIsFirstTime] = useState(true)
 
@@ -82,12 +89,13 @@ export function EternalBeamApp() {
       if (!file) return
       const isImage = file.type.startsWith('image/')
       const isVideo = file.type.startsWith('video/')
+      const alerts = memorialT(language).alerts
       if (!isImage && !isVideo) {
-        alert('이미지(JPG, PNG) 또는 동영상(MP4, WebM) 파일만 업로드 가능합니다.')
+        alert(alerts.fileType)
         return
       }
       if (isVideo && file.size > 100 * 1024 * 1024) {
-        alert('동영상은 100MB 이하로 선택해주세요.')
+        alert(alerts.videoSize)
         return
       }
 
@@ -102,7 +110,7 @@ export function EternalBeamApp() {
           setUploadedImage(result)
           localStorage.setItem('eternal_beam_main_photo', result)
           localStorage.removeItem('eternal_beam_main_video_url')
-          navigateTo('aiProcessing')
+          navigateTo('photoUpload')
         }
         reader.readAsDataURL(file)
       } else {
@@ -116,8 +124,9 @@ export function EternalBeamApp() {
     input.click()
   }
 
-  const handleAIProcessingComplete = (cutoutUrl: string) => {
-    setCutoutImage(cutoutUrl)
+  const handleAIProcessingComplete = async (cutoutUrl: string) => {
+    const thumb = await createDisplayImageUrl(cutoutUrl, 512)
+    setCutoutImage(thumb)
     navigateTo('themeSelection')
   }
 
@@ -179,22 +188,16 @@ export function EternalBeamApp() {
 
   return (
     <main className="min-h-screen bg-[#0a0a0a] flex items-center justify-center p-4 overflow-hidden">
-      {/* Premium Ambient Background */}
-      <div className="fixed inset-0 pointer-events-none overflow-hidden">
-        <motion.div
-          className="absolute top-1/3 left-1/3 w-[600px] h-[600px] rounded-full"
-          style={{
-            background:
-              'radial-gradient(circle, rgba(201, 162, 39, 0.06) 0%, transparent 70%)',
-            filter: 'blur(100px)',
-          }}
-          animate={{ scale: [1, 1.2, 1], opacity: [0.3, 0.5, 0.3] }}
-          transition={{ duration: 8, repeat: Infinity, ease: 'easeInOut' }}
-        />
-      </div>
+      <div
+        className="fixed inset-0 pointer-events-none overflow-hidden"
+        style={{
+          background:
+            'radial-gradient(circle at 35% 40%, rgba(201, 162, 39, 0.05) 0%, transparent 55%)',
+        }}
+      />
 
       <MobileFrame>
-        <AnimatePresence mode="wait">
+        <AnimatePresence mode="sync" initial={false}>
           {screen === 'onboarding' && (
             <motion.div
               key="onboarding"
@@ -222,7 +225,7 @@ export function EternalBeamApp() {
             >
               <AuthScreen
                 initialMode="signup"
-                onAuthComplete={(name) => {
+                onAuthComplete={(name?: string) => {
                   if (name) setUserName(name)
                   navigateTo('qrConnection')
                 }}
@@ -242,7 +245,7 @@ export function EternalBeamApp() {
             >
               <AuthScreen
                 initialMode="login"
-                onAuthComplete={(name) => {
+                onAuthComplete={(name?: string) => {
                   if (name) setUserName(name)
                   navigateTo('home')
                 }}
@@ -304,7 +307,7 @@ export function EternalBeamApp() {
               className="h-full"
             >
               <GalleryScreen
-                onSelectItem={(id) => console.log('Selected item', id)}
+                onSelectItem={(id: number) => console.log('Selected item', id)}
                 onAddNew={() => navigateTo('photoUpload')}
                 onBack={() => navigateTo('home')}
               />
@@ -323,6 +326,7 @@ export function EternalBeamApp() {
             >
               <PhotoUploadScreen
                 uploadedImage={uploadedImage}
+                language={language}
                 onImageUpload={handleImageUpload}
                 onContinue={() => navigateTo('aiProcessing')}
                 onBack={() => navigateTo('home')}
@@ -342,6 +346,7 @@ export function EternalBeamApp() {
             >
               <AIProcessingScreen
                 uploadedImage={uploadedImage}
+                language={language}
                 onComplete={handleAIProcessingComplete}
               />
             </motion.div>
@@ -360,6 +365,7 @@ export function EternalBeamApp() {
               <ThemeSelectionScreen
                 cutoutImage={cutoutImage}
                 selectedTheme={selectedTheme}
+                language={language}
                 onSelectTheme={handleThemeSelect}
                 onSelectPremiumTheme={handlePremiumThemeSelect}
                 onContinue={() => navigateTo('preview')}
@@ -380,6 +386,7 @@ export function EternalBeamApp() {
               className="h-full"
             >
               <PaymentScreen
+                language={language}
                 selectedTheme={getPendingThemeInfo()}
                 onComplete={handlePaymentComplete}
                 onSkip={handlePaymentSkip}
@@ -401,6 +408,7 @@ export function EternalBeamApp() {
               <PreviewScreen
                 cutoutImage={cutoutImage}
                 selectedTheme={selectedTheme}
+                language={language}
                 settings={previewSettings}
                 onSettingsChange={handlePreviewSettingsChange}
                 onComplete={() => navigateTo('nfcPlayback')}
@@ -420,6 +428,7 @@ export function EternalBeamApp() {
               className="h-full"
             >
               <NFCPlaybackScreen
+                language={language}
                 onComplete={handleReset}
                 onBack={() => navigateTo('preview')}
               />
@@ -455,7 +464,9 @@ export function EternalBeamApp() {
             >
               <SettingsScreen
                 currentLanguage={language}
-                onChangeLanguage={() => {}}
+                onChangeLanguage={() =>
+                  setLanguage((l) => (l === 'ko' ? 'en' : 'ko'))
+                }
                 onDeviceSettings={() => navigateTo('device')}
                 onBack={() => navigateTo('home')}
                 onLogout={handleLogout}

@@ -12,6 +12,7 @@
     "video-api": "python -m uvicorn backend.main:app --reload --port 8000"
   },
   "dependencies": {
+    "@imgly/background-removal": "^1.7.0",
     "@firebase/auth": "^1.12.0",
     "@firebase/firestore": "^4.11.0",
     "@react-three/drei": "^9.105.0",

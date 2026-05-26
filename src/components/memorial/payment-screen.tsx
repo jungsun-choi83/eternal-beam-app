@@ -3,8 +3,10 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { ArrowLeft, Check, Sparkles, X } from "lucide-react";
+import { memorialT } from "@/components/memorial/memorial-i18n";
 
 interface PaymentScreenProps {
+  language?: string;
   selectedTheme: {
     id: number;
     name: string;
@@ -15,12 +17,14 @@ interface PaymentScreenProps {
   onBack: () => void;
 }
 
-export function PaymentScreen({ 
-  selectedTheme, 
-  onComplete, 
-  onSkip, 
-  onBack 
+export function PaymentScreen({
+  language = "ko",
+  selectedTheme,
+  onComplete,
+  onSkip,
+  onBack,
 }: PaymentScreenProps) {
+  const pay = memorialT(language).payment;
   const [isProcessing, setIsProcessing] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<"card" | "apple" | null>(null);
 
@@ -58,7 +62,7 @@ export function PaymentScreen({
           className="text-xl font-light absolute left-1/2 -translate-x-1/2 text-center"
           style={{ color: "#F5F5F7" }}
         >
-          Premium Theme
+          {pay.title}
         </motion.h1>
 
         <motion.button
@@ -113,7 +117,7 @@ export function PaymentScreen({
                 {selectedTheme.name}
               </h3>
               <p className="text-sm font-light" style={{ color: "#A1A1A6" }}>
-                Premium Environment
+                {pay.premiumEnv}
               </p>
             </div>
           </div>
@@ -151,7 +155,7 @@ export function PaymentScreen({
             {selectedTheme.price}
           </span>
           <p className="text-sm font-light mt-2" style={{ color: "#A1A1A6" }}>
-            One-time purchase
+            {pay.oneTime}
           </p>
         </motion.div>
       </div>
@@ -187,10 +191,10 @@ export function PaymentScreen({
               </div>
               <div className="text-center">
                 <p className="text-sm font-light" style={{ color: "#F5F5F7" }}>
-                  Credit / Debit Card
+                  {pay.card}
                 </p>
                 <p className="text-xs font-light" style={{ color: "#A1A1A6" }}>
-                  Visa, Mastercard, AMEX
+                  {pay.cardBrands}
                 </p>
               </div>
             </div>
@@ -227,10 +231,10 @@ export function PaymentScreen({
               </div>
               <div className="text-center">
                 <p className="text-sm font-light" style={{ color: "#F5F5F7" }}>
-                  Apple Pay
+                  {pay.applePay}
                 </p>
                 <p className="text-xs font-light" style={{ color: "#A1A1A6" }}>
-                  Fast & Secure
+                  {pay.appleHint}
                 </p>
               </div>
             </div>
@@ -277,10 +281,10 @@ export function PaymentScreen({
                 animate={{ rotate: 360 }}
                 transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
               />
-              <span>Processing...</span>
+              <span>{pay.processing}</span>
             </>
           ) : (
-            <span>Purchase {selectedTheme.price}</span>
+            <span>{pay.purchase(selectedTheme.price)}</span>
           )}
         </motion.button>
 
@@ -295,7 +299,7 @@ export function PaymentScreen({
             className="text-sm font-light"
             style={{ color: "#A1A1A6", letterSpacing: "0.05em" }}
           >
-            Skip for now
+            {pay.skipForNow}
           </span>
         </motion.button>
       </div>

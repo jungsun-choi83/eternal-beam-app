@@ -8,33 +8,29 @@ import {
   type StoredPipeline,
 } from "@/components/memorial/ai-processing-screen";
 import { generatePreview, getVideoApiBaseUrl } from "@/app/services/videoProcessingApi";
+import { memorialT } from "@/components/memorial/memorial-i18n";
+import { getMemorialTheme } from "@/components/memorial/themes";
+import { ThemeBackgroundVideo } from "@/components/memorial/theme-background-video";
 
 interface PreviewScreenProps {
   cutoutImage: string | null;
   selectedTheme: number | null;
+  language?: string;
   settings: { scale: number; posX: number; posY: number };
   onSettingsChange: (settings: { scale: number; posX: number; posY: number }) => void;
   onComplete: () => void;
   onBack: () => void;
 }
 
-const themes = [
-  { id: 1, name: "Celestial", gradient: "from-indigo-900 via-purple-900 to-black", accent: "#8b5cf6" },
-  { id: 2, name: "Golden Meadow", gradient: "from-amber-900 via-yellow-900 to-black", accent: "#f59e0b" },
-  { id: 3, name: "Starlight", gradient: "from-slate-900 via-zinc-800 to-black", accent: "#e4e4e7" },
-  { id: 4, name: "Aurora", gradient: "from-emerald-900 via-teal-900 to-black", accent: "#10b981" },
-  { id: 5, name: "Sunset", gradient: "from-rose-900 via-orange-900 to-black", accent: "#f43f5e" },
-  { id: 6, name: "Ocean Deep", gradient: "from-blue-900 via-cyan-900 to-black", accent: "#06b6d4" },
-];
-
-/** Matches `backend/themes/{id}.mp4` when you add theme files (see THEMES_VIDEO_DIR). */
+/** Matches `backend/themes/{themeKey}.mp4` when you add theme files (see THEMES_VIDEO_DIR). */
 const THEME_PREVIEW_IDS: Record<number, string> = {
-  1: "celestial",
-  2: "golden_meadow",
-  3: "starlight",
-  4: "aurora",
-  5: "sunset",
-  6: "ocean_deep",
+  1: "snow_forest",
+  2: "celestial",
+  3: "golden_meadow",
+  4: "starlight",
+  5: "aurora",
+  6: "sunset",
+  7: "ocean_deep",
 };
 
 function isLikelyVideoUrl(url: string): boolean {
@@ -45,17 +41,19 @@ function isLikelyVideoUrl(url: string): boolean {
 export function PreviewScreen({
   cutoutImage,
   selectedTheme,
+  language = "ko",
   settings,
   onSettingsChange,
   onComplete,
   onBack,
 }: PreviewScreenProps) {
+  const p = memorialT(language).preview;
   const [activeSlider, setActiveSlider] = useState<string | null>(null);
   const [pipeline, setPipeline] = useState<StoredPipeline | null>(null);
   const [ffPreviewUrl, setFfPreviewUrl] = useState<string | null>(null);
   const [ffLoading, setFfLoading] = useState(false);
   const [ffError, setFfError] = useState<string | null>(null);
-  const currentTheme = themes.find(t => t.id === selectedTheme) || themes[0];
+  const currentTheme = getMemorialTheme(selectedTheme) ?? getMemorialTheme(1)!;
 
   useEffect(() => {
     try {
@@ -72,12 +70,12 @@ export function PreviewScreen({
 
   const tryFfmpegPreview = useCallback(async () => {
     if (!cutoutImage || !selectedTheme) {
-      setFfError("Cutout or theme missing.");
+      setFfError(p.cutoutMissing);
       return;
     }
     const bgId = THEME_PREVIEW_IDS[selectedTheme];
     if (!bgId) {
-      setFfError("Unknown theme for preview.");
+      setFfError(p.themeUnknown);
       return;
     }
     setFfLoading(true);
@@ -99,11 +97,11 @@ export function PreviewScreen({
         preview_url.startsWith("http") ? preview_url : `${base}${preview_url}`
       );
     } catch (e) {
-      setFfError(e instanceof Error ? e.message : "Preview failed (add theme MP4 under backend/themes?)");
+      setFfError(e instanceof Error ? e.message : p.previewFailed);
     } finally {
       setFfLoading(false);
     }
-  }, [cutoutImage, selectedTheme, settings.posX, settings.posY, settings.scale]);
+  }, [cutoutImage, selectedTheme, settings.posX, settings.posY, settings.scale, p.cutoutMissing, p.themeUnknown, p.previewFailed]);
 
   const SliderControl = ({ 
     label, 
@@ -143,7 +141,7 @@ export function PreviewScreen({
           className="text-xs font-light tabular-nums"
           style={{ color: "#c9a227" }}
         >
-          {value.toFixed(label === "Scale" ? 1 : 0)}
+          {value.toFixed(id === "scale" ? 1 : 0)}
         </span>
       </div>
       
@@ -219,7 +217,7 @@ export function PreviewScreen({
           className="text-xl font-light absolute left-1/2 -translate-x-1/2"
           style={{ color: "#F5F5F7" }}
         >
-          Adjust
+          {p.adjust}
         </motion.h1>
 
         <motion.button
@@ -250,56 +248,38 @@ export function PreviewScreen({
             boxShadow: `0 0 60px ${currentTheme.accent}08`,
           }}
         >
-          {/* Theme Background */}
-          <div className={`absolute inset-0 bg-gradient-to-b ${currentTheme.gradient}`} />
-          
-          {/* Ambient Glow */}
-          <motion.div
-            className="absolute inset-0"
-            style={{
-              background: `radial-gradient(circle at center, ${currentTheme.accent}15 0%, transparent 60%)`,
-            }}
-            animate={{ opacity: [0.3, 0.5, 0.3] }}
-            transition={{ duration: 3, repeat: Infinity }}
-          />
+          {currentTheme.bgVideo ? (
+            <ThemeBackgroundVideo
+              src={currentTheme.bgVideo}
+              poster={currentTheme.thumb}
+            />
+          ) : (
+            <div
+              className="absolute inset-0 bg-center bg-cover"
+              style={{ backgroundImage: `url(${currentTheme.thumb})` }}
+            />
+          )}
+          <div className={`absolute inset-0 bg-gradient-to-b ${currentTheme.gradient} opacity-25`} />
 
           {/* Subject with transformations */}
           {cutoutImage && (
-            <motion.div
-              className="absolute inset-0 flex items-center justify-center"
-              animate={{
-                scale: settings.scale,
-                x: settings.posX,
-                y: settings.posY,
+            <div
+              className="absolute inset-0 flex items-center justify-center p-4"
+              style={{
+                transform: `translate(${settings.posX}px, ${settings.posY}px) scale(${settings.scale})`,
               }}
-              transition={{ type: "spring", stiffness: 200, damping: 25 }}
             >
-              <div 
-                className="relative w-28 h-28 rounded-full overflow-hidden"
+              <img
+                src={cutoutImage}
+                alt="Subject"
+                className="max-h-[60%] max-w-[90%] object-contain drop-shadow-2xl"
                 style={{
-                  boxShadow: `0 0 50px ${currentTheme.accent}50, 0 0 100px ${currentTheme.accent}25`,
+                  filter: `drop-shadow(0 0 24px ${currentTheme.accent}80)`,
                 }}
-              >
-                <img src={cutoutImage} alt="Subject" className="w-full h-full object-cover" />
-              </div>
-            </motion.div>
-          )}
-
-          {/* Hologram Scanlines */}
-          <div className="absolute inset-0 opacity-10 pointer-events-none overflow-hidden">
-            {[...Array(12)].map((_, i) => (
-              <motion.div
-                key={i}
-                className="absolute left-0 right-0 h-[1px]"
-                style={{
-                  top: `${8 + i * 8}%`,
-                  background: `linear-gradient(90deg, transparent, ${currentTheme.accent}, transparent)`,
-                }}
-                animate={{ opacity: [0.2, 0.6, 0.2] }}
-                transition={{ duration: 2, delay: i * 0.15, repeat: Infinity }}
+                decoding="async"
               />
-            ))}
-          </div>
+            </div>
+          )}
 
           {/* Corner Guides */}
           {["top-3 left-3", "top-3 right-3", "bottom-3 left-3", "bottom-3 right-3"].map((pos, i) => (
@@ -324,18 +304,17 @@ export function PreviewScreen({
         >
           <div className="flex items-center gap-2 text-[11px] tracking-wider" style={{ color: "#888" }}>
             <Film className="w-3.5 h-3.5" strokeWidth={1.5} />
-            <span>Pipeline (Luma → Unity background)</span>
+            <span>{p.pipelineTitle}</span>
           </div>
           <p className="text-[10px] leading-relaxed" style={{ color: "#666" }}>
-            Unity will supply the final background composite. Below: Luma outputs from the server; FFmpeg row is optional if{" "}
-            <code className="text-[9px]">backend/themes/{`{theme}`}.mp4</code> exists.
+            {p.pipelineHint}
           </p>
           {pipeline?.idle_video_url || pipeline?.action_video_url ? (
             <div className="grid grid-cols-2 gap-2">
               {pipeline.idle_video_url ? (
                 <div className="space-y-1">
                   <span className="text-[9px] uppercase tracking-wider" style={{ color: "#888" }}>
-                    Idle
+                    {p.idle}
                   </span>
                   {isLikelyVideoUrl(pipeline.idle_video_url) ? (
                     <video
@@ -358,7 +337,7 @@ export function PreviewScreen({
               {pipeline.action_video_url ? (
                 <div className="space-y-1">
                   <span className="text-[9px] uppercase tracking-wider" style={{ color: "#888" }}>
-                    Action
+                    {p.action}
                   </span>
                   {isLikelyVideoUrl(pipeline.action_video_url) ? (
                     <video
@@ -381,7 +360,7 @@ export function PreviewScreen({
             </div>
           ) : (
             <p className="text-[11px] py-2 px-3 rounded-lg" style={{ background: "#1C1C1E", color: "#888" }}>
-              No Luma URLs in session — complete AI processing with the API running.
+              {p.noLuma}
             </p>
           )}
           <div
@@ -389,7 +368,7 @@ export function PreviewScreen({
             style={{ borderColor: `${currentTheme.accent}40`, background: "rgba(0,0,0,0.35)" }}
           >
             <p className="text-[11px] font-light mb-2" style={{ color: "#A1A1A6" }}>
-              Unity layer (placeholder): background plate + subject video / cutout on device.
+              {p.unityPlaceholder}
             </p>
             <button
               type="button"
@@ -402,7 +381,7 @@ export function PreviewScreen({
                 border: "1px solid #333",
               }}
             >
-              {ffLoading ? "Generating server preview…" : "Try FFmpeg composite preview"}
+              {ffLoading ? p.ffmpegLoading : p.ffmpegTry}
             </button>
             {ffError ? (
               <p className="text-[10px] mt-2" style={{ color: "#c97a7a" }}>
@@ -430,7 +409,7 @@ export function PreviewScreen({
       >
         <SliderControl
           id="scale"
-          label="Scale"
+          label={p.scale}
           icon={Maximize2}
           value={settings.scale}
           min={0.5}
@@ -441,7 +420,7 @@ export function PreviewScreen({
 
         <SliderControl
           id="posX"
-          label="Position X"
+          label={p.posX}
           icon={Move}
           value={settings.posX}
           min={-100}
@@ -452,7 +431,7 @@ export function PreviewScreen({
 
         <SliderControl
           id="posY"
-          label="Position Y"
+          label={p.posY}
           icon={Move}
           value={settings.posY}
           min={-100}
@@ -478,7 +457,7 @@ export function PreviewScreen({
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
         >
-          Complete
+          {p.complete}
         </motion.button>
       </div>
     </div>

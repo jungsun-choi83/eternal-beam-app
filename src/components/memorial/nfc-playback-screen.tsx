@@ -1,47 +1,73 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { motion } from "framer-motion";
 import { ArrowLeft, Wifi, Check, Sparkles } from "lucide-react";
+import { writeToNFCSlot } from "@/app/services/nfcManager";
+import { mapSlotToContent } from "@/app/services/supabaseContentService";
+import { memorialT } from "@/components/memorial/memorial-i18n";
 
 interface NFCPlaybackScreenProps {
+  language?: string;
   onComplete: () => void;
   onBack: () => void;
 }
 
-const slots = [
-  { id: 1, name: "Slot 1", occupied: false },
-  { id: 2, name: "Slot 2", occupied: false },
-  { id: 3, name: "Slot 3", occupied: false },
-  { id: 4, name: "Slot 4", occupied: false },
-];
+export function NFCPlaybackScreen({ language = "ko", onComplete, onBack }: NFCPlaybackScreenProps) {
+  const n = memorialT(language).nfc;
+  const slots = useMemo(
+    () => [1, 2, 3, 4].map((id) => ({ id, name: n.slot(id), occupied: false })),
+    [language]
+  );
 
-export function NFCPlaybackScreen({ onComplete, onBack }: NFCPlaybackScreenProps) {
   const [selectedSlot, setSelectedSlot] = useState<number | null>(null);
   const [isSending, setIsSending] = useState(false);
   const [isComplete, setIsComplete] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  const handleSend = () => {
+  const handleSend = async () => {
     if (!selectedSlot) return;
-    
-    setIsSending(true);
-    setTimeout(() => {
-      setIsSending(false);
+    const contentId =
+      localStorage.getItem("eternal_beam_content_id") ||
+      localStorage.getItem("eternal_beam_current_content_id");
+    if (!contentId) {
+      setErrorMessage(n.needContentId);
+      return;
+    }
+
+    try {
+      setErrorMessage(null);
+      setIsSending(true);
+      const videoId =
+        localStorage.getItem("eternal_beam_hologram_video_id") ||
+        localStorage.getItem("eternal_beam_current_video_id") ||
+        "video_unknown";
+
+      const payloadForNfc = { content_id: contentId, slot_number: selectedSlot };
+      const result = await writeToNFCSlot(contentId, videoId, selectedSlot, payloadForNfc);
+      if (!result.success) {
+        throw new Error(result.message || n.writeFailed);
+      }
+
+      await mapSlotToContent(selectedSlot, contentId);
       setIsComplete(true);
-    }, 3000);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : n.writeFailed;
+      setErrorMessage(msg);
+    } finally {
+      setIsSending(false);
+    }
   };
 
   if (isComplete) {
     return (
       <div className="h-full flex flex-col bg-[#0a0a0a] items-center justify-center px-8">
-        {/* Success Animation */}
         <motion.div
           initial={{ scale: 0, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
           transition={{ type: "spring", stiffness: 200, damping: 15 }}
           className="relative mb-10"
         >
-          {/* Glow Ring */}
           <motion.div
             className="absolute -inset-8 rounded-full"
             style={{
@@ -50,11 +76,12 @@ export function NFCPlaybackScreen({ onComplete, onBack }: NFCPlaybackScreenProps
             animate={{ scale: [1, 1.2, 1], opacity: [0.5, 0.8, 0.5] }}
             transition={{ duration: 2, repeat: Infinity }}
           />
-          
-          <div 
+
+          <div
             className="relative w-28 h-28 rounded-full flex items-center justify-center"
             style={{
-              background: "linear-gradient(135deg, #b8860b 0%, #c9a227 30%, #d4af37 50%, #f5d77a 70%, #d4af37 100%)",
+              background:
+                "linear-gradient(135deg, #b8860b 0%, #c9a227 30%, #d4af37 50%, #f5d77a 70%, #d4af37 100%)",
               boxShadow: "0 0 60px rgba(201, 162, 39, 0.35)",
             }}
           >
@@ -69,7 +96,7 @@ export function NFCPlaybackScreen({ onComplete, onBack }: NFCPlaybackScreenProps
           className="text-2xl font-light tracking-wider mb-4"
           style={{ color: "#F5F5F7" }}
         >
-          Transfer Complete
+          {n.completeTitle}
         </motion.h2>
 
         <motion.p
@@ -79,7 +106,7 @@ export function NFCPlaybackScreen({ onComplete, onBack }: NFCPlaybackScreenProps
           className="text-sm font-light text-center mb-14 max-w-[260px]"
           style={{ color: "#A1A1A6" }}
         >
-          Your holographic memory has been saved to the device
+          {n.completeBody}
         </motion.p>
 
         <motion.button
@@ -89,14 +116,15 @@ export function NFCPlaybackScreen({ onComplete, onBack }: NFCPlaybackScreenProps
           onClick={onComplete}
           className="w-full py-4 rounded-2xl font-normal text-[15px] tracking-wider"
           style={{
-            background: "linear-gradient(135deg, #b8860b 0%, #c9a227 30%, #d4af37 50%, #f5d77a 70%, #d4af37 100%)",
+            background:
+              "linear-gradient(135deg, #b8860b 0%, #c9a227 30%, #d4af37 50%, #f5d77a 70%, #d4af37 100%)",
             boxShadow: "0 10px 40px rgba(201, 162, 39, 0.25)",
             color: "#0a0a0a",
           }}
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
         >
-          Return Home
+          {n.done}
         </motion.button>
       </div>
     );
@@ -105,9 +133,7 @@ export function NFCPlaybackScreen({ onComplete, onBack }: NFCPlaybackScreenProps
   if (isSending) {
     return (
       <div className="h-full flex flex-col bg-[#0a0a0a] items-center justify-center px-8">
-        {/* Sending Animation */}
         <motion.div className="relative mb-10">
-          {/* Pulse Rings */}
           {[...Array(3)].map((_, i) => (
             <motion.div
               key={i}
@@ -123,7 +149,7 @@ export function NFCPlaybackScreen({ onComplete, onBack }: NFCPlaybackScreenProps
               }}
             />
           ))}
-          
+
           <motion.div
             className="relative w-24 h-24 rounded-full flex items-center justify-center"
             style={{
@@ -143,7 +169,7 @@ export function NFCPlaybackScreen({ onComplete, onBack }: NFCPlaybackScreenProps
           className="text-xl font-light tracking-wider mb-3"
           style={{ color: "#F5F5F7" }}
         >
-          Sending to Device
+          {n.sending}
         </motion.h2>
 
         <motion.p
@@ -152,7 +178,7 @@ export function NFCPlaybackScreen({ onComplete, onBack }: NFCPlaybackScreenProps
           className="text-xs font-light"
           style={{ color: "#A1A1A6" }}
         >
-          Please keep device nearby...
+          {n.sendingHint}
         </motion.p>
       </div>
     );
@@ -160,7 +186,6 @@ export function NFCPlaybackScreen({ onComplete, onBack }: NFCPlaybackScreenProps
 
   return (
     <div className="h-full flex flex-col bg-[#0a0a0a]">
-      {/* Header */}
       <header className="px-6 pt-14 pb-4 flex items-center justify-between relative">
         <motion.button
           initial={{ opacity: 0, x: -10 }}
@@ -183,23 +208,19 @@ export function NFCPlaybackScreen({ onComplete, onBack }: NFCPlaybackScreenProps
           className="text-xl font-light absolute left-1/2 -translate-x-1/2"
           style={{ color: "#F5F5F7" }}
         >
-          Save
+          {n.title}
         </motion.h1>
 
         <div className="w-10" />
       </header>
 
-      {/* NFC Animation Area */}
       <div className="flex-1 flex flex-col items-center justify-center px-8">
-
-        {/* 상단 삽입 안내 일러스트 */}
         <motion.div
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
           className="relative mb-8 flex flex-col items-center"
         >
-          {/* 카드 아이콘 — 아래로 내려오는 애니메이션 */}
           <motion.div
             animate={{ y: [0, 10, 0] }}
             transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
@@ -216,17 +237,21 @@ export function NFCPlaybackScreen({ onComplete, onBack }: NFCPlaybackScreenProps
             </div>
           </motion.div>
 
-          {/* 아래 화살표 */}
           <motion.div
             animate={{ opacity: [0.3, 1, 0.3] }}
             transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
           >
             <svg width="16" height="12" viewBox="0 0 16 12" fill="none">
-              <path d="M8 0 L8 8 M4 5 L8 10 L12 5" stroke="#c9a227" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+              <path
+                d="M8 0 L8 8 M4 5 L8 10 L12 5"
+                stroke="#c9a227"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
             </svg>
           </motion.div>
 
-          {/* 기기 상단 슬롯 표시 */}
           <div
             className="mt-1 w-16 h-2 rounded-full"
             style={{
@@ -252,7 +277,7 @@ export function NFCPlaybackScreen({ onComplete, onBack }: NFCPlaybackScreenProps
           className="text-sm font-light text-center max-w-[240px] mb-1"
           style={{ color: "#F5F5F7" }}
         >
-          Insert card into top slot
+          {n.insertCard}
         </motion.p>
         <motion.p
           initial={{ opacity: 0 }}
@@ -261,10 +286,9 @@ export function NFCPlaybackScreen({ onComplete, onBack }: NFCPlaybackScreenProps
           className="text-xs font-light text-center max-w-[240px] mb-8"
           style={{ color: "#666666" }}
         >
-          기기 상단 슬롯에 카드를 삽입하세요
+          {n.insertHint}
         </motion.p>
 
-        {/* Slot Selection */}
         <div className="w-full grid grid-cols-2 gap-3">
           {slots.map((slot, index) => (
             <motion.button
@@ -281,25 +305,23 @@ export function NFCPlaybackScreen({ onComplete, onBack }: NFCPlaybackScreenProps
               } ${slot.occupied ? "opacity-40" : ""}`}
               style={{
                 background: selectedSlot === slot.id ? "rgba(201, 162, 39, 0.08)" : "#1C1C1E",
-                border: selectedSlot === slot.id
-                  ? "1px solid rgba(201, 162, 39, 0.25)"
-                  : "1px solid #333333",
+                border:
+                  selectedSlot === slot.id
+                    ? "1px solid rgba(201, 162, 39, 0.25)"
+                    : "1px solid #333333",
               }}
               whileHover={!slot.occupied ? { scale: 1.02, borderColor: "#444444" } : {}}
               whileTap={!slot.occupied ? { scale: 0.98 } : {}}
             >
-              <span 
+              <span
                 className="text-sm font-light tracking-wider"
                 style={{ color: selectedSlot === slot.id ? "#c9a227" : "#F5F5F7" }}
               >
                 {slot.name}
               </span>
               {slot.occupied && (
-                <span 
-                  className="block text-[11px] mt-1"
-                  style={{ color: "#666666" }}
-                >
-                  In use
+                <span className="block text-[11px] mt-1" style={{ color: "#666666" }}>
+                  {n.inUse}
                 </span>
               )}
               {selectedSlot === slot.id && (
@@ -319,7 +341,6 @@ export function NFCPlaybackScreen({ onComplete, onBack }: NFCPlaybackScreenProps
         </div>
       </div>
 
-      {/* Send Button */}
       <div className="px-8 pb-10">
         <motion.button
           initial={{ opacity: 0, y: 20 }}
@@ -334,16 +355,19 @@ export function NFCPlaybackScreen({ onComplete, onBack }: NFCPlaybackScreenProps
               : "#1C1C1E",
             border: selectedSlot ? "none" : "1px solid #333333",
             color: selectedSlot ? "#0a0a0a" : "#A1A1A6",
-            boxShadow: selectedSlot
-              ? "0 10px 40px rgba(201, 162, 39, 0.25)"
-              : "none",
+            boxShadow: selectedSlot ? "0 10px 40px rgba(201, 162, 39, 0.25)" : "none",
             cursor: selectedSlot ? "pointer" : "not-allowed",
           }}
           whileHover={selectedSlot ? { scale: 1.02 } : {}}
           whileTap={selectedSlot ? { scale: 0.98 } : {}}
         >
-          Send to Device
+          {n.send}
         </motion.button>
+        {errorMessage && (
+          <p className="mt-3 text-center text-xs" style={{ color: "#fca5a5" }}>
+            {errorMessage}
+          </p>
+        )}
       </div>
     </div>
   );

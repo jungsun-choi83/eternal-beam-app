@@ -1,8 +1,12 @@
+import { isLiteUI } from "@/lib/ui-performance";
+
 /**
  * 홀로그램 배경 효과 (스캔라인 + Aurora)
  * CSS만 사용, fixed 배경 레이어
  */
 export function HologramEffects() {
+  if (isLiteUI()) return null;
+
   return (
     <div className="hologram-bg" aria-hidden>
       <div className="hologram-scanline" />

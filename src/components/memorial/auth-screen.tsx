@@ -44,7 +44,7 @@ export function AuthScreen({ initialMode = "login", onAuthComplete }: AuthScreen
     visible: {
       opacity: 1,
       y: 0,
-      transition: { duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] },
+      transition: { duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] as const },
     },
   };
 
@@ -59,7 +59,7 @@ export function AuthScreen({ initialMode = "login", onAuthComplete }: AuthScreen
         className="pt-8 pb-4 px-8 shrink-0"
         initial={{ opacity: 0, y: -30 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.7, ease: [0.25, 0.46, 0.45, 0.94] }}
+        transition={{ duration: 0.7, ease: [0.25, 0.46, 0.45, 0.94] as const }}
       >
         <div className="text-center relative overflow-hidden">
           {/* Enhanced Gold Glow */}
@@ -180,7 +180,7 @@ export function AuthScreen({ initialMode = "login", onAuthComplete }: AuthScreen
                 initial={{ opacity: 0, x: mode === "signup" ? 30 : -30 }}
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: mode === "signup" ? -30 : 30 }}
-                transition={{ duration: 0.35, ease: [0.25, 0.46, 0.45, 0.94] }}
+                transition={{ duration: 0.35, ease: [0.25, 0.46, 0.45, 0.94] as const }}
                 className="space-y-4"
               >
                 {mode === "signup" && (

@@ -4,25 +4,90 @@
  * - 합성: POST /api/compose-video (결제 Gate + FFmpeg) → unique_url, nfc_payload
  */
 
+/** 임시 Cloudflare 터널 URL은 만료되므로 프로덕션에서 무시 → same-origin /api (vercel.json rewrites) */
+function normalizeApiBase(raw: string | undefined): string {
+  if (!raw) return ''
+  const s = String(raw).trim().replace(/\/$/, '')
+  if (!s) return ''
+  const lower = s.toLowerCase()
+  if (lower.includes('trycloudflare.com') || lower.includes('ngrok-free.app') || lower.includes('ngrok.io')) {
+    if (import.meta.env.DEV) {
+      console.warn('[video-api] 임시 터널 URL은 무시합니다. npm run video-api 또는 VITE_VIDEO_API_URL을 사용하세요.', s)
+    }
+    return ''
+  }
+  return s
+}
+
 /** API base (no trailing slash). Dev: '' → same-origin so Vite proxies /api → :8000 */
 const getBaseUrl = (): string => {
-  const explicit = import.meta.env.VITE_VIDEO_API_URL || import.meta.env.VITE_API_URL
-  if (explicit) return String(explicit).replace(/\/$/, '')
+  const explicit = normalizeApiBase(
+    import.meta.env.VITE_VIDEO_API_URL || import.meta.env.VITE_API_URL
+  )
+  if (explicit) return explicit
   if (import.meta.env.DEV) return ''
-  // 배포(프리뷰 포함): localhost 백엔드는 방문자 브라우저에 없음 — 반드시 VITE_VIDEO_API_URL 설정
+  // 배포: VITE 미설정 시 device.eternalbeam.com/api → vercel.json → Render
   return ''
 }
 
 /** 프리뷰/정적 URL을 절대 주소로 붙일 때 사용 (내부 로직과 동일). */
 export const getVideoApiBaseUrl = getBaseUrl
 
-function requireVideoApiBase(): void {
-  const hasExplicit = !!(import.meta.env.VITE_VIDEO_API_URL || import.meta.env.VITE_API_URL)
-  if (import.meta.env.PROD && !hasExplicit) {
+function validateVideoApiBase(): void {
+  if (!import.meta.env.PROD) return
+  const raw = import.meta.env.VITE_VIDEO_API_URL || import.meta.env.VITE_API_URL
+  const s = raw != null ? String(raw).trim() : ''
+  // Empty is allowed: app may call same-origin /api through reverse proxy.
+  if (!s) return
+  const lower = s.toLowerCase()
+  if (lower.includes('localhost') || lower.includes('127.0.0.1')) {
     throw new Error(
-      '배포 사이트에는 영상 API 주소가 필요합니다. Vercel 등에 VITE_VIDEO_API_URL(예: 배포한 Python 서버 https URL)을 설정한 뒤 다시 빌드하세요.'
+      '프로덕션에서는 VITE_VIDEO_API_URL에 localhost를 넣을 수 없습니다. 방문자 PC에는 당신의 로컬 서버가 없습니다. FastAPI를 클라우드에 배포한 뒤 그 https 주소를 넣으세요.'
     )
   }
+}
+
+function missingVideoApiConfigMessage(): string {
+  return [
+    '누끼·합성 API가 설정되지 않았습니다.',
+    '- 방법 A(권장): Vercel 환경변수 `VITE_VIDEO_API_URL`에 FastAPI 배포 주소(https://...)를 넣고 재배포',
+    '- 방법 B: Vercel에서 `/api/*`를 백엔드로 Rewrite(프록시) 설정',
+  ].join('\n')
+}
+
+async function safeJson(res: Response): Promise<Record<string, unknown>> {
+  try {
+    return (await res.json()) as Record<string, unknown>
+  } catch {
+    return {}
+  }
+}
+
+/** 프로덕션/로컬에 맞는 안내 (Failed to fetch 등) */
+function cutoutFetchFailedMessage(): string {
+  if (import.meta.env.PROD) {
+    return [
+      '누끼 서버에 연결할 수 없습니다.',
+      'Vercel 환경변수 VITE_VIDEO_API_URL에 만료된 trycloudflare 주소가 들어가 있으면 삭제 후 재배포하세요.',
+      '또는 Render 백엔드 URL(예: https://eternal-beam-video-api.onrender.com)을 넣거나, vercel.json /api 프록시를 사용하세요.',
+    ].join(' ')
+  }
+  return '누끼 서버에 연결할 수 없습니다. 프로젝트 루트에서 `npm run video-api`로 백엔드(포트 8000)를 실행한 뒤 다시 시도하세요.'
+}
+
+/** 네트워크/터널 오류 — 데모 모드로 진행 가능 */
+export function isCutoutApiUnreachableError(message: string): boolean {
+  const m = message.toLowerCase()
+  return (
+    m.includes('누끼 서버') ||
+    m.includes('api가 설정') ||
+    m.includes('failed to fetch') ||
+    m.includes('network') ||
+    m.includes('err_name_not_resolved') ||
+    m.includes('load failed') ||
+    m.includes('trycloudflare') ||
+    m.includes('name not resolved')
+  )
 }
 
 function wrapNetworkError(err: unknown, hint: string): Error {
@@ -79,7 +144,7 @@ export async function cutoutImage(
     model?: string
   } = {}
 ): Promise<CutoutResult> {
-  requireVideoApiBase()
+  validateVideoApiBase()
   const form = new FormData()
   form.append('file', file)
   form.append('user_id', options.userId ?? 'anonymous')
@@ -94,13 +159,13 @@ export async function cutoutImage(
       body: form,
     })
   } catch (e) {
-    throw wrapNetworkError(
-      e,
-      '누끼 서버에 연결할 수 없습니다. 새 터미널에서 `npm run video-api`로 백엔드(포트 8000)를 실행한 뒤 다시 시도하세요.',
-    )
+    throw wrapNetworkError(e, cutoutFetchFailedMessage())
   }
   if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    if (import.meta.env.PROD && getBaseUrl() === '' && res.status === 404) {
+      throw new Error(missingVideoApiConfigMessage())
+    }
+    const err = await safeJson(res)
     throw new Error(formatHttpErrorDetail(err, '배경 제거 요청 실패'))
   }
   return res.json()
@@ -123,7 +188,7 @@ export async function composeVideo(
     subjectOnly?: boolean
   }
 ): Promise<ComposeVideoResult> {
-  requireVideoApiBase()
+  validateVideoApiBase()
   const form = new FormData()
   form.append('cutout_file', cutoutFile)
   form.append('user_id', options.userId ?? 'anonymous')
@@ -138,8 +203,12 @@ export async function composeVideo(
     body: form,
   })
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || err.message || '영상 합성 요청 실패')
+    if (import.meta.env.PROD && getBaseUrl() === '' && res.status === 404) {
+      throw new Error(missingVideoApiConfigMessage())
+    }
+    const err = await safeJson(res)
+    if (!('detail' in err)) err.detail = res.statusText
+    throw new Error(formatHttpErrorDetail(err, '영상 합성 요청 실패'))
   }
   return res.json()
 }
@@ -163,7 +232,7 @@ export async function generatePreview(params: {
   position_x: number
   position_y: number
 }): Promise<{ preview_url: string; preview_id: string }> {
-  requireVideoApiBase()
+  validateVideoApiBase()
   const form = new FormData()
   form.append('cutout_file', params.cutoutFile)
   form.append('background_id', params.background_id)
@@ -176,8 +245,12 @@ export async function generatePreview(params: {
     body: form,
   })
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }))
-    throw new Error(err.detail || err.message || '프리뷰 생성 실패')
+    if (import.meta.env.PROD && getBaseUrl() === '' && res.status === 404) {
+      throw new Error(missingVideoApiConfigMessage())
+    }
+    const err = await safeJson(res)
+    if (!('detail' in err)) err.detail = res.statusText
+    throw new Error(formatHttpErrorDetail(err, '프리뷰 생성 실패'))
   }
   return res.json()
 }
@@ -242,7 +315,7 @@ export async function generatePetVideo(
     skipPreprocessing?: boolean
   } = {}
 ): Promise<GeneratePetVideoResult> {
-  requireVideoApiBase()
+  validateVideoApiBase()
   const form = new FormData()
   form.append('file', file)
   form.append('user_id', options.userId ?? 'anonymous')
@@ -270,7 +343,10 @@ export async function generatePetVideo(
   }
   clearTimeout(tid)
   if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))) as Record<string, unknown>
+    if (import.meta.env.PROD && getBaseUrl() === '' && res.status === 404) {
+      throw new Error(missingVideoApiConfigMessage())
+    }
+    const err = await safeJson(res)
     throw new Error(formatHttpErrorDetail(err, 'generate-pet-video failed'))
   }
   return res.json()

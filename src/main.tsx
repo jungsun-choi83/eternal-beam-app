@@ -3,6 +3,9 @@ import { createRoot } from 'react-dom/client'
 import App from './app/App'
 import { ErrorBoundary } from './app/ErrorBoundary'
 import './styles/index.css'
+import { applyUILiteClass } from './lib/ui-performance'
+
+applyUILiteClass()
 
 const rootEl = document.getElementById('root')
 if (!rootEl) {

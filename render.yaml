@@ -1,8 +1,24 @@
-# Render Blueprint — Docker만 사용 (루트 package.json 때문에 Node로 잡히는 문제 회피)
-# https://render.com/docs/blueprint-spec
+# Render Blueprint — FastAPI 누끼 API (Docker)
+# Dashboard → Blueprint → 이 repo 연결
 services:
   - type: web
-    name: eternal-beam-api
+    name: eternal-beam-video-api
     region: singapore
     plan: free
+    runtime: docker
     dockerfilePath: ./Dockerfile
+    autoDeploy: true
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: PUBLIC_API_BASE_URL
+        value: https://eternal-beam-video-api.onrender.com
+      - key: HYBRID_USE_SUPABASE
+        value: "1"
+      - key: PET_HYBRID_SEED
+        value: "0"
+      - key: CREDIT_COST_PER_PLACE
+        value: "4"
+      - key: LUMA_CREDIT_CONCURRENCY
+        value: "3"

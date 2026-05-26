@@ -11,8 +11,8 @@ export interface NFCWriteResult {
 }
 
 /**
- * NFC 쓰기 (권한 체크 포함)
- * payload: 서버에서 받은 nfc_payload(unique_url 등)가 있으면 해당 JSON 기록
+ * NFC ?�기 (권한 체크 ?�함)
+ * payload: ?�버?�서 받�? nfc_payload(unique_url ??가 ?�으�??�당 JSON 기록
  */
 export const writeToNFCSlot = async (
   contentId: string,
@@ -21,21 +21,21 @@ export const writeToNFCSlot = async (
   payload?: { unique_url?: string; content_id?: string; theme_id?: string; slot_number?: number },
 ): Promise<NFCWriteResult> => {
   try {
-    console.log('🔒 NFC 쓰기 권한 확인 중...')
+    console.log('?�� NFC ?�기 권한 ?�인 �?..')
     await checkNFCWritePermission(contentId)
 
     if (!('NDEFReader' in window)) {
-      throw new Error('이 기기는 NFC를 지원하지 않습니다.')
+      throw new Error('??기기??NFC�?지?�하지 ?�습?�다.')
     }
 
-    // Content_ID만 기록 (레이어 시스템): version, content_id, slot_number
+    // Content_ID�?기록 (?�이???�스??: version, content_id, slot_number
     const dataToWrite = payload?.content_id != null
       ? { version: 1, content_id: payload.content_id, slot_number: payload.slot_number ?? slotNumber }
       : payload?.unique_url
         ? { version: 1, content_id: payload.content_id || contentId, unique_url: payload.unique_url, theme_id: payload.theme_id ?? '', slot_number: payload.slot_number ?? slotNumber }
         : { video_id: videoId, content_id: contentId, slot: slotNumber, timestamp: new Date().toISOString() }
 
-    console.log('📡 NFC 쓰기 시작...')
+    console.log('?�� NFC ?�기 ?�작...')
     const ndef = new (window as unknown as { NDEFReader: new () => NDEFReader }).NDEFReader()
 
     await ndef.write({
@@ -53,52 +53,51 @@ export const writeToNFCSlot = async (
       navigator.vibrate([100, 50, 100, 50, 100])
     }
 
-    console.log('✅ NFC 쓰기 완료!')
+    console.log('??NFC ?�기 ?�료!')
     return {
       success: true,
       slotNumber,
       videoId,
-      message: '슬롯에 데이터가 기록되었습니다!',
+      message: '?�롯???�이?��? 기록?�었?�니??',
     }
   } catch (error: unknown) {
     const err = error as Error
-    console.error('❌ NFC 쓰기 실패:', error)
+    console.error('??NFC ?�기 ?�패:', error)
     return {
       success: false,
       slotNumber,
       videoId,
-      message: err.message || 'NFC 쓰기에 실패했습니다.',
+      message: err.message || 'NFC ?�기???�패?�습?�다.',
     }
   }
 }
 
 /**
- * NFC 읽기
+ * NFC ?�기
  */
 export const readFromNFCSlot = async (): Promise<unknown> => {
   try {
     if (!('NDEFReader' in window)) {
-      throw new Error('이 기기는 NFC를 지원하지 않습니다.')
+      throw new Error('??기기??NFC�?지?�하지 ?�습?�다.')
     }
 
     const ndef = new (window as unknown as { NDEFReader: new () => NDEFReader }).NDEFReader()
     await ndef.scan()
 
     return new Promise((resolve, reject) => {
-      ndef.addEventListener(
-        'reading',
-        ({ message }: { message: NDEFMessage }) => {
-          const record = message.records[0]
-          const textDecoder = new TextDecoder()
-          const data = JSON.parse(textDecoder.decode(record.data))
-          resolve(data)
-        },
-      )
+      ndef.addEventListener('reading', (event: Event) => {
+        const readingEvent = event as Event & { message: NDEFMessage }
+        const record = readingEvent.message.records[0]
+        const textDecoder = new TextDecoder()
+        const data = JSON.parse(textDecoder.decode(record.data))
+        resolve(data)
+      })
 
-      setTimeout(() => reject(new Error('NFC 읽기 시간 초과')), 10000)
+      setTimeout(() => reject(new Error('NFC ?�기 ?�간 초과')), 10000)
     })
   } catch (error) {
-    console.error('❌ NFC 읽기 실패:', error)
+    console.error('??NFC ?�기 ?�패:', error)
     throw error
   }
 }
+
