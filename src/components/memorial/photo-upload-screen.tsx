@@ -236,10 +236,10 @@ export function PhotoUploadScreen({
                     <Upload className="w-7 h-7 text-[#c9a227]/70" strokeWidth={1.5} />
                   </div>
                   <div className="text-center">
-                    <p className="text-sm font-light text-[#F5F5F7]">
+                    <p className="text-sm font-medium text-[#F5F5F7] leading-snug">
                       {isDragging ? u.drop : u.drag}
                     </p>
-                    <p className="text-xs mt-1.5 font-light text-[#A1A1A6]">{u.tapBrowse}</p>
+                    <p className="memorial-caption mt-1.5">{u.tapBrowse}</p>
                   </div>
                   <p className="upload-hint text-center text-[#A1A1A6]">{u.formats}</p>
                 </div>
@@ -265,7 +265,7 @@ export function PhotoUploadScreen({
           transition={{ delay: 0.5 }}
           onClick={onContinue}
           disabled={!uploadedImage}
-          className="w-full py-4 rounded-2xl font-normal text-[15px] tracking-wider transition-all duration-300"
+          className="w-full py-4 rounded-2xl memorial-btn-label transition-all duration-300"
           style={{
             background: uploadedImage
               ? "linear-gradient(135deg, #b8860b 0%, #c9a227 30%, #d4af37 50%, #f5d77a 70%, #d4af37 100%)"

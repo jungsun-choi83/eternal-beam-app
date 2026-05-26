@@ -70,7 +70,15 @@ export function EternalBeamApp() {
   const [selectedTheme, setSelectedTheme] = useState<number | null>(null)
   const [pendingPremiumTheme, setPendingPremiumTheme] = useState<number | null>(null)
   const [previewSettings, setPreviewSettings] = useState({ scale: 1, posX: 0, posY: 0 })
-  const [language, setLanguage] = useState('ko')
+  const [language, setLanguage] = useState(() => {
+    if (typeof window === 'undefined') return 'ko'
+    return localStorage.getItem('eternal_beam_lang') || 'ko'
+  })
+
+  const handleLanguageChange = (lang: string) => {
+    setLanguage(lang)
+    localStorage.setItem('eternal_beam_lang', lang)
+  }
   const [userName, setUserName] = useState<string | null>(null)
   const [, setIsFirstTime] = useState(true)
 
@@ -208,7 +216,10 @@ export function EternalBeamApp() {
               className="h-full w-full"
               style={{ position: 'relative', display: 'block', minHeight: '100%' }}
             >
-              <OnboardingScreen onComplete={() => navigateTo('signup')} />
+              <OnboardingScreen
+                language={language}
+                onComplete={() => navigateTo('signup')}
+              />
             </motion.div>
           )}
 
@@ -223,6 +234,7 @@ export function EternalBeamApp() {
               className="h-full"
             >
               <AuthScreen
+                language={language}
                 initialMode="signup"
                 onAuthComplete={(name?: string) => {
                   if (name) setUserName(name)
@@ -243,6 +255,7 @@ export function EternalBeamApp() {
               className="h-full"
             >
               <AuthScreen
+                language={language}
                 initialMode="login"
                 onAuthComplete={(name?: string) => {
                   if (name) setUserName(name)
@@ -263,6 +276,7 @@ export function EternalBeamApp() {
               className="h-full"
             >
               <QRConnectionScreen
+                language={language}
                 onComplete={() => navigateTo('home')}
                 onBack={() => navigateTo('signup')}
                 onSkip={() => navigateTo('home')}
@@ -284,7 +298,7 @@ export function EternalBeamApp() {
                 cutoutImage={cutoutImage}
                 userName={userName ?? undefined}
                 language={language}
-                onLanguageChange={setLanguage}
+                onLanguageChange={handleLanguageChange}
                 onMediaFile={handleMediaFile}
                 onGallery={() => navigateTo('gallery')}
                 onSettings={() => navigateTo('settings')}
@@ -464,7 +478,7 @@ export function EternalBeamApp() {
               <SettingsScreen
                 currentLanguage={language}
                 onChangeLanguage={() =>
-                  setLanguage((l) => (l === 'ko' ? 'en' : 'ko'))
+                  handleLanguageChange(language === 'ko' ? 'en' : 'ko')
                 }
                 onDeviceSettings={() => navigateTo('device')}
                 onBack={() => navigateTo('home')}

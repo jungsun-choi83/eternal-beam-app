@@ -3,14 +3,23 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { ChevronLeft, Smartphone, CheckCircle2 } from "lucide-react";
+import { memorialT } from "@/components/memorial/memorial-i18n";
 
 interface QRConnectionScreenProps {
+  language?: string;
   onComplete: () => void;
   onBack: () => void;
   onSkip: () => void;
 }
 
-export function QRConnectionScreen({ onComplete, onBack, onSkip }: QRConnectionScreenProps) {
+export function QRConnectionScreen({
+  language = "ko",
+  onComplete,
+  onBack,
+  onSkip,
+}: QRConnectionScreenProps) {
+  const q = memorialT(language).qr;
+  const c = memorialT(language).common;
   const [isScanning, setIsScanning] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
 
@@ -35,24 +44,21 @@ export function QRConnectionScreen({ onComplete, onBack, onSkip }: QRConnectionS
 
   return (
     <div className="h-full flex flex-col bg-[#0a0a0a] relative overflow-hidden min-h-0">
-      {/* Header */}
       <header className="px-6 pt-8 pb-4 flex items-center justify-between relative shrink-0">
-        <button onClick={onBack} className="p-2 -ml-2">
+        <button type="button" onClick={onBack} className="p-2 -ml-2" aria-label={c.back}>
           <ChevronLeft className="w-5 h-5" style={{ color: "#F5F5F7" }} />
         </button>
-        <h1 className="text-xl font-light absolute left-1/2 -translate-x-1/2 text-center" style={{ color: "#F5F5F7" }}>
-          Connect Device
+        <h1 className="screen-title absolute left-1/2 -translate-x-1/2" style={{ color: "#F5F5F7" }}>
+          {q.title}
         </h1>
-        <button onClick={onSkip} className="text-sm" style={{ color: "#A1A1A6" }}>
-          Skip
+        <button type="button" onClick={onSkip} className="text-sm memorial-caption" style={{ color: "#A1A1A6" }}>
+          {q.skip}
         </button>
       </header>
 
-      {/* Content */}
       <div className="flex-1 flex flex-col items-center justify-center px-8 min-h-0 overflow-y-auto">
         {!isConnected ? (
           <>
-            {/* QR Code Area */}
             <motion.div
               className="w-56 h-56 rounded-3xl mb-8 relative overflow-hidden"
               style={{
@@ -62,7 +68,6 @@ export function QRConnectionScreen({ onComplete, onBack, onSkip }: QRConnectionS
               }}
               animate={isScanning ? { borderColor: "rgba(212, 175, 55, 0.5)" } : {}}
             >
-              {/* Simulated QR Pattern */}
               <div className="absolute inset-6 grid grid-cols-7 gap-1">
                 {Array.from({ length: 49 }).map((_, i) => (
                   <motion.div
@@ -81,7 +86,6 @@ export function QRConnectionScreen({ onComplete, onBack, onSkip }: QRConnectionS
                 ))}
               </div>
 
-              {/* Scanning Line */}
               {isScanning && (
                 <motion.div
                   className="absolute left-0 right-0 h-0.5"
@@ -91,28 +95,23 @@ export function QRConnectionScreen({ onComplete, onBack, onSkip }: QRConnectionS
                 />
               )}
 
-              {/* Corner Markers */}
               <div className="absolute top-3 left-3 w-8 h-8 border-t-2 border-l-2 rounded-tl" style={{ borderColor: "#d4af37" }} />
               <div className="absolute top-3 right-3 w-8 h-8 border-t-2 border-r-2 rounded-tr" style={{ borderColor: "#d4af37" }} />
               <div className="absolute bottom-3 left-3 w-8 h-8 border-b-2 border-l-2 rounded-bl" style={{ borderColor: "#d4af37" }} />
               <div className="absolute bottom-3 right-3 w-8 h-8 border-b-2 border-r-2 rounded-br" style={{ borderColor: "#d4af37" }} />
             </motion.div>
 
-            <h2 className="text-xl font-light mb-3" style={{ color: "#F5F5F7" }}>
-              Scan QR Code
-            </h2>
-            <p className="text-sm text-center mb-6 max-w-xs" style={{ color: "#A1A1A6" }}>
-              Scan the QR code on your Eternal Beam device to connect
-            </p>
+            <h2 className="upload-title text-center mb-3">{q.scanTitle}</h2>
+            <p className="memorial-body text-center mb-6 max-w-[17rem]">{q.scanHint}</p>
 
-            {/* Scan Button */}
             <motion.button
+              type="button"
               onClick={() => setIsScanning(true)}
               disabled={isScanning}
               className="w-full py-4 rounded-2xl flex items-center justify-center gap-3"
               style={{
-                background: isScanning 
-                  ? "rgba(212, 175, 55, 0.2)" 
+                background: isScanning
+                  ? "rgba(212, 175, 55, 0.2)"
                   : "linear-gradient(135deg, #d4af37 0%, #c9a227 100%)",
                 boxShadow: isScanning ? "none" : "0 8px 32px rgba(212, 175, 55, 0.3)",
               }}
@@ -120,8 +119,8 @@ export function QRConnectionScreen({ onComplete, onBack, onSkip }: QRConnectionS
               whileTap={!isScanning ? { scale: 0.98 } : {}}
             >
               <Smartphone className="w-5 h-5" style={{ color: isScanning ? "#d4af37" : "#0a0a0a" }} />
-              <span style={{ color: isScanning ? "#d4af37" : "#0a0a0a" }} className="font-medium">
-                {isScanning ? "Scanning..." : "Start Scanning"}
+              <span className="memorial-btn-label" style={{ color: isScanning ? "#d4af37" : "#0a0a0a" }}>
+                {isScanning ? q.scanning : q.startScan}
               </span>
             </motion.button>
           </>
@@ -140,21 +139,17 @@ export function QRConnectionScreen({ onComplete, onBack, onSkip }: QRConnectionS
             >
               <CheckCircle2 className="w-12 h-12" style={{ color: "#d4af37" }} />
             </motion.div>
-            <h2 className="text-xl font-light mb-2" style={{ color: "#F5F5F7" }}>
-              Device Connected
-            </h2>
-            <p className="text-sm" style={{ color: "#A1A1A6" }}>
-              Eternal Beam Pro is ready
-            </p>
+            <h2 className="upload-title mb-2">{q.connected}</h2>
+            <p className="memorial-body">{q.connectedHint}</p>
           </motion.div>
         )}
       </div>
 
-      {/* 하단 Next 버튼 - 항상 보이도록 고정 */}
       <div className="shrink-0 px-6 pb-8 pt-4">
         <motion.button
+          type="button"
           onClick={onComplete}
-          className="w-full py-4 rounded-2xl flex items-center justify-center font-medium"
+          className="w-full py-4 rounded-2xl flex items-center justify-center memorial-btn-label"
           style={{
             background: "linear-gradient(135deg, #d4af37 0%, #c9a227 100%)",
             boxShadow: "0 8px 32px rgba(212, 175, 55, 0.3)",
@@ -163,7 +158,7 @@ export function QRConnectionScreen({ onComplete, onBack, onSkip }: QRConnectionS
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
         >
-          Next
+          {q.next}
         </motion.button>
       </div>
     </div>

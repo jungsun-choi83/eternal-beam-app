@@ -5,13 +5,16 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Mail, Lock, User, Eye, EyeOff, ArrowRight } from "lucide-react";
 import { HolographicBackground } from "./holographic-background";
 import { HologramEffects } from "./hologram-effects";
+import { memorialT } from "@/components/memorial/memorial-i18n";
 
 interface AuthScreenProps {
   initialMode?: "login" | "signup";
+  language?: string;
   onAuthComplete: (userName?: string) => void;
 }
 
-export function AuthScreen({ initialMode = "login", onAuthComplete }: AuthScreenProps) {
+export function AuthScreen({ initialMode = "login", language = "ko", onAuthComplete }: AuthScreenProps) {
+  const a = memorialT(language).auth;
   const [mode, setMode] = useState<"login" | "signup">(initialMode);
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState("");
@@ -74,9 +77,7 @@ export function AuthScreen({ initialMode = "login", onAuthComplete }: AuthScreen
           <h1 className="logo-title logo-title--auth relative">
             Eternal Beam
           </h1>
-          <p className="logo-subtitle">
-            Holographic Memorial
-          </p>
+          <p className="logo-subtitle">{a.subtitle}</p>
         </div>
       </motion.header>
 
@@ -168,7 +169,7 @@ export function AuthScreen({ initialMode = "login", onAuthComplete }: AuthScreen
                       transition={{ type: "spring", bounce: 0.15, duration: 0.5 }}
                     />
                   )}
-                  <span className="relative z-10">{m === "login" ? "Sign In" : "Sign Up"}</span>
+                  <span className="relative z-10">{m === "login" ? a.signIn : a.signUp}</span>
                 </button>
               ))}
             </motion.div>
@@ -197,7 +198,7 @@ export function AuthScreen({ initialMode = "login", onAuthComplete }: AuthScreen
                     />
                     <input
                       type="text"
-                      placeholder="Full Name"
+                      placeholder={a.name}
                       value={name}
                       onChange={(e) => setName(e.target.value)}
                       onFocus={() => setFocusedField("name")}
@@ -230,7 +231,7 @@ export function AuthScreen({ initialMode = "login", onAuthComplete }: AuthScreen
                   />
                   <input
                     type="email"
-                    placeholder="Email"
+                    placeholder={a.email}
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     onFocus={() => setFocusedField("email")}
@@ -262,7 +263,7 @@ export function AuthScreen({ initialMode = "login", onAuthComplete }: AuthScreen
                   />
                   <input
                     type={showPassword ? "text" : "password"}
-                    placeholder="Password"
+                    placeholder={a.password}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     onFocus={() => setFocusedField("password")}
@@ -303,7 +304,7 @@ export function AuthScreen({ initialMode = "login", onAuthComplete }: AuthScreen
                 className="text-xs mt-4 font-medium tracking-wide transition-colors duration-300 hover:text-[#f5d77a]"
                 style={{ color: "#c9a227" }}
               >
-                Forgot password?
+                {a.forgotPassword}
               </motion.button>
             )}
 
@@ -337,7 +338,9 @@ export function AuthScreen({ initialMode = "login", onAuthComplete }: AuthScreen
             />
           ) : (
             <>
-              <span className="text-[#0a0a0a] font-bold">{mode === "login" ? "Sign In" : "Create Account"}</span>
+              <span className="text-[#0a0a0a] memorial-btn-label">
+                {mode === "login" ? a.submitLogin : a.submitSignup}
+              </span>
               <ArrowRight className="w-5 h-5 text-[#0a0a0a]" strokeWidth={2.5} />
             </>
           )}
@@ -351,10 +354,8 @@ export function AuthScreen({ initialMode = "login", onAuthComplete }: AuthScreen
         animate={{ opacity: 1 }}
         transition={{ delay: 0.7, duration: 0.5 }}
       >
-        <p className="text-center text-[11px] font-medium leading-relaxed" style={{ color: "#6B6B6B" }}>
-          By continuing, you agree to our{" "}
-          <span className="transition-colors duration-300 hover:text-[#f5d77a]" style={{ color: "#c9a227" }}>Terms of Service</span> and{" "}
-          <span className="transition-colors duration-300 hover:text-[#f5d77a]" style={{ color: "#c9a227" }}>Privacy Policy</span>
+        <p className="memorial-caption text-center px-2" style={{ color: "#6B6B6B" }}>
+          {a.terms}
         </p>
       </motion.div>
     </div>

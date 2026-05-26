@@ -3,8 +3,10 @@
 import { useState, useMemo, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronRight } from "lucide-react";
+import { memorialT } from "@/components/memorial/memorial-i18n";
 
 interface OnboardingScreenProps {
+  language?: string;
   onComplete: () => void;
 }
 
@@ -20,30 +22,9 @@ function createParticles() {
   }));
 }
 
-const slides = [
-  {
-    title: "Welcome to Eternal Beam",
-    subtitle: "Preserve precious memories in light",
-    description: "Create stunning holographic displays of your beloved companions",
-  },
-  {
-    title: "Upload Your Memories",
-    subtitle: "Photos & Videos",
-    description: "Our AI will transform your media into beautiful holographic content",
-  },
-  {
-    title: "Choose Your Environment",
-    subtitle: "Premium Themes Available",
-    description: "Select from a variety of ambient backgrounds to complement your memories",
-  },
-  {
-    title: "Connect Your Device",
-    subtitle: "One-tap NFC Transfer",
-    description: "Easily send your creations to your Eternal Beam holographic display",
-  },
-];
-
-export function OnboardingScreen({ onComplete }: OnboardingScreenProps) {
+export function OnboardingScreen({ language = "ko", onComplete }: OnboardingScreenProps) {
+  const ob = memorialT(language).onboarding;
+  const slides = ob.slides;
   const [currentSlide, setCurrentSlide] = useState(0);
   const [shootingStar, setShootingStar] = useState(false);
   const [reducedMotion, setReducedMotion] = useState(false);
@@ -317,13 +298,16 @@ export function OnboardingScreen({ onComplete }: OnboardingScreenProps) {
               </motion.div>
             </div>
 
-            <h1 className="text-2xl font-light mb-3" style={{ color: "#F5F5F7" }}>
+            <h1
+              className="upload-title text-center mb-3 px-2"
+              style={{ color: "#F5F5F7", whiteSpace: "normal" }}
+            >
               {slides[currentSlide].title}
             </h1>
-            <p className="text-sm font-medium mb-4 tracking-wide" style={{ color: "#d4af37" }}>
+            <p className="text-sm font-medium mb-4 text-center" style={{ color: "#d4af37" }}>
               {slides[currentSlide].subtitle}
             </p>
-            <p className="text-sm leading-relaxed max-w-xs mx-auto" style={{ color: "#A1A1A6" }}>
+            <p className="memorial-body text-center max-w-[17rem] mx-auto px-2">
               {slides[currentSlide].description}
             </p>
           </motion.div>
@@ -357,8 +341,8 @@ export function OnboardingScreen({ onComplete }: OnboardingScreenProps) {
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
         >
-          <span className="text-[#0a0a0a] font-medium">
-            {currentSlide === slides.length - 1 ? "Get Started" : "Continue"}
+          <span className="text-[#0a0a0a] memorial-btn-label">
+            {currentSlide === slides.length - 1 ? ob.getStarted : ob.continue}
           </span>
           <ChevronRight className="w-5 h-5 text-[#0a0a0a]" />
         </motion.button>

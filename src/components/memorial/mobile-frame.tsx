@@ -43,7 +43,7 @@ export function MobileFrame({ children }: MobileFrameProps) {
           </div>
         </div>
 
-        <div className="w-full h-full overflow-hidden safe-area-top safe-area-bottom">
+        <div className="memorial-ui w-full h-full overflow-hidden safe-area-top safe-area-bottom">
           {children}
         </div>
 
