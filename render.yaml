@@ -1,5 +1,5 @@
-# Render Blueprint — FastAPI 누끼 API (Docker)
-# Dashboard → Blueprint → 이 repo 연결
+# Render Blueprint — Eternal Beam FastAPI (Docker)
+# Dashboard: New → Blueprint → GitHub repo 연결 → Apply
 services:
   - type: web
     name: eternal-beam-video-api
@@ -18,7 +18,18 @@ services:
         value: "1"
       - key: PET_HYBRID_SEED
         value: "0"
+      - key: PET_BATCH_USE_SUPABASE
+        value: "1"
       - key: CREDIT_COST_PER_PLACE
         value: "4"
       - key: LUMA_CREDIT_CONCURRENCY
         value: "3"
+      - key: SUPABASE_STORAGE_BUCKET
+        value: user-assets
+      # 아래는 Render 대시보드에서 직접 입력 (Blueprint 적용 후 Environment 탭)
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: LUMA_API_KEY
+        sync: false
