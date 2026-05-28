@@ -223,7 +223,7 @@ export function ThemeSelectionScreen({
           <motion.h1
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="text-xl font-light"
+            className="text-xl font-medium"
             style={{ color: "#F1E5D1" }}
           >
             <span className="absolute inset-0 blur-[8px] opacity-30" style={{ color: "#F1E5D1" }}>
@@ -232,7 +232,7 @@ export function ThemeSelectionScreen({
             <span className="relative">{tc.title}</span>
           </motion.h1>
           {walletCredits !== null ? (
-            <p className="text-[11px] mt-1 font-light relative" style={{ color: "#c9a227" }}>
+            <p className="text-[13px] mt-1 font-normal relative" style={{ color: "#d8b861" }}>
               {tc.creditsBalance(walletCredits)}
             </p>
           ) : null}
@@ -242,7 +242,7 @@ export function ThemeSelectionScreen({
       </header>
 
       {!cutoutImage ? (
-        <div className="mx-6 mb-2 px-4 py-3 rounded-xl text-[11px] leading-relaxed" style={{ background: "rgba(120, 80, 20, 0.25)", color: "#e8c97a", border: "1px solid rgba(201,162,39,0.35)" }}>
+        <div className="mx-6 mb-2 px-4 py-3 rounded-xl text-[13px] leading-relaxed" style={{ background: "rgba(120, 80, 20, 0.25)", color: "#e8c97a", border: "1px solid rgba(201,162,39,0.35)" }}>
           {tc.cutoutMissing}
         </div>
       ) : null}
@@ -401,7 +401,7 @@ export function ThemeSelectionScreen({
                   </>
                 )}
               </div>
-              <p className="text-[11px] font-light" style={{ color: "#A1A1A6" }}>
+              <p className="text-[13px] font-normal" style={{ color: "rgba(245,245,247,0.65)" }}>
                 {tc.voiceHint}
               </p>
             </div>
@@ -412,8 +412,8 @@ export function ThemeSelectionScreen({
       {/* Theme Carousel (Swipe) */}
       <div className="px-6 pb-2">
         <p 
-          className="text-[11px] uppercase font-light mb-4 px-2 relative"
-          style={{ color: "#E2E2E2", letterSpacing: "0.2em" }}
+          className="text-[12px] uppercase font-medium mb-4 px-2 relative"
+          style={{ color: "#E2E2E2", letterSpacing: "0.12em" }}
         >
           {/* Bloom effect */}
           <span className="absolute inset-0 blur-[4px] opacity-30">{tc.subtitle}</span>
@@ -554,7 +554,7 @@ export function ThemeSelectionScreen({
       {/* Actions */}
       <div className="px-8 py-6 space-y-3">
         {selectedTheme && walletCredits !== null ? (
-          <p className="text-center text-[11px] font-light" style={{ color: "#A1A1A6" }}>
+          <p className="text-center text-[13px] font-normal" style={{ color: "rgba(245,245,247,0.68)" }}>
             {walletCredits < creditCost
               ? tc.needMoreCredits(walletCredits, creditCost)
               : tc.creditsCost(creditCost)}

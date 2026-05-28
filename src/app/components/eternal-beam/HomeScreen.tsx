@@ -30,7 +30,7 @@ function gradientToDataUrl(gradient: string, size = 256): string {
 }
 
 export function HomeScreen({ onNavigate }: HomeScreenProps) {
-  const { t } = useLanguage()
+  const { t, language, setLanguage } = useLanguage()
   const {
     subjectImageUrl,
     setSubjectImageUrl,
@@ -99,6 +99,30 @@ export function HomeScreen({ onNavigate }: HomeScreenProps) {
       <div className="flex shrink-0 items-center justify-between px-4 py-3">
         <span className="text-sm font-medium text-white/70">Eternal Beam</span>
         <div className="flex items-center gap-2">
+          <div className="flex items-center rounded-full border border-white/15 bg-black/35 p-0.5">
+            <button
+              type="button"
+              onClick={() => setLanguage('ko')}
+              className="rounded-full px-2.5 py-1 text-[11px] transition"
+              style={{
+                background: language === 'ko' ? 'rgba(255,255,255,0.2)' : 'transparent',
+                color: language === 'ko' ? '#ffffff' : 'rgba(255,255,255,0.65)',
+              }}
+            >
+              한국어
+            </button>
+            <button
+              type="button"
+              onClick={() => setLanguage('en')}
+              className="rounded-full px-2.5 py-1 text-[11px] transition"
+              style={{
+                background: language === 'en' ? 'rgba(255,255,255,0.2)' : 'transparent',
+                color: language === 'en' ? '#ffffff' : 'rgba(255,255,255,0.65)',
+              }}
+            >
+              EN
+            </button>
+          </div>
           <button
             onClick={() => onNavigate?.('settings')}
             className="rounded-full p-2 text-white/70 transition hover:bg-white/10 hover:text-white"

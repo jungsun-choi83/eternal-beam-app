@@ -49,10 +49,10 @@ export function HomeScreen({
           {/* Gallery Button */}
           <motion.button
             onClick={onGallery}
-            className="p-2.5 rounded-xl relative shrink-0"
+            className="mem-icon-btn relative shrink-0"
             style={{
-              background: "rgba(255, 255, 255, 0.06)",
-              backdropFilter: "blur(20px)",
+              background: "rgba(255, 255, 255, 0.08)",
+              borderColor: "rgba(255, 255, 255, 0.14)",
             }}
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
@@ -71,10 +71,10 @@ export function HomeScreen({
           {/* Settings Button */}
           <motion.button
             onClick={onSettings}
-            className="p-2.5 rounded-xl relative shrink-0"
+            className="mem-icon-btn relative shrink-0"
             style={{
-              background: "rgba(255, 255, 255, 0.06)",
-              backdropFilter: "blur(20px)",
+              background: "rgba(255, 255, 255, 0.08)",
+              borderColor: "rgba(255, 255, 255, 0.14)",
             }}
             whileHover={{ scale: 1.05 }}
             whileTap={{ scale: 0.95 }}
@@ -160,11 +160,11 @@ export function HomeScreen({
               </MediaFileTrigger>
               <MediaFileTrigger onFile={onMediaFile} className="touch-manipulation">
                 <div
-                  className="px-5 py-2.5 rounded-full text-sm font-light text-center"
+                  className="px-5 py-2.5 rounded-full text-[13px] font-normal text-center"
                   style={{
-                    background: "rgba(255, 255, 255, 0.08)",
-                    border: "1px solid rgba(201, 162, 39, 0.25)",
-                    color: "#d4af37",
+                    background: "rgba(255, 255, 255, 0.10)",
+                    border: "1px solid rgba(201, 162, 39, 0.32)",
+                    color: "#e8d5a3",
                   }}
                 >
                   {texts.addMedia}
@@ -196,7 +196,7 @@ export function HomeScreen({
                   <span className="relative text-base font-medium block" style={{ color: "#F1E5D1" }}>
                     {texts.addMedia}
                   </span>
-                  <span className="text-xs font-light mt-1 block" style={{ color: "#A1A1A6" }}>
+                  <span className="text-sm font-normal mt-1 block" style={{ color: "rgba(245,245,247,0.72)" }}>
                     {texts.photoOrVideo}
                   </span>
                 </div>
@@ -222,12 +222,12 @@ export function HomeScreen({
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.6 }}
           onClick={onSaveToNFC}
-          className="w-full py-4 rounded-2xl font-normal text-sm relative overflow-hidden"
+          className="w-full py-4 rounded-2xl font-semibold text-base relative overflow-hidden"
           style={{
             background: "linear-gradient(135deg, #b8860b 0%, #c9a227 30%, #d4af37 50%, #f5d77a 70%, #d4af37 100%)",
-            boxShadow: "0 10px 40px rgba(201, 162, 39, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.2)",
+            boxShadow: "0 10px 28px rgba(201, 162, 39, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.2)",
           }}
-          whileHover={{ scale: 1.02, boxShadow: "0 15px 50px rgba(201, 162, 39, 0.35)" }}
+          whileHover={{ scale: 1.015, boxShadow: "0 14px 34px rgba(201, 162, 39, 0.34)" }}
           whileTap={{ scale: 0.98 }}
         >
           {/* Top shine */}

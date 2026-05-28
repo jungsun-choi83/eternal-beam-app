@@ -1,16 +1,16 @@
 :root {
-  --font-body: 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic',
-    -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-  --font-headline: 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic',
-    -apple-system, sans-serif;
-  --font-display: 'Playfair Display', 'Noto Serif KR', Georgia, serif;
+  --font-body: 'SF Pro Text', 'SF Pro Display', -apple-system, BlinkMacSystemFont,
+    'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
+  --font-headline: 'SF Pro Display', 'SF Pro Text', -apple-system, BlinkMacSystemFont,
+    'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
+  --font-display: var(--font-headline);
 
   --letter-spacing-tight: 0;
   --letter-spacing-normal: 0;
   --letter-spacing-wide: 0.02em;
 
   /* 375px 기준 모바일 타입 스케일 */
-  --text-xs: 0.75rem;    /* 12px */
+  --text-xs: 0.8125rem;  /* 13px */
   --text-sm: 0.875rem;   /* 14px */
   --text-base: 1rem;     /* 16px */
   --text-lg: 1.125rem;   /* 18px */
@@ -179,7 +179,7 @@ select {
 
 .text-caption {
   font-family: var(--font-body);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 400;
   letter-spacing: -0.3px;
   line-height: 1.4;
@@ -201,10 +201,10 @@ select {
 
 .logo-subtitle {
   font-family: var(--font-body);
-  font-size: var(--text-xs);
+  font-size: 0.875rem;
   font-weight: 500;
-  letter-spacing: 0.02em;
-  color: rgba(255, 255, 255, 0.55);
+  letter-spacing: 0.01em;
+  color: rgba(255, 255, 255, 0.72);
   margin-top: 6px;
   line-height: var(--leading-normal);
 }
@@ -250,7 +250,7 @@ select {
   font-size: var(--text-sm);
   font-weight: 400;
   line-height: var(--leading-relaxed);
-  color: rgba(255, 255, 255, 0.62);
+  color: rgba(255, 255, 255, 0.78);
   margin-bottom: 12px;
 }
 
@@ -281,9 +281,9 @@ select {
 }
 
 .upload-guide-body {
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
   line-height: 1.55;
-  color: rgba(255, 255, 255, 0.72);
+  color: rgba(255, 255, 255, 0.82);
   margin-bottom: 12px;
 }
 
@@ -300,7 +300,7 @@ select {
   display: flex;
   gap: 10px;
   align-items: flex-start;
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
   line-height: 1.45;
 }
 
@@ -415,9 +415,9 @@ select {
 
 /* 드래그 힌트 추가 */
 .upload-hint {
-  font-size: var(--text-xs);
+  font-size: var(--text-sm);
   line-height: var(--leading-normal);
-  color: rgba(255, 255, 255, 0.45);
+  color: rgba(255, 255, 255, 0.65);
   margin-top: 12px;
   display: none;
 }

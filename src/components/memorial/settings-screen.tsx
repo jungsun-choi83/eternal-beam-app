@@ -103,7 +103,7 @@ export function SettingsScreen({
           <ChevronLeft className="w-5 h-5" style={{ color: "#F5F5F7" }} />
         </button>
         <h1
-          className="text-xl font-light absolute left-1/2 -translate-x-1/2"
+          className="text-xl font-medium absolute left-1/2 -translate-x-1/2"
           style={{ color: "#F5F5F7" }}
         >
           {s.title}
@@ -128,26 +128,26 @@ export function SettingsScreen({
             transition={{ delay: groupIndex * 0.1 }}
             className="mb-6"
           >
-            <p className="text-xs tracking-wide mb-2 px-2" style={{ color: "#A1A1A6" }}>
+            <p className="text-[11px] tracking-[0.12em] mb-2 px-2" style={{ color: "rgba(245,245,247,0.56)" }}>
               {group.title.toUpperCase()}
             </p>
 
             <div
               className="rounded-2xl overflow-hidden"
               style={{
-                background: "rgba(255, 255, 255, 0.03)",
-                border: "1px solid rgba(255, 255, 255, 0.06)",
+                background: "rgba(255, 255, 255, 0.045)",
+                border: "1px solid rgba(255, 255, 255, 0.10)",
               }}
             >
               {group.items.map((item, index) => (
                 <button
                   key={item.id}
                   onClick={() => handleItemClick(item.id)}
-                  className="w-full px-4 py-4 flex items-center justify-between transition-colors hover:bg-white/5"
+                  className="w-full px-4 py-[15px] flex items-center justify-between transition-colors hover:bg-white/5"
                   style={{
                     borderBottom:
                       index < group.items.length - 1
-                        ? "1px solid rgba(255, 255, 255, 0.06)"
+                        ? "1px solid rgba(255, 255, 255, 0.09)"
                         : "none",
                     background:
                       item.id === "subscription" && showSubscriptionTest
@@ -156,18 +156,18 @@ export function SettingsScreen({
                   }}
                 >
                   <div className="flex items-center gap-3">
-                    <item.icon className="w-5 h-5" style={{ color: "#A1A1A6" }} />
-                    <span className="text-sm" style={{ color: "#F5F5F7" }}>
+                    <item.icon className="w-5 h-5" style={{ color: "rgba(245,245,247,0.72)" }} />
+                    <span className="text-[15px]" style={{ color: "#F5F5F7" }}>
                       {item.label}
                     </span>
                   </div>
                   <div className="flex items-center gap-2">
                     {item.id === "language" && (
-                      <span className="text-sm" style={{ color: "#A1A1A6" }}>
+                      <span className="text-[13px]" style={{ color: "rgba(245,245,247,0.58)" }}>
                         {languageLabels[lang]}
                       </span>
                     )}
-                    <ChevronRight className="w-4 h-4" style={{ color: "#A1A1A6" }} />
+                    <ChevronRight className="w-4 h-4" style={{ color: "rgba(245,245,247,0.58)" }} />
                   </div>
                 </button>
               ))}
