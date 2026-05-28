@@ -56,7 +56,17 @@ for _p in (
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 
-from .routers import cutout, compose, assets, preview, content, pet_v1, device_v1
+from .routers import (
+  cutout,
+  compose,
+  assets,
+  preview,
+  content,
+  pet_v1,
+  device_v1,
+  payment_v1,
+  subscription_v1,
+)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -88,6 +98,8 @@ app.include_router(preview.router, prefix="/api", tags=["preview"])
 app.include_router(content.router, prefix="/api", tags=["content"])
 app.include_router(pet_v1.router, prefix="/api", tags=["pet-v1"])
 app.include_router(device_v1.router, prefix="/api", tags=["device-v1"])
+app.include_router(payment_v1.router, prefix="/api", tags=["payment-v1"])
+app.include_router(subscription_v1.router, prefix="/api", tags=["subscription-v1"])
 
 # Optional heavy pipeline endpoints (Luma/generate). Disable by default on lightweight deployments.
 _enable_generate = os.getenv("ENABLE_GENERATE_API", "0").strip().lower() in ("1", "true", "yes")

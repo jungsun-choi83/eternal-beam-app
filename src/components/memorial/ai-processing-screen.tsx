@@ -12,7 +12,10 @@ import {
 import { clientCutoutFromFile } from "@/lib/client-cutout";
 import { createDisplayImageUrl, createDisplayCutoutUrl } from "@/lib/display-image";
 import { friendlyCutoutError, normalizeImageToJpegFile } from "@/lib/normalize-image";
+import { mockCutoutFromFile } from "@/lib/mock-cutout";
 import { markServerCutoutDisabled } from "@/lib/server-cutout-available";
+import { MOCK_CUTOUT_ENABLED } from "@/lib/test-app-flags";
+import { warmupVideoApi } from "@/lib/video-api-warmup";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { isLiteUI } from "@/lib/ui-performance";
 import { useProcessingClock } from "@/lib/use-processing-clock";
@@ -46,36 +49,59 @@ async function runCutoutWithFallback(
   t: ProcessingCopy,
   language: string
 ): Promise<{ display: string; cutFile: File; contentId: string }> {
+  if (MOCK_CUTOUT_ENABLED) {
+    onStatus(t.mockCutout);
+    const display = await mockCutoutFromFile(file);
+    return {
+      display,
+      cutFile: dataUrlToFile(display, "cutout.jpg"),
+      contentId: `mock_${Date.now()}`,
+    };
+  }
+
   // 기본: Render 서버 누끼 (폰에서 AI 모델 다운로드 방지). VITE_CLIENT_CUTOUT=1 이면 기기만.
   if (!CLIENT_CUTOUT_FIRST) {
-    try {
-      onStatus(t.serverCutout);
-      const cut = await cutoutImage(file, {
-        userId: "anonymous",
-        saveToStorage: false,
-        model: "isnet-general-use",
-      });
-      const display = cutoutDisplayUrl(cut);
-      if (display && !cut.error) {
-        return {
-          display,
-          cutFile: await cutoutResultToFile(cut),
-          contentId: cut.content_id || `srv_${Date.now()}`,
-        };
+    const serverAttempts = 2;
+    for (let attempt = 0; attempt < serverAttempts; attempt++) {
+      try {
+        if (attempt === 0) {
+          onStatus(t.serverWaking);
+          await warmupVideoApi({ retries: 3, timeoutMs: 15_000 });
+        } else {
+          onStatus(t.serverRetry);
+          await sleep(2000);
+          await warmupVideoApi({ retries: 2, timeoutMs: 20_000 });
+        }
+        onStatus(t.serverCutout);
+        const cut = await cutoutImage(file, {
+          userId: "anonymous",
+          saveToStorage: false,
+          model: "isnet-general-use",
+        });
+        const display = cutoutDisplayUrl(cut);
+        if (display && !cut.error) {
+          return {
+            display,
+            cutFile: await cutoutResultToFile(cut),
+            contentId: cut.content_id || `srv_${Date.now()}`,
+          };
+        }
+        if (cut.error) {
+          onStatus(
+            isCutoutMemoryError(cut.error)
+              ? t.serverThenClient
+              : `${t.serverThenClient} (${cut.error})`
+          );
+        }
+        break;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (isCutoutApiUnreachableError(msg)) {
+          markServerCutoutDisabled();
+        }
+        if (attempt < serverAttempts - 1) continue;
+        onStatus(t.clientCutout);
       }
-      if (cut.error) {
-        onStatus(
-          isCutoutMemoryError(cut.error)
-            ? t.serverThenClient
-            : `${t.serverThenClient} (${cut.error})`
-        );
-      }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (isCutoutApiUnreachableError(msg)) {
-        markServerCutoutDisabled();
-      }
-      onStatus(t.clientCutout);
     }
   } else {
     onStatus(t.clientCutout);

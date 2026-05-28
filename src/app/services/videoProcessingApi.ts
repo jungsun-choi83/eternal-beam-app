@@ -415,3 +415,105 @@ export async function generateWithCredit(body: {
   }
   return res.json() as Promise<GenerateWithCreditResult>
 }
+
+/** IAP 단품: credit_pack_4 (4,900 KRW → +4 credits) */
+export interface VerifyAndChargeResult {
+  success: boolean
+  user_id: string
+  product_id: string
+  amount_krw: number
+  credits_added: number
+  credits_remaining: number
+  payment_id?: number | null
+  transaction_id?: string | null
+  store_type: 'apple' | 'google'
+  status: string
+  idempotent_replay: boolean
+  message: string
+}
+
+export async function verifyAndChargeIAP(body: {
+  user_id: string
+  receipt_data: string
+  store_type: 'apple' | 'google'
+  product_id?: string
+}): Promise<VerifyAndChargeResult> {
+  validateVideoApiBase()
+  const res = await fetch(`${getBaseUrl()}/api/v1/payment/verify-and-charge`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      product_id: 'credit_pack_4',
+      ...body,
+    }),
+  })
+  if (!res.ok) {
+    const err = await safeJson(res)
+    throw new Error(formatHttpErrorDetail(err, '결제 검증·충전 실패'))
+  }
+  return res.json()
+}
+
+/** Standard 구독 상태 (Unity·앱) */
+export interface SubscriptionStatusResult {
+  user_id: string
+  plan_id?: string | null
+  status?: 'active' | 'canceled' | 'expired' | null
+  next_billing_date?: string | null
+  entitled: boolean
+  credits_remaining?: number | null
+  display_name?: string | null
+  price_krw_monthly?: number | null
+  credits_per_month?: number | null
+}
+
+export async function getSubscriptionStatus(
+  userId: string
+): Promise<SubscriptionStatusResult> {
+  validateVideoApiBase()
+  const res = await fetch(
+    `${getBaseUrl()}/api/v1/subscription/status/${encodeURIComponent(userId)}`
+  )
+  if (!res.ok) {
+    const err = await safeJson(res)
+    throw new Error(formatHttpErrorDetail(err, '구독 상태 조회 실패'))
+  }
+  return res.json()
+}
+
+/** Apple/Google/목업 구독 웹훅 */
+export interface SubscriptionWebhookResult {
+  success: boolean
+  user_id: string
+  plan_id: string
+  event_type: string
+  subscription_status: 'active' | 'canceled' | 'expired'
+  credits_added: number
+  credits_remaining?: number | null
+  next_billing_date?: string | null
+  entitled: boolean
+  idempotent_replay: boolean
+  message: string
+}
+
+export async function postSubscriptionWebhook(body: {
+  store_type?: 'apple' | 'google' | 'mock'
+  notification_type: string
+  user_id: string
+  plan_id?: string
+  transaction_id?: string
+  product_id?: string
+  raw?: Record<string, unknown>
+}): Promise<SubscriptionWebhookResult> {
+  validateVideoApiBase()
+  const res = await fetch(`${getBaseUrl()}/api/v1/subscription/webhook`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const err = await safeJson(res)
+    throw new Error(formatHttpErrorDetail(err, '구독 웹훅 처리 실패'))
+  }
+  return res.json()
+}

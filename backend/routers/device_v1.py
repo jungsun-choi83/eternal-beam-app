@@ -4,14 +4,29 @@
 
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, HTTPException, Query
 
 from ..models.hybrid_business import DeviceSyncResponse
 from ..services import generated_motions_service as motions_svc
+from ..services import subscription_store_service as sub_store
 
 router = APIRouter(prefix="/v1/device", tags=["device-v1"])
 
 _DEVICE_404_DETAIL = "이 장소에 충전된 영혼(모션)이 없습니다. 앱에서 코인을 사용해 충전하세요."
+_SUBSCRIPTION_403_DETAIL = (
+  "subscription_not_entitled: 구독이 없거나 만료되었습니다. "
+  "앱에서 스탠다드 구독을 갱신한 뒤 다시 시도하세요."
+)
+
+
+def _subscription_gate_enabled() -> bool:
+  return os.getenv("SUBSCRIPTION_GATE_DEVICE", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+  )
 
 
 @router.get("/sync", response_model=DeviceSyncResponse)
@@ -29,6 +44,11 @@ async def device_sync(
   uid = (user_id or "").strip()
   if not uid:
     raise HTTPException(400, detail="user_id is required")
+
+  if _subscription_gate_enabled():
+    sub = await sub_store.get_subscription(uid)
+    if not sub_store.is_entitled(sub):
+      raise HTTPException(status_code=403, detail=_SUBSCRIPTION_403_DETAIL)
 
   items = await motions_svc.get_device_sync_payload(uid, place_id, pet_id)
   if not items:

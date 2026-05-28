@@ -1,6 +1,8 @@
 /**
  * 누끼/ONNX가 읽을 수 있도록 사진을 JPEG로 정규화 (HEIC·webp·잘못된 MIME 대응).
  */
+import { MOCK_CUTOUT_ENABLED, TEST_APP_MODE } from "@/lib/test-app-flags";
+
 export async function normalizeImageToJpegFile(
   source: File | string,
   maxEdge = 2048
@@ -116,9 +118,19 @@ export function friendlyCutoutError(message: string, language = "ko"): string {
     m.includes("load failed") ||
     m.includes("aborterror")
   ) {
+    if (MOCK_CUTOUT_ENABLED) {
+      return language === "ko"
+        ? "테스트 모드 처리에 실패했습니다. 사진을 다시 선택해 주세요."
+        : "Test mode processing failed. Please pick another photo.";
+    }
+    if (TEST_APP_MODE) {
+      return language === "ko"
+        ? "처리 서버가 준비 중입니다. Wi‑Fi에서 1분 뒤 다시 시도하거나, VITE_MOCK_CUTOUT=1 로 빠른 테스트를 켜 주세요."
+        : "Server is waking up. Retry on Wi‑Fi in a minute, or enable VITE_MOCK_CUTOUT=1.";
+    }
     return language === "ko"
-      ? "서버 연결이 느리거나 끊겼습니다. Wi‑Fi에서 다시 시도하거나, 1분 후 재시도해 주세요. (첫 실행은 AI 모델 다운로드로 시간이 걸릴 수 있습니다)"
-      : "Connection failed or timed out. Try Wi‑Fi and retry in a minute.";
+      ? "처리 중 연결이 지연되었습니다. Wi‑Fi에서 잠시 후 다시 시도해 주세요."
+      : "Connection delayed. Please retry on Wi‑Fi in a moment.";
   }
   if (m.includes("누끼 서버")) {
     return message;

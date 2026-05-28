@@ -24,6 +24,10 @@ services:
         value: "4"
       - key: STARTER_CREDITS
         value: "4"
+      - key: PAYMENT_MOCK
+        value: "1"
+      - key: SUBSCRIPTION_MOCK
+        value: "1"
       - key: LUMA_CREDIT_CONCURRENCY
         value: "3"
       - key: SUPABASE_STORAGE_BUCKET

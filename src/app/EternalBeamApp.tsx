@@ -6,6 +6,8 @@ import {
   isInsufficientCreditsError,
 } from '@/lib/credit-pipeline'
 import { saveCreditSession } from '@/lib/credit-session'
+import { chargeCreditPackMock } from '@/lib/iap-mock'
+import { IAP_MOCK_ENABLED } from '@/lib/test-app-flags'
 import { createDisplayCutoutUrl } from '@/lib/display-image'
 import { AnimatePresence, motion } from 'framer-motion'
 import { MobileFrame } from '@/components/memorial/mobile-frame'
@@ -93,6 +95,7 @@ export function EternalBeamApp() {
   const [, setIsFirstTime] = useState(true)
   const [walletCredits, setWalletCredits] = useState<number | null>(null)
   const [creditBusy, setCreditBusy] = useState(false)
+  const [creditPackBusy, setCreditPackBusy] = useState(false)
 
   const refreshWallet = useCallback(async () => {
     if (!CREDITS_ENABLED) return
@@ -179,6 +182,21 @@ export function EternalBeamApp() {
       setPendingPremiumTheme(null)
     }
     navigateTo('preview')
+  }
+
+  const handleBuyCreditsMock = async () => {
+    const tc = memorialT(language).theme
+    setCreditPackBusy(true)
+    try {
+      const result = await chargeCreditPackMock(getEternalBeamUserId(userName))
+      setWalletCredits(result.credits_remaining)
+      alert(tc.buyCreditsDone(result.credits_remaining))
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      alert(`${tc.buyCreditsFailed}: ${msg}`)
+    } finally {
+      setCreditPackBusy(false)
+    }
   }
 
   const handleThemeContinueWithCredit = async () => {
@@ -470,6 +488,12 @@ export function EternalBeamApp() {
                 walletCredits={walletCredits}
                 creditCost={CREDIT_COST}
                 creditBusy={creditBusy}
+                creditPackBusy={creditPackBusy}
+                onBuyCreditsMock={
+                  CREDITS_ENABLED && IAP_MOCK_ENABLED
+                    ? () => void handleBuyCreditsMock()
+                    : undefined
+                }
                 onSelectTheme={handleThemeSelect}
                 onSelectPremiumTheme={handlePremiumThemeSelect}
                 onContinue={() => void handleThemeContinueWithCredit()}
@@ -568,12 +592,14 @@ export function EternalBeamApp() {
             >
               <SettingsScreen
                 currentLanguage={language}
+                userId={getEternalBeamUserId(userName)}
                 onChangeLanguage={() =>
                   handleLanguageChange(language === 'ko' ? 'en' : 'ko')
                 }
                 onDeviceSettings={() => navigateTo('device')}
                 onBack={() => navigateTo('home')}
                 onLogout={handleLogout}
+                onCreditsChanged={(n) => setWalletCredits(n)}
               />
             </motion.div>
           )}

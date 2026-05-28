@@ -142,6 +142,44 @@ async def deduct_credits(user_id: str, amount: int) -> UserWallet:
     return wallet
 
 
+async def add_credits(user_id: str, amount: int) -> UserWallet:
+  """IAP·구독 등 — 크레딧 충전 (사용자 단위 Lock)."""
+  if amount <= 0:
+    raise ValueError("amount must be positive")
+
+  uid = user_id.strip()
+  async with _user_lock(uid):
+    wallet = await get_wallet(uid, create_if_missing=True)
+    assert wallet is not None
+    new_balance = wallet.current_credits + amount
+    now = datetime.utcnow()
+
+    if _use_db() and _supabase():
+      sb = _supabase()
+      r = sb.rpc("add_wallet_credits", {"p_user_id": uid, "p_amount": amount}).execute()
+      if r.data is not None:
+        bal = r.data
+        if isinstance(bal, list) and bal:
+          bal = bal[0]
+        if isinstance(bal, (int, float)):
+          new_balance = int(bal)
+        elif isinstance(bal, dict) and "credits_remaining" in bal:
+          new_balance = int(bal["credits_remaining"])
+        else:
+          sb.table(_table()).update(
+            {"current_credits": new_balance, "updated_at": now.isoformat()}
+          ).eq("user_id", uid).execute()
+      else:
+        sb.table(_table()).update(
+          {"current_credits": new_balance, "updated_at": now.isoformat()}
+        ).eq("user_id", uid).execute()
+
+    wallet.current_credits = new_balance
+    wallet.updated_at = now
+    _MOCK_WALLETS[uid] = wallet
+    return wallet
+
+
 async def refund_credits(user_id: str, amount: int) -> UserWallet:
   """Luma 제출 전체 실패 등 — 차감 롤백."""
   uid = user_id.strip()

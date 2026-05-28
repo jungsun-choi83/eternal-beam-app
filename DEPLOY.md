@@ -34,7 +34,18 @@
 Supabase SQL (대시보드 SQL Editor):
 
 1. `docs/supabase_hybrid_business.sql` — 지갑·모션·크레딧
-2. (선택) `docs/supabase_pet_scenarios.sql` — 40건 배치
+2. `docs/supabase_payment_iap.sql` — 단품 IAP
+3. `docs/supabase_subscription.sql` — 정기 구독
+4. (선택) `docs/supabase_pet_scenarios.sql` — 40건 배치
+
+테스트 앱 목업 (Render Environment):
+
+| 변수 | 값 |
+|------|-----|
+| `PAYMENT_MOCK` | `1` |
+| `SUBSCRIPTION_MOCK` | `1` |
+
+Vercel: `VITE_IAP_MOCK=1`, `VITE_SUBSCRIPTION_MOCK=1` → 설정에서 **구독 테스트** 버튼 표시
 
 누끼만 쓸 때는 Supabase 없이도 `/api/cutout` base64 반환은 동작합니다.
 

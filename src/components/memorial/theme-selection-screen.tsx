@@ -15,6 +15,8 @@ interface ThemeSelectionScreenProps {
   walletCredits?: number | null;
   creditCost?: number;
   creditBusy?: boolean;
+  creditPackBusy?: boolean;
+  onBuyCreditsMock?: () => void;
   onSelectTheme: (themeId: number) => void;
   onSelectPremiumTheme: (themeId: number) => void;
   onContinue: () => void;
@@ -31,6 +33,8 @@ export function ThemeSelectionScreen({
   walletCredits = null,
   creditCost = 4,
   creditBusy = false,
+  creditPackBusy = false,
+  onBuyCreditsMock,
   onSelectTheme, 
   onSelectPremiumTheme,
   onContinue, 
@@ -551,8 +555,29 @@ export function ThemeSelectionScreen({
       <div className="px-8 py-6 space-y-3">
         {selectedTheme && walletCredits !== null ? (
           <p className="text-center text-[11px] font-light" style={{ color: "#A1A1A6" }}>
-            {tc.creditsCost(creditCost)}
+            {walletCredits < creditCost
+              ? tc.needMoreCredits(walletCredits, creditCost)
+              : tc.creditsCost(creditCost)}
           </p>
+        ) : null}
+        {onBuyCreditsMock &&
+        (walletCredits === null || walletCredits < creditCost) ? (
+          <motion.button
+            type="button"
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            onClick={onBuyCreditsMock}
+            disabled={creditPackBusy || creditBusy}
+            className="w-full py-3 rounded-2xl text-[13px] font-light"
+            style={{
+              background: "rgba(28, 28, 30, 0.9)",
+              border: "1px solid rgba(201, 162, 39, 0.35)",
+              color: "#d4af37",
+              cursor: creditPackBusy ? "wait" : "pointer",
+            }}
+          >
+            {creditPackBusy ? tc.buyCreditsBusy : tc.buyCreditsMock}
+          </motion.button>
         ) : null}
         <motion.button
           initial={{ opacity: 0, y: 20 }}

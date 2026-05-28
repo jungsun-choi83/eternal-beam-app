@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { motion } from "framer-motion";
 import {
   ChevronLeft,
@@ -15,24 +16,31 @@ import {
   CreditCard,
 } from "lucide-react";
 import { languageLabels, memorialLang, memorialT } from "@/components/memorial/memorial-i18n";
+import { SubscriptionTestPanel } from "@/components/memorial/subscription-test-panel";
+import { SUBSCRIPTION_MOCK_ENABLED } from "@/lib/test-app-flags";
 
 interface SettingsScreenProps {
   currentLanguage: string;
+  userId?: string;
   onChangeLanguage: () => void;
   onDeviceSettings: () => void;
   onBack: () => void;
   onLogout: () => void;
+  onCreditsChanged?: (remaining: number) => void;
 }
 
 export function SettingsScreen({
   currentLanguage,
+  userId = "demo-user",
   onChangeLanguage,
   onDeviceSettings,
   onBack,
   onLogout,
+  onCreditsChanged,
 }: SettingsScreenProps) {
   const s = memorialT(currentLanguage).settings;
   const lang = memorialLang(currentLanguage);
+  const [showSubscriptionTest, setShowSubscriptionTest] = useState(false);
 
   const settingsGroups = [
     {
@@ -52,7 +60,11 @@ export function SettingsScreen({
     {
       title: s.account,
       items: [
-        { id: "subscription", label: s.subscription, icon: CreditCard },
+        {
+          id: "subscription",
+          label: SUBSCRIPTION_MOCK_ENABLED ? s.subscriptionTest : s.subscription,
+          icon: CreditCard,
+        },
         { id: "privacy", label: s.privacy, icon: Shield },
       ],
     },
@@ -74,6 +86,11 @@ export function SettingsScreen({
       case "wifi":
         onDeviceSettings();
         break;
+      case "subscription":
+        if (SUBSCRIPTION_MOCK_ENABLED) {
+          setShowSubscriptionTest((v) => !v);
+        }
+        break;
       default:
         break;
     }
@@ -94,6 +111,15 @@ export function SettingsScreen({
       </header>
 
       <div className="flex-1 overflow-y-auto px-4 pb-8">
+        {showSubscriptionTest && SUBSCRIPTION_MOCK_ENABLED ? (
+          <SubscriptionTestPanel
+            userId={userId}
+            language={currentLanguage}
+            onClose={() => setShowSubscriptionTest(false)}
+            onCreditsChanged={onCreditsChanged}
+          />
+        ) : null}
+
         {settingsGroups.map((group, groupIndex) => (
           <motion.div
             key={group.title}
@@ -123,6 +149,10 @@ export function SettingsScreen({
                       index < group.items.length - 1
                         ? "1px solid rgba(255, 255, 255, 0.06)"
                         : "none",
+                    background:
+                      item.id === "subscription" && showSubscriptionTest
+                        ? "rgba(201, 162, 39, 0.06)"
+                        : undefined,
                   }}
                 >
                   <div className="flex items-center gap-3">
