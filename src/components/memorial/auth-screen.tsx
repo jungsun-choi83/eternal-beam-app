@@ -7,14 +7,21 @@ import { HolographicBackground } from "./holographic-background";
 import { HologramEffects } from "./hologram-effects";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { setEternalBeamUserId } from "@/lib/eternal-beam-user";
+import { LanguageToggle } from "./language-toggle";
 
 interface AuthScreenProps {
   initialMode?: "login" | "signup";
   language?: string;
+  onLanguageChange?: (lang: "ko" | "en") => void;
   onAuthComplete: (userName?: string) => void;
 }
 
-export function AuthScreen({ initialMode = "login", language = "ko", onAuthComplete }: AuthScreenProps) {
+export function AuthScreen({
+  initialMode = "login",
+  language = "ko",
+  onLanguageChange,
+  onAuthComplete,
+}: AuthScreenProps) {
   const a = memorialT(language).auth;
   const [mode, setMode] = useState<"login" | "signup">(initialMode);
   const [showPassword, setShowPassword] = useState(false);
@@ -71,6 +78,12 @@ export function AuthScreen({ initialMode = "login", language = "ko", onAuthCompl
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.7, ease: [0.25, 0.46, 0.45, 0.94] as const }}
       >
+        <div className="flex justify-end mb-4">
+          <LanguageToggle
+            language={language}
+            onChange={(code) => onLanguageChange?.(code)}
+          />
+        </div>
         <div className="text-center relative overflow-hidden">
           {/* Enhanced Gold Glow */}
           <motion.div

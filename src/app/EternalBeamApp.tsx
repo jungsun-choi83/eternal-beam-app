@@ -324,6 +324,7 @@ export function EternalBeamApp() {
             >
               <OnboardingScreen
                 language={language}
+                onLanguageChange={handleLanguageChange}
                 onComplete={() => navigateTo('signup')}
               />
             </motion.div>
@@ -341,6 +342,7 @@ export function EternalBeamApp() {
             >
               <AuthScreen
                 language={language}
+                onLanguageChange={handleLanguageChange}
                 initialMode="signup"
                 onAuthComplete={(name?: string) => {
                   if (name) setUserName(name)
@@ -362,6 +364,7 @@ export function EternalBeamApp() {
             >
               <AuthScreen
                 language={language}
+                onLanguageChange={handleLanguageChange}
                 initialMode="login"
                 onAuthComplete={(name?: string) => {
                   if (name) setUserName(name)

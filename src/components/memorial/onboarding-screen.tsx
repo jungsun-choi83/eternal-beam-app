@@ -4,9 +4,11 @@ import { useState, useMemo, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ChevronRight } from "lucide-react";
 import { memorialT } from "@/components/memorial/memorial-i18n";
+import { LanguageToggle } from "./language-toggle";
 
 interface OnboardingScreenProps {
   language?: string;
+  onLanguageChange?: (lang: "ko" | "en") => void;
   onComplete: () => void;
 }
 
@@ -22,8 +24,13 @@ function createParticles() {
   }));
 }
 
-export function OnboardingScreen({ language = "ko", onComplete }: OnboardingScreenProps) {
-  const ob = memorialT(language).onboarding;
+export function OnboardingScreen({
+  language = "ko",
+  onLanguageChange,
+  onComplete,
+}: OnboardingScreenProps) {
+  const t = memorialT(language);
+  const ob = t.onboarding;
   const slides = ob.slides;
   const [currentSlide, setCurrentSlide] = useState(0);
   const [shootingStar, setShootingStar] = useState(false);
@@ -214,13 +221,19 @@ export function OnboardingScreen({ language = "ko", onComplete }: OnboardingScre
         )}
       </div>
 
-      {/* Skip Button - 클릭 가능하도록 최상단 */}
-      <div className="absolute top-6 right-6 z-20">
+      {/* 언어 · 건너뛰기 — 첫 화면에서 EN 전환 가능 */}
+      <div className="absolute top-6 left-6 right-6 z-20 flex items-center justify-between gap-3 pointer-events-auto">
+        <LanguageToggle
+          language={language}
+          onChange={(code) => onLanguageChange?.(code)}
+          className="relative z-20"
+        />
         <button
+          type="button"
           onClick={handleSkip}
-          className="text-sm text-[#A1A1A6] hover:text-[#F5F5F7] transition-colors"
+          className="text-sm text-[#A1A1A6] hover:text-[#F5F5F7] transition-colors shrink-0"
         >
-          Skip
+          {t.common.skip}
         </button>
       </div>
 

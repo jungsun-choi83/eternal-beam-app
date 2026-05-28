@@ -3,9 +3,13 @@
  */
 import { MOCK_CUTOUT_ENABLED, TEST_APP_MODE } from "@/lib/test-app-flags";
 
+/** 누끼 업로드용 — 서버 CUTOUT_MAX_PIXEL(1280)과 맞춤 */
+export const CUTOUT_UPLOAD_MAX_EDGE = 1280;
+
 export async function normalizeImageToJpegFile(
   source: File | string,
-  maxEdge = 2048
+  maxEdge = 2048,
+  jpegQuality = 0.92
 ): Promise<File> {
   const blob = await loadAsDecodableBlob(source);
   const bitmap = await createImageBitmap(blob).catch(async () => {
@@ -44,11 +48,15 @@ export async function normalizeImageToJpegFile(
     canvas.toBlob(
       (b) => (b ? resolve(b) : reject(new Error("사진 변환에 실패했습니다."))),
       "image/jpeg",
-      0.92
+      jpegQuality
     );
   });
 
   return new File([jpeg], "upload.jpg", { type: "image/jpeg" });
+}
+
+export function normalizeImageForCutout(source: File | string): Promise<File> {
+  return normalizeImageToJpegFile(source, CUTOUT_UPLOAD_MAX_EDGE, 0.88);
 }
 
 function dataUrlToBlob(dataUrl: string): Blob {
@@ -111,6 +119,17 @@ export function friendlyCutoutError(message: string, language = "ko"): string {
     return language === "ko"
       ? "사진 형식을 읽지 못했습니다. JPG·PNG 사진으로 다시 선택해 주세요."
       : "Could not read this photo. Please choose a JPG or PNG image.";
+  }
+  if (
+    m.includes("502") ||
+    m.includes("503") ||
+    m.includes("504") ||
+    m.includes("bad gateway") ||
+    m.includes("깨어나는 중")
+  ) {
+    return language === "ko"
+      ? "누끼 서버가 깨어나는 중입니다. 1분 정도 기다린 뒤 ‘다시 시도’를 눌러 주세요."
+      : "The cutout server is waking up. Wait about a minute, then tap Try again.";
   }
   if (
     m.includes("failed to fetch") ||

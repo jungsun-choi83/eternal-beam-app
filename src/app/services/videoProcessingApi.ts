@@ -19,6 +19,9 @@ function normalizeApiBase(raw: string | undefined): string {
   return s
 }
 
+/** Render FastAPI — 프로덕션 기본 (Vercel /api 프록시는 콜드스타트·긴 누끼 중 502) */
+export const DEFAULT_RENDER_VIDEO_API = 'https://eternal-beam-video-api.onrender.com'
+
 /** API base (no trailing slash). Dev: '' → same-origin so Vite proxies /api → :8000 */
 const getBaseUrl = (): string => {
   const explicit = normalizeApiBase(
@@ -26,8 +29,8 @@ const getBaseUrl = (): string => {
   )
   if (explicit) return explicit
   if (import.meta.env.DEV) return ''
-  // 배포: VITE 미설정 시 device.eternalbeam.com/api → vercel.json → Render
-  return ''
+  // 배포: 브라우저 → Render 직접 (CORS 허용). Vercel rewrite 타임아웃 502 방지
+  return DEFAULT_RENDER_VIDEO_API
 }
 
 /** 프리뷰/정적 URL을 절대 주소로 붙일 때 사용 (내부 로직과 동일). */
@@ -64,12 +67,15 @@ async function safeJson(res: Response): Promise<Record<string, unknown>> {
 }
 
 /** 프로덕션/로컬에 맞는 안내 (Failed to fetch 등) */
-function cutoutFetchFailedMessage(): string {
+function cutoutFetchFailedMessage(status?: number): string {
+  if (status === 502 || status === 503 || status === 504) {
+    return '누끼 서버가 깨어나는 중입니다(502). 1분 뒤 다시 시도해 주세요. Wi‑Fi를 권장합니다.'
+  }
   if (import.meta.env.PROD) {
     return [
       '누끼 서버에 연결할 수 없습니다.',
-      'Vercel 환경변수 VITE_VIDEO_API_URL에 만료된 trycloudflare 주소가 들어가 있으면 삭제 후 재배포하세요.',
-      '또는 Render 백엔드 URL(예: https://eternal-beam-video-api.onrender.com)을 넣거나, vercel.json /api 프록시를 사용하세요.',
+      'Render 무료 플랜은 잠들었다가 첫 요청에 1~2분 걸릴 수 있습니다.',
+      'VITE_VIDEO_API_URL이 만료된 터널 URL이면 삭제 후 재배포하세요.',
     ].join(' ')
   }
   return '누끼 서버에 연결할 수 없습니다. 프로젝트 루트에서 `npm run video-api`로 백엔드(포트 8000)를 실행한 뒤 다시 시도하세요.'
@@ -80,6 +86,11 @@ export function isCutoutApiUnreachableError(message: string): boolean {
   const m = message.toLowerCase()
   return (
     m.includes('누끼 서버') ||
+    m.includes('502') ||
+    m.includes('503') ||
+    m.includes('504') ||
+    m.includes('bad gateway') ||
+    m.includes('gateway') ||
     m.includes('api가 설정') ||
     m.includes('failed to fetch') ||
     m.includes('network') ||
@@ -142,6 +153,8 @@ export async function cutoutImage(
     saveToStorage?: boolean
     /** isnet-general-use(강아지·털) | u2net_human_seg(사람) */
     model?: string
+    /** 알파 매팅 생략 — 모바일·Render CPU에서 더 빠름 */
+    fast?: boolean
   } = {}
 ): Promise<CutoutResult> {
   validateVideoApiBase()
@@ -151,9 +164,10 @@ export async function cutoutImage(
   if (options.contentId) form.append('content_id', options.contentId)
   form.append('save_to_storage', String(options.saveToStorage !== false))
   if (options.model) form.append('model', options.model)
+  if (options.fast) form.append('fast', 'true')
 
   const ctrl = new AbortController()
-  const tid = setTimeout(() => ctrl.abort(), 120_000)
+  const tid = setTimeout(() => ctrl.abort(), 180_000)
   let res: Response
   try {
     res = await fetch(`${getBaseUrl()}/api/cutout`, {
@@ -169,6 +183,9 @@ export async function cutoutImage(
   if (!res.ok) {
     if (import.meta.env.PROD && getBaseUrl() === '' && res.status === 404) {
       throw new Error(missingVideoApiConfigMessage())
+    }
+    if (res.status === 502 || res.status === 503 || res.status === 504) {
+      throw new Error(cutoutFetchFailedMessage(res.status))
     }
     const err = await safeJson(res)
     throw new Error(formatHttpErrorDetail(err, '배경 제거 요청 실패'))

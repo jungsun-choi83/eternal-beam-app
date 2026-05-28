@@ -11,7 +11,7 @@ import {
 } from "@/app/services/videoProcessingApi";
 import { clientCutoutFromFile } from "@/lib/client-cutout";
 import { createDisplayImageUrl, createDisplayCutoutUrl } from "@/lib/display-image";
-import { friendlyCutoutError, normalizeImageToJpegFile } from "@/lib/normalize-image";
+import { friendlyCutoutError, normalizeImageForCutout } from "@/lib/normalize-image";
 import { mockCutoutFromFile } from "@/lib/mock-cutout";
 import { markServerCutoutDisabled } from "@/lib/server-cutout-available";
 import { MOCK_CUTOUT_ENABLED } from "@/lib/test-app-flags";
@@ -23,7 +23,8 @@ import { useProcessingClock } from "@/lib/use-processing-clock";
 export const ETERNAL_BEAM_PIPELINE_KEY = "eternal_beam_pipeline_v1";
 
 const LUMA_ENABLED = import.meta.env.VITE_ENABLE_LUMA === "1";
-const FILM_CONVERSION_SEC = Number(import.meta.env.VITE_FILM_CONVERSION_SEC || "12");
+const FILM_CONVERSION_SEC = Number(import.meta.env.VITE_FILM_CONVERSION_SEC ?? "0");
+const CLIENT_CUTOUT_FALLBACK = import.meta.env.VITE_CLIENT_CUTOUT_FALLBACK === "1";
 
 export interface StoredPipeline {
   content_id: string;
@@ -59,24 +60,25 @@ async function runCutoutWithFallback(
     };
   }
 
-  // 기본: Render 서버 누끼 (폰에서 AI 모델 다운로드 방지). VITE_CLIENT_CUTOUT=1 이면 기기만.
+  // 기본: Render 서버 누끼. 폰 폴백은 VITE_CLIENT_CUTOUT_FALLBACK=1 일 때만(첫 실행 3분+).
   if (!CLIENT_CUTOUT_FIRST) {
     const serverAttempts = 2;
     for (let attempt = 0; attempt < serverAttempts; attempt++) {
       try {
         if (attempt === 0) {
           onStatus(t.serverWaking);
-          await warmupVideoApi({ retries: 3, timeoutMs: 15_000 });
+          await warmupVideoApi({ coldStart: true });
+          onStatus(t.serverCutout);
         } else {
           onStatus(t.serverRetry);
-          await sleep(2000);
-          await warmupVideoApi({ retries: 2, timeoutMs: 20_000 });
+          await sleep(1500);
+          await warmupVideoApi({ retries: 2, timeoutMs: 12_000 });
         }
-        onStatus(t.serverCutout);
         const cut = await cutoutImage(file, {
           userId: "anonymous",
           saveToStorage: false,
           model: "isnet-general-use",
+          fast: true,
         });
         const display = cutoutDisplayUrl(cut);
         if (display && !cut.error) {
@@ -87,24 +89,31 @@ async function runCutoutWithFallback(
           };
         }
         if (cut.error) {
-          onStatus(
-            isCutoutMemoryError(cut.error)
-              ? t.serverThenClient
-              : `${t.serverThenClient} (${cut.error})`
-          );
+          if (attempt < serverAttempts - 1) continue;
+          if (!CLIENT_CUTOUT_FALLBACK) {
+            throw new Error(t.serverOnlyFailed);
+          }
+          onStatus(t.clientCutout);
+          break;
         }
-        break;
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (isCutoutApiUnreachableError(msg)) {
           markServerCutoutDisabled();
         }
         if (attempt < serverAttempts - 1) continue;
+        if (!CLIENT_CUTOUT_FALLBACK) {
+          throw new Error(t.serverOnlyFailed);
+        }
         onStatus(t.clientCutout);
       }
     }
   } else {
     onStatus(t.clientCutout);
+  }
+
+  if (!CLIENT_CUTOUT_FIRST && !CLIENT_CUTOUT_FALLBACK) {
+    throw new Error(t.serverOnlyFailed);
   }
 
   onStatus(t.waitHint);
@@ -189,7 +198,11 @@ async function runFilmConversionDemo(
   onTick: (pct: number, line: string) => void,
   t: ProcessingCopy
 ): Promise<void> {
-  const steps = Math.max(6, Math.min(20, FILM_CONVERSION_SEC));
+  if (FILM_CONVERSION_SEC <= 0) {
+    onTick(92, t.lumaSkip);
+    return;
+  }
+  const steps = Math.max(3, Math.min(12, FILM_CONVERSION_SEC));
   for (let i = 0; i < steps; i++) {
     onTick(40 + Math.round(((i + 1) / steps) * 55), t.convertingHint);
     await sleep((FILM_CONVERSION_SEC * 1000) / steps);
@@ -267,6 +280,7 @@ export function AIProcessingScreen({
   const [displayOriginal, setDisplayOriginal] = useState<string | null>(null);
   const [cutoutPreview, setCutoutPreview] = useState<string | null>(null);
   const [showCompare, setShowCompare] = useState(false);
+  const [retryKey, setRetryKey] = useState(0);
 
   const runTokenRef = useRef(0);
   const onCompleteRef = useRef(onComplete);
@@ -309,11 +323,13 @@ export function AIProcessingScreen({
       setShowCompare(false);
       setCurrentStep(0);
       setProgress(10);
-      setStatusLine(t.uploading);
+        setStatusLine(t.uploading);
 
       try {
         setStatusLine(t.steps[0].description);
-        const file = await normalizeImageToJpegFile(uploadedImage);
+        setStatusLine(t.serverWaking);
+        const file = await normalizeImageForCutout(uploadedImage);
+        await warmupVideoApi({ coldStart: true });
 
         const { display, cutFile, contentId: cutContentId } = await runCutoutWithFallback(
           file,
@@ -334,7 +350,7 @@ export function AIProcessingScreen({
         setProgress(38);
         setStatusLine(t.cutoutDone);
 
-        await sleep(lite ? 400 : 900);
+        await sleep(lite ? 250 : 450);
         if (cancelled || myToken !== runTokenRef.current) return;
 
         setCurrentStep(1);
@@ -391,7 +407,7 @@ export function AIProcessingScreen({
         setTimeout(() => {
           if (cancelled || myToken !== runTokenRef.current) return;
           onCompleteRef.current(display);
-        }, lite ? 400 : 700);
+        }, lite ? 300 : 500);
       } catch (e) {
         const msg =
           e instanceof Error ? e.message : typeof e === "string" ? e : "Processing failed";
@@ -509,11 +525,32 @@ export function AIProcessingScreen({
         </div>
 
         {error ? (
-          <div
-            className="mb-4 px-4 py-3 rounded-xl text-center text-sm max-w-[300px]"
-            style={{ background: "rgba(80, 20, 20, 0.4)", color: "#f5c2c2", border: "1px solid #553333" }}
-          >
-            {error}
+          <div className="mb-4 max-w-[300px] w-full">
+            <div
+              className="px-4 py-3 rounded-xl text-center text-sm"
+              style={{
+                background: "rgba(80, 20, 20, 0.4)",
+                color: "#f5c2c2",
+                border: "1px solid #553333",
+              }}
+            >
+              {error}
+            </div>
+            <button
+              type="button"
+              className="mt-3 w-full py-3 rounded-xl text-sm font-medium"
+              style={{
+                background: "rgba(201, 162, 39, 0.2)",
+                color: "#f5d77a",
+                border: "1px solid rgba(201, 162, 39, 0.35)",
+              }}
+              onClick={() => {
+                setError(null);
+                setRetryKey((k) => k + 1);
+              }}
+            >
+              {t.retry}
+            </button>
           </div>
         ) : null}
 

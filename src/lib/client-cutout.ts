@@ -2,7 +2,7 @@
  * 브라우저에서 배경 제거 — @imgly는 dynamic import (화면·타이머 먼저 살아 있게).
  */
 import { memorialT } from "@/components/memorial/memorial-i18n";
-import { normalizeImageToJpegFile } from "@/lib/normalize-image";
+import { normalizeImageForCutout } from "@/lib/normalize-image";
 
 function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -25,7 +25,7 @@ export async function clientCutoutFromFile(
   const p = memorialT(language).processing;
   onStatus?.(p.statusLines[2]);
   await yieldToUi();
-  const ready = await normalizeImageToJpegFile(file);
+  const ready = await normalizeImageForCutout(file);
   await yieldToUi();
 
   onStatus?.(p.modelLoad);
@@ -48,6 +48,6 @@ export async function clientCutoutFromDataUrl(
   dataUrl: string,
   onStatus?: (line: string) => void
 ): Promise<string> {
-  const ready = await normalizeImageToJpegFile(dataUrl);
+  const ready = await normalizeImageForCutout(dataUrl);
   return clientCutoutFromFile(ready, onStatus);
 }

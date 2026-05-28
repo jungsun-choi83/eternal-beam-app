@@ -8,7 +8,7 @@ interface LanguageToggleProps {
   className?: string;
 }
 
-/** 홈 상단 KO / EN 토글 */
+/** KO / EN 언어 전환 (온보딩·인증·홈 등 공통) */
 export function LanguageToggle({
   language = "ko",
   onChange,

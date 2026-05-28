@@ -31,6 +31,7 @@ async def post_cutout(
     save_to_storage: str = Form("true"),
     model: str | None = Form(None),
     pet_only: str = Form("false"),
+    fast: str = Form("false"),
 ):
     raw = await file.read()
     if not raw:
@@ -41,8 +42,20 @@ async def post_cutout(
     save = str(save_to_storage).lower() in ("1", "true", "yes")
     only_pet = str(pet_only).lower() in ("1", "true", "yes")
 
+    use_fast = str(fast).lower() in ("1", "true", "yes")
+
     try:
-        png = _run_cutout(raw, model_name, only_pet)
+        if use_fast and not only_pet:
+            from ..services.cutout_service import remove_background
+
+            png = remove_background(
+                raw,
+                model_name=model_name,
+                use_alpha_matting=False,
+                post_refine_feather=False,
+            )
+        else:
+            png = _run_cutout(raw, model_name, only_pet)
     except Exception as e:
         return {
             "content_id": cid,

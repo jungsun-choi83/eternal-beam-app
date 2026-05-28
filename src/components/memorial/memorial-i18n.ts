@@ -51,7 +51,7 @@ const STRINGS = {
       before: "원본",
       after: "누끼",
       uploading: "사진을 불러오는 중…",
-      waitHint: "첫 실행은 1~3분 걸릴 수 있어요. 화면을 유지해 주세요.",
+      waitHint: "보통 30초~2분 걸립니다. 화면을 유지해 주세요.",
       statusLines: [
         "배경을 지우는 중…",
         "사랑하는 모습을 남기는 중…",
@@ -67,10 +67,13 @@ const STRINGS = {
       lumaSkip: "잠시만 기다려 주세요…",
       clientCutout: "이 기기에서 배경을 지우는 중… (Wi‑Fi·첫 실행 시 1~3분)",
       serverCutout: "서버에서 배경을 지우는 중…",
-      serverWaking: "처리 서버를 준비하는 중…",
+      serverWaking: "처리 서버를 깨우는 중… (첫 요청 1~2분)",
       serverRetry: "다시 연결하는 중…",
       mockCutout: "테스트 모드 — 사진 준비 중…",
       serverThenClient: "서버 연결 실패 — 이 기기에서 다시 처리 중…",
+      serverOnlyFailed:
+        "처리 서버가 잠시 바쁩니다. Wi‑Fi에서 1분 뒤 다시 시도해 주세요.",
+      retry: "다시 시도",
     },
     theme: {
       title: "배경 선택",
@@ -312,10 +315,13 @@ const STRINGS = {
       lumaSkip: "Getting things ready…",
       clientCutout: "Removing background on this device… (Wi‑Fi, first run 1–3 min)",
       serverCutout: "Removing background on server…",
-      serverWaking: "Waking up processing server…",
+      serverWaking: "Waking up server… (first request may take 1–2 min)",
       serverRetry: "Reconnecting…",
       mockCutout: "Test mode — preparing photo…",
       serverThenClient: "Server unavailable — retrying on device…",
+      serverOnlyFailed:
+        "The processing server is busy. Please retry on Wi‑Fi in about a minute.",
+      retry: "Try again",
     },
     theme: {
       title: "Choose a Background",

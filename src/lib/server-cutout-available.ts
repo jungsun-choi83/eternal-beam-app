@@ -16,16 +16,12 @@ export async function isServerCutoutAvailable(): Promise<boolean> {
 
   try {
     const ctrl = new AbortController();
-    const tid = setTimeout(() => ctrl.abort(), 3000);
+    const tid = setTimeout(() => ctrl.abort(), 12_000);
     const res = await fetch(healthUrl, { method: "GET", signal: ctrl.signal });
     clearTimeout(tid);
-    if (!res.ok) {
-      markServerCutoutDisabled();
-      return false;
-    }
+    if (!res.ok) return false;
     return true;
   } catch {
-    markServerCutoutDisabled();
     return false;
   }
 }
