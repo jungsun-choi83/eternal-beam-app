@@ -155,6 +155,8 @@ export async function cutoutImage(
     model?: string
     /** 알파 매팅 생략 — 모바일·Render CPU에서 더 빠름 */
     fast?: boolean
+    /** fetch 상한(ms). fast 기본 90초 */
+    timeoutMs?: number
   } = {}
 ): Promise<CutoutResult> {
   validateVideoApiBase()
@@ -166,8 +168,10 @@ export async function cutoutImage(
   if (options.model) form.append('model', options.model)
   if (options.fast) form.append('fast', 'true')
 
+  const timeoutMs =
+    options.timeoutMs ?? (options.fast ? 90_000 : 180_000)
   const ctrl = new AbortController()
-  const tid = setTimeout(() => ctrl.abort(), 180_000)
+  const tid = setTimeout(() => ctrl.abort(), timeoutMs)
   let res: Response
   try {
     res = await fetch(`${getBaseUrl()}/api/cutout`, {

@@ -13,7 +13,11 @@ import { clientCutoutFromFile } from "@/lib/client-cutout";
 import { createDisplayImageUrl, createDisplayCutoutUrl } from "@/lib/display-image";
 import { friendlyCutoutError, normalizeImageForCutout } from "@/lib/normalize-image";
 import { mockCutoutFromFile } from "@/lib/mock-cutout";
-import { markServerCutoutDisabled } from "@/lib/server-cutout-available";
+import {
+  clearServerCutoutSkipped,
+  isServerCutoutSkipped,
+  markServerCutoutDisabled,
+} from "@/lib/server-cutout-available";
 import { MOCK_CUTOUT_ENABLED } from "@/lib/test-app-flags";
 import { warmupVideoApi } from "@/lib/video-api-warmup";
 import { memorialT } from "@/components/memorial/memorial-i18n";
@@ -60,25 +64,19 @@ async function runCutoutWithFallback(
     };
   }
 
-  // 기본: Render 서버 누끼. 폰 폴백은 VITE_CLIENT_CUTOUT_FALLBACK=1 일 때만(첫 실행 3분+).
+  // 기본: Render 서버 누끼(1회·90초). 실패 시 폰 WASM(768px, 1~3분).
   if (!CLIENT_CUTOUT_FIRST) {
-    const serverAttempts = 2;
-    for (let attempt = 0; attempt < serverAttempts; attempt++) {
+    if (!isServerCutoutSkipped()) {
       try {
-        if (attempt === 0) {
-          onStatus(t.serverWaking);
-          await warmupVideoApi({ coldStart: true });
-          onStatus(t.serverCutout);
-        } else {
-          onStatus(t.serverRetry);
-          await sleep(1500);
-          await warmupVideoApi({ retries: 2, timeoutMs: 12_000 });
-        }
+        onStatus(t.serverWaking);
+        await warmupVideoApi({ coldStart: true, maxWaitMs: 50_000 });
+        onStatus(t.serverCutout);
         const cut = await cutoutImage(file, {
           userId: "anonymous",
           saveToStorage: false,
           model: "isnet-general-use",
           fast: true,
+          timeoutMs: 90_000,
         });
         const display = cutoutDisplayUrl(cut);
         if (display && !cut.error) {
@@ -89,24 +87,27 @@ async function runCutoutWithFallback(
           };
         }
         if (cut.error) {
-          if (attempt < serverAttempts - 1) continue;
           if (!CLIENT_CUTOUT_FALLBACK) {
             throw new Error(t.serverOnlyFailed);
           }
-          onStatus(t.clientCutout);
-          break;
+          onStatus(t.serverThenClient);
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (isCutoutApiUnreachableError(msg)) {
           markServerCutoutDisabled();
         }
-        if (attempt < serverAttempts - 1) continue;
         if (!CLIENT_CUTOUT_FALLBACK) {
-          throw new Error(t.serverOnlyFailed);
+          throw new Error(
+            isCutoutApiUnreachableError(msg) ? t.serverOnlyFailed : msg
+          );
         }
-        onStatus(t.clientCutout);
+        onStatus(t.serverThenClient);
       }
+    } else if (CLIENT_CUTOUT_FALLBACK) {
+      onStatus(t.serverThenClient);
+    } else {
+      throw new Error(t.serverOnlyFailed);
     }
   } else {
     onStatus(t.clientCutout);
@@ -327,9 +328,7 @@ export function AIProcessingScreen({
 
       try {
         setStatusLine(t.steps[0].description);
-        setStatusLine(t.serverWaking);
         const file = await normalizeImageForCutout(uploadedImage);
-        await warmupVideoApi({ coldStart: true });
 
         const { display, cutFile, contentId: cutContentId } = await runCutoutWithFallback(
           file,
@@ -546,6 +545,7 @@ export function AIProcessingScreen({
               }}
               onClick={() => {
                 setError(null);
+                clearServerCutoutSkipped();
                 setRetryKey((k) => k + 1);
               }}
             >

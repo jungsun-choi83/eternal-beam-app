@@ -33,3 +33,20 @@ export function markServerCutoutDisabled(): void {
     /* ignore */
   }
 }
+
+/** 이전에 Render 404/연결 불가였을 때만 서버 누끼 생략 (콜드스타트 1회 실패로는 생략하지 않음) */
+export function isServerCutoutSkipped(): boolean {
+  try {
+    return sessionStorage.getItem(DISABLED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function clearServerCutoutSkipped(): void {
+  try {
+    sessionStorage.removeItem(DISABLED_KEY);
+  } catch {
+    /* ignore */
+  }
+}

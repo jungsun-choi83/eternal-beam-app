@@ -2,7 +2,13 @@
  * 브라우저에서 배경 제거 — @imgly는 dynamic import (화면·타이머 먼저 살아 있게).
  */
 import { memorialT } from "@/components/memorial/memorial-i18n";
-import { normalizeImageForCutout } from "@/lib/normalize-image";
+import {
+  normalizeImageForCutout,
+  normalizeImageToJpegFile,
+} from "@/lib/normalize-image";
+
+/** 폰 WASM — 해상도 낮출수록 8분+ → 1~3분대 */
+const CLIENT_CUTOUT_MAX_EDGE = 768;
 
 function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -25,7 +31,11 @@ export async function clientCutoutFromFile(
   const p = memorialT(language).processing;
   onStatus?.(p.statusLines[2]);
   await yieldToUi();
-  const ready = await normalizeImageForCutout(file);
+  const ready = await normalizeImageToJpegFile(
+    file,
+    CLIENT_CUTOUT_MAX_EDGE,
+    0.85
+  );
   await yieldToUi();
 
   onStatus?.(p.modelLoad);

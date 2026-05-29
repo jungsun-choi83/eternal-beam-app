@@ -51,7 +51,7 @@ const STRINGS = {
       before: "원본",
       after: "누끼",
       uploading: "사진을 불러오는 중…",
-      waitHint: "보통 30초~2분 걸립니다. 화면을 유지해 주세요.",
+      waitHint: "보통 30초~2분, 서버가 잠들어 있으면 최대 3~4분입니다. 화면을 유지해 주세요.",
       statusLines: [
         "배경을 지우는 중…",
         "사랑하는 모습을 남기는 중…",
@@ -65,7 +65,7 @@ const STRINGS = {
       convertingHint: "움직임을 만드는 중",
       done: "처리 완료",
       lumaSkip: "잠시만 기다려 주세요…",
-      clientCutout: "이 기기에서 배경을 지우는 중… (Wi‑Fi·첫 실행 시 1~3분)",
+      clientCutout: "이 기기에서 배경을 지우는 중… (Wi‑Fi·첫 실행 1~3분, 8분 넘으면 다시 시도)",
       serverCutout: "서버에서 배경을 지우는 중…",
       serverWaking: "처리 서버를 깨우는 중… (첫 요청 1~2분)",
       serverRetry: "다시 연결하는 중…",
