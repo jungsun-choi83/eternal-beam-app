@@ -178,6 +178,10 @@ async def save_completed_motion(
     try:
       with open(local_path, "rb") as f:
         mp4 = f.read()
+      if (job.action_id or "").upper() == "IDLE":
+        from .seamless_loop_service import make_seamless_loop_mp4
+
+        mp4, _loop_meta = make_seamless_loop_mp4(mp4)
       stored_url = await supabase_assets.upload_asset_to_storage(
         storage_path, mp4, "video/mp4"
       )

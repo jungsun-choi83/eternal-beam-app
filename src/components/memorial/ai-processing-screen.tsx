@@ -19,6 +19,12 @@ import {
   markServerCutoutDisabled,
 } from "@/lib/server-cutout-available";
 import { MOCK_CUTOUT_ENABLED } from "@/lib/test-app-flags";
+import {
+  CUTOUT_AUTO_REFINE,
+  CUTOUT_SERVER_TIMEOUT_MS,
+  CUTOUT_SPEED_MODE,
+  CUTOUT_WARMUP_MAX_MS,
+} from "@/lib/cutout-speed-mode";
 import { warmupVideoApi } from "@/lib/video-api-warmup";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { isLiteUI } from "@/lib/ui-performance";
@@ -69,15 +75,18 @@ async function runCutoutWithFallback(
     if (!isServerCutoutSkipped()) {
       try {
         onStatus(t.serverWaking);
-        await warmupVideoApi({ coldStart: true, maxWaitMs: 50_000 });
-        onStatus(t.serverCutout);
+        await warmupVideoApi({ coldStart: true, maxWaitMs: CUTOUT_WARMUP_MAX_MS });
+        onStatus(CUTOUT_SPEED_MODE ? t.serverCutoutFast : t.serverCutout);
         const cut = await cutoutImage(file, {
           userId: "anonymous",
           saveToStorage: false,
           model: "isnet-general-use",
-          fast: true,
-          timeoutMs: 90_000,
+          autoRefine: CUTOUT_AUTO_REFINE,
+          timeoutMs: CUTOUT_SERVER_TIMEOUT_MS,
         });
+        if (cut.cutout_quality?.refined) {
+          onStatus(t.serverFurRefine);
+        }
         const display = cutoutDisplayUrl(cut);
         if (display && !cut.error) {
           return {
@@ -117,7 +126,7 @@ async function runCutoutWithFallback(
     throw new Error(t.serverOnlyFailed);
   }
 
-  onStatus(t.waitHint);
+  onStatus(CUTOUT_SPEED_MODE ? t.waitHintFast : t.waitHint);
   const display = await clientCutoutFromFile(file, onStatus, language);
   return {
     display,
@@ -395,6 +404,8 @@ export function AIProcessingScreen({
         };
         try {
           sessionStorage.setItem(ETERNAL_BEAM_PIPELINE_KEY, JSON.stringify(stored));
+          localStorage.setItem("eternal_beam_content_id", stored.content_id);
+          localStorage.setItem("eternal_beam_current_content_id", stored.content_id);
         } catch {
           /* ignore */
         }

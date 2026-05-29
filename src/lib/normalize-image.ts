@@ -1,10 +1,11 @@
 /**
  * 누끼/ONNX가 읽을 수 있도록 사진을 JPEG로 정규화 (HEIC·webp·잘못된 MIME 대응).
  */
+import { CUTOUT_UPLOAD_MAX_EDGE_PX } from "@/lib/cutout-speed-mode";
 import { MOCK_CUTOUT_ENABLED, TEST_APP_MODE } from "@/lib/test-app-flags";
 
-/** 누끼 업로드용 — 서버 CUTOUT_MAX_PIXEL(1280)과 맞춤 */
-export const CUTOUT_UPLOAD_MAX_EDGE = 1280;
+/** 누끼 업로드용 — 서버 CUTOUT_MAX_PIXEL과 맞춤 (속도 모드 960) */
+export const CUTOUT_UPLOAD_MAX_EDGE = CUTOUT_UPLOAD_MAX_EDGE_PX;
 
 export async function normalizeImageToJpegFile(
   source: File | string,

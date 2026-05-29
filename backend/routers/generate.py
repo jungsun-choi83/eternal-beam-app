@@ -11,6 +11,7 @@ from ..services.luma_service import (
     create_generation_and_get_video_url,
     download_video,
 )
+from ..services.seamless_loop_service import make_seamless_loop_mp4
 
 router = APIRouter()
 
@@ -71,13 +72,15 @@ async def post_generate_pet_video(
     idle_local = await download_video(idle_remote)
     action_local = await download_video(action_remote)
 
+    loop_meta = None
     try:
         with open(idle_local, "rb") as f:
             idle_bytes = f.read()
+        idle_bytes, loop_meta = make_seamless_loop_mp4(idle_bytes)
         with open(action_local, "rb") as f:
             action_bytes = f.read()
         idle_url = await supabase_assets.upload_asset_to_storage(
-            f"{user_id}/{cid}/idle.mp4", idle_bytes, "video/mp4"
+            f"{user_id}/{cid}/idle_loop.mp4", idle_bytes, "video/mp4"
         )
         action_url = await supabase_assets.upload_asset_to_storage(
             f"{user_id}/{cid}/action.mp4", action_bytes, "video/mp4"
@@ -96,6 +99,7 @@ async def post_generate_pet_video(
         "dog_only_nobg_url": dog_url,
         "idle_video_url": idle_url,
         "action_video_url": action_url,
+        "idle_loop_meta": loop_meta,
         "prompts": {
             "idle": idle_prompt[:500],
             "action": action_prompt[:500],

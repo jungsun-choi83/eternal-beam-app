@@ -11,6 +11,7 @@ import { PhotoUploadGuide } from "@/components/memorial/photo-upload-guide";
 import { CutoutStage } from "@/components/memorial/cutout-stage";
 import { MemorialIconButton, MemorialPrimaryButton } from "@/components/memorial/memorial-chrome";
 import { inferMediaKind } from "@/lib/media-file-kind";
+import { CUTOUT_WARMUP_MAX_MS } from "@/lib/cutout-speed-mode";
 import { warmupVideoApi } from "@/lib/video-api-warmup";
 
 interface PhotoUploadScreenProps {
@@ -55,7 +56,7 @@ export function PhotoUploadScreen({
       if (kind === "image") {
         setMediaType("image");
         localStorage.setItem("eternal_beam_media_type", "image");
-        void warmupVideoApi({ coldStart: true });
+        void warmupVideoApi({ coldStart: true, maxWaitMs: CUTOUT_WARMUP_MAX_MS });
         const reader = new FileReader();
         reader.onload = () => onImageUpload(reader.result as string);
         reader.readAsDataURL(file);

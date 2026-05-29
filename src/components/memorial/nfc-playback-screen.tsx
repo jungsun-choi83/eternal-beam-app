@@ -6,14 +6,24 @@ import { ArrowLeft, Wifi, Check, Sparkles } from "lucide-react";
 import { writeToNFCSlot } from "@/app/services/nfcManager";
 import { mapSlotToContent } from "@/app/services/supabaseContentService";
 import { memorialT } from "@/components/memorial/memorial-i18n";
+import {
+  getStoredContentId,
+  persistDeviceContentFromPipeline,
+} from "@/lib/persist-device-content";
 
 interface NFCPlaybackScreenProps {
   language?: string;
   onComplete: () => void;
   onBack: () => void;
+  onGoPreview?: () => void;
 }
 
-export function NFCPlaybackScreen({ language = "ko", onComplete, onBack }: NFCPlaybackScreenProps) {
+export function NFCPlaybackScreen({
+  language = "ko",
+  onComplete,
+  onBack,
+  onGoPreview,
+}: NFCPlaybackScreenProps) {
   const n = memorialT(language).nfc;
   const slots = useMemo(
     () => [1, 2, 3, 4].map((id) => ({ id, name: n.slot(id), occupied: false })),
@@ -27,9 +37,10 @@ export function NFCPlaybackScreen({ language = "ko", onComplete, onBack }: NFCPl
 
   const handleSend = async () => {
     if (!selectedSlot) return;
-    const contentId =
-      localStorage.getItem("eternal_beam_content_id") ||
-      localStorage.getItem("eternal_beam_current_content_id");
+    let contentId = getStoredContentId();
+    if (!contentId) {
+      contentId = persistDeviceContentFromPipeline(null);
+    }
     if (!contentId) {
       setErrorMessage(n.needContentId);
       return;
@@ -364,9 +375,25 @@ export function NFCPlaybackScreen({ language = "ko", onComplete, onBack }: NFCPl
           {n.send}
         </motion.button>
         {errorMessage && (
-          <p className="mt-3 text-center text-xs" style={{ color: "#fca5a5" }}>
-            {errorMessage}
-          </p>
+          <div className="mt-3 space-y-2">
+            <p className="text-center text-xs" style={{ color: "#fca5a5" }}>
+              {errorMessage}
+            </p>
+            {onGoPreview ? (
+              <button
+                type="button"
+                onClick={onGoPreview}
+                className="w-full py-2.5 rounded-xl text-[13px] font-light"
+                style={{
+                  background: "rgba(28, 28, 30, 0.9)",
+                  border: "1px solid rgba(201, 162, 39, 0.35)",
+                  color: "#d4af37",
+                }}
+              >
+                {n.goPreview}
+              </button>
+            ) : null}
+          </div>
         )}
       </div>
     </div>

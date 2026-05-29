@@ -221,7 +221,7 @@ export function PreviewScreen({
           className="text-xl font-light absolute left-1/2 -translate-x-1/2"
           style={{ color: "#F5F5F7" }}
         >
-          {p.adjust}
+          {p.title}
         </motion.h1>
 
         <motion.button
@@ -239,6 +239,13 @@ export function PreviewScreen({
           <RotateCcw className="w-4 h-4" style={{ color: "#F5F5F7" }} strokeWidth={1.5} />
         </motion.button>
       </header>
+
+      <p
+        className="px-8 -mt-2 text-center text-xs font-light shrink-0"
+        style={{ color: "#888" }}
+      >
+        {p.adjustHint}
+      </p>
 
       {/* Preview Area */}
       <div className="px-6 py-4 flex-1 flex flex-col items-center justify-start min-h-0 overflow-y-auto gap-4">
@@ -458,7 +465,7 @@ export function PreviewScreen({
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
         >
-          {p.complete}
+          {p.completeSend}
         </motion.button>
       </div>
     </div>

@@ -121,11 +121,25 @@ function formatHttpErrorDetail(err: Record<string, unknown>, fallback: string): 
   return fallback
 }
 
+export interface CutoutQualityMeta {
+  semi_transparent_ratio?: number
+  boundary_pixel_count?: number
+  needs_refinement?: boolean
+  threshold?: number
+  quality_score?: number
+  refined?: boolean
+  cutout_pass?: string
+  refine_error?: string
+}
+
 export interface CutoutResult {
   content_id: string
   cutout_url?: string | null
   cutout_png_base64?: string | null
   error?: string
+  /** 0~1, 경계 반투명 비율이 낮을수록 높음 */
+  quality_score?: number | null
+  cutout_quality?: CutoutQualityMeta | null
 }
 
 export interface ComposeVideoResult {
@@ -153,9 +167,13 @@ export async function cutoutImage(
     saveToStorage?: boolean
     /** isnet-general-use(강아지·털) | u2net_human_seg(사람) */
     model?: string
-    /** 알파 매팅 생략 — 모바일·Render CPU에서 더 빠름 */
+    /** 알파 매팅 생략만 (auto_refine 끔) */
     fast?: boolean
-    /** fetch 상한(ms). fast 기본 90초 */
+    /**
+     * fast 1차 → 알파 경계 분석 → 장모 추정 시 matting 재처리 (기본 true)
+     */
+    autoRefine?: boolean
+    /** fetch 상한(ms). adaptive 기본 4분 */
     timeoutMs?: number
   } = {}
 ): Promise<CutoutResult> {
@@ -167,9 +185,16 @@ export async function cutoutImage(
   form.append('save_to_storage', String(options.saveToStorage !== false))
   if (options.model) form.append('model', options.model)
   if (options.fast) form.append('fast', 'true')
+  const autoRefine = options.autoRefine !== false
+  if (autoRefine && !options.fast) {
+    form.append('auto_refine', 'true')
+  } else if (!autoRefine) {
+    form.append('auto_refine', 'false')
+  }
 
   const timeoutMs =
-    options.timeoutMs ?? (options.fast ? 90_000 : 180_000)
+    options.timeoutMs ??
+    (options.fast ? 90_000 : autoRefine ? 240_000 : 180_000)
   const ctrl = new AbortController()
   const tid = setTimeout(() => ctrl.abort(), timeoutMs)
   let res: Response

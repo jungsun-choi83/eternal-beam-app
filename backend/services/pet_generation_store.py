@@ -245,6 +245,10 @@ async def update_scenario_from_luma(
       try:
         with open(local_path, "rb") as f:
           mp4_bytes = f.read()
+        if (action_key or "").upper() == "IDLE":
+          from .seamless_loop_service import make_seamless_loop_mp4
+
+          mp4_bytes, _loop_meta = make_seamless_loop_mp4(mp4_bytes)
         stored_url = await supabase_assets.upload_asset_to_storage(
           row.storage_path or f"{batch.user_id}/{batch.pet_id}/{place_key}_{action_key}.mp4",
           mp4_bytes,

@@ -6,6 +6,7 @@ import {
   isInsufficientCreditsError,
 } from '@/lib/credit-pipeline'
 import { saveCreditSession } from '@/lib/credit-session'
+import { persistDeviceContentFromPipeline } from '@/lib/persist-device-content'
 import { chargeCreditPackMock } from '@/lib/iap-mock'
 import { IAP_MOCK_ENABLED } from '@/lib/test-app-flags'
 import { createDisplayCutoutUrl } from '@/lib/display-image'
@@ -411,9 +412,10 @@ export function EternalBeamApp() {
                 onMediaFile={handleMediaFile}
                 onGallery={() => navigateTo('gallery')}
                 onSettings={() => navigateTo('settings')}
-                onSaveToNFC={() =>
+                onSaveToNFC={() => {
+                  if (!selectedTheme) setSelectedTheme(1)
                   cutoutImage ? navigateTo('preview') : navigateTo('photoUpload')
-                }
+                }}
               />
             </motion.div>
           )}
@@ -500,7 +502,10 @@ export function EternalBeamApp() {
                 onSelectTheme={handleThemeSelect}
                 onSelectPremiumTheme={handlePremiumThemeSelect}
                 onContinue={() => void handleThemeContinueWithCredit()}
-                onSkip={() => navigateTo('preview')}
+                onSkip={() => {
+                  if (!selectedTheme) setSelectedTheme(1)
+                  navigateTo('preview')
+                }}
                 onBack={() => navigateTo('home')}
               />
             </motion.div>
@@ -542,7 +547,11 @@ export function EternalBeamApp() {
                 language={language}
                 settings={previewSettings}
                 onSettingsChange={handlePreviewSettingsChange}
-                onComplete={() => navigateTo('nfcPlayback')}
+                onComplete={() => {
+                  if (!selectedTheme) setSelectedTheme(1)
+                  persistDeviceContentFromPipeline(selectedTheme ?? 1)
+                  navigateTo('nfcPlayback')
+                }}
                 onBack={() => navigateTo('themeSelection')}
               />
             </motion.div>
@@ -562,6 +571,7 @@ export function EternalBeamApp() {
                 language={language}
                 onComplete={handleReset}
                 onBack={() => navigateTo('preview')}
+                onGoPreview={() => navigateTo('preview')}
               />
             </motion.div>
           )}
