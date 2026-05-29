@@ -100,9 +100,9 @@ export function HomeScreen({
             }}
           />
 
-          <h1 className="logo-title relative">
-            Eternal Beam
-          </h1>
+          <div className="logo-holo-wrap">
+            <h1 className="logo-title logo-title--holo relative">Eternal Beam</h1>
+          </div>
           <p className="logo-subtitle">
             {texts.subtitle}
           </p>

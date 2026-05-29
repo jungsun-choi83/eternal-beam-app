@@ -24,7 +24,7 @@ export const ETERNAL_BEAM_PIPELINE_KEY = "eternal_beam_pipeline_v1";
 
 const LUMA_ENABLED = import.meta.env.VITE_ENABLE_LUMA === "1";
 const FILM_CONVERSION_SEC = Number(import.meta.env.VITE_FILM_CONVERSION_SEC ?? "0");
-const CLIENT_CUTOUT_FALLBACK = import.meta.env.VITE_CLIENT_CUTOUT_FALLBACK === "1";
+const CLIENT_CUTOUT_FALLBACK = import.meta.env.VITE_CLIENT_CUTOUT_FALLBACK !== "0";
 
 export interface StoredPipeline {
   content_id: string;
@@ -423,7 +423,7 @@ export function AIProcessingScreen({
       cancelled = true;
       setProcessingActive(false);
     };
-  }, [uploadedImage, language]);
+  }, [uploadedImage, language, retryKey]);
 
   const originalForUi = displayOriginal || uploadedImage;
 

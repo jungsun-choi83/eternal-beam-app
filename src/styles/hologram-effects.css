@@ -135,98 +135,132 @@
   animation: hologram-aurora-2 25s ease-in-out infinite;
 }
 
-/* ---- 3. 로고 펄스 (Eternal Beam glow) ---- */
-@keyframes logo-pulse {
-  0%,
-  100% {
-    text-shadow:
-      0 0 10px rgba(212, 175, 55, 0.5),
-      0 0 20px rgba(212, 175, 55, 0.3);
-  }
-  50% {
-    text-shadow:
-      0 0 20px rgba(212, 175, 55, 0.7),
-      0 0 40px rgba(212, 175, 55, 0.4),
-      0 0 60px rgba(212, 175, 55, 0.2);
-  }
-}
-
-/* 로고 펄스 적용 (홈 등, --auth가 아닐 때만) */
-.hologram-bg-active .logo-title:not(.logo-title--auth) {
-  animation: logo-pulse 3s ease-in-out infinite;
-}
-
-/* ---- 4. 회원가입 화면 Eternal Beam 전용: Shimmer + Letter spacing + Gradient shift ---- */
-@keyframes logo-shimmer {
-  0% {
-    transform: translate3d(-100%, 0, 0);
-  }
-  100% {
-    transform: translate3d(350%, 0, 0);
-  }
-}
-
-@keyframes logo-letter-spacing {
-  0%,
-  100% {
-    letter-spacing: 1px;
-  }
-  50% {
-    letter-spacing: 3px;
-  }
-}
-
-@keyframes logo-gradient-shift {
+/* ---- 3. Eternal Beam 홀로그램 로고 (골드 그라데이션 + 쉬머 + 엠비언트 글로우) ---- */
+@keyframes logo-holo-gradient {
   0% {
     background-position: 0% 50%;
+  }
+  33% {
+    background-position: 85% 20%;
+  }
+  66% {
+    background-position: 15% 80%;
   }
   100% {
     background-position: 200% 50%;
   }
 }
 
-.logo-title--auth {
-  /* B. Letter spacing 애니메이션 */
-  animation: logo-letter-spacing 5s ease-in-out infinite;
-  /* C. Gradient shift - 골드 그라데이션 텍스트 */
+@keyframes logo-holo-ambient {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 6px rgba(138, 107, 26, 0.55))
+      drop-shadow(0 0 16px rgba(201, 162, 39, 0.32));
+  }
+  50% {
+    filter: drop-shadow(0 0 14px rgba(244, 208, 63, 0.92))
+      drop-shadow(0 0 28px rgba(232, 212, 131, 0.55))
+      drop-shadow(0 0 44px rgba(201, 162, 39, 0.28));
+  }
+}
+
+@keyframes logo-holo-shimmer {
+  0% {
+    transform: translate3d(-130%, -25%, 0) skewX(-14deg);
+    opacity: 0;
+  }
+  12% {
+    opacity: 0.85;
+  }
+  88% {
+    opacity: 0.85;
+  }
+  100% {
+    transform: translate3d(260%, 25%, 0) skewX(-14deg);
+    opacity: 0;
+  }
+}
+
+.logo-holo-wrap {
+  position: relative;
+  display: inline-block;
+  overflow: hidden;
+  isolation: isolate;
+  padding: 0.1em 0.25em;
+  max-width: 100%;
+}
+
+.logo-title--holo,
+.logo-title.logo-title--holo,
+.logo-title--auth,
+.logo-title.logo-title--auth {
+  position: relative;
+  display: inline-block;
+  margin: 0;
+  text-shadow: none;
   background: linear-gradient(
-    90deg,
-    #c9a227 0%,
-    #e8d48b 15%,
-    #f4d03f 35%,
-    #d4af37 50%,
-    #f4d03f 65%,
-    #e8d48b 85%,
-    #c9a227 100%
+    115deg,
+    #5c4818 0%,
+    #7a5f18 12%,
+    #a8862a 26%,
+    #e8d5a3 40%,
+    #fff4cc 48%,
+    #f4d03f 54%,
+    #d4af37 66%,
+    #9a7724 80%,
+    #5c4818 100%
   );
-  background-size: 200% 100%;
+  background-size: 280% 280%;
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
   color: transparent;
   animation:
-    logo-letter-spacing 5s ease-in-out infinite,
-    logo-gradient-shift 8s linear infinite;
-  position: relative;
-  /* Shimmer을 위한 overflow는 부모에서 처리 */
+    logo-holo-gradient 7s ease-in-out infinite,
+    logo-holo-ambient 4.2s ease-in-out infinite;
 }
 
-/* A. Shimmer - 골드 빛 좌→우 흐름 (매우 서브틀) */
-.logo-title--auth::after {
+.logo-holo-wrap::after {
   content: "";
   position: absolute;
-  left: 0;
-  top: 0;
-  width: 40%;
-  height: 100%;
+  inset: -25% -35%;
   pointer-events: none;
   background: linear-gradient(
-    90deg,
-    transparent 0%,
-    rgba(244, 208, 63, 0.2) 50%,
-    transparent 100%
+    105deg,
+    transparent 40%,
+    rgba(255, 243, 196, 0.5) 50%,
+    transparent 60%
   );
-  animation: logo-shimmer 3.5s ease-in-out infinite;
+  animation: logo-holo-shimmer 4.8s ease-in-out infinite;
+  mix-blend-mode: plus-lighter;
+}
+
+/* PNG 로고 이미지용 (온보딩 등) */
+.logo-holo-img-wrap {
+  position: relative;
+  display: inline-block;
+  overflow: hidden;
+  isolation: isolate;
+  border-radius: 12px;
+}
+
+.logo-holo-img-wrap img {
+  display: block;
+  animation: logo-holo-ambient 4.2s ease-in-out infinite;
+}
+
+.logo-holo-img-wrap::after {
+  content: "";
+  position: absolute;
+  inset: -15% -30%;
+  pointer-events: none;
+  background: linear-gradient(
+    105deg,
+    transparent 38%,
+    rgba(255, 243, 196, 0.55) 50%,
+    transparent 62%
+  );
+  animation: logo-holo-shimmer 4.8s ease-in-out infinite;
   mix-blend-mode: plus-lighter;
 }
 
@@ -248,9 +282,16 @@
 html.ui-lite .hologram-scanline,
 html.ui-lite .hologram-aurora-1,
 html.ui-lite .hologram-aurora-2,
-html.ui-lite .hologram-bg-active .logo-title,
-html.ui-lite .logo-title--auth {
+html.ui-lite .logo-title--holo,
+html.ui-lite .logo-title--auth,
+html.ui-lite .logo-holo-img-wrap img {
   animation: none !important;
+}
+
+html.ui-lite .logo-holo-wrap::after,
+html.ui-lite .logo-holo-img-wrap::after {
+  animation: none !important;
+  opacity: 0;
 }
 
 html.ui-lite .hologram-scanline {
@@ -279,11 +320,22 @@ html.ui-lite .hologram-aurora-2 {
     opacity: 0.04;
   }
 
-  .hologram-bg-active .logo-title {
+  .logo-title--holo,
+  .logo-title--auth,
+  .logo-holo-img-wrap img {
     animation: none !important;
   }
-  .logo-title--auth {
+
+  .logo-holo-wrap::after,
+  .logo-holo-img-wrap::after {
     animation: none !important;
+    opacity: 0;
+  }
+
+  .logo-title--holo,
+  .logo-title--auth {
+    background: linear-gradient(90deg, #a8862a, #e8d5a3, #c9a227);
+    background-size: 100% 100%;
   }
 }
 

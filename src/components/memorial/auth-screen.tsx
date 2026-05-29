@@ -94,9 +94,9 @@ export function AuthScreen({
             animate={{ opacity: [0.3, 0.5, 0.3] }}
             transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
           />
-          <h1 className="logo-title logo-title--auth relative">
-            Eternal Beam
-          </h1>
+          <div className="logo-holo-wrap">
+            <h1 className="logo-title logo-title--holo relative">Eternal Beam</h1>
+          </div>
           <p className="logo-subtitle">{a.subtitle}</p>
         </div>
       </motion.header>

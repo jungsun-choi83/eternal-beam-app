@@ -72,22 +72,26 @@ export function OnboardingScreen({ onNavigate }: OnboardingScreenProps) {
       <div className="relative z-10 mx-6 mt-20 flex flex-col items-center">
         {logoError ? (
           <>
-            <h1 className="logo-title">Eternal Beam</h1>
+            <div className="logo-holo-wrap">
+              <h1 className="logo-title logo-title--holo">Eternal Beam</h1>
+            </div>
             <p className="logo-subtitle">당신의 영원한 순간을 빛으로</p>
           </>
         ) : (
           <>
-            <img
-              src="/eternal-beam-logo.png?v=4"
-              alt="Eternal Beam"
-              className="mb-2 w-auto object-contain"
-              style={{
-                height: 80,
-                minHeight: 80,
-                maxWidth: 'min(400px, 92vw)',
-              }}
-              onError={() => setLogoError(true)}
-            />
+            <div className="logo-holo-img-wrap mb-2">
+              <img
+                src="/eternal-beam-logo.png?v=4"
+                alt="Eternal Beam"
+                className="w-auto object-contain"
+                style={{
+                  height: 80,
+                  minHeight: 80,
+                  maxWidth: 'min(400px, 92vw)',
+                }}
+                onError={() => setLogoError(true)}
+              />
+            </div>
             <p className="logo-subtitle">당신의 영원한 순간을 빛으로</p>
           </>
         )}

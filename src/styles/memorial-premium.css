@@ -46,6 +46,10 @@
   text-shadow: 0 0 32px var(--eb-gold-glow);
 }
 
+.logo-title.logo-title--holo {
+  text-shadow: none;
+}
+
 .logo-subtitle {
   font-weight: 400;
   letter-spacing: 0.04em;
