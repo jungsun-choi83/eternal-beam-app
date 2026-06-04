@@ -75,14 +75,23 @@ async def lifespan(app: FastAPI):
 
         seed_dummy_wallets()
 
-    # 누끼 모델 프리로드 — 첫 요청에서 모델 로딩 지연 제거 (실패해도 무시)
-    if os.getenv("CUTOUT_PRELOAD_MODEL", "1").strip().lower() in ("1", "true", "yes"):
-        try:
-            from .services.cutout_service import preload_default_model
+    # 누끼 모델 프리로드 — 첫 요청 지연 제거용(선택).
+    # 기본 OFF: 메모리 작은 무료 인스턴스에서 부팅/헬스체크를 막지 않도록.
+    # 켤 때도 백그라운드 스레드로 돌려 /health 응답을 막지 않음.
+    if os.getenv("CUTOUT_PRELOAD_MODEL", "0").strip().lower() in ("1", "true", "yes"):
+        import threading
 
-            preload_default_model(os.getenv("CUTOUT_PRELOAD_MODEL_NAME", "isnet-general-use"))
-        except Exception:
-            pass
+        def _preload() -> None:
+            try:
+                from .services.cutout_service import preload_default_model
+
+                preload_default_model(
+                    os.getenv("CUTOUT_PRELOAD_MODEL_NAME", "isnet-general-use")
+                )
+            except Exception:
+                pass
+
+        threading.Thread(target=_preload, daemon=True).start()
 
     yield
 
