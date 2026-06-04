@@ -12,5 +12,5 @@ export const CUTOUT_SERVER_TIMEOUT_MS = CUTOUT_SPEED_MODE ? 90_000 : 240_000;
 /** adaptive 2차 매팅 (장모) — 속도 모드에서는 OFF */
 export const CUTOUT_AUTO_REFINE = !CUTOUT_SPEED_MODE;
 
-/** 업로드 해상도 상한 */
-export const CUTOUT_UPLOAD_MAX_EDGE_PX = CUTOUT_SPEED_MODE ? 960 : 1280;
+/** 업로드 해상도 상한 (속도 모드: 720px — 홀로그램 표시엔 충분, 처리 단축) */
+export const CUTOUT_UPLOAD_MAX_EDGE_PX = CUTOUT_SPEED_MODE ? 720 : 1280;

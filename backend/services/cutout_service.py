@@ -33,6 +33,32 @@ except Exception:
     CV2_AVAILABLE = False
 
 
+# rembg 세션 캐시 — 요청마다 모델을 새로 로드하지 않도록 재사용.
+# (콜드 스타트 후 첫 요청뿐 아니라 매 요청 속도가 빨라짐)
+_SESSION_CACHE: dict = {}
+
+
+def _get_session(model_name: str, providers: list[str]):
+    """모델 세션을 캐시에서 가져오거나 1회만 생성한다."""
+    key = (model_name, tuple(providers))
+    sess = _SESSION_CACHE.get(key)
+    if sess is None:
+        sess = new_session(model_name, providers=providers)
+        _SESSION_CACHE[key] = sess
+    return sess
+
+
+def preload_default_model(model_name: str = "isnet-general-use") -> bool:
+    """서버 시작 시 기본 모델을 미리 로드해 첫 요청 지연을 없앤다."""
+    if not REMBG_AVAILABLE:
+        return False
+    try:
+        _get_session(model_name, ["CPUExecutionProvider"])
+        return True
+    except Exception:
+        return False
+
+
 def _alpha_matting_refine(rgba: np.ndarray, feather: bool = True) -> np.ndarray:
     """
     알파 채널 경계 정제.
@@ -145,7 +171,7 @@ def remove_background(
     if use_am and not force_alpha and pixels > alpha_pixel_budget:
         use_am = False
 
-    session = new_session(model_name, providers=["CUDAExecutionProvider", "CPUExecutionProvider"])
+    session = _get_session(model_name, ["CUDAExecutionProvider", "CPUExecutionProvider"])
     cpu_session = None
 
     def _oomish(err: BaseException) -> bool:
@@ -174,7 +200,7 @@ def remove_background(
         if not _oomish(first_err):
             raise
         # CUDA/provider 메모리 이슈일 때 CPU 세션으로 재시도
-        cpu_session = new_session(model_name, providers=["CPUExecutionProvider"])
+        cpu_session = _get_session(model_name, ["CPUExecutionProvider"])
         input_img = _downscale_for_rembg(input_img, max(512, max_side // 2))
         try:
             out_img = _rembg_call(

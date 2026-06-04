@@ -74,6 +74,16 @@ async def lifespan(app: FastAPI):
         from .services.wallet_service import seed_dummy_wallets
 
         seed_dummy_wallets()
+
+    # 누끼 모델 프리로드 — 첫 요청에서 모델 로딩 지연 제거 (실패해도 무시)
+    if os.getenv("CUTOUT_PRELOAD_MODEL", "1").strip().lower() in ("1", "true", "yes"):
+        try:
+            from .services.cutout_service import preload_default_model
+
+            preload_default_model(os.getenv("CUTOUT_PRELOAD_MODEL_NAME", "isnet-general-use"))
+        except Exception:
+            pass
+
     yield
 
 app = FastAPI(
