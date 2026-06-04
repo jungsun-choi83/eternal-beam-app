@@ -1,0 +1,16 @@
+# Eternal Beam — Raspberry Pi 5 센서 브리지 의존성
+# 설치: pip install -r requirements-pi.txt
+#   (먼저: sudo apt install -y python3-pip portaudio19-dev alsa-utils i2c-tools)
+
+# ToF 거리 센서 (VL53L0X, I2C)
+adafruit-circuitpython-vl53l0x
+
+# NFC 리더 (PN532, I2C)
+adafruit-circuitpython-pn532
+
+# I2C/보드 핀 추상화 (Blinka)
+adafruit-blinka
+
+# 마이크(INMP441, I2S) 음성 감지
+pyaudio
+numpy

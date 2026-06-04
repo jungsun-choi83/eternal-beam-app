@@ -1,0 +1,6 @@
+{
+  "_comment": "PN532 UID (hex, no separators) → Unity theme_id (BackgroundManager / light_rgb folder name)",
+  "A1B2C3D4": "snow_forest",
+  "FOREST01": "snow_forest",
+  "CARD02": "snow_forest"
+}

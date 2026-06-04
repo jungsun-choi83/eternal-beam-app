@@ -4,6 +4,10 @@ env.local
 .env.local
 .env.production
 .env.*.local
+# Vercel/배포용 실키·토큰 (절대 커밋 금지)
+.env.vercel.prod
+.env.*.prod
+.vercel/
 
 # 의존성
 node_modules
@@ -34,6 +38,7 @@ media/
 # Theme backgrounds (tracked; run scripts/sync_theme_backgrounds.py)
 !backend/themes/*.mp4
 !EternalBeam/Assets/Backgrounds/*.mp4
+!public/backgrounds/**/*.mp4
 __pycache__/
 *.rtf
 KakaoTalk_*
@@ -53,3 +58,5 @@ python/out_depth.png
 고야사진.jpg
 제우스포카.jpg
 새 폴더/
+
+.vercel

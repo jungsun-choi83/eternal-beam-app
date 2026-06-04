@@ -1,0 +1,20 @@
+[Unit]
+Description=Eternal Beam Pi sensor bridge (ToF + NFC + INMP441 -> Unity UDP)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# install.sh 가 아래 경로/IP 를 실제 값으로 치환한다.
+WorkingDirectory=__APP_DIR__/python
+EnvironmentFile=__APP_DIR__/python/systemd/eternal-beam-pi.env
+ExecStart=/usr/bin/env python3 __APP_DIR__/python/eternal_beam_pi.py
+Restart=always
+RestartSec=3
+# 부팅 후 모니터 없이 자동 복구
+StartLimitIntervalSec=0
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
