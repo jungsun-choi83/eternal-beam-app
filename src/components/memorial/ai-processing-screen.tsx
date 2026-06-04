@@ -371,7 +371,7 @@ export function AIProcessingScreen({
           try {
             pet = await generatePetVideo(cutFile, {
               userId: "anonymous",
-              contentId: cut.content_id || undefined,
+              contentId: cutContentId || undefined,
               skipPreprocessing: true,
             });
           } catch (e) {
