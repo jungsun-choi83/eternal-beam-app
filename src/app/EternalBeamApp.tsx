@@ -58,13 +58,17 @@ const themes = [
 ]
 
 const pageVariants = {
-  initial: { opacity: 0 },
-  animate: { opacity: 1 },
-  exit: { opacity: 0 },
+  initial: { opacity: 0, x: '100%' },
+  animate: { opacity: 1, x: 0 },
+  exit: {
+    opacity: 0,
+    x: '100%',
+    transition: { duration: 0.25, ease: 'easeOut' as const },
+  },
 }
 
 const pageTransition = {
-  duration: 0.15,
+  duration: 0.3,
   ease: 'easeOut' as const,
 }
 
@@ -311,7 +315,7 @@ export function EternalBeamApp() {
       />
 
       <MobileFrame>
-        <AnimatePresence mode="sync" initial={false}>
+        <AnimatePresence mode="wait" initial={false}>
           {screen === 'onboarding' && (
             <motion.div
               key="onboarding"

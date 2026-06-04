@@ -1,5 +1,6 @@
 "use client";
 
+import { useMemo, type CSSProperties } from "react";
 import { memorialLang, memorialT } from "@/components/memorial/memorial-i18n";
 import { motion } from "framer-motion";
 import { Plus, Settings, Grid3X3 } from "lucide-react";
@@ -32,6 +33,19 @@ export function HomeScreen({
   const lang = memorialLang(language);
   const texts = memorialT(language).home;
 
+  const bgDots = useMemo(
+    () =>
+      Array.from({ length: 15 }, (_, i) => ({
+        id: i,
+        left: Math.random() * 100,
+        size: 2 + Math.random() * 2,
+        opacity: 0.15 + Math.random() * 0.25,
+        duration: 6 + Math.random() * 6,
+        delay: Math.random() * 6,
+      })),
+    [],
+  );
+
   const handleLanguageSelect = (code: "ko" | "en") => {
     onLanguageChange?.(code);
   };
@@ -41,6 +55,26 @@ export function HomeScreen({
       {/* Holographic Background */}
       <HolographicBackground />
       <HologramEffects />
+
+      {/* 배경 골드 파티클 (위로 천천히 떠오름) */}
+      <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden" aria-hidden>
+        {bgDots.map((d) => (
+          <span
+            key={d.id}
+            className="home-dot"
+            style={
+              {
+                left: `${d.left}%`,
+                width: `${d.size}px`,
+                height: `${d.size}px`,
+                "--dot-o": d.opacity,
+                animationDuration: `${d.duration}s`,
+                animationDelay: `${d.delay}s`,
+              } as CSSProperties
+            }
+          />
+        ))}
+      </div>
 
       {/* Header with Brand */}
       <header className="px-6 pt-8 pb-4 relative z-10 shrink-0">
@@ -222,11 +256,7 @@ export function HomeScreen({
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.6 }}
           onClick={onSaveToNFC}
-          className="w-full py-4 rounded-2xl font-semibold text-base relative overflow-hidden"
-          style={{
-            background: "linear-gradient(135deg, #b8860b 0%, #c9a227 30%, #d4af37 50%, #f5d77a 70%, #d4af37 100%)",
-            boxShadow: "0 10px 28px rgba(201, 162, 39, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.2)",
-          }}
+          className="cta-gold w-full py-4 font-semibold text-base relative overflow-hidden"
           whileHover={{ scale: 1.015, boxShadow: "0 14px 34px rgba(201, 162, 39, 0.34)" }}
           whileTap={{ scale: 0.98 }}
         >

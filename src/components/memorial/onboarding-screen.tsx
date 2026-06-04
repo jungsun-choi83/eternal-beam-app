@@ -103,8 +103,8 @@ export function OnboardingScreen({
         }
         /* '1' 원 주변만: 링이 작게 퍼져서 텍스트 영역까지 안 내려감 */
         @keyframes ob-pulse-ring-circle {
-          0% { transform: scale(1); opacity: 0.65; }
-          100% { transform: scale(1.7); opacity: 0; }
+          0% { transform: scale(1); opacity: 0.6; }
+          100% { transform: scale(1.35); opacity: 0; }
         }
         @keyframes ob-shooting-star {
           0% { transform: translate(0, 0); opacity: 0; }
@@ -258,15 +258,15 @@ export function OnboardingScreen({
                 className="absolute inset-0 flex items-center justify-center pointer-events-none"
                 style={{ width: "100%", height: "100%" }}
               >
-                {[0, 1, 2].map((i) => (
+                {[0, 1.1].map((delay) => (
                   <div
-                    key={i}
+                    key={delay}
                     className="ob-pulse-ring absolute rounded-full"
                     style={{
                       width: 128,
                       height: 128,
                       border: "2px solid rgba(212,175,55,0.8)",
-                      animation: `ob-pulse-ring-circle 3s ease-out ${i * 1}s infinite`,
+                      animation: `ob-pulse-ring-circle 2.2s ease-out ${delay}s infinite`,
                       transformOrigin: "center center",
                     }}
                   />
@@ -317,7 +317,7 @@ export function OnboardingScreen({
             >
               {slides[currentSlide].title}
             </h1>
-            <p className="text-sm font-medium mb-4 text-center" style={{ color: "#d4af37" }}>
+            <p className="gold-subtitle text-sm font-medium mb-4 text-center" style={{ color: "#d4af37" }}>
               {slides[currentSlide].subtitle}
             </p>
             <p className="memorial-body text-center max-w-[17rem] mx-auto px-2">
@@ -346,11 +346,7 @@ export function OnboardingScreen({
       <div className="px-8 pb-10 relative z-[2]">
         <motion.button
           onClick={handleNext}
-          className="w-full py-4 rounded-2xl flex items-center justify-center gap-2 transition-all duration-300"
-          style={{
-            background: "linear-gradient(135deg, #d4af37 0%, #c9a227 100%)",
-            boxShadow: "0 8px 32px rgba(212, 175, 55, 0.3)",
-          }}
+          className="cta-gold w-full py-4 flex items-center justify-center gap-2"
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
         >

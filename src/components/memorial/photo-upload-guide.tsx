@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, X } from "lucide-react";
+import { Check, X, Dog } from "lucide-react";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 
 interface PhotoUploadGuideProps {
@@ -16,30 +16,33 @@ export function PhotoUploadGuide({ language = "ko" }: PhotoUploadGuideProps) {
         {g.title}
       </h3>
 
-      <p className="upload-guide-quote">&ldquo;{g.leashQuote}&rdquo;</p>
-
       <p className="upload-guide-body">{g.body}</p>
 
-      <ul className="upload-guide-list">
-        <li className="upload-guide-item upload-guide-item--good">
-          <span className="upload-guide-badge upload-guide-badge--good" aria-hidden>
+      <div className="upload-guide-cards">
+        <div className="guide-card guide-card--good">
+          <span className="guide-card__badge guide-card__badge--good" aria-hidden>
             <Check className="w-3.5 h-3.5" strokeWidth={2.5} />
           </span>
-          <span>
-            <span className="upload-guide-label upload-guide-label--good">O ({g.goodLabel})</span>
-            <span className="upload-guide-text">{g.good}</span>
+          <div className="guide-card__thumb">
+            <Dog className="w-10 h-10" strokeWidth={1.25} />
+          </div>
+          <span className="guide-card__label guide-card__label--good">
+            {g.goodLabel}
           </span>
-        </li>
-        <li className="upload-guide-item upload-guide-item--bad">
-          <span className="upload-guide-badge upload-guide-badge--bad" aria-hidden>
+        </div>
+
+        <div className="guide-card guide-card--bad">
+          <span className="guide-card__badge guide-card__badge--bad" aria-hidden>
             <X className="w-3.5 h-3.5" strokeWidth={2.5} />
           </span>
-          <span>
-            <span className="upload-guide-label upload-guide-label--bad">X ({g.badLabel})</span>
-            <span className="upload-guide-text">{g.bad}</span>
+          <div className="guide-card__thumb">
+            <Dog className="w-10 h-10" strokeWidth={1.25} />
+          </div>
+          <span className="guide-card__label guide-card__label--bad">
+            {g.badLabel}
           </span>
-        </li>
-      </ul>
+        </div>
+      </div>
     </section>
   );
 }
