@@ -25,12 +25,18 @@ import { PaymentScreen } from '@/components/memorial/payment-screen'
 import { PreviewScreen } from '@/components/memorial/preview-screen'
 import { NFCPlaybackScreen } from '@/components/memorial/nfc-playback-screen'
 import { ForestExperienceScreen } from '@/components/memorial/forest-experience-screen'
+import { MemorialDevicePlayScreen } from '@/components/memorial/memorial-device-play-screen'
 import { DeviceScreen } from '@/components/memorial/device-screen'
 import { SettingsScreen } from '@/components/memorial/settings-screen'
 import { memorialT } from '@/components/memorial/memorial-i18n'
 import { memorialThemes, getMemorialTheme } from '@/components/memorial/themes'
 import { isForestTheme } from '@/lib/forest-demo-config'
 import { isPublicForestEntry } from '@/lib/app-entry'
+import {
+  DEVICE_DEMO_GOYA_CUTOUT,
+  isDeviceKickstarterDemo,
+} from '@/lib/device-demo-config'
+import { FOREST_THEME_ID } from '@/lib/forest-demo-config'
 import { inferMediaKind } from '@/lib/media-file-kind'
 import type { PickedMedia } from '@/lib/pick-media-file'
 
@@ -48,12 +54,14 @@ type Screen =
   | 'preview'
   | 'nfcPlayback'
   | 'forestExperience'
+  | 'devicePlay'
   | 'device'
   | 'settings'
 
 function resolveInitialScreen(): Screen {
   if (typeof window === 'undefined') return 'onboarding'
   if (isPublicForestEntry()) return 'forestExperience'
+  if (isDeviceKickstarterDemo()) return 'home'
   return 'onboarding'
 }
 
@@ -93,6 +101,7 @@ const CREDITS_ENABLED = import.meta.env.VITE_ENABLE_CREDITS !== '0'
 export function EternalBeamApp() {
   const [screen, setScreen] = useState<Screen>(resolveInitialScreen)
   const [publicForestDemo] = useState(() => isPublicForestEntry())
+  const [deviceDemo] = useState(() => isDeviceKickstarterDemo())
   const [uploadedImage, setUploadedImage] = useState<string | null>(null)
   const [cutoutImage, setCutoutImage] = useState<string | null>(null)
   const [selectedTheme, setSelectedTheme] = useState<number | null>(null)
@@ -127,6 +136,18 @@ export function EternalBeamApp() {
   useEffect(() => {
     if (screen === 'themeSelection') void refreshWallet()
   }, [screen, refreshWallet])
+
+  useEffect(() => {
+    if (!deviceDemo) return
+    setCutoutImage(DEVICE_DEMO_GOYA_CUTOUT)
+    setSelectedTheme(FOREST_THEME_ID)
+    try {
+      localStorage.setItem('eternal_beam_background_theme_id', String(FOREST_THEME_ID))
+      localStorage.setItem('eternal_beam_background_theme_name', '숲속')
+    } catch {
+      /* ignore */
+    }
+  }, [deviceDemo])
 
   const navigateTo = (nextScreen: Screen, direction: NavDirection = 'forward') => {
     navDirection.current = direction
@@ -212,7 +233,7 @@ export function EternalBeamApp() {
       return
     }
     if (isForestTheme(selectedTheme)) {
-      navigateTo('forestExperience')
+      navigateTo('devicePlay')
       return
     }
     if (!CREDITS_ENABLED) {
@@ -417,6 +438,11 @@ export function EternalBeamApp() {
                 onSettings={() => navigateTo('settings')}
                 onTryForest={() => navigateTo('forestExperience')}
                 onSaveToNFC={() => {
+                  if (deviceDemo && cutoutImage) {
+                    setSelectedTheme(FOREST_THEME_ID)
+                    navigateTo('devicePlay')
+                    return
+                  }
                   if (!selectedTheme) setSelectedTheme(1)
                   cutoutImage ? navigateTo('preview') : navigateTo('photoUpload')
                 }}
@@ -566,6 +592,24 @@ export function EternalBeamApp() {
                 onComplete={handleReset}
                 onBack={() => navigateTo('preview', 'back')}
                 onGoPreview={() => navigateTo('preview')}
+              />
+            </motion.div>
+          )}
+
+          {screen === 'devicePlay' && (
+            <motion.div
+              key="devicePlay"
+              custom={navDirection.current}
+              variants={pageVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              className="h-full"
+            >
+              <MemorialDevicePlayScreen
+                cutoutImage={cutoutImage}
+                language={language}
+                onBack={() => navigateTo('home', 'back')}
               />
             </motion.div>
           )}

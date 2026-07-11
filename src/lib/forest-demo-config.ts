@@ -4,7 +4,7 @@
  * 2) 또는 VITE_FOREST_BG_URL 로 URL 지정
  */
 
-export const FOREST_THEME_ID = 5
+export const FOREST_THEME_ID = 8
 export const FOREST_THEME_KEY = 'fresh_forest'
 
 export const forestDemoAssets = {

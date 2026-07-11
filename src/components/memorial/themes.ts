@@ -92,6 +92,18 @@ export const memorialThemes: MemorialTheme[] = [
     price: "$2.99",
     thumb: "/theme-thumbs/ocean_deep.jpg",
   },
+  {
+    id: 8,
+    name: "Forest",
+    nameKo: "숲속",
+    themeKey: "fresh_forest",
+    gradient: "from-emerald-950 via-green-900 to-black",
+    accent: "#34d399",
+    premium: false,
+    price: "",
+    thumb: "/theme-thumbs/snow_forest.jpg",
+    bgVideo: "/demo/forest.mp4",
+  },
 ];
 
 export function getMemorialTheme(id: number | null): MemorialTheme | undefined {
