@@ -98,12 +98,31 @@ def _player_env() -> dict[str, str]:
 def _build_cmd(player: list[str], video: Path) -> list[str]:
     extra = os.getenv("BG_MPV_EXTRA", "").strip().split()
     if player[0] == "mpv":
+        # Pi 터치스크린: --panscan=1.0 으로 여백 없이 꽉 채움 (가장자리 약간 잘릴 수 있음)
+        fill = os.getenv("BG_MPV_FILL", "panscan").strip().lower()
+        fill_args: list[str]
+        if fill in ("stretch", "noaspect", "distort"):
+            fill_args = ["--keepaspect=no"]
+        elif fill == "none":
+            fill_args = []
+        else:
+            # 세로 영상 + 가로 터치스크린: 바닥이 잘리지 않게 아래 정렬
+            fill_args = [
+                "--panscan=1.0",
+                "--keepaspect-window=no",
+                "--video-align-y=1",
+            ]
+
         return [
             "mpv",
             "--fs",
+            "--fs-screen=0",
             "--loop=inf",
             "--no-audio",
             "--no-terminal",
+            "--no-border",
+            "--ontop",
+            *fill_args,
             *extra,
             str(video),
         ]
@@ -223,7 +242,13 @@ def handle_payload(payload: dict[str, Any], bg_map: dict[str, str]) -> None:
     play_background(theme_id, bg_map)
 
 
-def run_listener(bind_host: str, bind_port: int, bg_map: dict[str, str]) -> None:
+def run_listener(
+    bind_host: str,
+    bind_port: int,
+    bg_map: dict[str, str],
+    *,
+    wait_nfc: bool = False,
+) -> None:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     try:
@@ -247,8 +272,14 @@ def run_listener(bind_host: str, bind_port: int, bg_map: dict[str, str]) -> None
         flush=True,
     )
 
-    print("[pi_display_bg] 부팅 기본 배경 재생 시도…", flush=True)
-    play_background(None, bg_map)
+    if wait_nfc:
+        print(
+            "[pi_display_bg] --wait-nfc: 배경 대기 (화면 검정/바탕) — NFC 신호 시 forest 재생",
+            flush=True,
+        )
+    else:
+        print("[pi_display_bg] 부팅 기본 배경 재생 시도…", flush=True)
+        play_background(None, bg_map)
 
     while True:
         try:
@@ -296,6 +327,11 @@ def main() -> None:
     ap.add_argument("--port", type=int, default=BG_DISPLAY_PORT)
     ap.add_argument("--videos-dir", default=str(BG_VIDEOS_DIR))
     ap.add_argument(
+        "--wait-nfc",
+        action="store_true",
+        help="촬영용: 시작 시 배경 없음, nfc_tagged 수신 시에만 재생",
+    )
+    ap.add_argument(
         "--test-forest",
         action="store_true",
         help="UDP 없이 forest 배경만 바로 재생 (터치스크린 테스트)",
@@ -328,7 +364,7 @@ def main() -> None:
         return
 
     try:
-        run_listener(args.bind, args.port, bg_map)
+        run_listener(args.bind, args.port, bg_map, wait_nfc=args.wait_nfc)
     except KeyboardInterrupt:
         _shutdown()
 
