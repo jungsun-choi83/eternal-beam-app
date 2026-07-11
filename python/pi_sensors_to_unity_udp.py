@@ -63,10 +63,22 @@ def _init_pn532():
     import busio
     from adafruit_pn532.i2c import PN532_I2C
 
-    i2c = busio.I2C(board.SCL, board.SDA)
-    pn532 = PN532_I2C(i2c, debug=False)
-    pn532.SAM_configuration()
-    return pn532
+    last_err: Exception | None = None
+    for attempt in range(5):
+        try:
+            if attempt:
+                time.sleep(0.5 * attempt)
+            i2c = busio.I2C(board.SCL, board.SDA)
+            pn532 = PN532_I2C(i2c, debug=False)
+            pn532.SAM_configuration()
+            return pn532
+        except Exception as e:  # noqa: BLE001
+            last_err = e
+            try:
+                i2c.deinit()
+            except Exception:
+                pass
+    raise RuntimeError(f"PN532 init failed after retries: {last_err}")
 
 
 def _distance_loop(send, sensor) -> None:
