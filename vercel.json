@@ -11,6 +11,10 @@
     {
       "source": "/output/:path*",
       "destination": "https://eternal-beam-video-api.onrender.com/output/:path*"
+    },
+    {
+      "source": "/((?!api/|outputs/|output/|assets/|demo/).*)",
+      "destination": "/index.html"
     }
   ]
 }

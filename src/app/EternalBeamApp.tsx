@@ -1,14 +1,15 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { getWalletBalance } from '@/app/services/videoProcessingApi'
-import { getEternalBeamUserId } from '@/lib/eternal-beam-user'
+import { getAuthDisplayName, getEternalBeamUserId, setAuthSession } from '@/lib/eternal-beam-user'
+import { onAuthStateChanged } from 'firebase/auth'
+import { auth, isFirebaseConfigured } from '@/app/config/firebase'
+import { upsertAppUser } from '@/app/services/supabaseUserService'
 import {
   runCreditMotionGeneration,
   isInsufficientCreditsError,
 } from '@/lib/credit-pipeline'
 import { saveCreditSession } from '@/lib/credit-session'
 import { persistDeviceContentFromPipeline } from '@/lib/persist-device-content'
-import { chargeCreditPackMock } from '@/lib/iap-mock'
-import { IAP_MOCK_ENABLED } from '@/lib/test-app-flags'
 import { createDisplayCutoutUrl } from '@/lib/display-image'
 import { AnimatePresence, motion } from 'framer-motion'
 import { MobileFrame } from '@/components/memorial/mobile-frame'
@@ -26,9 +27,13 @@ import { ThemeSelectionScreen } from '@/components/memorial/theme-selection-scre
 import { PaymentScreen } from '@/components/memorial/payment-screen'
 import { PreviewScreen } from '@/components/memorial/preview-screen'
 import { NFCPlaybackScreen } from '@/components/memorial/nfc-playback-screen'
+import { ForestExperienceScreen } from '@/components/memorial/forest-experience-screen'
 import { DeviceScreen } from '@/components/memorial/device-screen'
 import { SettingsScreen } from '@/components/memorial/settings-screen'
 import { memorialT } from '@/components/memorial/memorial-i18n'
+import { memorialThemes, getMemorialTheme } from '@/components/memorial/themes'
+import { isForestTheme } from '@/lib/forest-demo-config'
+import { isPublicForestEntry } from '@/lib/app-entry'
 import { inferMediaKind } from '@/lib/media-file-kind'
 import type { PickedMedia } from '@/lib/pick-media-file'
 
@@ -45,43 +50,52 @@ type Screen =
   | 'checkout'
   | 'preview'
   | 'nfcPlayback'
+  | 'forestExperience'
   | 'device'
   | 'settings'
 
-const themes = [
-  { id: 1, name: 'Celestial', price: '' },
-  { id: 2, name: 'Golden Meadow', price: '' },
-  { id: 3, name: 'Starlight', price: '' },
-  { id: 4, name: 'Aurora', price: '$2.99' },
-  { id: 5, name: 'Sunset', price: '$2.99' },
-  { id: 6, name: 'Ocean Deep', price: '$2.99' },
-]
+function resolveInitialScreen(): Screen {
+  if (typeof window === 'undefined') return 'onboarding'
+  if (isPublicForestEntry()) return 'forestExperience'
+  return 'onboarding'
+}
+
+const themes = memorialThemes.map((t) => ({
+  id: t.id,
+  name: t.name,
+  price: t.price,
+}))
+
+type NavDirection = 'forward' | 'back'
+
+const pageEase = [0.22, 1, 0.36, 1] as const
 
 const pageVariants = {
-  initial: { opacity: 0, x: '100%' },
-  animate: { opacity: 1, x: 0 },
-  exit: {
+  initial: (dir: NavDirection) => ({
     opacity: 0,
-    x: '100%',
-    transition: { duration: 0.25, ease: 'easeOut' as const },
+    x: dir === 'forward' ? 28 : -28,
+  }),
+  animate: {
+    opacity: 1,
+    x: 0,
+    transition: { duration: 0.38, ease: pageEase },
   },
+  exit: (dir: NavDirection) => ({
+    opacity: 0,
+    x: dir === 'forward' ? -28 : 28,
+    transition: {
+      duration: dir === 'forward' ? 0.38 : 0.32,
+      ease: pageEase,
+    },
+  }),
 }
-
-const pageTransition = {
-  duration: 0.3,
-  ease: 'easeOut' as const,
-}
-
-const filmSkipOnboarding =
-  import.meta.env.VITE_FILM_SKIP_ONBOARDING === '1'
 
 const CREDIT_COST = Number(import.meta.env.VITE_CREDIT_COST_PER_PLACE || '4')
 const CREDITS_ENABLED = import.meta.env.VITE_ENABLE_CREDITS !== '0'
 
 export function EternalBeamApp() {
-  const [screen, setScreen] = useState<Screen>(
-    filmSkipOnboarding ? 'home' : 'onboarding'
-  )
+  const [screen, setScreen] = useState<Screen>(resolveInitialScreen)
+  const [publicForestDemo] = useState(() => isPublicForestEntry())
   const [uploadedImage, setUploadedImage] = useState<string | null>(null)
   const [cutoutImage, setCutoutImage] = useState<string | null>(null)
   const [selectedTheme, setSelectedTheme] = useState<number | null>(null)
@@ -100,7 +114,8 @@ export function EternalBeamApp() {
   const [, setIsFirstTime] = useState(true)
   const [walletCredits, setWalletCredits] = useState<number | null>(null)
   const [creditBusy, setCreditBusy] = useState(false)
-  const [creditPackBusy, setCreditPackBusy] = useState(false)
+  const [tapFlash, setTapFlash] = useState(false)
+  const navDirection = useRef<NavDirection>('forward')
 
   const refreshWallet = useCallback(async () => {
     if (!CREDITS_ENABLED) return
@@ -116,7 +131,39 @@ export function EternalBeamApp() {
     if (screen === 'themeSelection') void refreshWallet()
   }, [screen, refreshWallet])
 
-  const navigateTo = (nextScreen: Screen) => {
+  useEffect(() => {
+    if (!isFirebaseConfigured() || !auth) return
+
+    const unsub = onAuthStateChanged(auth, (user) => {
+      if (!user?.uid) return
+
+      const displayName =
+        user.displayName?.trim() ||
+        getAuthDisplayName() ||
+        user.email?.split('@')[0] ||
+        ''
+
+      setAuthSession({
+        uid: user.uid,
+        email: user.email ?? '',
+        displayName,
+      })
+      if (displayName) setUserName(displayName)
+
+      void upsertAppUser({
+        user_id: user.uid,
+        email: user.email ?? '',
+        display_name: displayName,
+      })
+    })
+
+    return unsub
+  }, [])
+
+  const navigateTo = (nextScreen: Screen, direction: NavDirection = 'forward') => {
+    navDirection.current = direction
+    setTapFlash(true)
+    window.setTimeout(() => setTapFlash(false), 150)
     setScreen(nextScreen)
   }
 
@@ -189,26 +236,15 @@ export function EternalBeamApp() {
     navigateTo('preview')
   }
 
-  const handleBuyCreditsMock = async () => {
-    const tc = memorialT(language).theme
-    setCreditPackBusy(true)
-    try {
-      const result = await chargeCreditPackMock(getEternalBeamUserId(userName))
-      setWalletCredits(result.credits_remaining)
-      alert(tc.buyCreditsDone(result.credits_remaining))
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      alert(`${tc.buyCreditsFailed}: ${msg}`)
-    } finally {
-      setCreditPackBusy(false)
-    }
-  }
-
   const handleThemeContinueWithCredit = async () => {
     const tc = memorialT(language).theme
     if (!selectedTheme) return
     if (!cutoutImage) {
       alert(tc.cutoutMissing)
+      return
+    }
+    if (isForestTheme(selectedTheme)) {
+      navigateTo('forestExperience')
       return
     }
     if (!CREDITS_ENABLED) {
@@ -251,16 +287,7 @@ export function EternalBeamApp() {
       navigateTo('preview')
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      if (isInsufficientCreditsError(e)) {
-        const skip = window.confirm(`${msg}\n\n${tc.skipWithoutCredit}?`)
-        if (!skip) {
-          setCreditBusy(false)
-          return
-        }
-      } else {
-        alert(`${tc.creditFailed}: ${msg}`)
-      }
-      navigateTo('preview')
+      alert(isInsufficientCreditsError(e) ? msg : `${tc.creditFailed}: ${msg}`)
     } finally {
       setCreditBusy(false)
     }
@@ -300,8 +327,10 @@ export function EternalBeamApp() {
   }
 
   const getPendingThemeInfo = () => {
-    const theme = themes.find((t) => t.id === pendingPremiumTheme)
-    return theme || { id: 0, name: 'Premium Theme', price: '$2.99' }
+    const theme = getMemorialTheme(pendingPremiumTheme)
+    return theme
+      ? { id: theme.id, name: theme.name, price: theme.price }
+      : { id: 0, name: 'Premium Theme', price: '' }
   }
 
   return (
@@ -315,15 +344,16 @@ export function EternalBeamApp() {
       />
 
       <MobileFrame>
+        {tapFlash ? <div className="eb-tap-flash absolute inset-0 z-[80] rounded-[inherit]" aria-hidden /> : null}
         <AnimatePresence mode="wait" initial={false}>
           {screen === 'onboarding' && (
             <motion.div
               key="onboarding"
+              custom={navDirection.current}
               variants={pageVariants}
               initial="initial"
               animate="animate"
               exit="exit"
-              transition={pageTransition}
               className="h-full w-full"
               style={{ position: 'relative', display: 'block', minHeight: '100%' }}
             >
@@ -331,6 +361,7 @@ export function EternalBeamApp() {
                 language={language}
                 onLanguageChange={handleLanguageChange}
                 onComplete={() => navigateTo('signup')}
+                onTryForest={() => navigateTo('forestExperience')}
               />
             </motion.div>
           )}
@@ -338,11 +369,11 @@ export function EternalBeamApp() {
           {screen === 'signup' && (
             <motion.div
               key="signup"
+              custom={navDirection.current}
               variants={pageVariants}
               initial="initial"
               animate="animate"
               exit="exit"
-              transition={pageTransition}
               className="h-full"
             >
               <AuthScreen
@@ -360,11 +391,11 @@ export function EternalBeamApp() {
           {screen === 'login' && (
             <motion.div
               key="login"
+              custom={navDirection.current}
               variants={pageVariants}
               initial="initial"
               animate="animate"
               exit="exit"
-              transition={pageTransition}
               className="h-full"
             >
               <AuthScreen
@@ -382,17 +413,17 @@ export function EternalBeamApp() {
           {screen === 'qrConnection' && (
             <motion.div
               key="qrConnection"
+              custom={navDirection.current}
               variants={pageVariants}
               initial="initial"
               animate="animate"
               exit="exit"
-              transition={pageTransition}
               className="h-full"
             >
               <QRConnectionScreen
                 language={language}
                 onComplete={() => navigateTo('home')}
-                onBack={() => navigateTo('signup')}
+                onBack={() => navigateTo('signup', 'back')}
                 onSkip={() => navigateTo('home')}
               />
             </motion.div>
@@ -401,11 +432,11 @@ export function EternalBeamApp() {
           {screen === 'home' && (
             <motion.div
               key="home"
+              custom={navDirection.current}
               variants={pageVariants}
               initial="initial"
               animate="animate"
               exit="exit"
-              transition={pageTransition}
               className="h-full"
             >
               <HomeScreen
@@ -416,6 +447,7 @@ export function EternalBeamApp() {
                 onMediaFile={handleMediaFile}
                 onGallery={() => navigateTo('gallery')}
                 onSettings={() => navigateTo('settings')}
+                onTryForest={() => navigateTo('forestExperience')}
                 onSaveToNFC={() => {
                   if (!selectedTheme) setSelectedTheme(1)
                   cutoutImage ? navigateTo('preview') : navigateTo('photoUpload')
@@ -427,17 +459,17 @@ export function EternalBeamApp() {
           {screen === 'gallery' && (
             <motion.div
               key="gallery"
+              custom={navDirection.current}
               variants={pageVariants}
               initial="initial"
               animate="animate"
               exit="exit"
-              transition={pageTransition}
               className="h-full"
             >
               <GalleryScreen
                 onSelectItem={(id: number) => console.log('Selected item', id)}
                 onAddNew={() => navigateTo('photoUpload')}
-                onBack={() => navigateTo('home')}
+                onBack={() => navigateTo('home', 'back')}
               />
             </motion.div>
           )}
@@ -445,11 +477,11 @@ export function EternalBeamApp() {
           {screen === 'photoUpload' && (
             <motion.div
               key="photoUpload"
+              custom={navDirection.current}
               variants={pageVariants}
               initial="initial"
               animate="animate"
               exit="exit"
-              transition={pageTransition}
               className="h-full"
             >
               <PhotoUploadScreen
@@ -457,7 +489,7 @@ export function EternalBeamApp() {
                 language={language}
                 onImageUpload={handleImageUpload}
                 onContinue={() => navigateTo('aiProcessing')}
-                onBack={() => navigateTo('home')}
+                onBack={() => navigateTo('home', 'back')}
               />
             </motion.div>
           )}
@@ -465,11 +497,11 @@ export function EternalBeamApp() {
           {screen === 'aiProcessing' && (
             <motion.div
               key="aiProcessing"
+              custom={navDirection.current}
               variants={pageVariants}
               initial="initial"
               animate="animate"
               exit="exit"
-              transition={pageTransition}
               className="h-full"
             >
               <AIProcessingScreen
@@ -483,11 +515,11 @@ export function EternalBeamApp() {
           {screen === 'themeSelection' && (
             <motion.div
               key="themeSelection"
+              custom={navDirection.current}
               variants={pageVariants}
               initial="initial"
               animate="animate"
               exit="exit"
-              transition={pageTransition}
               className="h-full"
             >
               <ThemeSelectionScreen
@@ -497,20 +529,10 @@ export function EternalBeamApp() {
                 walletCredits={walletCredits}
                 creditCost={CREDIT_COST}
                 creditBusy={creditBusy}
-                creditPackBusy={creditPackBusy}
-                onBuyCreditsMock={
-                  CREDITS_ENABLED && IAP_MOCK_ENABLED
-                    ? () => void handleBuyCreditsMock()
-                    : undefined
-                }
                 onSelectTheme={handleThemeSelect}
                 onSelectPremiumTheme={handlePremiumThemeSelect}
                 onContinue={() => void handleThemeContinueWithCredit()}
-                onSkip={() => {
-                  if (!selectedTheme) setSelectedTheme(1)
-                  navigateTo('preview')
-                }}
-                onBack={() => navigateTo('home')}
+                onBack={() => navigateTo('home', 'back')}
               />
             </motion.div>
           )}
@@ -518,11 +540,11 @@ export function EternalBeamApp() {
           {screen === 'checkout' && (
             <motion.div
               key="checkout"
+              custom={navDirection.current}
               variants={pageVariants}
               initial="initial"
               animate="animate"
               exit="exit"
-              transition={pageTransition}
               className="h-full"
             >
               <PaymentScreen
@@ -530,7 +552,7 @@ export function EternalBeamApp() {
                 selectedTheme={getPendingThemeInfo()}
                 onComplete={handlePaymentComplete}
                 onSkip={handlePaymentSkip}
-                onBack={() => navigateTo('themeSelection')}
+                onBack={() => navigateTo('themeSelection', 'back')}
               />
             </motion.div>
           )}
@@ -538,11 +560,11 @@ export function EternalBeamApp() {
           {screen === 'preview' && (
             <motion.div
               key="preview"
+              custom={navDirection.current}
               variants={pageVariants}
               initial="initial"
               animate="animate"
               exit="exit"
-              transition={pageTransition}
               className="h-full"
             >
               <PreviewScreen
@@ -556,7 +578,7 @@ export function EternalBeamApp() {
                   persistDeviceContentFromPipeline(selectedTheme ?? 1)
                   navigateTo('nfcPlayback')
                 }}
-                onBack={() => navigateTo('themeSelection')}
+                onBack={() => navigateTo('themeSelection', 'back')}
               />
             </motion.div>
           )}
@@ -564,18 +586,43 @@ export function EternalBeamApp() {
           {screen === 'nfcPlayback' && (
             <motion.div
               key="nfcPlayback"
+              custom={navDirection.current}
               variants={pageVariants}
               initial="initial"
               animate="animate"
               exit="exit"
-              transition={pageTransition}
               className="h-full"
             >
               <NFCPlaybackScreen
                 language={language}
                 onComplete={handleReset}
-                onBack={() => navigateTo('preview')}
+                onBack={() => navigateTo('preview', 'back')}
                 onGoPreview={() => navigateTo('preview')}
+              />
+            </motion.div>
+          )}
+
+          {screen === 'forestExperience' && (
+            <motion.div
+              key="forestExperience"
+              custom={navDirection.current}
+              variants={pageVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              className="h-full"
+            >
+              <ForestExperienceScreen
+                language={language}
+                publicDemo={publicForestDemo}
+                onBack={() =>
+                  publicForestDemo
+                    ? navigateTo('home', 'back')
+                    : cutoutImage
+                      ? navigateTo('themeSelection', 'back')
+                      : navigateTo('home', 'back')
+                }
+                onComplete={() => navigateTo('nfcPlayback')}
               />
             </motion.div>
           )}
@@ -583,15 +630,15 @@ export function EternalBeamApp() {
           {screen === 'device' && (
             <motion.div
               key="device"
+              custom={navDirection.current}
               variants={pageVariants}
               initial="initial"
               animate="animate"
               exit="exit"
-              transition={pageTransition}
               className="h-full"
             >
               <DeviceScreen
-                onBack={() => navigateTo('settings')}
+                onBack={() => navigateTo('settings', 'back')}
                 onReconnect={() => navigateTo('qrConnection')}
               />
             </motion.div>
@@ -600,23 +647,21 @@ export function EternalBeamApp() {
           {screen === 'settings' && (
             <motion.div
               key="settings"
+              custom={navDirection.current}
               variants={pageVariants}
               initial="initial"
               animate="animate"
               exit="exit"
-              transition={pageTransition}
               className="h-full"
             >
               <SettingsScreen
                 currentLanguage={language}
-                userId={getEternalBeamUserId(userName)}
                 onChangeLanguage={() =>
                   handleLanguageChange(language === 'ko' ? 'en' : 'ko')
                 }
                 onDeviceSettings={() => navigateTo('device')}
-                onBack={() => navigateTo('home')}
+                onBack={() => navigateTo('home', 'back')}
                 onLogout={handleLogout}
-                onCreditsChanged={(n) => setWalletCredits(n)}
               />
             </motion.div>
           )}

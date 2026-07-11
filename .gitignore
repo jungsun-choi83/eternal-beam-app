@@ -39,6 +39,8 @@ media/
 !backend/themes/*.mp4
 !EternalBeam/Assets/Backgrounds/*.mp4
 !public/backgrounds/**/*.mp4
+!public/demo/*.mp4
+!python/backgrounds/*.mp4
 __pycache__/
 *.rtf
 KakaoTalk_*

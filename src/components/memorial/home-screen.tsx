@@ -1,6 +1,5 @@
 "use client";
 
-import { useMemo, type CSSProperties } from "react";
 import { memorialLang, memorialT } from "@/components/memorial/memorial-i18n";
 import { motion } from "framer-motion";
 import { Plus, Settings, Grid3X3 } from "lucide-react";
@@ -17,6 +16,7 @@ interface HomeScreenProps {
   onMediaFile: (file: File) => void;
   onGallery?: () => void;
   onSettings?: () => void;
+  onTryForest?: () => void;
   onSaveToNFC: () => void;
 }
 
@@ -28,53 +28,20 @@ export function HomeScreen({
   onMediaFile,
   onGallery,
   onSettings,
+  onTryForest,
   onSaveToNFC,
 }: HomeScreenProps) {
   const lang = memorialLang(language);
   const texts = memorialT(language).home;
-
-  const bgDots = useMemo(
-    () =>
-      Array.from({ length: 15 }, (_, i) => ({
-        id: i,
-        left: Math.random() * 100,
-        size: 2 + Math.random() * 2,
-        opacity: 0.15 + Math.random() * 0.25,
-        duration: 6 + Math.random() * 6,
-        delay: Math.random() * 6,
-      })),
-    [],
-  );
 
   const handleLanguageSelect = (code: "ko" | "en") => {
     onLanguageChange?.(code);
   };
 
   return (
-    <div className="hologram-bg-active h-full flex flex-col bg-[#000000] relative overflow-hidden min-h-0">
-      {/* Holographic Background */}
+    <div className="hologram-bg-active memorial-screen-shell h-full flex flex-col relative overflow-hidden min-h-0">
       <HolographicBackground />
       <HologramEffects />
-
-      {/* 배경 골드 파티클 (위로 천천히 떠오름) */}
-      <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden" aria-hidden>
-        {bgDots.map((d) => (
-          <span
-            key={d.id}
-            className="home-dot"
-            style={
-              {
-                left: `${d.left}%`,
-                width: `${d.size}px`,
-                height: `${d.size}px`,
-                "--dot-o": d.opacity,
-                animationDuration: `${d.duration}s`,
-                animationDelay: `${d.delay}s`,
-              } as CSSProperties
-            }
-          />
-        ))}
-      </div>
 
       {/* Header with Brand */}
       <header className="px-6 pt-8 pb-4 relative z-10 shrink-0">
@@ -230,9 +197,11 @@ export function HomeScreen({
                   <span className="relative text-base font-medium block" style={{ color: "#F1E5D1" }}>
                     {texts.addMedia}
                   </span>
-                  <span className="text-sm font-normal mt-1 block" style={{ color: "rgba(245,245,247,0.72)" }}>
-                    {texts.photoOrVideo}
-                  </span>
+                  {texts.photoOrVideo ? (
+                    <span className="text-sm font-normal mt-1 block memorial-body">
+                      {texts.photoOrVideo}
+                    </span>
+                  ) : null}
                 </div>
 
                 <div className="upload-formats">
@@ -249,8 +218,28 @@ export function HomeScreen({
         </motion.div>
       </div>
 
-      {/* Bottom Action - Save to Memory 버튼 항상 보임 */}
-      <div className="px-8 pb-10 pt-4 relative z-10 shrink-0">
+      {/* Bottom Action */}
+      <div className="px-8 pb-10 pt-4 relative z-10 shrink-0 space-y-3">
+        {onTryForest ? (
+          <motion.button
+            type="button"
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.5 }}
+            onClick={onTryForest}
+            className="w-full py-3.5 rounded-full text-sm font-medium"
+            style={{
+              background: "rgba(255,255,255,0.08)",
+              border: "1px solid rgba(110, 231, 183, 0.35)",
+              color: "#a7f3d0",
+            }}
+            whileHover={{ scale: 1.01 }}
+            whileTap={{ scale: 0.98 }}
+          >
+            <span className="block">{texts.tryForest}</span>
+            <span className="block text-xs mt-0.5 opacity-70 font-normal">{texts.tryForestHint}</span>
+          </motion.button>
+        ) : null}
         <motion.button
           initial={{ opacity: 0, y: 10 }}
           animate={{ opacity: 1, y: 0 }}
