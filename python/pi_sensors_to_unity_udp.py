@@ -82,13 +82,22 @@ def _init_pn532():
 
 
 def _distance_loop(send, sensor) -> None:
-    last_sent = 0.0
+    TOUCH_THRESHOLD_MM = 120
+    last_touch = 0.0
+    last_approach = 0.0
     while True:
         try:
             mm = int(sensor.range)
-            if 0 < mm < DISTANCE_THRESHOLD_MM and (time.monotonic() - last_sent) >= APPROACH_COOLDOWN_SEC:
+            now = time.monotonic()
+            if 0 < mm < TOUCH_THRESHOLD_MM and (now - last_touch) >= APPROACH_COOLDOWN_SEC:
+                send({"event": "touch", "distance_mm": mm})
+                last_touch = now
+            elif (
+                0 < mm < DISTANCE_THRESHOLD_MM
+                and (now - last_approach) >= APPROACH_COOLDOWN_SEC
+            ):
                 send({"event": "approach", "distance_mm": mm})
-                last_sent = time.monotonic()
+                last_approach = now
         except Exception as e:
             print(f"[VL53L0X] {e}")
         time.sleep(DISTANCE_POLL_SEC)

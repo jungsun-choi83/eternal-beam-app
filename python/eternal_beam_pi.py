@@ -78,6 +78,13 @@ def make_sender(
             sock.sendto(msg.encode("utf-8"), target)
         print(f"[UDP -> {label}] {msg}", flush=True)
 
+        try:
+            from pi_sse_server import broadcast_event  # type: ignore
+
+            broadcast_event(payload)
+        except Exception:
+            pass
+
     return send
 
 
@@ -123,6 +130,7 @@ def run_distance(send, *, simulate: bool) -> None:
         from pi_sensors_to_unity_udp import _init_vl53l0x, _distance_loop  # type: ignore
 
         sensor = _init_vl53l0x()
+        print("[VL53L0X] 시작 — 12cm 이내=touch, 30cm 이내=approach → S23", flush=True)
     except Exception as e:  # noqa: BLE001
         print(f"[VL53L0X] 비활성화 (init 실패): {e}", flush=True)
         return
@@ -183,11 +191,18 @@ def run_voice(send, *, simulate: bool) -> None:
         from voice_to_unity import run_voice_loop  # type: ignore
     except Exception as e:  # noqa: BLE001
         print(f"[INMP441] 모듈 로드 실패: {e}", flush=True)
+        print("[INMP441] Pi에 voice_to_unity.py 있는지 확인하세요.", flush=True)
         return
     try:
+        print("[INMP441] 시작 — 말하면 S23 Unity로 voice 이벤트 전송", flush=True)
         run_voice_loop(send, simulate=simulate)
     except Exception as e:  # noqa: BLE001
         print(f"[INMP441] 비활성화: {e}", flush=True)
+        print(
+            "[INMP441] 힌트: python3 voice_to_unity.py --list-devices  "
+            "VOICE_DEVICE_INDEX=1 bash start_machine_sensors.sh bridge",
+            flush=True,
+        )
 
 
 def main() -> None:
@@ -200,7 +215,21 @@ def main() -> None:
     ap.add_argument("--no-tof", action="store_true")
     ap.add_argument("--no-nfc", action="store_true")
     ap.add_argument("--no-voice", action="store_true")
+    ap.add_argument(
+        "--sse-port",
+        type=int,
+        default=int(os.getenv("PI_SSE_PORT", "8787")),
+        help="폰 웹앱 SSE 포트 (0=끔, 기본 8787)",
+    )
     args = ap.parse_args()
+
+    if args.sse_port > 0:
+        try:
+            from pi_sse_server import start_sse_server  # type: ignore
+
+            start_sse_server(port=args.sse_port)
+        except Exception as e:  # noqa: BLE001
+            print(f"[SSE] 시작 실패: {e}", flush=True)
 
     send = make_sender(args.host, args.port, args.bg_host, args.bg_port)
     theme_map = load_theme_map()
@@ -209,6 +238,7 @@ def main() -> None:
         f"2디스플레이 브리지\n"
         f"  NFC 배경  → udp://{args.bg_host}:{args.bg_port} (pi_display_bg.py)\n"
         f"  피사체    → udp://{args.host}:{args.port} (Unity APK)\n"
+        f"  폰 웹 SSE → http://0.0.0.0:{args.sse_port}/events (sse_port=0 이면 끔)\n"
         f"  simulate={args.simulate}",
         flush=True,
     )
@@ -231,8 +261,10 @@ def main() -> None:
         print("활성화된 센서가 없습니다.", flush=True)
         return
 
-    for t in threads:
+    for i, t in enumerate(threads):
         t.start()
+        if i < len(threads) - 1:
+            time.sleep(0.9)
 
     try:
         while True:
