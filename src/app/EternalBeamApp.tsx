@@ -1,9 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { getWalletBalance } from '@/app/services/videoProcessingApi'
-import { getAuthDisplayName, getEternalBeamUserId, setAuthSession } from '@/lib/eternal-beam-user'
-import { onAuthStateChanged } from 'firebase/auth'
-import { auth, isFirebaseConfigured } from '@/app/config/firebase'
-import { upsertAppUser } from '@/app/services/supabaseUserService'
+import { getEternalBeamUserId } from '@/lib/eternal-beam-user'
 import {
   runCreditMotionGeneration,
   isInsufficientCreditsError,
@@ -130,35 +127,6 @@ export function EternalBeamApp() {
   useEffect(() => {
     if (screen === 'themeSelection') void refreshWallet()
   }, [screen, refreshWallet])
-
-  useEffect(() => {
-    if (!isFirebaseConfigured() || !auth) return
-
-    const unsub = onAuthStateChanged(auth, (user) => {
-      if (!user?.uid) return
-
-      const displayName =
-        user.displayName?.trim() ||
-        getAuthDisplayName() ||
-        user.email?.split('@')[0] ||
-        ''
-
-      setAuthSession({
-        uid: user.uid,
-        email: user.email ?? '',
-        displayName,
-      })
-      if (displayName) setUserName(displayName)
-
-      void upsertAppUser({
-        user_id: user.uid,
-        email: user.email ?? '',
-        display_name: displayName,
-      })
-    })
-
-    return unsub
-  }, [])
 
   const navigateTo = (nextScreen: Screen, direction: NavDirection = 'forward') => {
     navDirection.current = direction
