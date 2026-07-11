@@ -138,13 +138,8 @@ def _log_player_exit(proc: subprocess.Popen) -> None:
     if code is None:
         print(f"[pi_display_bg] 플레이어 실행 중 PID={proc.pid}", flush=True)
         return
-    err = b""
-    try:
-        err = proc.stderr.read(4096) if proc.stderr else b""
-    except Exception:
-        pass
     print(
-        f"[pi_display_bg] 플레이어 즉시 종료 exit={code} stderr={err.decode(errors='replace')!r}",
+        f"[pi_display_bg] 플레이어 즉시 종료 exit={code}",
         flush=True,
     )
     print(
@@ -204,7 +199,7 @@ def play_background(theme_id: str | None, bg_map: dict[str, str]) -> None:
             _player_proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
                 env=_player_env(),
             )
         except Exception as e:
