@@ -1,5 +1,5 @@
 [Unit]
-Description=Eternal Beam Pi sensor bridge (ToF + NFC + INMP441 -> Unity UDP)
+Description=Eternal Beam Pi sensor bridge (NFC→Pi bg, touch/voice→Unity)
 After=network-online.target
 Wants=network-online.target
 

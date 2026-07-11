@@ -1,0 +1,6 @@
+{
+  "_comment": "PN532 UID → raspi_nfc_playback 슬롯 번호 (1=숲 배경)",
+  "_default_slot": 1,
+  "A1B2C3D4": 1,
+  "FOREST01": 1
+}

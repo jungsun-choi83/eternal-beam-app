@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
-# Eternal Beam — Pi 센서 브리지 systemd 자동 실행 설치
+# Eternal Beam — Pi 배경(pi_display_bg) + 센서(eternal_beam_pi) 자동 시작
 #   sudo bash systemd/install.sh
-# 전원만 켜면(모니터 없이) eternal_beam_pi.py 가 자동 시작/복구된다.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-SERVICE_NAME="eternal-beam-pi.service"
-DEST="/etc/systemd/system/${SERVICE_NAME}"
 ENV_SRC="${SCRIPT_DIR}/eternal-beam-pi.env"
 ENV_EXAMPLE="${SCRIPT_DIR}/eternal-beam-pi.env.example"
 
@@ -16,22 +13,31 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
-# 1) 환경설정 파일 준비
+install_service() {
+  local name="$1"
+  sed "s#__APP_DIR__#${APP_DIR}#g" "${SCRIPT_DIR}/${name}" > "/etc/systemd/system/${name}"
+  echo "[+] /etc/systemd/system/${name}"
+}
+
 if [[ ! -f "${ENV_SRC}" ]]; then
   cp "${ENV_EXAMPLE}" "${ENV_SRC}"
-  echo "[!] ${ENV_SRC} 생성됨 — UDP_HOST(폰 IP)를 실제 값으로 수정하세요."
+  echo "[!] ${ENV_SRC} 생성 — UDP_HOST(폰 IP) 확인하세요."
 fi
 
-# 2) 유닛 파일 경로 치환 후 설치
-sed "s#__APP_DIR__#${APP_DIR}#g" "${SCRIPT_DIR}/${SERVICE_NAME}" > "${DEST}"
-echo "[+] ${DEST} 설치됨 (APP_DIR=${APP_DIR})"
+if [[ ! -f "${APP_DIR}/python/backgrounds/fresh_forest.mp4" ]]; then
+  echo "[!] ${APP_DIR}/python/backgrounds/fresh_forest.mp4 없음 — forest.mp4 복사 필요" >&2
+fi
 
-# 3) 활성화
+install_service "pi-display-bg.service"
+install_service "eternal-beam-pi.service"
+
 systemctl daemon-reload
-systemctl enable "${SERVICE_NAME}"
-systemctl restart "${SERVICE_NAME}"
+systemctl enable pi-display-bg.service eternal-beam-pi.service
+systemctl restart pi-display-bg.service
+systemctl restart eternal-beam-pi.service
 
 echo
-echo "완료. 상태/로그 확인:"
-echo "  systemctl status ${SERVICE_NAME}"
-echo "  journalctl -u ${SERVICE_NAME} -f"
+echo "2디스플레이 시작됨:"
+echo "  journalctl -u pi-display-bg.service -f    # Pi 터치스크린 배경"
+echo "  journalctl -u eternal-beam-pi.service -f  # NFC→배경, 거리/음성→Unity"
+echo "  python3 nfc_scan_uid.py                   # 흰 카드 UID 등록"

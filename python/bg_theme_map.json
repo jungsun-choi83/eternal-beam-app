@@ -1,0 +1,8 @@
+{
+  "_comment": "theme_id → Pi 디스플레이 배경 mp4 (python/backgrounds/ 기준)",
+  "_default": "idle.mp4",
+  "forest": "fresh_forest.mp4",
+  "fresh_forest": "fresh_forest.mp4",
+  "goya_bg": "fresh_forest.mp4",
+  "snow_forest": "fresh_forest.mp4"
+}

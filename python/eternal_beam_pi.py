@@ -1,35 +1,29 @@
 #!/usr/bin/env python3
 """
-Eternal Beam — Raspberry Pi 5 통합 센서 브리지 (production main)
+Eternal Beam — Raspberry Pi 5 통합 센서 브리지 (2디스플레이)
 
-문서 "이터널빔 임베디드" 기준 '커서 담당' 산출물.
-ToF(VL53L0X) + NFC(PN532) + 마이크(INMP441) 3개 센서를 하나의 프로세스에서
-동시에 감시하고, 같은 Wi-Fi의 Unity(기계 속 폰)로 UDP JSON 패킷을 쏜다.
+  Pi 터치스크린  → 배경 mp4 만 (pi_display_bg.py, UDP :9999)
+  기계 안 폰(S23) → 피사체(강아지) 만 (Unity APK, UDP :5005)
 
-전송 이벤트 (Unity UDPReceiver 계약):
-  {"event":"approach","distance_mm":240}            # 사람 접근  → near
-  {"event":"nfc_tagged","theme_id":"snow_forest","uid":"A1B2C3D4"}  # NFC → 배경 전환
-  {"event":"voice","source":"inmp441","rms":1800}   # 음성     → action 영상
+이중 UDP 라우팅:
+  NFC nfc_tagged          → Pi 디스플레이 :9999  (배경 전환, Unity 로 안 감)
+  touch / approach / voice → S21/S23 Unity :5005  (idle / action)
+
+  {"event":"nfc_tagged","theme_id":"forest","uid":"..."}  → Pi 터치스크린
+  {"event":"touch","distance_mm":85}                      → Unity (피사체)
+  {"event":"voice",...}                                   → Unity (피사체)
 
 사용:
-  # 폰(Unity) Wi-Fi IP로 전송, 3센서 전부
-  UDP_HOST=192.168.0.25 python eternal_beam_pi.py
-
-  # 특정 센서만 끄기 (하드웨어 일부만 연결된 경우)
-  python eternal_beam_pi.py --host 192.168.0.25 --no-voice
-
-  # PC에서 배선 없이 동작 확인 (전부 시뮬레이션)
+  UDP_HOST=192.168.219.187 python eternal_beam_pi.py   # 폰 Wi-Fi IP
   python eternal_beam_pi.py --simulate
 
-설치(Pi):
-  pip install -r requirements-pi.txt
-자동 실행(systemd):
-  sudo bash systemd/install.sh   # 전원 켜면 자동 시작
+  # Pi 배경 플레이어는 별도 터미널(또는 systemd):
+  python pi_display_bg.py --videos-dir ./backgrounds
 
 환경변수:
-  UDP_HOST (기본 127.0.0.1)   UDP_PORT (기본 5005)
-  NFC_THEME_MAP (기본 nfc_theme_map.json)
-  voice_to_unity.py 의 VOICE_* 변수도 그대로 적용됨
+  UDP_HOST / UDP_PORT           — Unity 폰 (기본 5005)
+  BG_DISPLAY_HOST / BG_DISPLAY_PORT — Pi 배경 (기본 127.0.0.1:9999)
+  NFC_THEME_MAP, NFC_FALLBACK_THEME (기본 forest)
 """
 
 from __future__ import annotations
@@ -50,30 +44,46 @@ if str(BASE_DIR) not in sys.path:
 
 UDP_HOST = os.getenv("UDP_HOST", "127.0.0.1")
 UDP_PORT = int(os.getenv("UDP_PORT", "5005"))
+BG_DISPLAY_HOST = os.getenv("BG_DISPLAY_HOST", "127.0.0.1")
+BG_DISPLAY_PORT = int(os.getenv("BG_DISPLAY_PORT", "9999"))
 NFC_THEME_MAP_PATH = Path(os.getenv("NFC_THEME_MAP", str(BASE_DIR / "nfc_theme_map.json")))
+NFC_FALLBACK_THEME = os.getenv("NFC_FALLBACK_THEME", "forest").strip()
 
 NFC_POLL_SEC = 0.15
 NFC_DEBOUNCE_SEC = 1.5
 
 
-def make_sender(host: str, port: int):
-    """스레드 안전한 UDP 송신 함수를 반환한다."""
+def make_sender(
+    unity_host: str,
+    unity_port: int,
+    bg_host: str = BG_DISPLAY_HOST,
+    bg_port: int = BG_DISPLAY_PORT,
+):
+    """NFC → Pi 배경(:9999), 나머지 센서 → Unity 폰(:5005)."""
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     lock = threading.Lock()
 
     def send(payload: dict[str, Any]) -> None:
+        event = str(payload.get("event", "")).strip().lower()
         msg = json.dumps(payload, separators=(",", ":"))
+
+        if event == "nfc_tagged":
+            target = (bg_host, bg_port)
+            label = f"Pi 터치스크린(배경) {bg_host}:{bg_port}"
+        else:
+            target = (unity_host, unity_port)
+            label = f"Unity 폰(피사체) {unity_host}:{unity_port}"
+
         with lock:
-            sock.sendto(msg.encode("utf-8"), (host, port))
-        print(f"[UDP -> {host}:{port}] {msg}", flush=True)
+            sock.sendto(msg.encode("utf-8"), target)
+        print(f"[UDP -> {label}] {msg}", flush=True)
 
     return send
 
 
 def load_theme_map() -> dict[str, str]:
-    """NFC UID(hex, 대문자) → Unity theme_id 매핑. 주석 키(_)는 무시."""
     if not NFC_THEME_MAP_PATH.exists():
-        print(f"[NFC] theme map 없음: {NFC_THEME_MAP_PATH} (uid만 전송)", flush=True)
+        print(f"[NFC] theme map 없음: {NFC_THEME_MAP_PATH}", flush=True)
         return {}
     try:
         with open(NFC_THEME_MAP_PATH, "r", encoding="utf-8") as f:
@@ -88,10 +98,21 @@ def load_theme_map() -> dict[str, str]:
         return {}
 
 
-# --------------------------- 센서 스레드 ---------------------------
+def resolve_nfc_theme(uid_hex: str, theme_map: dict[str, str]) -> str | None:
+    theme = theme_map.get(uid_hex)
+    if theme:
+        return theme
+    if NFC_FALLBACK_THEME:
+        print(
+            f"[NFC] 미등록 UID={uid_hex} → fallback theme={NFC_FALLBACK_THEME!r}",
+            flush=True,
+        )
+        return NFC_FALLBACK_THEME
+    print(f"[NFC] 미등록 UID={uid_hex} — nfc_theme_map.json 또는 NFC_FALLBACK_THEME", flush=True)
+    return None
+
 
 def run_distance(send, *, simulate: bool) -> None:
-    """ToF(VL53L0X) 접근 감지 → approach. simulate면 8초마다 가짜 접근."""
     if simulate:
         while True:
             time.sleep(8)
@@ -99,10 +120,7 @@ def run_distance(send, *, simulate: bool) -> None:
         return
 
     try:
-        from pi_sensors_to_unity_udp import (  # type: ignore
-            _init_vl53l0x,
-            _distance_loop,
-        )
+        from pi_sensors_to_unity_udp import _init_vl53l0x, _distance_loop  # type: ignore
 
         sensor = _init_vl53l0x()
     except Exception as e:  # noqa: BLE001
@@ -112,9 +130,9 @@ def run_distance(send, *, simulate: bool) -> None:
 
 
 def run_nfc(send, theme_map: dict[str, str], *, simulate: bool) -> None:
-    """NFC(PN532) 태깅 → theme_id 매핑 후 nfc_tagged 전송."""
+    """NFC → Pi 터치스크린 배경만 (Unity 로 보내지 않음)."""
     if simulate:
-        demo = list(theme_map.items()) or [("A1B2C3D4", "snow_forest")]
+        demo = list(theme_map.items()) or [("A1B2C3D4", NFC_FALLBACK_THEME or "forest")]
         i = 0
         while True:
             time.sleep(12)
@@ -147,13 +165,12 @@ def run_nfc(send, theme_map: dict[str, str], *, simulate: bool) -> None:
                 time.sleep(NFC_POLL_SEC)
                 continue
 
-            payload: dict[str, Any] = {"event": "nfc_tagged", "uid": uid_hex}
-            theme = theme_map.get(uid_hex)
-            if theme:
-                payload["theme_id"] = theme
-            else:
-                print(f"[NFC] 미매핑 UID={uid_hex} (nfc_theme_map.json에 추가 필요)", flush=True)
-            send(payload)
+            theme = resolve_nfc_theme(uid_hex, theme_map)
+            if not theme:
+                time.sleep(NFC_POLL_SEC)
+                continue
+
+            send({"event": "nfc_tagged", "theme_id": theme, "uid": uid_hex})
             last_uid = uid_hex
             last_sent = now
         except Exception as e:  # noqa: BLE001
@@ -162,7 +179,6 @@ def run_nfc(send, theme_map: dict[str, str], *, simulate: bool) -> None:
 
 
 def run_voice(send, *, simulate: bool) -> None:
-    """INMP441 마이크 음성 감지 → voice."""
     try:
         from voice_to_unity import run_voice_loop  # type: ignore
     except Exception as e:  # noqa: BLE001
@@ -175,34 +191,44 @@ def run_voice(send, *, simulate: bool) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Eternal Beam Pi 통합 센서 브리지")
-    ap.add_argument("--host", default=UDP_HOST, help="Unity(폰) Wi-Fi IP")
-    ap.add_argument("--port", type=int, default=UDP_PORT, help="Unity UDP 포트 (기본 5005)")
-    ap.add_argument("--simulate", action="store_true", help="배선 없이 전체 시뮬레이션(PC 테스트)")
-    ap.add_argument("--no-tof", action="store_true", help="거리 센서 끄기")
-    ap.add_argument("--no-nfc", action="store_true", help="NFC 끄기")
-    ap.add_argument("--no-voice", action="store_true", help="마이크 끄기")
+    ap = argparse.ArgumentParser(description="Eternal Beam Pi 센서 (2디스플레이)")
+    ap.add_argument("--host", default=UDP_HOST, help="Unity 폰 Wi-Fi IP (피사체만)")
+    ap.add_argument("--port", type=int, default=UDP_PORT, help="Unity UDP (기본 5005)")
+    ap.add_argument("--bg-host", default=BG_DISPLAY_HOST, help="Pi 배경 수신 IP (기본 127.0.0.1)")
+    ap.add_argument("--bg-port", type=int, default=BG_DISPLAY_PORT, help="Pi 배경 UDP (기본 9999)")
+    ap.add_argument("--simulate", action="store_true")
+    ap.add_argument("--no-tof", action="store_true")
+    ap.add_argument("--no-nfc", action="store_true")
+    ap.add_argument("--no-voice", action="store_true")
     args = ap.parse_args()
 
-    send = make_sender(args.host, args.port)
+    send = make_sender(args.host, args.port, args.bg_host, args.bg_port)
     theme_map = load_theme_map()
 
     print(
-        f"Eternal Beam Pi bridge -> udp://{args.host}:{args.port} "
-        f"(simulate={args.simulate})",
+        f"2디스플레이 브리지\n"
+        f"  NFC 배경  → udp://{args.bg_host}:{args.bg_port} (pi_display_bg.py)\n"
+        f"  피사체    → udp://{args.host}:{args.port} (Unity APK)\n"
+        f"  simulate={args.simulate}",
         flush=True,
     )
 
     threads: list[threading.Thread] = []
     if not args.no_tof:
-        threads.append(threading.Thread(target=run_distance, args=(send,), kwargs={"simulate": args.simulate}, daemon=True))
+        threads.append(
+            threading.Thread(target=run_distance, args=(send,), kwargs={"simulate": args.simulate}, daemon=True)
+        )
     if not args.no_nfc:
-        threads.append(threading.Thread(target=run_nfc, args=(send, theme_map), kwargs={"simulate": args.simulate}, daemon=True))
+        threads.append(
+            threading.Thread(target=run_nfc, args=(send, theme_map), kwargs={"simulate": args.simulate}, daemon=True)
+        )
     if not args.no_voice:
-        threads.append(threading.Thread(target=run_voice, args=(send,), kwargs={"simulate": args.simulate}, daemon=True))
+        threads.append(
+            threading.Thread(target=run_voice, args=(send,), kwargs={"simulate": args.simulate}, daemon=True)
+        )
 
     if not threads:
-        print("활성화된 센서가 없습니다. --no-* 옵션을 확인하세요.", flush=True)
+        print("활성화된 센서가 없습니다.", flush=True)
         return
 
     for t in threads:

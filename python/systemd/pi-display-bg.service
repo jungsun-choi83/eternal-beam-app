@@ -1,0 +1,17 @@
+[Unit]
+Description=Eternal Beam Pi touchscreen background (NFC UDP :9999)
+After=network-online.target graphical.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__APP_DIR__/python
+EnvironmentFile=__APP_DIR__/python/systemd/eternal-beam-pi.env
+ExecStart=/usr/bin/env python3 __APP_DIR__/python/pi_display_bg.py --videos-dir __APP_DIR__/python/backgrounds
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

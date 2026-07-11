@@ -1,18 +1,10 @@
 {
   "1": {
-    "bg_video": "../background11.mp4.mp4",
-    "theme": "무지개들판"
+    "bg_video": "backgrounds/fresh_forest.mp4",
+    "theme": "숲속 (forest)"
   },
-  "2": {
-    "bg_video": "../background1.mp4.mp4",
-    "theme": "배경2"
-  },
-  "3": {
-    "bg_video": "../background.mp4",
-    "theme": "슬롯3"
-  },
-  "4": {
-    "bg_video": "../background.mp4",
-    "theme": "슬롯4"
+  "no_slot": {
+    "bg_video": "",
+    "theme": "대기 (검은 화면)"
   }
 }
