@@ -634,7 +634,9 @@ export function EternalBeamApp() {
                       ? navigateTo('themeSelection', 'back')
                       : navigateTo('home', 'back')
                 }
-                onComplete={() => navigateTo('nfcPlayback')}
+                onComplete={() =>
+                  deviceDemo ? navigateTo('themeSelection') : navigateTo('nfcPlayback')
+                }
               />
             </motion.div>
           )}
