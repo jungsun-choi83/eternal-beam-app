@@ -350,7 +350,9 @@ export function EternalBeamApp() {
                 language={language}
                 onLanguageChange={handleLanguageChange}
                 onComplete={() => navigateTo('signup')}
-                onTryForest={() => navigateTo('forestExperience')}
+                onTryForest={
+                  deviceDemo ? () => navigateTo('forestExperience') : undefined
+                }
               />
             </motion.div>
           )}
@@ -436,7 +438,9 @@ export function EternalBeamApp() {
                 onMediaFile={handleMediaFile}
                 onGallery={() => navigateTo('gallery')}
                 onSettings={() => navigateTo('settings')}
-                onTryForest={() => navigateTo('forestExperience')}
+                onTryForest={
+                  deviceDemo ? () => navigateTo('forestExperience') : undefined
+                }
                 onSaveToNFC={() => {
                   if (deviceDemo && cutoutImage) {
                     setSelectedTheme(FOREST_THEME_ID)
