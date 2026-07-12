@@ -101,7 +101,7 @@ export const memorialThemes: MemorialTheme[] = [
     accent: "#34d399",
     premium: false,
     price: "",
-    thumb: "/theme-thumbs/snow_forest.jpg",
+    thumb: "/theme-thumbs/fresh_forest.jpg",
     bgVideo: "/demo/forest.mp4",
   },
 ];
