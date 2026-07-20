@@ -58,6 +58,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .routers import (
   cutout,
+  matting,
   compose,
   assets,
   preview,
@@ -93,6 +94,20 @@ async def lifespan(app: FastAPI):
 
         threading.Thread(target=_preload, daemon=True).start()
 
+    # ViTMatte 모델 프리로드 — 기본 OFF (torch/transformers 로드 비용이 큼).
+    if os.getenv("VITMATTE_PRELOAD_MODEL", "0").strip().lower() in ("1", "true", "yes"):
+        import threading
+
+        def _preload_vitmatte() -> None:
+            try:
+                from .services.vitmatte_service import preload_vitmatte_model
+
+                preload_vitmatte_model()
+            except Exception:
+                pass
+
+        threading.Thread(target=_preload_vitmatte, daemon=True).start()
+
     yield
 
 app = FastAPI(
@@ -111,6 +126,7 @@ app.add_middleware(
 )
 
 app.include_router(cutout.router, prefix="/api", tags=["cutout"])
+app.include_router(matting.router, prefix="/api", tags=["matting"])
 app.include_router(compose.router, prefix="/api", tags=["compose"])
 app.include_router(assets.router, prefix="/api", tags=["assets"])
 app.include_router(preview.router, prefix="/api", tags=["preview"])

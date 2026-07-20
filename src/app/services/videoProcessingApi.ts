@@ -1,6 +1,7 @@
 /**
  * 영상 처리 API (서버 사이드 렌더링)
- * - 누끼: POST /api/cutout (rembg + Alpha Matting)
+ * - 누끼: POST /api/matting/cutout (SAM2 박스 프롬프트 + ViTMatte 경계 정제, rembg 대체)
+ *   * 예전 파이프라인(rembg)은 POST /api/cutout — VITE_CUTOUT_PIPELINE=rembg로 되돌릴 수 있음
  * - 합성: POST /api/compose-video (결제 Gate + FFmpeg) → unique_url, nfc_payload
  */
 
@@ -35,6 +36,15 @@ const getBaseUrl = (): string => {
 
 /** 프리뷰/정적 URL을 절대 주소로 붙일 때 사용 (내부 로직과 동일). */
 export const getVideoApiBaseUrl = getBaseUrl
+
+/**
+ * 누끼 파이프라인 선택: 기본은 SAM2+ViTMatte(/api/matting/cutout).
+ * 문제 생기면 VITE_CUTOUT_PIPELINE=rembg로 예전 /api/cutout(rembg)으로 즉시 되돌릴 수 있게 남겨둠.
+ */
+function getCutoutPath(): string {
+  const pipeline = String(import.meta.env.VITE_CUTOUT_PIPELINE || '').trim().toLowerCase()
+  return pipeline === 'rembg' ? '/api/cutout' : '/api/matting/cutout'
+}
 
 function validateVideoApiBase(): void {
   if (!import.meta.env.PROD) return
@@ -156,8 +166,10 @@ export interface ComposeVideoResult {
 }
 
 /**
- * 사진 업로드 → 서버에서 배경 제거(rembg + Alpha Matting)
- * model: isnet-general-use(강아지/털) | u2net_human_seg(사람)
+ * 사진 업로드 → 서버에서 배경 제거.
+ * 기본 파이프라인: SAM2(박스 프롬프트) + ViTMatte 경계 정제 (/api/matting/cutout).
+ * VITE_CUTOUT_PIPELINE=rembg 설정 시 예전 rembg 파이프라인(/api/cutout)으로 전환.
+ * model/fast/autoRefine 옵션은 rembg 파이프라인에서만 사용됨.
  */
 export async function cutoutImage(
   file: File,
@@ -178,18 +190,24 @@ export async function cutoutImage(
   } = {}
 ): Promise<CutoutResult> {
   validateVideoApiBase()
+  const cutoutPath = getCutoutPath()
+  const isRembgPipeline = cutoutPath === '/api/cutout'
   const form = new FormData()
   form.append('file', file)
   form.append('user_id', options.userId ?? 'anonymous')
   if (options.contentId) form.append('content_id', options.contentId)
   form.append('save_to_storage', String(options.saveToStorage !== false))
-  if (options.model) form.append('model', options.model)
-  if (options.fast) form.append('fast', 'true')
+  // options.model은 rembg 모델 이름(예: isnet-general-use)이라 SAM2+ViTMatte
+  // 파이프라인(/api/matting/cutout)에는 그대로 넘기면 안 됨 — rembg 경로에서만 전달.
+  if (isRembgPipeline && options.model) form.append('model', options.model)
   const autoRefine = options.autoRefine !== false
-  if (autoRefine && !options.fast) {
-    form.append('auto_refine', 'true')
-  } else if (!autoRefine) {
-    form.append('auto_refine', 'false')
+  if (isRembgPipeline) {
+    if (options.fast) form.append('fast', 'true')
+    if (autoRefine && !options.fast) {
+      form.append('auto_refine', 'true')
+    } else if (!autoRefine) {
+      form.append('auto_refine', 'false')
+    }
   }
 
   const timeoutMs =
@@ -199,7 +217,7 @@ export async function cutoutImage(
   const tid = setTimeout(() => ctrl.abort(), timeoutMs)
   let res: Response
   try {
-    res = await fetch(`${getBaseUrl()}/api/cutout`, {
+    res = await fetch(`${getBaseUrl()}${cutoutPath}`, {
       method: 'POST',
       body: form,
       signal: ctrl.signal,
@@ -442,11 +460,19 @@ export async function generateWithCredit(body: {
   pet_id?: string
 }): Promise<GenerateWithCreditResult> {
   validateVideoApiBase()
-  const res = await fetch(`${getBaseUrl()}/api/v1/pet/generate-with-credit`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
+  const ctrl = new AbortController()
+  const tid = setTimeout(() => ctrl.abort(), 20_000)
+  let res: Response
+  try {
+    res = await fetch(`${getBaseUrl()}/api/v1/pet/generate-with-credit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    })
+  } finally {
+    clearTimeout(tid)
+  }
   if (res.status === 403) {
     const err = await safeJson(res)
     throw new Error(

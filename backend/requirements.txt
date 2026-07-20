@@ -10,7 +10,7 @@ rembg[gpu]==2.0.57
 Pillow>=10.0.0
 numpy>=1.24.0
 
-# 알파 경계 정제 (선택, 머리카락 품질 향상)
+# 알파 경계 정제 + SAM2/GrabCut 마스크→트라이맵 변환(erode/dilate)에 필수
 # opencv-python-headless==4.9.0.80
 opencv-python-headless>=4.8.0
 
@@ -19,6 +19,12 @@ ffmpeg-python==0.2.0
 
 # 강아지 bbox 검출 (COCO class 16) → 크롭 후 rembg
 ultralytics>=8.1.0
+
+# SAM2 + ViTMatte 매팅 파이프라인 (rembg 대체, /api/matting/cutout)
+# torch는 ultralytics가 이미 끌어오지만 transformers가 명시적으로 요구하므로 직접 명시.
+# transformers에 SAM2(Sam2Model/Sam2Processor)가 들어간 게 2025-08-14부터라 4.57+ 필요.
+torch>=2.1.0
+transformers>=4.57.0
 
 # Supabase
 supabase>=2.3.0
