@@ -9,6 +9,7 @@ import io
 import os
 import asyncio
 import tempfile
+import uuid
 from typing import Optional, Tuple
 
 LUMA_API_KEY = os.getenv("LUMA_API_KEY")
@@ -19,6 +20,11 @@ from .luma_prompts import LUMA_PROMPT_ACTION, LUMA_PROMPT_IDLE  # noqa: E402
 
 # 배경 결정 임계값: 평균 luminance < 이 값이면 블랙탄(검정색 강아지) → 흰 배경
 LUMINANCE_THRESHOLD_BLACK_DOG = 80
+
+
+def _mock_enabled() -> bool:
+    """LUMA_MOCK=1 — 실제 Luma 호출 없이 mock_ generation id / MOCK_LUMA_VIDEO_URL로 파이프라인만 테스트."""
+    return os.getenv("LUMA_MOCK", "").strip().lower() in ("1", "true", "yes")
 
 try:
     import requests
@@ -103,8 +109,11 @@ async def create_generation(
         callback_url: 완료 시 Luma가 POST 하는 웹훅 URL (선택)
 
     Returns:
-        generation_id (폴링·웹훅 매핑용)
+        generation_id (폴링·웹훅 매핑용). LUMA_MOCK=1이면 API 호출 없이 "mock_..." 반환.
     """
+    if _mock_enabled():
+        return f"mock_{uuid.uuid4().hex[:12]}"
+
     key = (os.getenv("LUMA_API_KEY") or "").strip()
     if not key:
         raise RuntimeError("LUMA_API_KEY가 설정되지 않았습니다.")
@@ -163,6 +172,14 @@ async def poll_until_complete(
     Returns:
         video_url (다운로드용)
     """
+    if generation_id.startswith("mock_"):
+        mock_video = (os.getenv("MOCK_LUMA_VIDEO_URL") or "").strip()
+        if not mock_video:
+            raise RuntimeError(
+                "LUMA_MOCK=1이지만 MOCK_LUMA_VIDEO_URL이 설정되지 않았습니다."
+            )
+        return mock_video
+
     key = (os.getenv("LUMA_API_KEY") or "").strip()
     if not key or not requests:
         raise RuntimeError("LUMA_API_KEY 및 requests 필요")

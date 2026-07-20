@@ -25,9 +25,12 @@ LUMA_AVOID_CLAUSE = (
 # ── 행동별 (4종) — 크레딧·배치 API용 ─────────────────────────────────────────
 LUMA_ACTION_PROMPTS: dict[str, str] = {
     "IDLE": (
-        "The dog sits calmly, blinking naturally, gentle chest breathing, "
-        "minimal motion, looking toward camera. "
-        "Nobody enters the scene. No leash visible."
+        "The dog sits calmly in the exact same pose as the reference image, "
+        "with only very subtle idle motion: gentle chest breathing, occasional "
+        "natural blinking, tiny ear twitch, minimal head sway. Static locked-off "
+        "camera, no pan, no zoom, no dolly. The dog stays in place and returns "
+        "close to its starting pose and position by the end of the clip, "
+        "looking toward camera. Nobody enters the scene. No leash visible."
     ),
     "TOUCH": (
         "The dog reacts as if gently petted on the head — happy expression, "

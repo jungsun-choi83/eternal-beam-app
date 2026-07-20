@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect, useRef, memo } from "react";
-import { Sparkles, Check } from "lucide-react";
+import { Check } from "lucide-react";
+import { EternalBeamBrandMark } from "@/components/memorial/eternal-beam-brand-mark";
 import { CutoutStage } from "@/components/memorial/cutout-stage";
 import {
   cutoutImage,
@@ -373,6 +374,8 @@ export function AIProcessingScreen({
               userId: "anonymous",
               contentId: cutContentId || undefined,
               skipPreprocessing: true,
+              // 액션(20종)은 Live Portrait가 맡을 예정 — Luma는 아이들(미세 모션) 1건만 생성.
+              idleOnly: true,
             });
           } catch (e) {
             const msg =
@@ -438,14 +441,9 @@ export function AIProcessingScreen({
   const originalForUi = displayOriginal || uploadedImage;
 
   return (
-    <div className="h-full flex flex-col bg-[#0a0a0a] relative overflow-hidden">
+    <div className="h-full flex flex-col relative overflow-hidden">
       <header className="px-8 pt-14 pb-4 text-center relative z-10 shrink-0">
-        <h1
-          className="text-lg font-light italic leading-relaxed px-2"
-          style={{ color: "#F1E5D1" }}
-        >
-          {titles[titleIndex]}
-        </h1>
+        <h1 className="processing-headline px-2">{titles[titleIndex]}</h1>
       </header>
 
       <div className="flex-1 flex flex-col items-center px-6 relative z-10 min-h-0 overflow-y-auto hide-scrollbar">
@@ -565,10 +563,7 @@ export function AIProcessingScreen({
           </div>
         ) : null}
 
-        <div className="flex items-center gap-2 mb-6 text-[#c9a227]">
-          <Sparkles className="w-4 h-4" />
-          <span className="text-[11px] text-[#888]">{m.brand}</span>
-        </div>
+        <EternalBeamBrandMark language={language} className="mb-6" />
       </div>
     </div>
   );

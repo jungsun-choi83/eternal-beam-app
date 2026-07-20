@@ -365,14 +365,18 @@ export async function getContent(contentId: string): Promise<{
   return res.json()
 }
 
-/** Pet pipeline: optional YOLO+rembg, then Supabase URL + Luma idle + action (no payment). */
+/**
+ * Pet pipeline: optional YOLO+rembg, then Supabase URL + Luma idle (+ action, no payment).
+ * 기본은 idle 전용(idleOnly=true) — 20종 액션은 Live Portrait가 맡을 예정이라 Luma 액션
+ * 영상은 더 생성하지 않음. action_video_url은 idleOnly일 때 null.
+ */
 export interface GeneratePetVideoResult {
   success: boolean
   content_id: string
   dog_only_nobg_url: string
   idle_video_url: string
-  action_video_url: string
-  prompts?: { idle: string; action: string }
+  action_video_url: string | null
+  prompts?: { idle: string; action?: string }
 }
 
 export async function generatePetVideo(
@@ -382,6 +386,8 @@ export async function generatePetVideo(
     contentId?: string
     /** Use true when file is already a cutout (e.g. after /api/cutout). */
     skipPreprocessing?: boolean
+    /** 아이들(미세 모션)만 생성 — 기본 true. false면 예전처럼 액션도 함께 생성. */
+    idleOnly?: boolean
   } = {}
 ): Promise<GeneratePetVideoResult> {
   validateVideoApiBase()
@@ -390,6 +396,7 @@ export async function generatePetVideo(
   form.append('user_id', options.userId ?? 'anonymous')
   if (options.contentId) form.append('content_id', options.contentId)
   form.append('skip_preprocessing', String(options.skipPreprocessing === true))
+  form.append('idle_only', String(options.idleOnly !== false))
 
   const ctrl = new AbortController()
   const PET_VIDEO_TIMEOUT_MS = 25 * 60 * 1000
