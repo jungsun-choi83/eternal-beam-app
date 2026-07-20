@@ -14,10 +14,12 @@ import {
   Bell,
   Shield,
   CreditCard,
+  Sparkles,
 } from "lucide-react";
 import { languageLabels, memorialLang, memorialT } from "@/components/memorial/memorial-i18n";
 import { SubscriptionTestPanel } from "@/components/memorial/subscription-test-panel";
-import { SUBSCRIPTION_MOCK_ENABLED } from "@/lib/test-app-flags";
+import { IdleGenerationTestPanel } from "@/components/memorial/idle-generation-test-panel";
+import { SUBSCRIPTION_MOCK_ENABLED, IDLE_TEST_PANEL_ENABLED } from "@/lib/test-app-flags";
 
 interface SettingsScreenProps {
   currentLanguage: string;
@@ -41,6 +43,7 @@ export function SettingsScreen({
   const s = memorialT(currentLanguage).settings;
   const lang = memorialLang(currentLanguage);
   const [showSubscriptionTest, setShowSubscriptionTest] = useState(false);
+  const [showIdleTest, setShowIdleTest] = useState(false);
 
   const settingsGroups = [
     {
@@ -66,6 +69,9 @@ export function SettingsScreen({
           icon: CreditCard,
         },
         { id: "privacy", label: s.privacy, icon: Shield },
+        ...(IDLE_TEST_PANEL_ENABLED
+          ? [{ id: "idle-test", label: "아이들 5종 테스트", icon: Sparkles }]
+          : []),
       ],
     },
     {
@@ -91,13 +97,18 @@ export function SettingsScreen({
           setShowSubscriptionTest((v) => !v);
         }
         break;
+      case "idle-test":
+        if (IDLE_TEST_PANEL_ENABLED) {
+          setShowIdleTest((v) => !v);
+        }
+        break;
       default:
         break;
     }
   };
 
   return (
-    <div className="h-full flex flex-col bg-[#0a0a0a] relative overflow-hidden">
+    <div className="h-full flex flex-col relative overflow-hidden">
       <header className="px-6 pt-14 pb-4 flex items-center relative">
         <button onClick={onBack} className="p-2 -ml-2">
           <ChevronLeft className="w-5 h-5" style={{ color: "#F5F5F7" }} />
@@ -118,6 +129,10 @@ export function SettingsScreen({
             onClose={() => setShowSubscriptionTest(false)}
             onCreditsChanged={onCreditsChanged}
           />
+        ) : null}
+
+        {showIdleTest && IDLE_TEST_PANEL_ENABLED ? (
+          <IdleGenerationTestPanel userId={userId} onClose={() => setShowIdleTest(false)} />
         ) : null}
 
         {settingsGroups.map((group, groupIndex) => (
@@ -150,7 +165,8 @@ export function SettingsScreen({
                         ? "1px solid rgba(255, 255, 255, 0.09)"
                         : "none",
                     background:
-                      item.id === "subscription" && showSubscriptionTest
+                      (item.id === "subscription" && showSubscriptionTest) ||
+                      (item.id === "idle-test" && showIdleTest)
                         ? "rgba(201, 162, 39, 0.06)"
                         : undefined,
                   }}

@@ -13,3 +13,6 @@ export const MOCK_CUTOUT_ENABLED = import.meta.env.VITE_MOCK_CUTOUT === "1";
 /** 테스트 앱 UX (오류 문구 완화 등) */
 export const TEST_APP_MODE =
   import.meta.env.VITE_TEST_APP === "1" || IAP_MOCK_ENABLED || MOCK_CUTOUT_ENABLED;
+
+/** 아이들(Idle) 5종 세트 테스트 패널 — Luma가 켜져 있을 때만 노출 (설정 화면) */
+export const IDLE_TEST_PANEL_ENABLED = import.meta.env.VITE_ENABLE_LUMA === "1";
