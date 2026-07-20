@@ -32,6 +32,14 @@ services:
         value: "3"
       - key: SUPABASE_STORAGE_BUCKET
         value: user-assets
+      # 아이들(Idle) 영상 목업 테스트 — 실제 Luma 과금 없이 파이프라인만 확인.
+      # 진짜 생성으로 바꾸려면 LUMA_MOCK 삭제 + 아래 LUMA_API_KEY 채우기.
+      - key: ENABLE_GENERATE_API
+        value: "1"
+      - key: LUMA_MOCK
+        value: "1"
+      - key: MOCK_LUMA_VIDEO_URL
+        value: https://eternal-beam-app.vercel.app/demo/goya_idle_packed.mp4
       # 아래는 Render 대시보드에서 직접 입력 (Blueprint 적용 후 Environment 탭)
       - key: SUPABASE_URL
         sync: false
