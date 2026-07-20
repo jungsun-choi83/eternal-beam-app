@@ -33,7 +33,8 @@ import { useProcessingClock } from "@/lib/use-processing-clock";
 
 export const ETERNAL_BEAM_PIPELINE_KEY = "eternal_beam_pipeline_v1";
 
-const LUMA_ENABLED = import.meta.env.VITE_ENABLE_LUMA === "1";
+// .trim() — Vercel 등 대시보드에서 값에 공백/개행이 섞여 들어가도 안전하게 비교
+const LUMA_ENABLED = String(import.meta.env.VITE_ENABLE_LUMA ?? "").trim() === "1";
 const FILM_CONVERSION_SEC = Number(import.meta.env.VITE_FILM_CONVERSION_SEC ?? "0");
 const CLIENT_CUTOUT_FALLBACK = import.meta.env.VITE_CLIENT_CUTOUT_FALLBACK !== "0";
 
