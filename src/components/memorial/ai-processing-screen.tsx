@@ -10,9 +10,9 @@ import {
   isCutoutApiUnreachableError,
   type CutoutResult,
 } from "@/app/services/videoProcessingApi";
-import { clientCutoutFromFile } from "@/lib/client-cutout";
+import { clientCutoutFromFile, dataUrlToFile } from "@/lib/client-cutout";
 import { createDisplayImageUrl, createDisplayCutoutUrl } from "@/lib/display-image";
-import { friendlyCutoutError, normalizeImageForCutout } from "@/lib/normalize-image";
+import { friendlyCutoutError, friendlyPetVideoError, normalizeImageForCutout } from "@/lib/normalize-image";
 import { mockCutoutFromFile } from "@/lib/mock-cutout";
 import {
   clearServerCutoutSkipped,
@@ -136,16 +136,6 @@ async function runCutoutWithFallback(
     cutFile: dataUrlToFile(display, "cutout.png"),
     contentId: `client_${Date.now()}`,
   };
-}
-
-function dataUrlToFile(dataUrl: string, filename: string): File {
-  const arr = dataUrl.split(",");
-  const mime = arr[0].match(/:(.*?);/)?.[1] || "image/jpeg";
-  const bstr = atob(arr[1]);
-  let n = bstr.length;
-  const u8arr = new Uint8Array(n);
-  while (n--) u8arr[n] = bstr.charCodeAt(n);
-  return new File([u8arr], filename, { type: mime });
 }
 
 function cutoutDisplayUrl(result: CutoutResult): string {
@@ -327,6 +317,13 @@ export function AIProcessingScreen({
       setError(friendlyCutoutError(msg, language));
       setProgress(0);
     };
+    // Luma 펫 영상 생성 실패는 콜드스타트 문구("서버가 깨어나는 중")를 쓰면 오해를 줌 —
+    // 이미 누끼가 끝난 뒤 수 분간 처리하다 실패한 것이므로 전용 문구 사용.
+    const failPetVideo = (msg: string) => {
+      if (cancelled || myToken !== runTokenRef.current) return;
+      setError(friendlyPetVideoError(msg, language));
+      setProgress(0);
+    };
 
     (async () => {
       setProcessingActive(true);
@@ -382,7 +379,10 @@ export function AIProcessingScreen({
           } catch (e) {
             const msg =
               e instanceof Error ? e.message : typeof e === "string" ? e : "Luma failed";
-            if (!isSkippableLumaError(msg)) throw e;
+            if (!isSkippableLumaError(msg)) {
+              failPetVideo(msg);
+              return;
+            }
             await runFilmConversionDemo((pct, line) => {
               if (cancelled || myToken !== runTokenRef.current) return;
               setProgress(pct);

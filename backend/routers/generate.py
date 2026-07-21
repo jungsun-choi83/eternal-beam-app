@@ -28,6 +28,17 @@ async def _cutout_to_dog_bytes(raw: bytes, *, skip: bool) -> bytes:
     return png_bytes
 
 
+def _pet_video_seamless_loop_enabled() -> bool:
+    """
+    /generate-pet-video 의 아이들 영상 후처리(ffmpeg seamless loop) on/off.
+    Render 512MB 컨테이너에서 ffmpeg 재인코딩(xfade+concat)이 uvicorn 프로세스와
+    메모리를 다투다 컨테이너 전체를 OOM으로 죽이는 문제가 확인되어 기본값 off.
+    더 큰 플랜으로 옮기거나 ffmpeg 메모리 사용을 낮추면 PET_VIDEO_SEAMLESS_LOOP=1로
+    다시 켤 수 있음. (/api/generate-idle-variant 는 이 플래그와 무관하게 그대로 동작.)
+    """
+    return os.getenv("PET_VIDEO_SEAMLESS_LOOP", "false").lower() in ("1", "true", "yes")
+
+
 @router.post("/generate-pet-video")
 async def post_generate_pet_video(
     file: UploadFile = File(...),
@@ -99,7 +110,11 @@ async def post_generate_pet_video(
     try:
         with open(idle_local, "rb") as f:
             idle_bytes = f.read()
-        idle_bytes, loop_meta = make_seamless_loop_mp4(idle_bytes)
+        if _pet_video_seamless_loop_enabled():
+            idle_bytes, loop_meta = make_seamless_loop_mp4(idle_bytes)
+        else:
+            # ffmpeg 재인코딩 OOM 회피 — 루프 없는 원본 Luma 영상을 그대로 사용.
+            loop_meta = {"skipped": True, "reason": "pet_video_seamless_loop_disabled"}
         idle_url = await supabase_assets.upload_asset_to_storage(
             f"{user_id}/{cid}/idle_loop.mp4", idle_bytes, "video/mp4"
         )

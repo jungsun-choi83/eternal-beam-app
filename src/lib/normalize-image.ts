@@ -157,3 +157,28 @@ export function friendlyCutoutError(message: string, language = "ko"): string {
   }
   return message;
 }
+
+/**
+ * 펫 영상(Luma) 생성 단계 전용 오류 문구.
+ * friendlyCutoutError의 "서버가 깨어나는 중" 문구는 콜드스타트를 가정한 문구라
+ * 누끼 완료 후 수 분간 Luma 생성을 돌리다 서버가 죽는 경우(OOM 등)에는 오해를 줌.
+ * 이 경우 재시도해도 같은 원인이면 계속 실패할 수 있음을 알려줌.
+ */
+export function friendlyPetVideoError(message: string, language = "ko"): string {
+  const m = message.toLowerCase();
+  if (
+    m.includes("failed to fetch") ||
+    m.includes("network") ||
+    m.includes("load failed") ||
+    m.includes("aborterror") ||
+    m.includes("502") ||
+    m.includes("503") ||
+    m.includes("504") ||
+    m.includes("bad gateway")
+  ) {
+    return language === "ko"
+      ? "영상 생성 중 서버에 문제가 생겼습니다. 사진 배경 제거는 이미 저장됐어요. 잠시 후 다시 시도해 주세요. 계속 같은 오류가 나오면 앱을 다시 실행한 뒤 시도해 주세요."
+      : "The server ran into a problem while generating the pet video (your cutout is already saved). Please try again shortly. If this keeps happening, please restart the app and try again.";
+  }
+  return friendlyCutoutError(message, language);
+}

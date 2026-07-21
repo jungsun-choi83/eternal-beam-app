@@ -10,6 +10,20 @@ import {
 /** 폰 WASM — 해상도 낮출수록 8분+ → 1~3분대 */
 const CLIENT_CUTOUT_MAX_EDGE = 768;
 
+/**
+ * data URL → File. 브라우저 누끼(WASM) 결과를 서버 업로드용 File로 변환할 때 공용으로 사용.
+ * (바이트 복사 버그 이력 있음 — charCodeAt(n)이어야 함. 두 번째 사본을 만들지 말고 이 함수를 공유할 것.)
+ */
+export function dataUrlToFile(dataUrl: string, filename = "cutout.png"): File {
+  const arr = dataUrl.split(",");
+  const mime = arr[0].match(/:(.*?);/)?.[1] || "image/jpeg";
+  const bstr = atob(arr[1]);
+  let n = bstr.length;
+  const u8arr = new Uint8Array(n);
+  while (n--) u8arr[n] = bstr.charCodeAt(n);
+  return new File([u8arr], filename, { type: mime });
+}
+
 function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();

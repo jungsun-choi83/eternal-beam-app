@@ -2,7 +2,9 @@
  * VideoGenerationService — Luma 기반 "아이들(Idle)" 홀로그램 애니메이션 5종 세트 생성.
  *
  * 파이프라인 (사진 업로드 → 완료까지 자동 연결):
- *   1) SAM2 누끼 API (POST /api/matting/cutout, videoProcessingApi.cutoutImage) — 1회만 호출
+ *   1) 누끼 — 1회만.
+ *      - VITE_CLIENT_CUTOUT=1: 브라우저(WASM, @imgly/background-removal)에서 처리 (서버 미호출)
+ *      - 그 외(기본): SAM2 누끼 API (POST /api/matting/cutout, videoProcessingApi.cutoutImage)
  *   2) Luma 영상 생성 API (POST /api/generate-idle-variant) — IDLE_TEMPLATE_ORDER 순서대로 5회 순차 호출
  *      (누끼는 이미 끝났으므로 skipPreprocessing=true로 재사용)
  *
@@ -21,6 +23,15 @@
  */
 
 import { cutoutImage, getVideoApiBaseUrl, type CutoutResult } from './videoProcessingApi'
+import { clientCutoutFromFile, dataUrlToFile } from '@/lib/client-cutout'
+
+/**
+ * 서버 누끼(/api/matting/cutout, /api/cutout)는 Render 512MB 플랜에서 OOM으로
+ * 죽는 사례가 확인되어(ai-processing-screen.tsx와 동일 이슈), VITE_CLIENT_CUTOUT=1이면
+ * 이 5종 테스트 패널도 브라우저(WASM) 누끼로 전환해 서버를 건드리지 않음.
+ * .trim() — Vercel 등 대시보드 값에 공백/개행이 섞여도 안전하게 비교.
+ */
+const CLIENT_CUTOUT_FIRST = String(import.meta.env.VITE_CLIENT_CUTOUT ?? '').trim() === '1'
 
 /** Constraint 1 — 5개 고정 아이들(Idle) 모션 템플릿. 순서·문구 변경 금지. */
 export const IDLE_PROMPT_TEMPLATES = {
@@ -69,6 +80,22 @@ function formatErrorDetail(err: Record<string, unknown>, fallback: string): stri
 function isLikelyMp4Url(url: string): boolean {
   const path = url.split('?')[0].split('#')[0]
   return path.toLowerCase().endsWith('.mp4')
+}
+
+/** 브라우저(WASM) 누끼 — data URL 결과를 CutoutResult 형태로 감싸서 이하 로직 재사용. */
+async function runClientCutout(
+  photo: File,
+  contentId?: string
+): Promise<{ cutout: CutoutResult; cutoutFile: File }> {
+  const dataUrl = await clientCutoutFromFile(photo)
+  const cutoutFile = dataUrlToFile(dataUrl, 'cutout.png')
+  const base64 = dataUrl.split(',')[1] ?? ''
+  const cutout: CutoutResult = {
+    content_id: contentId || `idle_client_${Date.now()}`,
+    cutout_url: null,
+    cutout_png_base64: base64,
+  }
+  return { cutout, cutoutFile }
 }
 
 /** SAM2 누끼 결과(URL 또는 base64)를 Luma 업로드용 File로 변환. */
@@ -207,18 +234,26 @@ export async function generateIdleAnimationSet(
   photo: File,
   options: GenerateIdleSetOptions = {}
 ): Promise<GenerateIdleSetResult> {
-  // 1) SAM2 누끼 — 한 번만.
-  const cutout = await cutoutImage(photo, {
-    userId: options.userId,
-    contentId: options.contentId,
-    saveToStorage: false,
-  })
-  if (cutout.error) {
-    throw new Error(`SAM2 누끼 실패: ${cutout.error}`)
+  // 1) 누끼 — 한 번만. VITE_CLIENT_CUTOUT=1이면 브라우저(WASM)에서, 아니면 서버(SAM2)에서.
+  let cutout: CutoutResult
+  let cutoutFile: File
+  if (CLIENT_CUTOUT_FIRST) {
+    const clientResult = await runClientCutout(photo, options.contentId)
+    cutout = clientResult.cutout
+    cutoutFile = clientResult.cutoutFile
+  } else {
+    cutout = await cutoutImage(photo, {
+      userId: options.userId,
+      contentId: options.contentId,
+      saveToStorage: false,
+    })
+    if (cutout.error) {
+      throw new Error(`SAM2 누끼 실패: ${cutout.error}`)
+    }
+    cutoutFile = await cutoutResultToFile(cutout)
   }
   options.onCutoutComplete?.(cutout)
 
-  const cutoutFile = await cutoutResultToFile(cutout)
   const contentId = cutout.content_id || options.contentId || `idle_${Date.now()}`
 
   // 2) Luma 아이들 5종 — 순차 호출 (동시에 여러 개 쏘지 않음: 요청사항 "순차적으로 적용").

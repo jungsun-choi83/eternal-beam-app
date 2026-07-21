@@ -422,6 +422,11 @@ export async function generatePetVideo(
     if (import.meta.env.PROD && getBaseUrl() === '' && res.status === 404) {
       throw new Error(missingVideoApiConfigMessage())
     }
+    if (res.status === 502 || res.status === 503 || res.status === 504) {
+      // 주의: 이 메시지에 "generate-pet-video" 문자열을 넣지 말 것 —
+      // isSkippableLumaError()가 그 문자열을 포함한 오류는 데모 모드로 스킵 처리함.
+      throw new Error(`Pet video server error (HTTP ${res.status})`)
+    }
     const err = await safeJson(res)
     throw new Error(formatHttpErrorDetail(err, 'generate-pet-video failed'))
   }
