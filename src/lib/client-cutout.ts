@@ -44,6 +44,10 @@ export async function clientCutoutFromFile(
 
   onStatus?.(p.steps[0].description);
   const blob = await removeBackground(ready, {
+    // v1.5+는 Next.js 호환 문제로 proxyToWorker 기본값이 false로 바뀜 —
+    // 이 앱은 Vite라 해당 없음. 명시적으로 켜서 무거운 추론을 Web Worker로
+    // 넘기고 메인 스레드(타이머·화면 텍스트)가 멈춘 것처럼 보이지 않게 함.
+    proxyToWorker: true,
     progress: (_key, current, total) => {
       if (total > 0 && current === 0) {
         onStatus?.(p.almostDone);

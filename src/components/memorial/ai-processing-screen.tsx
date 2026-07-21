@@ -52,7 +52,8 @@ interface AIProcessingScreenProps {
   onComplete: (cutoutUrl: string) => void;
 }
 
-const CLIENT_CUTOUT_FIRST = import.meta.env.VITE_CLIENT_CUTOUT === "1";
+// .trim() — Vercel 등 대시보드/CLI에서 값에 공백/개행이 섞여 들어가도 안전하게 비교
+const CLIENT_CUTOUT_FIRST = String(import.meta.env.VITE_CLIENT_CUTOUT ?? "").trim() === "1";
 
 type ProcessingCopy = ReturnType<typeof memorialT>["processing"];
 
