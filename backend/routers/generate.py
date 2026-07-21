@@ -1,3 +1,4 @@
+import logging
 import os
 import uuid
 
@@ -15,6 +16,8 @@ from ..services.luma_service import (
 )
 from ..services.seamless_loop_service import make_seamless_loop_mp4
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 
@@ -30,11 +33,15 @@ async def _cutout_to_dog_bytes(raw: bytes, *, skip: bool) -> bytes:
 
 def _pet_video_seamless_loop_enabled() -> bool:
     """
-    /generate-pet-video 의 아이들 영상 후처리(ffmpeg seamless loop) on/off.
+    /generate-pet-video, /generate-idle-variant 공통: 아이들 영상 후처리
+    (ffmpeg seamless loop) on/off.
     Render 512MB 컨테이너에서 ffmpeg 재인코딩(xfade+concat)이 uvicorn 프로세스와
     메모리를 다투다 컨테이너 전체를 OOM으로 죽이는 문제가 확인되어 기본값 off.
     더 큰 플랜으로 옮기거나 ffmpeg 메모리 사용을 낮추면 PET_VIDEO_SEAMLESS_LOOP=1로
-    다시 켤 수 있음. (/api/generate-idle-variant 는 이 플래그와 무관하게 그대로 동작.)
+    다시 켤 수 있음.
+    (2026-07-21: /api/generate-idle-variant도 같은 플래그를 공유하도록 변경 —
+    5종 세트는 이 엔드포인트를 5번 순차 호출하므로, 매 호출마다 ffmpeg 재인코딩을
+    돌리면 OOM 위험이 5배가 되어 "5종 테스트 패널이 멈춘다"는 증상의 주 원인이었음.)
     """
     return os.getenv("PET_VIDEO_SEAMLESS_LOOP", "false").lower() in ("1", "true", "yes")
 
@@ -63,6 +70,7 @@ async def post_generate_pet_video(
         else:
             dog_bytes = build_dog_only_nobg_png_bytes(raw)
     except Exception as e:
+        logger.exception("generate-pet-video: cutout/preprocessing failed (cid=%s)", cid)
         raise HTTPException(status_code=500, detail=str(e)) from e
 
     try:
@@ -70,6 +78,9 @@ async def post_generate_pet_video(
             f"{user_id}/{cid}/dog_only_nobg.png", dog_bytes, "image/png"
         )
     except Exception as e:
+        logger.exception(
+            "generate-pet-video: Supabase upload of dog_only_nobg.png failed (cid=%s)", cid
+        )
         raise HTTPException(
             status_code=503,
             detail=f"Luma용 이미지 URL이 필요합니다. Supabase(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)와 Storage 버킷을 설정하세요: {e}",
@@ -81,6 +92,9 @@ async def post_generate_pet_video(
             f"{user_id}/{cid}/luma_keyframe.jpg", key_jpeg, "image/jpeg"
         )
     except Exception as e:
+        logger.exception(
+            "generate-pet-video: keyframe flatten/upload failed (cid=%s)", cid
+        )
         raise HTTPException(status_code=503, detail=str(e)) from e
 
     lum_src = raw if not skip else dog_bytes
@@ -99,6 +113,10 @@ async def post_generate_pet_video(
             )
         )
     except Exception as e:
+        # 이 자리에서 나는 502는 OOM이 아니라 Luma 쪽(키/쿼터/모더레이션/타임아웃) 문제일
+        # 가능성이 높음 — 프론트의 friendlyPetVideoError()가 "서버 문제"로 뭉뚱그려 보여주므로
+        # 실제 원인은 반드시 이 로그(Render 대시보드 Logs)에서 확인해야 함.
+        logger.exception("generate-pet-video: Luma generation failed (cid=%s)", cid)
         raise HTTPException(status_code=502, detail=f"Luma 생성 실패: {e}") from e
 
     idle_local = await download_video(idle_remote)
@@ -124,6 +142,11 @@ async def post_generate_pet_video(
             action_url = await supabase_assets.upload_asset_to_storage(
                 f"{user_id}/{cid}/action.mp4", action_bytes, "video/mp4"
             )
+    except Exception as e:
+        logger.exception(
+            "generate-pet-video: post-process/upload of generated video failed (cid=%s)", cid
+        )
+        raise HTTPException(status_code=502, detail=f"영상 업로드 실패: {e}") from e
     finally:
         for p in (idle_local, action_local):
             try:
@@ -160,7 +183,7 @@ async def post_generate_idle_variant(
     """
     아이들(Idle) 5종 세트 중 template_key 1개를 생성.
     파이프라인: (SAM2 누끼, 필요 시) → Luma 생성 → mp4/블랙배경 검증(+재시도)
-    → seamless loop → Supabase 업로드.
+    → seamless loop(PET_VIDEO_SEAMLESS_LOOP=1일 때만) → Supabase 업로드.
 
     프론트(VideoGenerationService.ts)는 IDLE_TEMPLATE_ORDER 순서대로 이 엔드포인트를
     5번 순차 호출한다(SAM2 누끼는 최초 1회만 하고 나머지 4번은 skip_preprocessing=true).
@@ -181,6 +204,9 @@ async def post_generate_idle_variant(
     try:
         dog_bytes = await _cutout_to_dog_bytes(raw, skip=skip)
     except Exception as e:
+        logger.exception(
+            "generate-idle-variant(%s): cutout failed (cid=%s)", template_key, cid
+        )
         raise HTTPException(status_code=500, detail=f"누끼 실패: {e}") from e
 
     try:
@@ -192,6 +218,9 @@ async def post_generate_idle_variant(
             f"{user_id}/{cid}/luma_keyframe.jpg", key_jpeg, "image/jpeg"
         )
     except Exception as e:
+        logger.exception(
+            "generate-idle-variant(%s): Supabase upload failed (cid=%s)", template_key, cid
+        )
         raise HTTPException(
             status_code=503,
             detail=f"Luma용 이미지 URL이 필요합니다. Supabase(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)와 Storage 버킷을 설정하세요: {e}",
@@ -202,12 +231,30 @@ async def post_generate_idle_variant(
             key_url, template_key, max_retries=max_retries
         )
     except Exception as e:
+        # OOM이 아니어도 Luma 쪽(키/쿼터/모더레이션/타임아웃) 문제로 502가 날 수 있음 —
+        # 실제 원인은 Render 대시보드 Logs에서 이 traceback으로 확인.
+        logger.exception(
+            "generate-idle-variant(%s): Luma generation failed (cid=%s)", template_key, cid
+        )
         raise HTTPException(status_code=502, detail=f"Luma 아이들 생성 실패: {e}") from e
 
-    looped_bytes, loop_meta = make_seamless_loop_mp4(variant.video_bytes)
-    video_url = await supabase_assets.upload_asset_to_storage(
-        f"{user_id}/{cid}/idle_{template_key.lower()}.mp4", looped_bytes, "video/mp4"
-    )
+    try:
+        if _pet_video_seamless_loop_enabled():
+            looped_bytes, loop_meta = make_seamless_loop_mp4(variant.video_bytes)
+        else:
+            # ffmpeg 재인코딩 OOM 회피 — 루프 없는 원본 Luma 영상을 그대로 사용.
+            looped_bytes, loop_meta = variant.video_bytes, {
+                "skipped": True,
+                "reason": "pet_video_seamless_loop_disabled",
+            }
+        video_url = await supabase_assets.upload_asset_to_storage(
+            f"{user_id}/{cid}/idle_{template_key.lower()}.mp4", looped_bytes, "video/mp4"
+        )
+    except Exception as e:
+        logger.exception(
+            "generate-idle-variant(%s): post-process/upload failed (cid=%s)", template_key, cid
+        )
+        raise HTTPException(status_code=502, detail=f"영상 업로드 실패: {e}") from e
 
     return {
         "success": True,

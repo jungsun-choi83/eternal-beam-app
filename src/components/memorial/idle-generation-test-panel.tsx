@@ -80,6 +80,12 @@ export function IdleGenerationTestPanel({ userId, onClose }: IdleGenerationTestP
             [result.template_key]: { state: "done", result },
           }));
         },
+        onVariantError: (templateKey: IdleTemplateKey, message: string) => {
+          setStatuses((prev) => ({
+            ...prev,
+            [templateKey]: { state: "error", message },
+          }));
+        },
       });
     } catch (e) {
       setGlobalError(e instanceof Error ? e.message : String(e));

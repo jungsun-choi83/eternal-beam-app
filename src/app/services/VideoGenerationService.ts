@@ -161,7 +161,11 @@ export async function generateIdleVariant(
   form.append('max_retries', String(options.maxRetries ?? 2))
 
   const ctrl = new AbortController()
-  const timeoutMs = options.timeoutMs ?? 10 * 60 * 1000 // Luma 1건 폴링 상한 (서버 LUMA_POLL_MAX_SEC와 별개 안전장치)
+  // 서버는 max_retries(기본 2, 즉 최대 3회 시도) × LUMA_POLL_MAX_SEC(기본 1200초)까지
+  // 한 요청 안에서 재시도할 수 있음. 예전 10분 상한은 이보다 훨씬 짧아서, 정상적으로
+  // 재시도 중인데도 프론트가 먼저 중단(abort)해버려 "멈춘 것처럼" 보이는 원인이 됐음.
+  // 20분으로 늘려 서버 쪽 재시도가 끝날 시간을 충분히 준다(그래도 서버보다는 짧게 유지).
+  const timeoutMs = options.timeoutMs ?? 20 * 60 * 1000
   const tid = setTimeout(() => ctrl.abort(), timeoutMs)
 
   let res: Response
@@ -205,6 +209,12 @@ export interface GenerateIdleSetOptions {
   onVariantComplete?: (result: IdleVariantResult, index: number, total: number) => void
   /** 템플릿 1건 시작 시 호출. */
   onVariantStart?: (templateKey: IdleTemplateKey, index: number, total: number) => void
+  /**
+   * 템플릿 1건이 실패했을 때 호출 (progress UI용).
+   * 이 콜백이 없으면 UI가 "running" 상태에 멈춘 것처럼 보일 수 있으니
+   * 진행 상태를 그리는 화면은 반드시 이 콜백도 처리해야 함.
+   */
+  onVariantError?: (templateKey: IdleTemplateKey, message: string, index: number, total: number) => void
   /** SAM2 누끼가 끝났을 때 호출 (미리보기 표시용). */
   onCutoutComplete?: (cutout: CutoutResult) => void
   /** 특정 템플릿 실패 시 전체를 중단할지(기본 false — 나머지는 계속 진행). */
@@ -275,6 +285,7 @@ export async function generateIdleAnimationSet(
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e)
       outcomes.push({ templateKey, error: message })
+      options.onVariantError?.(templateKey, message, i, templates.length)
       if (options.stopOnError) break
     }
   }
