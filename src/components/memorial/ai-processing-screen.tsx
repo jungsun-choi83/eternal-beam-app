@@ -7,7 +7,6 @@ import {
   cutoutImage,
   generatePetVideo,
   isCutoutApiUnreachableError,
-  resolveIdleVideoUrl,
   type CutoutResult,
 } from "@/app/services/videoProcessingApi";
 import { clientCutoutFromFile, dataUrlToFile } from "@/lib/client-cutout";
@@ -33,16 +32,14 @@ import { CutoutStage } from "@/components/memorial/cutout-stage";
 import { useProcessingClock } from "@/lib/use-processing-clock";
 import {
   isClientCutoutFirst,
-  isIdleTestFallbackEnabled,
   isLumaPipelineEnabled,
+  ensureIdleMp4Url,
 } from "@/lib/device-host-flags";
 import { isLikelyVideoUrl } from "@/lib/video-url";
 import { IdleLoopVideo } from "@/components/memorial/idle-loop-video";
 
 export const ETERNAL_BEAM_PIPELINE_KEY = "eternal_beam_pipeline_v1";
 
-const LUMA_ENABLED = isLumaPipelineEnabled();
-const IDLE_TEST_FALLBACK = isIdleTestFallbackEnabled();
 const FILM_CONVERSION_SEC = Number(import.meta.env.VITE_FILM_CONVERSION_SEC ?? "0");
 const CLIENT_CUTOUT_FALLBACK = import.meta.env.VITE_CLIENT_CUTOUT_FALLBACK !== "0";
 /** 누끼 전/후 비교를 idle 단계 전에 유지 (ms) */
@@ -169,19 +166,6 @@ function cutoutDisplayUrl(result: CutoutResult): string {
   if (result.cutout_png_base64)
     return `data:image/png;base64,${result.cutout_png_base64}`;
   return "";
-}
-
-function isSkippableLumaError(message: string): boolean {
-  const m = message.toLowerCase();
-  // Luma 미설정·크레딧 부족만 데모 모드 — 서버 502/네트워크는 재시도 후 실패 처리
-  return (
-    m.includes("insufficient credit") ||
-    m.includes("크레딧") ||
-    m.includes("luma_api_key") ||
-    m.includes("luma api key") ||
-    m.includes("luma api not") ||
-    m.includes("not configured")
-  );
 }
 
 function isTransientPetVideoError(message: string): boolean {
@@ -428,9 +412,10 @@ export function AIProcessingScreen({
         setStatusLine(t.converting);
 
         let pet: Awaited<ReturnType<typeof generatePetVideo>> | null = null;
-        let lumaDemoFallback = false;
+        let apiIdleUrl = "";
+        const lumaEnabled = isLumaPipelineEnabled();
 
-        if (LUMA_ENABLED) {
+        if (lumaEnabled) {
           try {
             pet = await generateIdleVideoWithRetry(
               cutFile,
@@ -440,49 +425,14 @@ export function AIProcessingScreen({
               },
               t
             );
-            if (
-              pet?.idle_video_url &&
-              isLikelyVideoUrl(pet.idle_video_url) &&
-              !cancelled &&
-              myToken === runTokenRef.current
-            ) {
-              setIdlePreviewUrl(pet.idle_video_url);
+            if (pet?.idle_video_url && isLikelyVideoUrl(pet.idle_video_url)) {
+              apiIdleUrl = pet.idle_video_url;
             }
-          } catch (e) {
-            const msg =
-              e instanceof Error ? e.message : typeof e === "string" ? e : "Luma failed";
-            lumaDemoFallback = true;
+          } catch {
             if (!cancelled && myToken === runTokenRef.current) {
-              setStatusLine(
-                IDLE_TEST_FALLBACK
-                  ? t.idleDemoFallback
-                  : isSkippableLumaError(msg)
-                    ? t.lumaSkip
-                    : t.idleSkipFallback
-              );
-            }
-            if (IDLE_TEST_FALLBACK) {
-              setProgress(88);
-              await sleep(600);
-            } else if (isSkippableLumaError(msg)) {
-              await runFilmConversionDemo((pct, line) => {
-                if (cancelled || myToken !== runTokenRef.current) return;
-                setProgress(pct);
-                setStatusLine(line);
-              }, t);
-            } else {
-              setProgress(88);
-              await sleep(1200);
+              setStatusLine(t.idleDemoFallback);
             }
           }
-        } else if (IDLE_TEST_FALLBACK) {
-          setStatusLine(t.idleDemoFallback);
-          const demoUrl = resolveIdleVideoUrl("");
-          if (demoUrl && !cancelled && myToken === runTokenRef.current) {
-            setIdlePreviewUrl(demoUrl);
-          }
-          setProgress(88);
-          await sleep(600);
         } else {
           setStatusLine(t.lumaSkip);
           await runFilmConversionDemo((pct, line) => {
@@ -494,25 +444,13 @@ export function AIProcessingScreen({
 
         if (cancelled || myToken !== runTokenRef.current) return;
 
-        const apiIdleUrl =
-          pet?.idle_video_url && isLikelyVideoUrl(pet.idle_video_url)
-            ? pet.idle_video_url
-            : "";
-        const resolvedIdleUrl = resolveIdleVideoUrl(apiIdleUrl);
+        const resolvedIdleUrl = ensureIdleMp4Url(apiIdleUrl);
 
         if (!cancelled && myToken === runTokenRef.current) {
-          if (resolvedIdleUrl && !apiIdleUrl && IDLE_TEST_FALLBACK) {
-            setStatusLine(t.idleDemoFallback);
-            setIdlePreviewUrl(resolvedIdleUrl);
-            setProgress(92);
-            await sleep(500);
-          } else if (!resolvedIdleUrl && LUMA_ENABLED) {
-            setStatusLine(lumaDemoFallback ? t.idleSkipFallback : t.idleMissing);
-            setProgress(92);
-            await sleep(800);
-          } else if (resolvedIdleUrl) {
-            setIdlePreviewUrl(resolvedIdleUrl);
-          }
+          setIdlePreviewUrl(resolvedIdleUrl);
+          if (!apiIdleUrl) setStatusLine(t.idleDemoFallback);
+          setProgress(92);
+          await sleep(apiIdleUrl ? 300 : 500);
         }
 
         const stored: StoredPipeline = {

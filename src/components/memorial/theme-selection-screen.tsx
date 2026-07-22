@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, Check, Sparkles } from "lucide-react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { ArrowLeft, ArrowRight, Check, Flower2 } from "lucide-react";
 import { memorialT, themeDisplayName } from "@/components/memorial/memorial-i18n";
 import {
   ETERNAL_BEAM_PIPELINE_KEY,
@@ -24,34 +24,123 @@ interface ThemeSelectionScreenProps {
   onSelectTheme: (themeId: number) => void;
   /** requiresGeneration 테마(예: custom_photo_bg) 카드를 탭했을 때 */
   onSelectCustomBackground?: (theme: MemorialTheme) => void;
-  onContinue: () => void;
+  onContinue: (themeId: number) => void;
   onSkip: () => void;
   onBack: () => void;
 }
 
-function ThemeCarousel({
+function findCenteredThemeId(
+  container: HTMLDivElement,
+  themes: MemorialTheme[]
+): number | null {
+  const center = container.scrollLeft + container.clientWidth / 2;
+  let bestId: number | null = null;
+  let bestDist = Infinity;
+
+  for (let i = 0; i < container.children.length; i++) {
+    const card = container.children[i] as HTMLElement;
+    const cardCenter = card.offsetLeft + card.offsetWidth / 2;
+    const dist = Math.abs(center - cardCenter);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestId = themes[i]?.id ?? null;
+    }
+  }
+  return bestId;
+}
+
+const ThemeThumb = memo(function ThemeThumb({
+  theme,
+  loadImage,
+}: {
+  theme: MemorialTheme;
+  loadImage: boolean;
+}) {
+  if (!loadImage) {
+    return <div className="absolute inset-0 bg-[#141416]" aria-hidden />;
+  }
+  return (
+    <img
+      src={theme.thumb}
+      alt=""
+      loading="lazy"
+      decoding="async"
+      className="absolute inset-0 h-full w-full object-cover"
+    />
+  );
+});
+
+const ThemeCarousel = memo(function ThemeCarousel({
   themes,
   selectedTheme,
   themeLabel,
   carouselRef,
+  carouselId,
+  isInteractionTarget,
+  onInteractionStart,
   onSelect,
+  onSnapTheme,
 }: {
   themes: MemorialTheme[];
   selectedTheme: number | null;
   themeLabel: (th: MemorialTheme) => string;
   carouselRef: React.RefObject<HTMLDivElement | null>;
+  carouselId: "free" | "premium";
+  isInteractionTarget: () => boolean;
+  onInteractionStart: (id: "free" | "premium") => void;
   onSelect: (theme: MemorialTheme) => void;
+  onSnapTheme: (themeId: number, source: "free" | "premium") => void;
 }) {
+  const [focusIndex, setFocusIndex] = useState(() =>
+    Math.max(0, themes.findIndex((t) => t.id === selectedTheme))
+  );
+
+  useEffect(() => {
+    const idx = themes.findIndex((t) => t.id === selectedTheme);
+    if (idx >= 0) setFocusIndex(idx);
+  }, [selectedTheme, themes]);
+
+  useEffect(() => {
+    const el = carouselRef.current;
+    if (!el) return;
+
+    let raf = 0;
+    const syncFromScroll = () => {
+      if (!isInteractionTarget()) return;
+      const id = findCenteredThemeId(el, themes);
+      if (id == null) return;
+      const idx = themes.findIndex((t) => t.id === id);
+      if (idx >= 0) setFocusIndex(idx);
+      onSnapTheme(id, carouselId);
+    };
+
+    const onScroll = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(syncFromScroll);
+    };
+
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      cancelAnimationFrame(raf);
+      el.removeEventListener("scroll", onScroll);
+    };
+  }, [carouselId, carouselRef, themes, onSnapTheme, isInteractionTarget]);
+
+  const scrollByPage = useCallback(
+    (dir: -1 | 1) => {
+      const el = carouselRef.current;
+      if (!el) return;
+      el.scrollBy({ left: dir * Math.max(140, el.clientWidth * 0.65), behavior: "smooth" });
+    },
+    [carouselRef]
+  );
+
   return (
     <div className="relative">
       <button
         type="button"
         aria-label="Previous"
-        onClick={() => {
-          const el = carouselRef.current;
-          if (!el) return;
-          el.scrollBy({ left: -Math.max(140, el.clientWidth * 0.65), behavior: "smooth" });
-        }}
+        onClick={() => scrollByPage(-1)}
         className="absolute left-0 top-1/2 z-10 -translate-y-1/2 rounded-full p-2 bg-white/15 border border-white/25"
       >
         <ArrowLeft className="h-4 w-4 text-white" />
@@ -59,11 +148,7 @@ function ThemeCarousel({
       <button
         type="button"
         aria-label="Next"
-        onClick={() => {
-          const el = carouselRef.current;
-          if (!el) return;
-          el.scrollBy({ left: Math.max(140, el.clientWidth * 0.65), behavior: "smooth" });
-        }}
+        onClick={() => scrollByPage(1)}
         className="absolute right-0 top-1/2 z-10 -translate-y-1/2 rounded-full p-2 bg-white/15 border border-white/25"
       >
         <ArrowRight className="h-4 w-4 text-white" />
@@ -71,27 +156,27 @@ function ThemeCarousel({
 
       <div
         ref={carouselRef}
+        onPointerDown={() => onInteractionStart(carouselId)}
         className="hide-scrollbar flex snap-x snap-mandatory gap-3 overflow-x-auto px-10 pb-2"
       >
-        {themes.map((theme) => {
+        {themes.map((theme, index) => {
           const selected = selectedTheme === theme.id;
+          const loadImage = Math.abs(index - focusIndex) <= 1;
           return (
             <button
               key={theme.id}
               type="button"
+              data-theme-id={theme.id}
               onClick={() => onSelect(theme)}
-              className={`theme-selection-screen__carousel-card relative aspect-[3/4] w-[38%] shrink-0 snap-center rounded-2xl overflow-hidden border-2 transition-colors ${
-                selected ? "border-[#c9a227]" : "border-transparent"
+              className={`theme-selection-screen__carousel-card relative aspect-[3/4] w-[38%] shrink-0 snap-center rounded-2xl overflow-hidden border-2 transition-[border-color,box-shadow] duration-150 ${
+                selected ? "border-[#c9a227] shadow-[0_0_0_1px_rgba(201,162,39,0.35)]" : "border-transparent"
               }`}
             >
-              <div
-                className="absolute inset-0 bg-cover bg-center"
-                style={{ backgroundImage: `url(${theme.thumb})` }}
-              />
-              <div className={`absolute inset-0 bg-gradient-to-b ${theme.gradient} opacity-40`} />
+              <ThemeThumb theme={theme} loadImage={loadImage} />
+              <div className={`absolute inset-0 bg-gradient-to-b ${theme.gradient} opacity-40 pointer-events-none`} />
               {theme.requiresGeneration ? (
                 <div className="absolute top-2 left-2 w-5 h-5 rounded-full bg-white/15 border border-white/30 flex items-center justify-center">
-                  <Sparkles className="w-3 h-3 text-[#f5d77a]" strokeWidth={2} />
+                  <Flower2 className="w-3 h-3 text-[#f5d77a]" strokeWidth={2} />
                 </div>
               ) : null}
               {selected ? (
@@ -116,7 +201,7 @@ function ThemeCarousel({
       </div>
     </div>
   );
-}
+});
 
 export function ThemeSelectionScreen({
   cutoutImage,
@@ -133,36 +218,76 @@ export function ThemeSelectionScreen({
     themeDisplayName(language === "ko" ? "ko" : "en", th);
   const freeCarouselRef = useRef<HTMLDivElement | null>(null);
   const premiumCarouselRef = useRef<HTMLDivElement | null>(null);
-  const [idleVideoUrl, setIdleVideoUrl] = useState<string | null>(null);
+  const interactionCarouselRef = useRef<"free" | "premium" | null>(null);
+  const [idleVideoUrl, setIdleVideoUrl] = useState<string>(resolveIdleVideoUrl(null));
+  const [highlightTheme, setHighlightTheme] = useState<number | null>(selectedTheme);
+
+  const isInteractionTarget = useCallback(
+    (id: "free" | "premium") => () => interactionCarouselRef.current === id,
+    []
+  );
+
+  const markInteraction = useCallback((id: "free" | "premium") => {
+    interactionCarouselRef.current = id;
+  }, []);
+
+  useEffect(() => {
+    setHighlightTheme(selectedTheme);
+  }, [selectedTheme]);
 
   useEffect(() => {
     try {
       const raw = sessionStorage.getItem(ETERNAL_BEAM_PIPELINE_KEY);
       if (!raw) {
-        setIdleVideoUrl(null);
+        setIdleVideoUrl(resolveIdleVideoUrl(null));
         return;
       }
       const pipeline = JSON.parse(raw) as StoredPipeline;
-      const url = resolveIdleVideoUrl(pipeline.idle_video_url);
-      setIdleVideoUrl(url || null);
+      setIdleVideoUrl(resolveIdleVideoUrl(pipeline.idle_video_url));
     } catch {
-      setIdleVideoUrl(null);
+      setIdleVideoUrl(resolveIdleVideoUrl(null));
     }
   }, [cutoutImage]);
 
-  const selectTheme = (theme: MemorialTheme) => {
-    if (theme.requiresGeneration) {
-      onSelectCustomBackground?.(theme);
-      return;
-    }
-    try {
-      localStorage.setItem("eternal_beam_theme_key", theme.themeKey);
-      localStorage.setItem("eternal_beam_theme_id", String(theme.id));
-    } catch {
-      /* ignore */
-    }
-    onSelectTheme(theme.id);
-  };
+  const selectTheme = useCallback(
+    (theme: MemorialTheme, source: "free" | "premium") => {
+      interactionCarouselRef.current = source;
+      setHighlightTheme(theme.id);
+      if (theme.requiresGeneration) {
+        onSelectCustomBackground?.(theme);
+        return;
+      }
+      try {
+        localStorage.setItem("eternal_beam_theme_key", theme.themeKey);
+        localStorage.setItem("eternal_beam_theme_id", String(theme.id));
+      } catch {
+        /* ignore */
+      }
+      onSelectTheme(theme.id);
+    },
+    [onSelectCustomBackground, onSelectTheme]
+  );
+
+  const snapSelectTheme = useCallback(
+    (themeId: number, source: "free" | "premium") => {
+      if (interactionCarouselRef.current !== source) return;
+      setHighlightTheme(themeId);
+      const theme = (source === "free" ? freeMemorialThemes : premiumMemorialThemes).find(
+        (t) => t.id === themeId
+      );
+      if (!theme || theme.requiresGeneration) return;
+      try {
+        localStorage.setItem("eternal_beam_theme_key", theme.themeKey);
+        localStorage.setItem("eternal_beam_theme_id", String(theme.id));
+      } catch {
+        /* ignore */
+      }
+      onSelectTheme(themeId);
+    },
+    [onSelectTheme]
+  );
+
+  const activeTheme = highlightTheme ?? selectedTheme;
 
   return (
     <div className="theme-selection-screen flex h-full min-h-0 flex-col overflow-hidden bg-[#0a0a0a]">
@@ -186,54 +311,47 @@ export function ThemeSelectionScreen({
           </div>
         ) : null}
 
-        {/* Neutral preview — no theme background yet */}
         <div className="px-5 py-2">
           <div className="theme-selection-screen__preview relative aspect-[4/3] mx-auto rounded-2xl overflow-hidden border border-white/10 bg-[#0a0a0c]">
             <CutoutStage className="absolute inset-0">
-              {idleVideoUrl ? (
-                <IdleLoopVideo
-                  src={idleVideoUrl}
-                  className="cutout-stage__subject"
-                />
-              ) : cutoutImage ? (
-                <img
-                  src={cutoutImage}
-                  alt=""
-                  className="cutout-stage__subject"
-                />
-              ) : (
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <p className="text-sm text-[#888]">{tc.subject}</p>
-                </div>
-              )}
+              <IdleLoopVideo
+                src={idleVideoUrl}
+                className="cutout-stage__subject"
+              />
             </CutoutStage>
           </div>
           <p className="mt-2 text-center text-[10px] text-[#666]">{tc.previewNeutralHint}</p>
         </div>
 
-        {/* Free themes */}
         <div className="px-5 pb-3">
           <p className="text-[11px] uppercase tracking-widest text-[#a8e6a3] mb-1 px-1">{tc.freeSection}</p>
           <p className="text-[10px] text-[#666] mb-2 px-1">{tc.freeSectionHint}</p>
           <ThemeCarousel
             themes={freeMemorialThemes}
-            selectedTheme={selectedTheme}
+            selectedTheme={activeTheme}
             themeLabel={themeLabel}
             carouselRef={freeCarouselRef}
-            onSelect={selectTheme}
+            carouselId="free"
+            isInteractionTarget={isInteractionTarget("free")}
+            onInteractionStart={markInteraction}
+            onSelect={(theme) => selectTheme(theme, "free")}
+            onSnapTheme={snapSelectTheme}
           />
         </div>
 
-        {/* Premium themes */}
         <div className="px-5 pb-2">
           <p className="text-[11px] uppercase tracking-widest text-[#f5d77a] mb-1 px-1">{tc.premiumSection}</p>
           <p className="text-[10px] text-[#666] mb-2 px-1">{tc.premiumSectionHint}</p>
           <ThemeCarousel
             themes={premiumMemorialThemes}
-            selectedTheme={selectedTheme}
+            selectedTheme={activeTheme}
             themeLabel={themeLabel}
             carouselRef={premiumCarouselRef}
-            onSelect={selectTheme}
+            carouselId="premium"
+            isInteractionTarget={isInteractionTarget("premium")}
+            onInteractionStart={markInteraction}
+            onSelect={(theme) => selectTheme(theme, "premium")}
+            onSnapTheme={snapSelectTheme}
           />
           <p className="mt-2 text-[10px] text-[#888]">{tc.swipeHint}</p>
         </div>
@@ -242,12 +360,12 @@ export function ThemeSelectionScreen({
       <div className="theme-selection-footer shrink-0 px-5 pt-3 space-y-2 relative z-20">
         <button
           type="button"
-          onClick={onContinue}
-          disabled={!selectedTheme}
+          onClick={() => activeTheme && onContinue(activeTheme)}
+          disabled={!activeTheme}
           className="cta-gold w-full py-3.5 rounded-2xl font-medium text-[15px] disabled:opacity-45 disabled:cursor-not-allowed"
         >
-          {selectedTheme
-            ? isPremiumTheme(selectedTheme)
+          {activeTheme
+            ? isPremiumTheme(activeTheme)
               ? tc.continuePremium
               : tc.continueFree
             : tc.selectFirst}

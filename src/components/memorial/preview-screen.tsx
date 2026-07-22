@@ -13,6 +13,10 @@ import { getMemorialTheme } from "@/components/memorial/themes";
 import { ThemeBackgroundVideo } from "@/components/memorial/theme-background-video";
 import { IdleLoopVideo } from "@/components/memorial/idle-loop-video";
 import { getEffectiveBgVideo } from "@/lib/custom-background-store";
+import {
+  getThemeBackgroundApiId,
+  resolveSelectedThemeId,
+} from "@/lib/theme-selection-store";
 import { isLikelyVideoUrl } from "@/lib/video-url";
 
 interface PreviewScreenProps {
@@ -25,20 +29,21 @@ interface PreviewScreenProps {
   onBack: () => void;
 }
 
-/** Matches `backend/themes/{themeKey}.mp4` when you add theme files (see THEMES_VIDEO_DIR). */
-const THEME_PREVIEW_IDS: Record<number, string> = {
-  1: "snow_forest",
-  2: "celestial",
-  3: "golden_meadow",
-  4: "starlight",
-  5: "aurora",
-  6: "sunset",
-  7: "ocean_deep",
-};
-
 /** 개발·QA 전용. 프로덕션에서는 조정 화면에 Luma/FFmpeg 패널 숨김 */
 const SHOW_PIPELINE_DEBUG =
   import.meta.env.DEV || import.meta.env.VITE_SHOW_PIPELINE_DEBUG === "1";
+
+function assertPreviewTheme(selectedTheme: number | null, resolvedId: number) {
+  if (import.meta.env.DEV && selectedTheme != null && selectedTheme !== resolvedId) {
+    console.warn(
+      "[preview] selectedTheme prop",
+      selectedTheme,
+      "!== resolved preview theme",
+      resolvedId,
+      "— using resolved id from localStorage sync"
+    );
+  }
+}
 
 export function PreviewScreen({
   cutoutImage,
@@ -55,7 +60,17 @@ export function PreviewScreen({
   const [ffPreviewUrl, setFfPreviewUrl] = useState<string | null>(null);
   const [ffLoading, setFfLoading] = useState(false);
   const [ffError, setFfError] = useState<string | null>(null);
-  const currentTheme = getMemorialTheme(selectedTheme) ?? getMemorialTheme(1)!;
+  const previewThemeId = resolveSelectedThemeId(selectedTheme);
+  const currentTheme =
+    (previewThemeId != null ? getMemorialTheme(previewThemeId) : undefined) ??
+    getMemorialTheme(1)!;
+  const previewBgVideo = getEffectiveBgVideo(currentTheme);
+
+  useEffect(() => {
+    if (previewThemeId != null) {
+      assertPreviewTheme(selectedTheme, previewThemeId);
+    }
+  }, [selectedTheme, previewThemeId]);
 
   const idleVideoUrl = resolveIdleVideoUrl(pipeline?.idle_video_url);
 
@@ -73,11 +88,11 @@ export function PreviewScreen({
   }, [onSettingsChange]);
 
   const tryFfmpegPreview = useCallback(async () => {
-    if (!cutoutImage || !selectedTheme) {
+    if (!cutoutImage || previewThemeId == null) {
       setFfError(p.cutoutMissing);
       return;
     }
-    const bgId = THEME_PREVIEW_IDS[selectedTheme];
+    const bgId = getThemeBackgroundApiId(currentTheme);
     if (!bgId) {
       setFfError(p.themeUnknown);
       return;
@@ -105,7 +120,7 @@ export function PreviewScreen({
     } finally {
       setFfLoading(false);
     }
-  }, [cutoutImage, selectedTheme, settings.posX, settings.posY, settings.scale, p.cutoutMissing, p.themeUnknown, p.previewFailed]);
+  }, [cutoutImage, previewThemeId, currentTheme, settings.posX, settings.posY, settings.scale, p.cutoutMissing, p.themeUnknown, p.previewFailed]);
 
   const SliderControl = ({ 
     label, 
@@ -255,9 +270,10 @@ export function PreviewScreen({
           className="theme-preview-frame relative w-full aspect-[3/4] max-h-[320px]"
         >
           <div className="memory-cta-card__shine" />
-          {getEffectiveBgVideo(currentTheme) ? (
+          {previewBgVideo ? (
             <ThemeBackgroundVideo
-              src={getEffectiveBgVideo(currentTheme)!}
+              key={`theme-bg-${previewThemeId}-${previewBgVideo}`}
+              src={previewBgVideo}
               poster={currentTheme.thumb}
             />
           ) : (
@@ -276,25 +292,13 @@ export function PreviewScreen({
                 transform: `translate(${settings.posX}px, ${settings.posY}px) scale(${settings.scale})`,
               }}
             >
-              {idleVideoUrl ? (
-                <IdleLoopVideo
-                  src={idleVideoUrl}
-                  className="cutout-stage__subject max-h-[62%] max-w-[92%]"
-                  style={{
-                    filter: `drop-shadow(0 16px 32px ${currentTheme.accent}66)`,
-                  }}
-                />
-              ) : (
-                <img
-                  src={cutoutImage}
-                  alt="Subject"
-                  className="cutout-stage__subject max-h-[62%] max-w-[92%]"
-                  style={{
-                    filter: `drop-shadow(0 16px 32px ${currentTheme.accent}66)`,
-                  }}
-                  decoding="async"
-                />
-              )}
+              <IdleLoopVideo
+                src={idleVideoUrl}
+                className="cutout-stage__subject max-h-[62%] max-w-[92%]"
+                style={{
+                  filter: `drop-shadow(0 16px 32px ${currentTheme.accent}66)`,
+                }}
+              />
             </div>
           )}
 

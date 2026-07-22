@@ -5,6 +5,8 @@
  * - 합성: POST /api/compose-video (결제 Gate + FFmpeg) → unique_url, nfc_payload
  */
 
+import { ensureIdleMp4Url } from '@/lib/device-host-flags'
+
 /** 임시 Cloudflare 터널 URL은 만료되므로 프로덕션에서 무시 → same-origin /api (vercel.json rewrites) */
 function normalizeApiBase(raw: string | undefined): string {
   if (!raw) return ''
@@ -431,6 +433,11 @@ export async function generatePetVideo(
     throw new Error(formatHttpErrorDetail(err, 'generate-pet-video failed'))
   }
   return res.json()
+}
+
+/** API idle URL 또는 same-origin 데모 mp4 — 항상 재생 가능한 mp4 반환 */
+export function resolveIdleVideoUrl(apiUrl: string | null | undefined): string {
+  return ensureIdleMp4Url(apiUrl)
 }
 
 /** 구독 크레딧 지갑 */
