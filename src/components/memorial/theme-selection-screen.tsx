@@ -165,8 +165,8 @@ export function ThemeSelectionScreen({
         ) : null}
 
         {/* Neutral preview — no theme background yet */}
-        <div className="px-5 py-3">
-          <div className="relative aspect-[4/3] mx-auto rounded-2xl overflow-hidden border border-white/10 bg-[#0a0a0c]">
+        <div className="px-5 py-2">
+          <div className="theme-selection-screen__preview relative aspect-[4/3] mx-auto rounded-2xl overflow-hidden border border-white/10 bg-[#0a0a0c]">
             <CutoutStage className="absolute inset-0">
               {cutoutImage ? (
                 <img
@@ -185,9 +185,9 @@ export function ThemeSelectionScreen({
         </div>
 
         {/* Free themes */}
-        <div className="px-5 pb-4">
+        <div className="px-5 pb-3">
           <p className="text-[11px] uppercase tracking-widest text-[#a8e6a3] mb-1 px-1">{tc.freeSection}</p>
-          <p className="text-[10px] text-[#666] mb-3 px-1">{tc.freeSectionHint}</p>
+          <p className="text-[10px] text-[#666] mb-2 px-1">{tc.freeSectionHint}</p>
           <ThemeCarousel
             themes={freeMemorialThemes}
             selectedTheme={selectedTheme}
@@ -198,9 +198,9 @@ export function ThemeSelectionScreen({
         </div>
 
         {/* Premium themes */}
-        <div className="px-5 pb-3">
+        <div className="px-5 pb-2">
           <p className="text-[11px] uppercase tracking-widest text-[#f5d77a] mb-1 px-1">{tc.premiumSection}</p>
-          <p className="text-[10px] text-[#666] mb-3 px-1">{tc.premiumSectionHint}</p>
+          <p className="text-[10px] text-[#666] mb-2 px-1">{tc.premiumSectionHint}</p>
           <ThemeCarousel
             themes={premiumMemorialThemes}
             selectedTheme={selectedTheme}

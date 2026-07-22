@@ -47,6 +47,41 @@
   overflow-x: hidden;
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.theme-selection-screen__scroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* AI processing — fit viewport without visible scrollbars */
+.ai-processing-screen {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ai-processing-screen__body {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.ai-processing-screen__body::-webkit-scrollbar {
+  display: none;
+}
+
+.ai-processing-screen__idle-preview {
+  width: min(100%, 240px);
+  min-height: clamp(140px, 28dvh, 220px);
+  aspect-ratio: 1 / 1;
+}
+
+.ai-processing-screen__idle-preview .cutout-stage__subject {
+  min-height: clamp(140px, 28dvh, 220px);
 }
 
 .theme-selection-screen__preview {

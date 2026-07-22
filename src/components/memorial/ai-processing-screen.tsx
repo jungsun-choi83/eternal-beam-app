@@ -3,7 +3,6 @@
 import { useState, useEffect, useRef, memo } from "react";
 import { Check } from "lucide-react";
 import { EternalBeamBrandMark } from "@/components/memorial/eternal-beam-brand-mark";
-import { CutoutStage } from "@/components/memorial/cutout-stage";
 import {
   cutoutImage,
   generatePetVideo,
@@ -300,8 +299,8 @@ const CompareImages = memo(function CompareImages({
   showCheck: boolean;
 }) {
   return (
-    <div className="w-full max-w-[320px] mb-5 relative z-10">
-      <div className="grid grid-cols-2 gap-3">
+    <div className="w-full max-w-[280px] mb-3 relative z-10 shrink-0">
+      <div className="grid grid-cols-2 gap-2.5">
         <div className="compare-panel">
           <p className="compare-panel__label">{beforeLabel}</p>
           <div className="aspect-square relative overflow-hidden">
@@ -537,24 +536,43 @@ export function AIProcessingScreen({
   }, [uploadedImage, language, retryKey]);
 
   const originalForUi = displayOriginal || uploadedImage;
+  const showComparePanel =
+    currentStep === 0 && showCompare && originalForUi && cutoutPreview;
+  const showIdlePreview = currentStep >= 1 && Boolean(idlePreviewUrl);
 
   return (
-    <div className="h-full flex flex-col relative overflow-hidden">
-      <header className="px-8 pt-14 pb-4 text-center relative z-10 shrink-0">
+    <div className="ai-processing-screen h-full flex flex-col relative overflow-hidden">
+      <header className="px-6 pt-[max(2.75rem,env(safe-area-inset-top,0px))] pb-2 text-center relative z-10 shrink-0">
         <h1 className="processing-headline px-2">{titles[titleIndex]}</h1>
       </header>
 
-      <div className="flex-1 flex flex-col items-center px-6 relative z-10 min-h-0 overflow-y-auto hide-scrollbar">
-        {showCompare && originalForUi && cutoutPreview ? (
+      <div className="ai-processing-screen__body flex-1 flex flex-col items-center px-5 relative z-10 min-h-0 hide-scrollbar">
+        {showComparePanel ? (
           <CompareImages
             original={originalForUi}
             cutout={cutoutPreview}
             beforeLabel={t.before}
             afterLabel={t.after}
-            showCheck={currentStep >= 1}
+            showCheck={false}
           />
-        ) : originalForUi ? (
-          <div className="w-40 h-40 mb-6 rounded-2xl overflow-hidden bg-[#141416] flex items-center justify-center">
+        ) : showIdlePreview ? (
+          <div className="ai-processing-screen__idle-preview mb-3 relative z-10 shrink-0">
+            <p className="text-[10px] tracking-wider uppercase text-center mb-2" style={{ color: "#888" }}>
+              {t.idlePreview}
+            </p>
+            <CutoutStage className="rounded-xl border border-white/10 overflow-hidden w-full h-full">
+              <video
+                src={idlePreviewUrl!}
+                className="cutout-stage__subject w-full h-full object-contain"
+                autoPlay
+                muted
+                playsInline
+                loop
+              />
+            </CutoutStage>
+          </div>
+        ) : originalForUi && currentStep === 0 ? (
+          <div className="w-36 h-36 mb-4 rounded-2xl overflow-hidden bg-[#141416] flex items-center justify-center shrink-0">
             <img
               src={originalForUi}
               alt=""
@@ -564,29 +582,11 @@ export function AIProcessingScreen({
           </div>
         ) : null}
 
-        {idlePreviewUrl && currentStep >= 1 ? (
-          <div className="w-full max-w-[220px] mb-4 relative z-10">
-            <p className="text-[10px] tracking-wider uppercase text-center mb-2" style={{ color: "#888" }}>
-              {t.idlePreview}
-            </p>
-            <CutoutStage className="rounded-xl border border-white/10 overflow-hidden w-full max-h-[120px]">
-              <video
-                src={idlePreviewUrl}
-                className="cutout-stage__subject w-full max-h-[120px] object-contain"
-                autoPlay
-                muted
-                playsInline
-                loop
-              />
-            </CutoutStage>
-          </div>
+        {currentStep === 1 && !showIdlePreview && !lite ? (
+          <div className="processing-scanline w-40 h-1 mb-3 rounded-full overflow-hidden bg-white/5 shrink-0" />
         ) : null}
 
-        {currentStep === 1 && !lite ? (
-          <div className="processing-scanline w-40 h-1 mb-4 rounded-full overflow-hidden bg-white/5" />
-        ) : null}
-
-        <div className="w-full max-w-[300px] mb-6 shrink-0">
+        <div className="w-full max-w-[300px] mb-4 shrink-0">
           <div className="flex items-center justify-between mb-4">
             {t.steps.map((step, index) => (
               <div key={step.id} className="flex flex-col items-center flex-1">
@@ -623,7 +623,7 @@ export function AIProcessingScreen({
           </div>
         </div>
 
-        <div className="text-center mb-4 max-w-[300px]">
+        <div className="text-center mb-3 max-w-[300px] shrink-0">
           <p className="text-sm font-light min-h-[1.25rem]" style={{ color: "#F1E5D1" }}>
             {currentStep === 0 ? rotatingStatus : t.steps[currentStep]?.description}
           </p>
@@ -679,7 +679,7 @@ export function AIProcessingScreen({
           </div>
         ) : null}
 
-        <EternalBeamBrandMark language={language} className="mb-6" />
+        <EternalBeamBrandMark language={language} className="mb-4 shrink-0" />
       </div>
     </div>
   );
