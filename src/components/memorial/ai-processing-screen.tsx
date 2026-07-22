@@ -62,6 +62,59 @@ const CLIENT_CUTOUT_FIRST = String(import.meta.env.VITE_CLIENT_CUTOUT ?? "").tri
 
 type ProcessingCopy = ReturnType<typeof memorialT>["processing"];
 
+async function tryServerCutout(
+  file: File,
+  onStatus: (line: string) => void,
+  t: ProcessingCopy
+): Promise<{ display: string; cutFile: File; contentId: string } | null> {
+  if (isServerCutoutSkipped()) return null;
+  try {
+    onStatus(t.serverWaking);
+    await warmupVideoApi({ coldStart: true, maxWaitMs: CUTOUT_WARMUP_MAX_MS });
+    onStatus(CUTOUT_SPEED_MODE ? t.serverCutoutFast : t.serverCutout);
+    const cut = await cutoutImage(file, {
+      userId: "anonymous",
+      saveToStorage: false,
+      model: "isnet-general-use",
+      autoRefine: CUTOUT_AUTO_REFINE,
+      timeoutMs: CUTOUT_SERVER_TIMEOUT_MS,
+    });
+    if (cut.cutout_quality?.refined) {
+      onStatus(t.serverFurRefine);
+    }
+    const display = cutoutDisplayUrl(cut);
+    if (display && !cut.error) {
+      return {
+        display,
+        cutFile: await cutoutResultToFile(cut),
+        contentId: cut.content_id || `srv_${Date.now()}`,
+      };
+    }
+    return null;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (isCutoutApiUnreachableError(msg)) {
+      markServerCutoutDisabled();
+    }
+    return null;
+  }
+}
+
+async function tryClientCutout(
+  file: File,
+  onStatus: (line: string) => void,
+  t: ProcessingCopy,
+  language: string
+): Promise<{ display: string; cutFile: File; contentId: string }> {
+  onStatus(CUTOUT_SPEED_MODE ? t.waitHintFast : t.waitHint);
+  const display = await clientCutoutFromFile(file, onStatus, language);
+  return {
+    display,
+    cutFile: dataUrlToFile(display, "cutout.png"),
+    contentId: `client_${Date.now()}`,
+  };
+}
+
 async function runCutoutWithFallback(
   file: File,
   onStatus: (line: string) => void,
@@ -80,67 +133,28 @@ async function runCutoutWithFallback(
 
   // 기본: Render 서버 누끼(1회·90초). 실패 시 폰 WASM(768px, 1~3분).
   if (!CLIENT_CUTOUT_FIRST) {
-    if (!isServerCutoutSkipped()) {
-      try {
-        onStatus(t.serverWaking);
-        await warmupVideoApi({ coldStart: true, maxWaitMs: CUTOUT_WARMUP_MAX_MS });
-        onStatus(CUTOUT_SPEED_MODE ? t.serverCutoutFast : t.serverCutout);
-        const cut = await cutoutImage(file, {
-          userId: "anonymous",
-          saveToStorage: false,
-          model: "isnet-general-use",
-          autoRefine: CUTOUT_AUTO_REFINE,
-          timeoutMs: CUTOUT_SERVER_TIMEOUT_MS,
-        });
-        if (cut.cutout_quality?.refined) {
-          onStatus(t.serverFurRefine);
-        }
-        const display = cutoutDisplayUrl(cut);
-        if (display && !cut.error) {
-          return {
-            display,
-            cutFile: await cutoutResultToFile(cut),
-            contentId: cut.content_id || `srv_${Date.now()}`,
-          };
-        }
-        if (cut.error) {
-          if (!CLIENT_CUTOUT_FALLBACK) {
-            throw new Error(t.serverOnlyFailed);
-          }
-          onStatus(t.serverThenClient);
-        }
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (isCutoutApiUnreachableError(msg)) {
-          markServerCutoutDisabled();
-        }
-        if (!CLIENT_CUTOUT_FALLBACK) {
-          throw new Error(
-            isCutoutApiUnreachableError(msg) ? t.serverOnlyFailed : msg
-          );
-        }
-        onStatus(t.serverThenClient);
-      }
-    } else if (CLIENT_CUTOUT_FALLBACK) {
-      onStatus(t.serverThenClient);
-    } else {
+    const server = await tryServerCutout(file, onStatus, t);
+    if (server) return server;
+
+    if (!CLIENT_CUTOUT_FALLBACK) {
       throw new Error(t.serverOnlyFailed);
     }
-  } else {
-    onStatus(t.clientCutout);
+    onStatus(t.serverThenClient);
+    return tryClientCutout(file, onStatus, t, language);
   }
 
-  if (!CLIENT_CUTOUT_FIRST && !CLIENT_CUTOUT_FALLBACK) {
-    throw new Error(t.serverOnlyFailed);
+  onStatus(t.clientCutout);
+  try {
+    return await tryClientCutout(file, onStatus, t, language);
+  } catch (clientErr) {
+    if (!CLIENT_CUTOUT_FALLBACK) {
+      throw clientErr;
+    }
+    onStatus(t.clientThenServer);
+    const server = await tryServerCutout(file, onStatus, t);
+    if (server) return server;
+    throw clientErr;
   }
-
-  onStatus(CUTOUT_SPEED_MODE ? t.waitHintFast : t.waitHint);
-  const display = await clientCutoutFromFile(file, onStatus, language);
-  return {
-    display,
-    cutFile: dataUrlToFile(display, "cutout.png"),
-    contentId: `client_${Date.now()}`,
-  };
 }
 
 function cutoutDisplayUrl(result: CutoutResult): string {

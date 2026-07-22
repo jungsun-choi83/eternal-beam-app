@@ -80,6 +80,9 @@ const STRINGS = {
       serverRetry: "다시 연결하는 중…",
       mockCutout: "테스트 모드 — 사진 준비 중…",
       serverThenClient: "서버 연결 실패 — 이 기기에서 다시 처리 중…",
+      clientThenServer: "기기 처리 시간 초과 — 서버에서 다시 시도 중…",
+      clientCutoutTimeout:
+        "이 기기에서 배경 제거가 너무 오래 걸립니다. Wi‑Fi에서 다시 시도해 주세요.",
       serverOnlyFailed:
         "처리 서버가 잠시 바쁩니다. Wi‑Fi에서 1분 뒤 다시 시도해 주세요.",
       retry: "다시 시도",
@@ -398,6 +401,9 @@ const STRINGS = {
       serverRetry: "Reconnecting…",
       mockCutout: "Test mode — preparing photo…",
       serverThenClient: "Server unavailable — retrying on device…",
+      clientThenServer: "On-device cutout timed out — retrying on server…",
+      clientCutoutTimeout:
+        "On-device background removal is taking too long. Please retry on Wi‑Fi.",
       serverOnlyFailed:
         "The processing server is busy. Please retry on Wi‑Fi in about a minute.",
       retry: "Try again",
