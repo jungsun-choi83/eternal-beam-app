@@ -155,6 +155,16 @@ export function friendlyCutoutError(message: string, language = "ko"): string {
   if (m.includes("누끼 서버")) {
     return message;
   }
+  if (
+    m.includes("시간 초과") ||
+    m.includes("too long") ||
+    m.includes("timed out") ||
+    m.includes("timeout")
+  ) {
+    return language === "ko"
+      ? "배경 제거가 너무 오래 걸립니다. Wi‑Fi에서 1~3분 기다린 뒤 ‘다시 시도’를 눌러 주세요."
+      : "Background removal is taking too long. Wait 1–3 minutes on Wi‑Fi, then tap Try again.";
+  }
   return message;
 }
 

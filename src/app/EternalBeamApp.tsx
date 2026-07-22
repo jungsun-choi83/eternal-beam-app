@@ -99,7 +99,7 @@ function persistThemeChoice(themeId: number) {
 }
 
 export function EternalBeamApp() {
-  const [screen, setScreen] = useState<Screen>(resolveInitialScreen)
+  const [screen, setScreen] = useState<Screen>(() => resolveInitialScreen())
   const [publicForestDemo] = useState(() => isPublicForestEntry())
   const [deviceDemo] = useState(() => isDeviceKickstarterDemo())
   const [uploadedImage, setUploadedImage] = useState<string | null>(null)

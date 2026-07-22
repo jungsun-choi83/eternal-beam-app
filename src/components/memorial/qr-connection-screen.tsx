@@ -45,7 +45,10 @@ export function QRConnectionScreen({
   }, [isConnected, onComplete]);
 
   return (
-    <div className="h-full flex flex-col relative overflow-hidden min-h-0">
+    <div
+      data-screen="qrConnection"
+      className="h-full flex flex-col relative overflow-hidden min-h-0"
+    >
       <header className="px-6 pt-8 pb-4 flex items-center justify-between relative shrink-0">
         {showBack ? (
           <button type="button" onClick={onBack} className="p-2 -ml-2" aria-label={c.back}>

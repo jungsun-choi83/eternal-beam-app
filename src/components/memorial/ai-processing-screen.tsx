@@ -12,7 +12,7 @@ import {
 } from "@/app/services/videoProcessingApi";
 import { clientCutoutFromFile, dataUrlToFile } from "@/lib/client-cutout";
 import { createDisplayImageUrl, createDisplayCutoutUrl } from "@/lib/display-image";
-import { friendlyCutoutError, friendlyPetVideoError, normalizeImageForCutout } from "@/lib/normalize-image";
+import { friendlyCutoutError, normalizeImageForCutout } from "@/lib/normalize-image";
 import { mockCutoutFromFile } from "@/lib/mock-cutout";
 import {
   clearServerCutoutSkipped,
@@ -30,11 +30,14 @@ import { warmupVideoApi } from "@/lib/video-api-warmup";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { isLiteUI } from "@/lib/ui-performance";
 import { useProcessingClock } from "@/lib/use-processing-clock";
+import {
+  isClientCutoutFirst,
+  isLumaPipelineEnabled,
+} from "@/lib/device-host-flags";
 
 export const ETERNAL_BEAM_PIPELINE_KEY = "eternal_beam_pipeline_v1";
 
-// .trim() — Vercel 등 대시보드에서 값에 공백/개행이 섞여 들어가도 안전하게 비교
-const LUMA_ENABLED = String(import.meta.env.VITE_ENABLE_LUMA ?? "").trim() === "1";
+const LUMA_ENABLED = isLumaPipelineEnabled();
 const FILM_CONVERSION_SEC = Number(import.meta.env.VITE_FILM_CONVERSION_SEC ?? "0");
 const CLIENT_CUTOUT_FALLBACK = import.meta.env.VITE_CLIENT_CUTOUT_FALLBACK !== "0";
 /** 누끼 전/후 비교를 idle 단계 전에 유지 (ms) */
@@ -57,8 +60,7 @@ interface AIProcessingScreenProps {
   onComplete: (cutoutUrl: string) => void;
 }
 
-// .trim() — Vercel 등 대시보드/CLI에서 값에 공백/개행이 섞여 들어가도 안전하게 비교
-const CLIENT_CUTOUT_FIRST = String(import.meta.env.VITE_CLIENT_CUTOUT ?? "").trim() === "1";
+const CLIENT_CUTOUT_FIRST = isClientCutoutFirst();
 
 type ProcessingCopy = ReturnType<typeof memorialT>["processing"];
 
@@ -312,11 +314,11 @@ const CompareImages = memo(function CompareImages({
         </div>
         <div className="compare-panel compare-panel--cutout">
           <p className="compare-panel__label">{afterLabel}</p>
-          <CutoutStage className="aspect-square relative">
+          <CutoutStage className="aspect-square relative w-full min-h-[120px]">
             <img
               src={cutout}
               alt={afterLabel}
-              className="cutout-stage__subject"
+              className="cutout-stage__subject w-full h-full"
               decoding="async"
             />
             {showCheck ? (
@@ -389,13 +391,6 @@ export function AIProcessingScreen({
       setError(friendlyCutoutError(msg, language));
       setProgress(0);
     };
-    // Luma 펫 영상 생성 실패는 콜드스타트 문구("서버가 깨어나는 중")를 쓰면 오해를 줌 —
-    // 이미 누끼가 끝난 뒤 수 분간 처리하다 실패한 것이므로 전용 문구 사용.
-    const failPetVideo = (msg: string) => {
-      if (cancelled || myToken !== runTokenRef.current) return;
-      setError(friendlyPetVideoError(msg, language));
-      setProgress(0);
-    };
 
     (async () => {
       setProcessingActive(true);
@@ -462,16 +457,22 @@ export function AIProcessingScreen({
           } catch (e) {
             const msg =
               e instanceof Error ? e.message : typeof e === "string" ? e : "Luma failed";
-            if (!isSkippableLumaError(msg)) {
-              failPetVideo(msg);
-              return;
-            }
             lumaDemoFallback = true;
-            await runFilmConversionDemo((pct, line) => {
-              if (cancelled || myToken !== runTokenRef.current) return;
-              setProgress(pct);
-              setStatusLine(line);
-            }, t);
+            if (!cancelled && myToken === runTokenRef.current) {
+              setStatusLine(
+                isSkippableLumaError(msg) ? t.lumaSkip : t.idleSkipFallback
+              );
+            }
+            if (isSkippableLumaError(msg)) {
+              await runFilmConversionDemo((pct, line) => {
+                if (cancelled || myToken !== runTokenRef.current) return;
+                setProgress(pct);
+                setStatusLine(line);
+              }, t);
+            } else {
+              setProgress(88);
+              await sleep(1200);
+            }
           }
         } else {
           setStatusLine(t.lumaSkip);
@@ -488,9 +489,10 @@ export function AIProcessingScreen({
           pet?.idle_video_url && isVideoPipelineUrl(pet.idle_video_url)
             ? pet.idle_video_url
             : "";
-        if (LUMA_ENABLED && !idleUrl && !lumaDemoFallback) {
-          failPetVideo(t.idleMissing);
-          return;
+        if (LUMA_ENABLED && !idleUrl && !cancelled && myToken === runTokenRef.current) {
+          setStatusLine(lumaDemoFallback ? t.idleSkipFallback : t.idleMissing);
+          setProgress(92);
+          await sleep(800);
         }
 
         const stored: StoredPipeline = {

@@ -21,8 +21,63 @@
 }
 
 .memorial-screen {
-  background: var(--eb-ink);
+  background: transparent;
   color: var(--eb-champagne);
+}
+
+.processing-headline {
+  font-family: var(--font-body);
+  font-weight: 300;
+  font-size: 1.0625rem;
+  line-height: 1.85;
+  letter-spacing: 0.05em;
+  font-style: normal;
+  color: rgba(241, 229, 209, 0.9);
+  text-wrap: balance;
+}
+
+/* Theme selection — desktop/mobile height-aware layout */
+.theme-selection-screen {
+  min-height: 0;
+}
+
+.theme-selection-screen__scroll {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.theme-selection-screen__preview {
+  max-height: clamp(200px, 36dvh, 300px);
+  width: min(100%, 340px);
+  margin-inline: auto;
+}
+
+.theme-selection-screen__carousel-card {
+  width: clamp(118px, 38vw, 168px);
+}
+
+.theme-selection-footer {
+  flex-shrink: 0;
+  position: relative;
+  z-index: 10;
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(
+    to top,
+    rgba(10, 10, 10, 0.98) 0%,
+    rgba(10, 10, 10, 0.94) 72%,
+    rgba(10, 10, 10, 0) 100%
+  );
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+@media (min-height: 760px) {
+  .theme-selection-screen__preview {
+    max-height: clamp(160px, 30dvh, 260px);
+  }
 }
 
 .memorial-screen::before {
@@ -290,6 +345,7 @@
   overflow: hidden;
   border: 1px solid var(--eb-glass-border);
   background: var(--eb-ink-card);
+  min-width: 0;
 }
 
 .compare-panel--cutout {
@@ -324,8 +380,17 @@
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  padding: 8%;
+  padding: 4% 3% 2%;
   pointer-events: none;
+}
+
+.theme-preview-frame__subject img {
+  height: 96%;
+  width: auto;
+  max-width: 98%;
+  object-fit: contain;
+  object-position: center bottom;
+  filter: drop-shadow(0 12px 28px rgba(0, 0, 0, 0.45));
 }
 
 /* Home — add memory card */
