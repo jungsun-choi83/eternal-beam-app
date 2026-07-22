@@ -11,7 +11,17 @@ export interface MemorialTheme {
   thumb: string;
   /** public/ 기준 동영상 배경 (있으면 프리뷰에 재생) */
   bgVideo?: string;
+  /**
+   * true면 이 테마는 고정 에셋(bgVideo)이 없고, 사용자 사진마다 배경 인페인팅+Luma
+   * 파이프라인(custom-background-store.ts)으로 생성된다 — 선택 시 바로 결제로 넘어가지
+   * 않고 생성 화면(customBackground)을 먼저 거친다. 화면 쪽 분기는 이 플래그로 판단한다.
+   */
+  requiresGeneration?: boolean;
 }
+
+/** "내 사진으로 나만의 배경 만들기" 테마의 고정 id/key — 여러 파일에서 참조하므로 상수로 노출. */
+export const CUSTOM_PHOTO_BG_THEME_ID = 9;
+export const CUSTOM_PHOTO_BG_THEME_KEY = "custom_photo_bg";
 
 export const memorialThemes: MemorialTheme[] = [
   {
@@ -103,6 +113,19 @@ export const memorialThemes: MemorialTheme[] = [
     price: "",
     thumb: "/theme-thumbs/fresh_forest.jpg",
     bgVideo: "/demo/forest.mp4",
+  },
+  {
+    id: CUSTOM_PHOTO_BG_THEME_ID,
+    name: "My Photo, Animated",
+    nameKo: "내 사진으로 나만의 배경",
+    themeKey: CUSTOM_PHOTO_BG_THEME_KEY,
+    gradient: "from-fuchsia-950 via-purple-900 to-black",
+    accent: "#c084fc",
+    premium: true,
+    price: "$2.99",
+    thumb: "/theme-thumbs/custom_photo_bg.jpg",
+    // bgVideo 없음 — 고정 에셋이 아니라 사용자별로 생성됨(custom-background-store.ts 참고).
+    requiresGeneration: true,
   },
 ];
 
