@@ -37,6 +37,11 @@ export const ETERNAL_BEAM_PIPELINE_KEY = "eternal_beam_pipeline_v1";
 const LUMA_ENABLED = String(import.meta.env.VITE_ENABLE_LUMA ?? "").trim() === "1";
 const FILM_CONVERSION_SEC = Number(import.meta.env.VITE_FILM_CONVERSION_SEC ?? "0");
 const CLIENT_CUTOUT_FALLBACK = import.meta.env.VITE_CLIENT_CUTOUT_FALLBACK !== "0";
+/** 누끼 전/후 비교를 idle 단계 전에 유지 (ms) */
+const COMPARE_HOLD_MS = Math.max(
+  2000,
+  Number(import.meta.env.VITE_COMPARE_HOLD_MS ?? "4500")
+);
 
 export interface StoredPipeline {
   content_id: string;
@@ -147,20 +152,67 @@ function cutoutDisplayUrl(result: CutoutResult): string {
 
 function isSkippableLumaError(message: string): boolean {
   const m = message.toLowerCase();
+  // Luma 미설정·크레딧 부족만 데모 모드 — 서버 502/네트워크는 재시도 후 실패 처리
   return (
     m.includes("insufficient credit") ||
     m.includes("크레딧") ||
-    m.includes("not found") ||
-    m.includes("404") ||
     m.includes("luma_api_key") ||
-    m.includes("luma api") ||
-    m.includes("generate-pet-video") ||
-    // Render OOM/콜드스타트 등 — 누끼는 이미 완료됐으므로 데모 모드로 배경 선택까지 진행
+    m.includes("luma api key") ||
+    m.includes("luma api not") ||
+    m.includes("not configured")
+  );
+}
+
+function isVideoPipelineUrl(url: string | null | undefined): boolean {
+  if (!url) return false;
+  const u = url.toLowerCase();
+  return (
+    u.startsWith("blob:") ||
+    u.endsWith(".mp4") ||
+    u.endsWith(".webm") ||
+    u.endsWith(".mov")
+  );
+}
+
+function isTransientPetVideoError(message: string): boolean {
+  const m = message.toLowerCase();
+  return (
     m.includes("pet video server error") ||
     m.includes("failed to fetch") ||
     m.includes("network") ||
-    m.includes("load failed")
+    m.includes("load failed") ||
+    m.includes("timeout") ||
+    m.includes("502") ||
+    m.includes("503") ||
+    m.includes("504")
   );
+}
+
+async function generateIdleVideoWithRetry(
+  cutFile: File,
+  contentId: string,
+  onStatus: (line: string) => void,
+  t: ProcessingCopy
+): Promise<Awaited<ReturnType<typeof generatePetVideo>>> {
+  const opts = {
+    userId: "anonymous" as const,
+    contentId: contentId || undefined,
+    skipPreprocessing: true,
+    idleOnly: true,
+  };
+
+  try {
+    onStatus(t.serverWaking);
+    await warmupVideoApi({ coldStart: true, maxWaitMs: CUTOUT_WARMUP_MAX_MS });
+    return await generatePetVideo(cutFile, opts);
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (!isTransientPetVideoError(msg)) throw e;
+    onStatus(t.serverRetry);
+    await sleep(3000);
+    await warmupVideoApi({ coldStart: true, maxWaitMs: CUTOUT_WARMUP_MAX_MS });
+    return await generatePetVideo(cutFile, opts);
+  }
 }
 
 function isCutoutMemoryError(message: string): boolean {
@@ -288,6 +340,7 @@ export function AIProcessingScreen({
   const [displayOriginal, setDisplayOriginal] = useState<string | null>(null);
   const [cutoutPreview, setCutoutPreview] = useState<string | null>(null);
   const [showCompare, setShowCompare] = useState(false);
+  const [idlePreviewUrl, setIdlePreviewUrl] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
 
   const runTokenRef = useRef(0);
@@ -336,6 +389,7 @@ export function AIProcessingScreen({
       setError(null);
       setCutoutPreview(null);
       setShowCompare(false);
+      setIdlePreviewUrl(null);
       setCurrentStep(0);
       setProgress(10);
         setStatusLine(t.uploading);
@@ -363,7 +417,7 @@ export function AIProcessingScreen({
         setProgress(38);
         setStatusLine(t.cutoutDone);
 
-        await sleep(lite ? 250 : 450);
+        await sleep(COMPARE_HOLD_MS);
         if (cancelled || myToken !== runTokenRef.current) return;
 
         setCurrentStep(1);
@@ -371,16 +425,26 @@ export function AIProcessingScreen({
         setStatusLine(t.converting);
 
         let pet: Awaited<ReturnType<typeof generatePetVideo>> | null = null;
+        let lumaDemoFallback = false;
 
         if (LUMA_ENABLED) {
           try {
-            pet = await generatePetVideo(cutFile, {
-              userId: "anonymous",
-              contentId: cutContentId || undefined,
-              skipPreprocessing: true,
-              // 액션(20종)은 Live Portrait가 맡을 예정 — Luma는 아이들(미세 모션) 1건만 생성.
-              idleOnly: true,
-            });
+            pet = await generateIdleVideoWithRetry(
+              cutFile,
+              cutContentId || "",
+              (line) => {
+                if (!cancelled && myToken === runTokenRef.current) setStatusLine(line);
+              },
+              t
+            );
+            if (
+              pet?.idle_video_url &&
+              isVideoPipelineUrl(pet.idle_video_url) &&
+              !cancelled &&
+              myToken === runTokenRef.current
+            ) {
+              setIdlePreviewUrl(pet.idle_video_url);
+            }
           } catch (e) {
             const msg =
               e instanceof Error ? e.message : typeof e === "string" ? e : "Luma failed";
@@ -388,6 +452,7 @@ export function AIProcessingScreen({
               failPetVideo(msg);
               return;
             }
+            lumaDemoFallback = true;
             await runFilmConversionDemo((pct, line) => {
               if (cancelled || myToken !== runTokenRef.current) return;
               setProgress(pct);
@@ -405,12 +470,21 @@ export function AIProcessingScreen({
 
         if (cancelled || myToken !== runTokenRef.current) return;
 
+        const idleUrl =
+          pet?.idle_video_url && isVideoPipelineUrl(pet.idle_video_url)
+            ? pet.idle_video_url
+            : "";
+        if (LUMA_ENABLED && !idleUrl && !lumaDemoFallback) {
+          failPetVideo(t.idleMissing);
+          return;
+        }
+
         const stored: StoredPipeline = {
           content_id: pet?.content_id || cutContentId || `fallback_${Date.now()}`,
           cutout_display_url: display,
           dog_only_nobg_url: pet?.dog_only_nobg_url || display,
-          idle_video_url: pet?.idle_video_url || display,
-          action_video_url: pet?.action_video_url || display,
+          idle_video_url: idleUrl || display,
+          action_video_url: pet?.action_video_url || "",
         };
         try {
           sessionStorage.setItem(ETERNAL_BEAM_PIPELINE_KEY, JSON.stringify(stored));
@@ -469,6 +543,22 @@ export function AIProcessingScreen({
               alt=""
               className="max-w-full max-h-full object-contain p-2"
               decoding="async"
+            />
+          </div>
+        ) : null}
+
+        {idlePreviewUrl && currentStep >= 1 ? (
+          <div className="w-full max-w-[220px] mb-4 relative z-10">
+            <p className="text-[10px] tracking-wider uppercase text-center mb-2" style={{ color: "#888" }}>
+              {t.idlePreview}
+            </p>
+            <video
+              src={idlePreviewUrl}
+              className="w-full rounded-xl border border-white/10 max-h-[120px] object-cover bg-black"
+              autoPlay
+              muted
+              playsInline
+              loop
             />
           </div>
         ) : null}
