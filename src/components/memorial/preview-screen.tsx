@@ -11,6 +11,7 @@ import { generatePreview, getVideoApiBaseUrl } from "@/app/services/videoProcess
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { getMemorialTheme } from "@/components/memorial/themes";
 import { ThemeBackgroundVideo } from "@/components/memorial/theme-background-video";
+import { getEffectiveBgVideo } from "@/lib/custom-background-store";
 
 interface PreviewScreenProps {
   cutoutImage: string | null;
@@ -197,7 +198,7 @@ export function PreviewScreen({
   );
 
   return (
-    <div className="h-full flex flex-col bg-[#0a0a0a] min-h-0 overflow-hidden">
+    <div className="h-full flex flex-col min-h-0 overflow-hidden">
       {/* Header */}
       <header className="px-6 pt-8 pb-4 flex items-center justify-between relative shrink-0">
         <motion.button
@@ -255,9 +256,9 @@ export function PreviewScreen({
           className="theme-preview-frame relative w-full aspect-[3/4] max-h-[320px]"
         >
           <div className="memory-cta-card__shine" />
-          {currentTheme.bgVideo ? (
+          {getEffectiveBgVideo(currentTheme) ? (
             <ThemeBackgroundVideo
-              src={currentTheme.bgVideo}
+              src={getEffectiveBgVideo(currentTheme)!}
               poster={currentTheme.thumb}
             />
           ) : (
@@ -268,7 +269,7 @@ export function PreviewScreen({
           )}
           <div className={`absolute inset-0 bg-gradient-to-b ${currentTheme.gradient} opacity-25`} />
 
-          {/* Subject with transformations */}
+          {/* Subject with transformations — first composite with selected theme bg */}
           {cutoutImage && (
             <div
               className="absolute inset-0 flex items-center justify-center p-4"
@@ -276,15 +277,29 @@ export function PreviewScreen({
                 transform: `translate(${settings.posX}px, ${settings.posY}px) scale(${settings.scale})`,
               }}
             >
-              <img
-                src={cutoutImage}
-                alt="Subject"
-                className="cutout-stage__subject max-h-[62%] max-w-[92%]"
-                style={{
-                  filter: `drop-shadow(0 16px 32px ${currentTheme.accent}66)`,
-                }}
-                decoding="async"
-              />
+              {pipeline?.idle_video_url && isLikelyVideoUrl(pipeline.idle_video_url) ? (
+                <video
+                  src={pipeline.idle_video_url}
+                  className="cutout-stage__subject max-h-[62%] max-w-[92%]"
+                  style={{
+                    filter: `drop-shadow(0 16px 32px ${currentTheme.accent}66)`,
+                  }}
+                  autoPlay
+                  muted
+                  playsInline
+                  loop
+                />
+              ) : (
+                <img
+                  src={cutoutImage}
+                  alt="Subject"
+                  className="cutout-stage__subject max-h-[62%] max-w-[92%]"
+                  style={{
+                    filter: `drop-shadow(0 16px 32px ${currentTheme.accent}66)`,
+                  }}
+                  decoding="async"
+                />
+              )}
             </div>
           )}
 

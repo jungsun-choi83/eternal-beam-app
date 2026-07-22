@@ -29,6 +29,7 @@ import {
 import { warmupVideoApi } from "@/lib/video-api-warmup";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { isLiteUI } from "@/lib/ui-performance";
+import { CutoutStage } from "@/components/memorial/cutout-stage";
 import { useProcessingClock } from "@/lib/use-processing-clock";
 import {
   isClientCutoutFirst,
@@ -568,14 +569,16 @@ export function AIProcessingScreen({
             <p className="text-[10px] tracking-wider uppercase text-center mb-2" style={{ color: "#888" }}>
               {t.idlePreview}
             </p>
-            <video
-              src={idlePreviewUrl}
-              className="w-full rounded-xl border border-white/10 max-h-[120px] object-cover bg-black"
-              autoPlay
-              muted
-              playsInline
-              loop
-            />
+            <CutoutStage className="rounded-xl border border-white/10 overflow-hidden w-full max-h-[120px]">
+              <video
+                src={idlePreviewUrl}
+                className="cutout-stage__subject w-full max-h-[120px] object-contain"
+                autoPlay
+                muted
+                playsInline
+                loop
+              />
+            </CutoutStage>
           </div>
         ) : null}
 

@@ -133,3 +133,10 @@ export function getMemorialTheme(id: number | null): MemorialTheme | undefined {
   if (id == null) return undefined;
   return memorialThemes.find((t) => t.id === id);
 }
+
+export const freeMemorialThemes = memorialThemes.filter((t) => !t.premium);
+export const premiumMemorialThemes = memorialThemes.filter((t) => t.premium);
+
+export function isPremiumTheme(themeId: number | null | undefined): boolean {
+  return getMemorialTheme(themeId ?? null)?.premium ?? false;
+}

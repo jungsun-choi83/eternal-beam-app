@@ -23,7 +23,12 @@ import { MemorialDevicePlayScreen } from '@/components/memorial/memorial-device-
 import { DeviceScreen } from '@/components/memorial/device-screen'
 import { SettingsScreen } from '@/components/memorial/settings-screen'
 import { memorialT } from '@/components/memorial/memorial-i18n'
-import { getMemorialTheme, CUSTOM_PHOTO_BG_THEME_ID } from '@/components/memorial/themes'
+import {
+  getMemorialTheme,
+  CUSTOM_PHOTO_BG_THEME_ID,
+  isPremiumTheme,
+  freeMemorialThemes,
+} from '@/components/memorial/themes'
 import { clearStoredCustomBgVideoUrl } from '@/lib/custom-background-store'
 import { isForestTheme } from '@/lib/forest-demo-config'
 import { isPublicForestEntry } from '@/lib/app-entry'
@@ -188,11 +193,6 @@ export function EternalBeamApp() {
   const handleAIProcessingComplete = async (cutoutUrl: string) => {
     const thumb = await createDisplayCutoutUrl(cutoutUrl, 640)
     setCutoutImage(thumb)
-    setSelectedTheme((prev) => {
-      const themeId = prev ?? 1
-      persistThemeChoice(themeId)
-      return themeId
-    })
     navigateTo('themeSelection')
   }
 
@@ -216,15 +216,22 @@ export function EternalBeamApp() {
   const handleThemeContinue = () => {
     if (!selectedTheme) return
     persistThemeChoice(selectedTheme)
-    // 숲 데모 테마는 결제 화면 없이 바로 기기 재생 데모로 이동 (별도 키오스크 흐름)
-    navigateTo(isForestTheme(selectedTheme) ? 'devicePlay' : 'checkout')
+    if (deviceDemo && isForestTheme(selectedTheme)) {
+      navigateTo('devicePlay')
+      return
+    }
+    navigateTo(isPremiumTheme(selectedTheme) ? 'checkout' : 'preview')
   }
 
   const handleThemeSkip = () => {
-    const themeId = selectedTheme ?? 1
-    if (!selectedTheme) setSelectedTheme(themeId)
+    const themeId = freeMemorialThemes[0]?.id ?? 1
+    setSelectedTheme(themeId)
     persistThemeChoice(themeId)
-    navigateTo(isForestTheme(themeId) ? 'devicePlay' : 'checkout')
+    if (deviceDemo && isForestTheme(themeId)) {
+      navigateTo('devicePlay')
+      return
+    }
+    navigateTo('preview')
   }
 
   const handlePaymentComplete = () => {
@@ -569,7 +576,12 @@ export function EternalBeamApp() {
                   persistDeviceContentFromPipeline(selectedTheme ?? 1)
                   navigateTo('nfcPlayback')
                 }}
-                onBack={() => navigateTo('themeSelection', 'back')}
+                onBack={() =>
+                  navigateTo(
+                    selectedTheme && isPremiumTheme(selectedTheme) ? 'checkout' : 'themeSelection',
+                    'back'
+                  )
+                }
               />
             </motion.div>
           )}
