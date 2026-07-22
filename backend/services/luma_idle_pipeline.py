@@ -29,6 +29,22 @@ from .luma_service import create_generation_and_get_video_url, download_video
 BLACK_BG_LUMINANCE_THRESHOLD = float(os.getenv("LUMA_IDLE_BLACK_BG_THRESHOLD", "42"))
 
 
+def _black_bg_check_enabled() -> bool:
+    """
+    블랙 배경 검증(ffmpeg로 첫 프레임 추출) on/off. 기본 off.
+
+    2026-07-21: 라이브 Render(512MB, generate-pet-video/generate-idle-variant가
+    같은 프로세스·메모리를 공유)에서 실측 — generate-pet-video는 연속 성공했지만
+    generate-idle-variant만 반복적으로 컨테이너를 죽이는(재시작 후 /health까지
+    503) 현상을 확인. generate-idle-variant에만 있고 generate-pet-video에는
+    없는 유일한 무거운 동작이 이 ffmpeg 프레임 추출(subprocess)이라 이게
+    OOM의 남은 원인일 가능성이 큼. check_black_background()는 검증 불가 시
+    이미 (True, None)로 통과시키도록 설계되어 있어(품질 체크일 뿐 필수 아님)
+    기본 off로 꺼도 파이프라인 동작에는 영향 없음(재시도 트리거만 못 함).
+    """
+    return os.getenv("LUMA_IDLE_BLACK_BG_CHECK_ENABLED", "false").lower() in ("1", "true", "yes")
+
+
 @dataclass
 class IdleVariantResult:
     template_key: str
@@ -78,7 +94,12 @@ def check_black_background(
     """
     영상 첫 프레임의 네 모서리(피사체가 중앙에 있다고 가정) 평균 밝기로 블랙
     배경 여부 판정. 검증 불가(ffmpeg/PIL 없음 등) 시 (True, None)로 통과시킴.
+    LUMA_IDLE_BLACK_BG_CHECK_ENABLED=1이 아니면 ffmpeg 프레임 추출 자체를
+    건너뛰고 (True, None) 통과 — Render 512MB에서 이 ffmpeg subprocess가
+    컨테이너를 OOM으로 죽이는 사례 확인.
     """
+    if not _black_bg_check_enabled():
+        return True, None
     frame_png = _extract_first_frame_png(video_bytes)
     if not frame_png:
         return True, None

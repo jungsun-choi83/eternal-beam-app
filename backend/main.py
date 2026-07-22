@@ -53,8 +53,13 @@ for _p in (
 ):
     _merge_dotenv_nonempty(_p)
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
+import logging
+
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+
+logger = logging.getLogger(__name__)
 
 from .routers import (
   cutout,
@@ -124,6 +129,25 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """
+    처리되지 않은 예외를 JSON 500으로 변환해 CORSMiddleware가 헤더를 붙이게 한다.
+    Starlette ServerErrorMiddleware의 순수 텍스트 500은 CORS 헤더 없이 나가
+    브라우저에서 불투명한 CORS 오류로 보이는 문제를 방지한다.
+    """
+    logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Internal server error",
+            "error": str(exc) or exc.__class__.__name__,
+            "path": request.url.path,
+        },
+    )
+
 
 app.include_router(cutout.router, prefix="/api", tags=["cutout"])
 app.include_router(matting.router, prefix="/api", tags=["matting"])

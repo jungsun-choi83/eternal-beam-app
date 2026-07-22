@@ -9,12 +9,15 @@ UserWallet — 구독 크레딧(코인) 지갑.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from datetime import datetime
 from typing import Optional
 
 from ..data.dummy_business_seed import DUMMY_WALLETS
 from ..models.hybrid_business import UserWallet
+
+logger = logging.getLogger(__name__)
 
 _INSUFFICIENT_MSG = "크레딧이 부족합니다. 구독 플랜을 업그레이드하세요."
 
@@ -63,27 +66,35 @@ def seed_dummy_wallets() -> None:
 async def get_wallet(user_id: str, *, create_if_missing: bool = False) -> Optional[UserWallet]:
   uid = user_id.strip()
   if _use_db() and _supabase():
-    sb = _supabase()
-    r = sb.table(_table()).select("*").eq("user_id", uid).limit(1).execute()
-    if r.data:
-      row = r.data[0]
-      return UserWallet(
-        user_id=row["user_id"],
-        current_credits=int(row["current_credits"]),
-        updated_at=row.get("updated_at"),
+    try:
+      sb = _supabase()
+      r = sb.table(_table()).select("*").eq("user_id", uid).limit(1).execute()
+      if r.data:
+        row = r.data[0]
+        return UserWallet(
+          user_id=row["user_id"],
+          current_credits=int(row["current_credits"]),
+          updated_at=row.get("updated_at"),
+        )
+      if create_if_missing:
+        starter = max(0, int(os.getenv("STARTER_CREDITS", "0")))
+        w = UserWallet(user_id=uid, current_credits=starter, updated_at=datetime.utcnow())
+        sb.table(_table()).insert(
+          {
+            "user_id": uid,
+            "current_credits": starter,
+            "updated_at": w.updated_at.isoformat(),
+          }
+        ).execute()
+        return w
+      return None
+    except Exception:
+      # Supabase 테이블 부재(마이그레이션 미적용)·네트워크 오류 등으로 지갑 조회가
+      # 실패해도 500으로 죽지 않고 인메모리 목업으로 계속 서비스한다 (defense-in-depth).
+      logger.exception(
+        "wallet_service.get_wallet: Supabase 조회 실패 — 인메모리 목업으로 폴백 (user_id=%s)",
+        uid,
       )
-    if create_if_missing:
-      starter = max(0, int(os.getenv("STARTER_CREDITS", "0")))
-      w = UserWallet(user_id=uid, current_credits=starter, updated_at=datetime.utcnow())
-      sb.table(_table()).insert(
-        {
-          "user_id": uid,
-          "current_credits": starter,
-          "updated_at": w.updated_at.isoformat(),
-        }
-      ).execute()
-      return w
-    return None
 
   if uid in _MOCK_WALLETS:
     return _MOCK_WALLETS[uid]
@@ -120,21 +131,30 @@ async def deduct_credits(user_id: str, amount: int) -> UserWallet:
     now = datetime.utcnow()
 
     if _use_db() and _supabase():
-      sb = _supabase()
-      # 낙관적 잠금: 이전 잔액과 일치할 때만 업데이트
-      r = (
-        sb.table(_table())
-        .update({"current_credits": new_balance, "updated_at": now.isoformat()})
-        .eq("user_id", uid)
-        .eq("current_credits", wallet.current_credits)
-        .execute()
-      )
-      if not r.data:
-        # 동시 요청 등으로 실패 → 재조회 후 한 번 더 판단
-        refreshed = await get_wallet(uid)
-        if not refreshed or refreshed.current_credits < amount:
-          raise InsufficientCreditsError()
-        return await deduct_credits(uid, amount)
+      try:
+        sb = _supabase()
+        # 낙관적 잠금: 이전 잔액과 일치할 때만 업데이트
+        r = (
+          sb.table(_table())
+          .update({"current_credits": new_balance, "updated_at": now.isoformat()})
+          .eq("user_id", uid)
+          .eq("current_credits", wallet.current_credits)
+          .execute()
+        )
+        if not r.data:
+          # 동시 요청 등으로 실패 → 재조회 후 한 번 더 판단
+          refreshed = await get_wallet(uid)
+          if not refreshed or refreshed.current_credits < amount:
+            raise InsufficientCreditsError()
+          return await deduct_credits(uid, amount)
+      except InsufficientCreditsError:
+        raise
+      except Exception:
+        # DB 갱신 실패(테이블 부재 등) — 인메모리 목업으로 폴백해 요청 자체는 계속 처리.
+        logger.exception(
+          "wallet_service.deduct_credits: Supabase 갱신 실패 — 인메모리 목업으로 폴백 (user_id=%s)",
+          uid,
+        )
 
     wallet.current_credits = new_balance
     wallet.updated_at = now
@@ -155,24 +175,30 @@ async def add_credits(user_id: str, amount: int) -> UserWallet:
     now = datetime.utcnow()
 
     if _use_db() and _supabase():
-      sb = _supabase()
-      r = sb.rpc("add_wallet_credits", {"p_user_id": uid, "p_amount": amount}).execute()
-      if r.data is not None:
-        bal = r.data
-        if isinstance(bal, list) and bal:
-          bal = bal[0]
-        if isinstance(bal, (int, float)):
-          new_balance = int(bal)
-        elif isinstance(bal, dict) and "credits_remaining" in bal:
-          new_balance = int(bal["credits_remaining"])
+      try:
+        sb = _supabase()
+        r = sb.rpc("add_wallet_credits", {"p_user_id": uid, "p_amount": amount}).execute()
+        if r.data is not None:
+          bal = r.data
+          if isinstance(bal, list) and bal:
+            bal = bal[0]
+          if isinstance(bal, (int, float)):
+            new_balance = int(bal)
+          elif isinstance(bal, dict) and "credits_remaining" in bal:
+            new_balance = int(bal["credits_remaining"])
+          else:
+            sb.table(_table()).update(
+              {"current_credits": new_balance, "updated_at": now.isoformat()}
+            ).eq("user_id", uid).execute()
         else:
           sb.table(_table()).update(
             {"current_credits": new_balance, "updated_at": now.isoformat()}
           ).eq("user_id", uid).execute()
-      else:
-        sb.table(_table()).update(
-          {"current_credits": new_balance, "updated_at": now.isoformat()}
-        ).eq("user_id", uid).execute()
+      except Exception:
+        logger.exception(
+          "wallet_service.add_credits: Supabase 갱신 실패 — 인메모리 목업으로 폴백 (user_id=%s)",
+          uid,
+        )
 
     wallet.current_credits = new_balance
     wallet.updated_at = now
@@ -190,10 +216,16 @@ async def refund_credits(user_id: str, amount: int) -> UserWallet:
     now = datetime.utcnow()
 
     if _use_db() and _supabase():
-      sb = _supabase()
-      sb.table(_table()).update(
-        {"current_credits": new_balance, "updated_at": now.isoformat()}
-      ).eq("user_id", uid).execute()
+      try:
+        sb = _supabase()
+        sb.table(_table()).update(
+          {"current_credits": new_balance, "updated_at": now.isoformat()}
+        ).eq("user_id", uid).execute()
+      except Exception:
+        logger.exception(
+          "wallet_service.refund_credits: Supabase 갱신 실패 — 인메모리 목업으로 폴백 (user_id=%s)",
+          uid,
+        )
 
     wallet.current_credits = new_balance
     wallet.updated_at = now
