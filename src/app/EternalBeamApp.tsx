@@ -213,14 +213,14 @@ export function EternalBeamApp() {
     navigateTo('checkout')
   }
 
-  const handleThemeContinue = () => {
-    if (!selectedTheme) return
-    persistThemeChoice(selectedTheme)
-    if (deviceDemo && isForestTheme(selectedTheme)) {
+  const handleThemeContinue = (themeId: number) => {
+    setSelectedTheme(themeId)
+    persistThemeChoice(themeId)
+    if (deviceDemo && isForestTheme(themeId)) {
       navigateTo('devicePlay')
       return
     }
-    navigateTo(isPremiumTheme(selectedTheme) ? 'checkout' : 'preview')
+    navigateTo(isPremiumTheme(themeId) ? 'checkout' : 'preview')
   }
 
   const handleThemeSkip = () => {
@@ -300,7 +300,7 @@ export function EternalBeamApp() {
   const getCheckoutThemeInfo = () => {
     const theme = getMemorialTheme(selectedTheme)
     return theme
-      ? { id: theme.id, themeKey: theme.themeKey, name: theme.name, price: theme.price }
+      ? { id: theme.id, themeKey: theme.themeKey, name: theme.name, price: theme.price, thumb: theme.thumb }
       : { id: 0, themeKey: '', name: 'Theme', price: '' }
   }
 

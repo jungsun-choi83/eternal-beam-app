@@ -140,3 +140,10 @@ export const premiumMemorialThemes = memorialThemes.filter((t) => t.premium);
 export function isPremiumTheme(themeId: number | null | undefined): boolean {
   return getMemorialTheme(themeId ?? null)?.premium ?? false;
 }
+
+/** snow_forest 전용 mp4는 아직 public에 없음 — thumb 폴백으로 잘못된 배경 노출 방지 */
+export function getThemePreviewBgVideo(theme: MemorialTheme): string | undefined {
+  if (!theme.bgVideo) return undefined;
+  if (theme.themeKey === "snow_forest") return undefined;
+  return theme.bgVideo;
+}

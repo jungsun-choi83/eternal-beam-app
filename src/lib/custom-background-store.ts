@@ -7,7 +7,11 @@
  * "고정 bgVideo가 있으면 그걸, 없고 custom_photo_bg면 저장된 생성 결과를" 가져온다.
  */
 
-import { CUSTOM_PHOTO_BG_THEME_KEY, type MemorialTheme } from "@/components/memorial/themes";
+import {
+  CUSTOM_PHOTO_BG_THEME_KEY,
+  getThemePreviewBgVideo,
+  type MemorialTheme,
+} from "@/components/memorial/themes";
 
 export const CUSTOM_BG_VIDEO_URL_KEY = "eternal_beam_custom_bg_video_url";
 export const CUSTOM_BG_JOB_ID_KEY = "eternal_beam_custom_bg_job_id";
@@ -20,7 +24,8 @@ export function isCustomPhotoBgTheme(theme: Pick<MemorialTheme, "themeKey"> | nu
 /** 테마의 실제 프리뷰 배경 영상 — 고정 테마는 theme.bgVideo, custom_photo_bg는 생성 결과. */
 export function getEffectiveBgVideo(theme: MemorialTheme | null | undefined): string | undefined {
   if (!theme) return undefined;
-  if (theme.bgVideo) return theme.bgVideo;
+  const fixed = getThemePreviewBgVideo(theme);
+  if (fixed) return fixed;
   if (isCustomPhotoBgTheme(theme)) {
     return getStoredCustomBgVideoUrl() ?? undefined;
   }
