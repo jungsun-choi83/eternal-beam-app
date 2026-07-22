@@ -75,13 +75,13 @@
 }
 
 .ai-processing-screen__idle-preview {
-  width: min(100%, 240px);
-  min-height: clamp(140px, 28dvh, 220px);
+  width: min(100%, 280px);
+  min-height: clamp(160px, 32dvh, 260px);
   aspect-ratio: 1 / 1;
 }
 
 .ai-processing-screen__idle-preview .cutout-stage__subject {
-  min-height: clamp(140px, 28dvh, 220px);
+  min-height: clamp(160px, 32dvh, 260px);
 }
 
 .theme-selection-screen__preview {
@@ -105,8 +105,8 @@
     rgba(10, 10, 10, 0.94) 72%,
     rgba(10, 10, 10, 0) 100%
   );
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
 }
 
 @media (min-height: 760px) {

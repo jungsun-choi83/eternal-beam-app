@@ -6,12 +6,18 @@ interface IdleLoopVideoProps {
   src: string;
   className?: string;
   style?: React.CSSProperties;
+  /** metadata = 빠른 첫 프레임, auto = 전체 프리로드 */
+  preload?: "none" | "metadata" | "auto";
 }
 
 /** Luma idle 루프 — muted/playsInline/loop + autoplay 재시도 */
-export function IdleLoopVideo({ src, className = "", style }: IdleLoopVideoProps) {
+export function IdleLoopVideo({
+  src,
+  className = "",
+  style,
+  preload = "metadata",
+}: IdleLoopVideoProps) {
   const ref = useRef<HTMLVideoElement>(null);
-  const needsCrossOrigin = src.startsWith("http://") || src.startsWith("https://");
 
   useEffect(() => {
     const el = ref.current;
@@ -38,8 +44,7 @@ export function IdleLoopVideo({ src, className = "", style }: IdleLoopVideoProps
       loop
       muted
       playsInline
-      preload="auto"
-      crossOrigin={needsCrossOrigin ? "anonymous" : undefined}
+      preload={preload}
     />
   );
 }
