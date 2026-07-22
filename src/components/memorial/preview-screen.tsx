@@ -7,11 +7,13 @@ import {
   ETERNAL_BEAM_PIPELINE_KEY,
   type StoredPipeline,
 } from "@/components/memorial/ai-processing-screen";
-import { generatePreview, getVideoApiBaseUrl } from "@/app/services/videoProcessingApi";
+import { generatePreview, getVideoApiBaseUrl, resolveIdleVideoUrl } from "@/app/services/videoProcessingApi";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { getMemorialTheme } from "@/components/memorial/themes";
 import { ThemeBackgroundVideo } from "@/components/memorial/theme-background-video";
+import { IdleLoopVideo } from "@/components/memorial/idle-loop-video";
 import { getEffectiveBgVideo } from "@/lib/custom-background-store";
+import { isLikelyVideoUrl } from "@/lib/video-url";
 
 interface PreviewScreenProps {
   cutoutImage: string | null;
@@ -34,11 +36,6 @@ const THEME_PREVIEW_IDS: Record<number, string> = {
   7: "ocean_deep",
 };
 
-function isLikelyVideoUrl(url: string): boolean {
-  const u = url.toLowerCase();
-  return u.endsWith(".mp4") || u.endsWith(".webm") || u.endsWith(".mov");
-}
-
 /** 개발·QA 전용. 프로덕션에서는 조정 화면에 Luma/FFmpeg 패널 숨김 */
 const SHOW_PIPELINE_DEBUG =
   import.meta.env.DEV || import.meta.env.VITE_SHOW_PIPELINE_DEBUG === "1";
@@ -59,6 +56,8 @@ export function PreviewScreen({
   const [ffLoading, setFfLoading] = useState(false);
   const [ffError, setFfError] = useState<string | null>(null);
   const currentTheme = getMemorialTheme(selectedTheme) ?? getMemorialTheme(1)!;
+
+  const idleVideoUrl = resolveIdleVideoUrl(pipeline?.idle_video_url);
 
   useEffect(() => {
     try {
@@ -277,17 +276,13 @@ export function PreviewScreen({
                 transform: `translate(${settings.posX}px, ${settings.posY}px) scale(${settings.scale})`,
               }}
             >
-              {pipeline?.idle_video_url && isLikelyVideoUrl(pipeline.idle_video_url) ? (
-                <video
-                  src={pipeline.idle_video_url}
+              {idleVideoUrl ? (
+                <IdleLoopVideo
+                  src={idleVideoUrl}
                   className="cutout-stage__subject max-h-[62%] max-w-[92%]"
                   style={{
                     filter: `drop-shadow(0 16px 32px ${currentTheme.accent}66)`,
                   }}
-                  autoPlay
-                  muted
-                  playsInline
-                  loop
                 />
               ) : (
                 <img
@@ -331,29 +326,17 @@ export function PreviewScreen({
           <p className="text-[10px] leading-relaxed" style={{ color: "#666" }}>
             {p.pipelineHint}
           </p>
-          {pipeline?.idle_video_url || pipeline?.action_video_url ? (
+          {idleVideoUrl || pipeline?.action_video_url ? (
             <div className="grid grid-cols-2 gap-2">
-              {pipeline.idle_video_url ? (
+              {idleVideoUrl ? (
                 <div className="space-y-1">
                   <span className="text-[9px] uppercase tracking-wider" style={{ color: "#888" }}>
                     {p.idle}
                   </span>
-                  {isLikelyVideoUrl(pipeline.idle_video_url) ? (
-                    <video
-                      src={pipeline.idle_video_url}
-                      className="w-full rounded-lg border border-white/10 max-h-[88px] object-cover bg-black"
-                      controls
-                      muted
-                      playsInline
-                      loop
-                    />
-                  ) : (
-                    <img
-                      src={pipeline.idle_video_url}
-                      alt="Idle fallback"
-                      className="w-full rounded-lg border border-white/10 max-h-[88px] object-cover bg-black"
-                    />
-                  )}
+                  <IdleLoopVideo
+                    src={idleVideoUrl}
+                    className="w-full rounded-lg border border-white/10 max-h-[88px] object-cover bg-black"
+                  />
                 </div>
               ) : null}
               {pipeline.action_video_url ? (

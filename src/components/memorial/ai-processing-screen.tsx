@@ -7,6 +7,7 @@ import {
   cutoutImage,
   generatePetVideo,
   isCutoutApiUnreachableError,
+  resolveIdleVideoUrl,
   type CutoutResult,
 } from "@/app/services/videoProcessingApi";
 import { clientCutoutFromFile, dataUrlToFile } from "@/lib/client-cutout";
@@ -32,12 +33,16 @@ import { CutoutStage } from "@/components/memorial/cutout-stage";
 import { useProcessingClock } from "@/lib/use-processing-clock";
 import {
   isClientCutoutFirst,
+  isIdleTestFallbackEnabled,
   isLumaPipelineEnabled,
 } from "@/lib/device-host-flags";
+import { isLikelyVideoUrl } from "@/lib/video-url";
+import { IdleLoopVideo } from "@/components/memorial/idle-loop-video";
 
 export const ETERNAL_BEAM_PIPELINE_KEY = "eternal_beam_pipeline_v1";
 
 const LUMA_ENABLED = isLumaPipelineEnabled();
+const IDLE_TEST_FALLBACK = isIdleTestFallbackEnabled();
 const FILM_CONVERSION_SEC = Number(import.meta.env.VITE_FILM_CONVERSION_SEC ?? "0");
 const CLIENT_CUTOUT_FALLBACK = import.meta.env.VITE_CLIENT_CUTOUT_FALLBACK !== "0";
 /** 누끼 전/후 비교를 idle 단계 전에 유지 (ms) */
@@ -176,17 +181,6 @@ function isSkippableLumaError(message: string): boolean {
     m.includes("luma api key") ||
     m.includes("luma api not") ||
     m.includes("not configured")
-  );
-}
-
-function isVideoPipelineUrl(url: string | null | undefined): boolean {
-  if (!url) return false;
-  const u = url.toLowerCase();
-  return (
-    u.startsWith("blob:") ||
-    u.endsWith(".mp4") ||
-    u.endsWith(".webm") ||
-    u.endsWith(".mov")
   );
 }
 
@@ -448,7 +442,7 @@ export function AIProcessingScreen({
             );
             if (
               pet?.idle_video_url &&
-              isVideoPipelineUrl(pet.idle_video_url) &&
+              isLikelyVideoUrl(pet.idle_video_url) &&
               !cancelled &&
               myToken === runTokenRef.current
             ) {
@@ -460,10 +454,17 @@ export function AIProcessingScreen({
             lumaDemoFallback = true;
             if (!cancelled && myToken === runTokenRef.current) {
               setStatusLine(
-                isSkippableLumaError(msg) ? t.lumaSkip : t.idleSkipFallback
+                IDLE_TEST_FALLBACK
+                  ? t.idleDemoFallback
+                  : isSkippableLumaError(msg)
+                    ? t.lumaSkip
+                    : t.idleSkipFallback
               );
             }
-            if (isSkippableLumaError(msg)) {
+            if (IDLE_TEST_FALLBACK) {
+              setProgress(88);
+              await sleep(600);
+            } else if (isSkippableLumaError(msg)) {
               await runFilmConversionDemo((pct, line) => {
                 if (cancelled || myToken !== runTokenRef.current) return;
                 setProgress(pct);
@@ -474,6 +475,14 @@ export function AIProcessingScreen({
               await sleep(1200);
             }
           }
+        } else if (IDLE_TEST_FALLBACK) {
+          setStatusLine(t.idleDemoFallback);
+          const demoUrl = resolveIdleVideoUrl("");
+          if (demoUrl && !cancelled && myToken === runTokenRef.current) {
+            setIdlePreviewUrl(demoUrl);
+          }
+          setProgress(88);
+          await sleep(600);
         } else {
           setStatusLine(t.lumaSkip);
           await runFilmConversionDemo((pct, line) => {
@@ -485,21 +494,32 @@ export function AIProcessingScreen({
 
         if (cancelled || myToken !== runTokenRef.current) return;
 
-        const idleUrl =
-          pet?.idle_video_url && isVideoPipelineUrl(pet.idle_video_url)
+        const apiIdleUrl =
+          pet?.idle_video_url && isLikelyVideoUrl(pet.idle_video_url)
             ? pet.idle_video_url
             : "";
-        if (LUMA_ENABLED && !idleUrl && !cancelled && myToken === runTokenRef.current) {
-          setStatusLine(lumaDemoFallback ? t.idleSkipFallback : t.idleMissing);
-          setProgress(92);
-          await sleep(800);
+        const resolvedIdleUrl = resolveIdleVideoUrl(apiIdleUrl);
+
+        if (!cancelled && myToken === runTokenRef.current) {
+          if (resolvedIdleUrl && !apiIdleUrl && IDLE_TEST_FALLBACK) {
+            setStatusLine(t.idleDemoFallback);
+            setIdlePreviewUrl(resolvedIdleUrl);
+            setProgress(92);
+            await sleep(500);
+          } else if (!resolvedIdleUrl && LUMA_ENABLED) {
+            setStatusLine(lumaDemoFallback ? t.idleSkipFallback : t.idleMissing);
+            setProgress(92);
+            await sleep(800);
+          } else if (resolvedIdleUrl) {
+            setIdlePreviewUrl(resolvedIdleUrl);
+          }
         }
 
         const stored: StoredPipeline = {
           content_id: pet?.content_id || cutContentId || `fallback_${Date.now()}`,
           cutout_display_url: display,
           dog_only_nobg_url: pet?.dog_only_nobg_url || display,
-          idle_video_url: idleUrl || display,
+          idle_video_url: resolvedIdleUrl,
           action_video_url: pet?.action_video_url || "",
         };
         try {
@@ -561,13 +581,9 @@ export function AIProcessingScreen({
               {t.idlePreview}
             </p>
             <CutoutStage className="rounded-xl border border-white/10 overflow-hidden w-full h-full">
-              <video
+              <IdleLoopVideo
                 src={idlePreviewUrl!}
                 className="cutout-stage__subject w-full h-full object-contain"
-                autoPlay
-                muted
-                playsInline
-                loop
               />
             </CutoutStage>
           </div>

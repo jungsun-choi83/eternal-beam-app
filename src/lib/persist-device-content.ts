@@ -3,14 +3,7 @@ import {
   type StoredPipeline,
 } from "@/components/memorial/ai-processing-screen";
 import { loadCreditSession } from "@/lib/credit-session";
-
-function isVideoUrl(url: string): boolean {
-  const u = url.toLowerCase();
-  return (
-    u.startsWith("http") &&
-    (u.endsWith(".mp4") || u.endsWith(".webm") || u.endsWith(".mov"))
-  );
-}
+import { isLikelyVideoUrl } from "@/lib/video-url";
 
 export function readPipeline(): StoredPipeline | null {
   try {
@@ -37,9 +30,9 @@ export function persistDeviceContentFromPipeline(
   localStorage.setItem("eternal_beam_current_content_id", contentId);
 
   const videoCandidate =
-    pipeline?.idle_video_url && isVideoUrl(pipeline.idle_video_url)
+    pipeline?.idle_video_url && isLikelyVideoUrl(pipeline.idle_video_url)
       ? pipeline.idle_video_url
-      : pipeline?.action_video_url && isVideoUrl(pipeline.action_video_url)
+      : pipeline?.action_video_url && isLikelyVideoUrl(pipeline.action_video_url)
         ? pipeline.action_video_url
         : null;
 

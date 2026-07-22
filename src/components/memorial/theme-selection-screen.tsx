@@ -1,8 +1,12 @@
 "use client";
 
-import { useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, ArrowRight, Check, Sparkles } from "lucide-react";
 import { memorialT, themeDisplayName } from "@/components/memorial/memorial-i18n";
+import {
+  ETERNAL_BEAM_PIPELINE_KEY,
+  type StoredPipeline,
+} from "@/components/memorial/ai-processing-screen";
 import {
   freeMemorialThemes,
   premiumMemorialThemes,
@@ -10,6 +14,8 @@ import {
   type MemorialTheme,
 } from "@/components/memorial/themes";
 import { CutoutStage } from "@/components/memorial/cutout-stage";
+import { IdleLoopVideo } from "@/components/memorial/idle-loop-video";
+import { resolveIdleVideoUrl } from "@/app/services/videoProcessingApi";
 
 interface ThemeSelectionScreenProps {
   cutoutImage: string | null;
@@ -127,6 +133,22 @@ export function ThemeSelectionScreen({
     themeDisplayName(language === "ko" ? "ko" : "en", th);
   const freeCarouselRef = useRef<HTMLDivElement | null>(null);
   const premiumCarouselRef = useRef<HTMLDivElement | null>(null);
+  const [idleVideoUrl, setIdleVideoUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(ETERNAL_BEAM_PIPELINE_KEY);
+      if (!raw) {
+        setIdleVideoUrl(null);
+        return;
+      }
+      const pipeline = JSON.parse(raw) as StoredPipeline;
+      const url = resolveIdleVideoUrl(pipeline.idle_video_url);
+      setIdleVideoUrl(url || null);
+    } catch {
+      setIdleVideoUrl(null);
+    }
+  }, [cutoutImage]);
 
   const selectTheme = (theme: MemorialTheme) => {
     if (theme.requiresGeneration) {
@@ -168,7 +190,12 @@ export function ThemeSelectionScreen({
         <div className="px-5 py-2">
           <div className="theme-selection-screen__preview relative aspect-[4/3] mx-auto rounded-2xl overflow-hidden border border-white/10 bg-[#0a0a0c]">
             <CutoutStage className="absolute inset-0">
-              {cutoutImage ? (
+              {idleVideoUrl ? (
+                <IdleLoopVideo
+                  src={idleVideoUrl}
+                  className="cutout-stage__subject"
+                />
+              ) : cutoutImage ? (
                 <img
                   src={cutoutImage}
                   alt=""
