@@ -1,13 +1,6 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { getWalletBalance } from '@/app/services/videoProcessingApi'
-import { getEternalBeamUserId } from '@/lib/eternal-beam-user'
-import {
-  runCreditMotionGeneration,
-  isInsufficientCreditsError,
-} from '@/lib/credit-pipeline'
-import { saveCreditSession } from '@/lib/credit-session'
-import { persistDeviceContentFromPipeline } from '@/lib/persist-device-content'
+import { useState, useEffect, useRef } from 'react'
 import { createDisplayCutoutUrl } from '@/lib/display-image'
+import { persistDeviceContentFromPipeline } from '@/lib/persist-device-content'
 import { AnimatePresence, motion } from 'framer-motion'
 import { MobileFrame } from '@/components/memorial/mobile-frame'
 import { OnboardingScreen } from '@/components/memorial/onboarding-screen'
@@ -21,6 +14,7 @@ import {
   ETERNAL_BEAM_PIPELINE_KEY,
 } from '@/components/memorial/ai-processing-screen'
 import { ThemeSelectionScreen } from '@/components/memorial/theme-selection-screen'
+import { CustomBackgroundScreen } from '@/components/memorial/custom-background-screen'
 import { PaymentScreen } from '@/components/memorial/payment-screen'
 import { PreviewScreen } from '@/components/memorial/preview-screen'
 import { NFCPlaybackScreen } from '@/components/memorial/nfc-playback-screen'
@@ -29,7 +23,8 @@ import { MemorialDevicePlayScreen } from '@/components/memorial/memorial-device-
 import { DeviceScreen } from '@/components/memorial/device-screen'
 import { SettingsScreen } from '@/components/memorial/settings-screen'
 import { memorialT } from '@/components/memorial/memorial-i18n'
-import { memorialThemes, getMemorialTheme } from '@/components/memorial/themes'
+import { getMemorialTheme, CUSTOM_PHOTO_BG_THEME_ID } from '@/components/memorial/themes'
+import { clearStoredCustomBgVideoUrl } from '@/lib/custom-background-store'
 import { isForestTheme } from '@/lib/forest-demo-config'
 import { isPublicForestEntry } from '@/lib/app-entry'
 import {
@@ -50,6 +45,7 @@ type Screen =
   | 'photoUpload'
   | 'aiProcessing'
   | 'themeSelection'
+  | 'customBackground'
   | 'checkout'
   | 'preview'
   | 'nfcPlayback'
@@ -59,17 +55,11 @@ type Screen =
   | 'settings'
 
 function resolveInitialScreen(): Screen {
-  if (typeof window === 'undefined') return 'onboarding'
+  if (typeof window === 'undefined') return 'qrConnection'
   if (isPublicForestEntry()) return 'forestExperience'
   if (isDeviceKickstarterDemo()) return 'home'
-  return 'onboarding'
+  return 'qrConnection'
 }
-
-const themes = memorialThemes.map((t) => ({
-  id: t.id,
-  name: t.name,
-  price: t.price,
-}))
 
 type NavDirection = 'forward' | 'back'
 
@@ -95,8 +85,18 @@ const pageVariants = {
   }),
 }
 
-const CREDIT_COST = Number(import.meta.env.VITE_CREDIT_COST_PER_PLACE || '4')
-const CREDITS_ENABLED = import.meta.env.VITE_ENABLE_CREDITS !== '0'
+function persistThemeChoice(themeId: number) {
+  const th = getMemorialTheme(themeId)
+  if (!th) return
+  try {
+    localStorage.setItem('eternal_beam_theme_key', th.themeKey)
+    localStorage.setItem('eternal_beam_theme_id', String(themeId))
+    localStorage.setItem('eternal_beam_background_theme_id', String(themeId))
+    localStorage.setItem('eternal_beam_background_theme_name', th.nameKo || th.name)
+  } catch {
+    /* ignore */
+  }
+}
 
 export function EternalBeamApp() {
   const [screen, setScreen] = useState<Screen>(resolveInitialScreen)
@@ -105,7 +105,6 @@ export function EternalBeamApp() {
   const [uploadedImage, setUploadedImage] = useState<string | null>(null)
   const [cutoutImage, setCutoutImage] = useState<string | null>(null)
   const [selectedTheme, setSelectedTheme] = useState<number | null>(null)
-  const [pendingPremiumTheme, setPendingPremiumTheme] = useState<number | null>(null)
   const [previewSettings, setPreviewSettings] = useState({ scale: 1, posX: 0, posY: 0 })
   const [language, setLanguage] = useState(() => {
     if (typeof window === 'undefined') return 'ko'
@@ -118,24 +117,9 @@ export function EternalBeamApp() {
   }
   const [userName, setUserName] = useState<string | null>(null)
   const [, setIsFirstTime] = useState(true)
-  const [walletCredits, setWalletCredits] = useState<number | null>(null)
-  const [creditBusy, setCreditBusy] = useState(false)
+  const [qrBackTarget, setQrBackTarget] = useState<Screen | null>(null)
   const [tapFlash, setTapFlash] = useState(false)
   const navDirection = useRef<NavDirection>('forward')
-
-  const refreshWallet = useCallback(async () => {
-    if (!CREDITS_ENABLED) return
-    try {
-      const w = await getWalletBalance(getEternalBeamUserId(userName))
-      setWalletCredits(w.current_credits)
-    } catch {
-      setWalletCredits(null)
-    }
-  }, [userName])
-
-  useEffect(() => {
-    if (screen === 'themeSelection') void refreshWallet()
-  }, [screen, refreshWallet])
 
   useEffect(() => {
     if (!deviceDemo) return
@@ -202,89 +186,53 @@ export function EternalBeamApp() {
   }
 
   const handleAIProcessingComplete = async (cutoutUrl: string) => {
-    const thumb = await createDisplayCutoutUrl(cutoutUrl, 512)
+    const thumb = await createDisplayCutoutUrl(cutoutUrl, 640)
     setCutoutImage(thumb)
+    setSelectedTheme((prev) => {
+      const themeId = prev ?? 1
+      persistThemeChoice(themeId)
+      return themeId
+    })
     navigateTo('themeSelection')
   }
 
   const handleThemeSelect = (themeId: number) => {
     setSelectedTheme(themeId)
+    persistThemeChoice(themeId)
   }
 
-  const handlePremiumThemeSelect = (themeId: number) => {
-    setSelectedTheme(themeId)
-    setPendingPremiumTheme(null)
-    navigateTo('preview')
+  // "내 사진으로 나만의 배경 만들기" 카드 탭 — 일반 테마 선택과 달리 결제 전에
+  // 생성 화면(customBackground)을 먼저 거친다(생성이 끝나야 미리보기/결제가 가능).
+  const handleSelectCustomBackground = () => {
+    navigateTo('customBackground')
+  }
+
+  const handleCustomBackgroundComplete = () => {
+    setSelectedTheme(CUSTOM_PHOTO_BG_THEME_ID)
+    persistThemeChoice(CUSTOM_PHOTO_BG_THEME_ID)
+    navigateTo('checkout')
+  }
+
+  const handleThemeContinue = () => {
+    if (!selectedTheme) return
+    persistThemeChoice(selectedTheme)
+    // 숲 데모 테마는 결제 화면 없이 바로 기기 재생 데모로 이동 (별도 키오스크 흐름)
+    navigateTo(isForestTheme(selectedTheme) ? 'devicePlay' : 'checkout')
+  }
+
+  const handleThemeSkip = () => {
+    const themeId = selectedTheme ?? 1
+    if (!selectedTheme) setSelectedTheme(themeId)
+    persistThemeChoice(themeId)
+    navigateTo(isForestTheme(themeId) ? 'devicePlay' : 'checkout')
   }
 
   const handlePaymentComplete = () => {
-    if (pendingPremiumTheme) {
-      setSelectedTheme(pendingPremiumTheme)
-      setPendingPremiumTheme(null)
-    }
     navigateTo('preview')
   }
 
-  const handleThemeContinueWithCredit = async () => {
-    const tc = memorialT(language).theme
-    if (!selectedTheme) return
-    if (!cutoutImage) {
-      alert(tc.cutoutMissing)
-      return
-    }
-    if (isForestTheme(selectedTheme)) {
-      navigateTo('devicePlay')
-      return
-    }
-    if (!CREDITS_ENABLED) {
-      navigateTo('preview')
-      return
-    }
-
-    setCreditBusy(true)
-    try {
-      let contentId: string | undefined
-      try {
-        const raw = sessionStorage.getItem(ETERNAL_BEAM_PIPELINE_KEY)
-        if (raw) contentId = JSON.parse(raw).content_id
-      } catch {
-        /* ignore */
-      }
-
-      const userId = getEternalBeamUserId(userName)
-      const { result, petImageUrl } = await runCreditMotionGeneration({
-        userId,
-        cutoutDisplay: cutoutImage,
-        themeId: selectedTheme,
-        contentId,
-      })
-
-      saveCreditSession(result, petImageUrl)
-      setWalletCredits(result.credits_remaining)
-
-      try {
-        const raw = sessionStorage.getItem(ETERNAL_BEAM_PIPELINE_KEY)
-        if (raw) {
-          const p = JSON.parse(raw)
-          p.dog_only_nobg_url = petImageUrl
-          sessionStorage.setItem(ETERNAL_BEAM_PIPELINE_KEY, JSON.stringify(p))
-        }
-      } catch {
-        /* ignore */
-      }
-
-      navigateTo('preview')
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e)
-      alert(isInsufficientCreditsError(e) ? msg : `${tc.creditFailed}: ${msg}`)
-    } finally {
-      setCreditBusy(false)
-    }
-  }
-
   const handlePaymentSkip = () => {
-    setPendingPremiumTheme(null)
-    navigateTo('themeSelection')
+    navigateTo('themeSelection', 'back')
   }
 
   const handlePreviewSettingsChange = (settings: {
@@ -301,25 +249,52 @@ export function EternalBeamApp() {
     } catch {
       /* ignore */
     }
+    clearStoredCustomBgVideoUrl()
     setScreen('home')
     setUploadedImage(null)
     setCutoutImage(null)
     setSelectedTheme(null)
-    setPendingPremiumTheme(null)
     setPreviewSettings({ scale: 1, posX: 0, posY: 0 })
   }
 
   const handleLogout = () => {
     setIsFirstTime(true)
-    setScreen('onboarding')
-    handleReset()
+    setQrBackTarget(null)
+    try {
+      sessionStorage.removeItem(ETERNAL_BEAM_PIPELINE_KEY)
+    } catch {
+      /* ignore */
+    }
+    clearStoredCustomBgVideoUrl()
+    setUploadedImage(null)
+    setCutoutImage(null)
+    setSelectedTheme(null)
+    setPreviewSettings({ scale: 1, posX: 0, posY: 0 })
+    setScreen('qrConnection')
   }
 
-  const getPendingThemeInfo = () => {
-    const theme = getMemorialTheme(pendingPremiumTheme)
+  const handleQrComplete = () => {
+    if (qrBackTarget) {
+      const target = qrBackTarget
+      setQrBackTarget(null)
+      navigateTo(target, 'back')
+      return
+    }
+    navigateTo('onboarding')
+  }
+
+  const handleQrBack = () => {
+    if (!qrBackTarget) return
+    const target = qrBackTarget
+    setQrBackTarget(null)
+    navigateTo(target, 'back')
+  }
+
+  const getCheckoutThemeInfo = () => {
+    const theme = getMemorialTheme(selectedTheme)
     return theme
-      ? { id: theme.id, name: theme.name, price: theme.price }
-      : { id: 0, name: 'Premium Theme', price: '' }
+      ? { id: theme.id, themeKey: theme.themeKey, name: theme.name, price: theme.price }
+      : { id: 0, themeKey: '', name: 'Theme', price: '' }
   }
 
   return (
@@ -373,7 +348,7 @@ export function EternalBeamApp() {
                 initialMode="signup"
                 onAuthComplete={(name?: string) => {
                   if (name) setUserName(name)
-                  navigateTo('qrConnection')
+                  navigateTo('home')
                 }}
               />
             </motion.div>
@@ -413,9 +388,10 @@ export function EternalBeamApp() {
             >
               <QRConnectionScreen
                 language={language}
-                onComplete={() => navigateTo('home')}
-                onBack={() => navigateTo('signup', 'back')}
-                onSkip={() => navigateTo('home')}
+                showBack={qrBackTarget !== null}
+                onComplete={handleQrComplete}
+                onBack={handleQrBack}
+                onSkip={handleQrComplete}
               />
             </motion.div>
           )}
@@ -524,13 +500,30 @@ export function EternalBeamApp() {
                 cutoutImage={cutoutImage}
                 selectedTheme={selectedTheme}
                 language={language}
-                walletCredits={walletCredits}
-                creditCost={CREDIT_COST}
-                creditBusy={creditBusy}
                 onSelectTheme={handleThemeSelect}
-                onSelectPremiumTheme={handlePremiumThemeSelect}
-                onContinue={() => void handleThemeContinueWithCredit()}
+                onSelectCustomBackground={handleSelectCustomBackground}
+                onContinue={handleThemeContinue}
+                onSkip={handleThemeSkip}
                 onBack={() => navigateTo('home', 'back')}
+              />
+            </motion.div>
+          )}
+
+          {screen === 'customBackground' && (
+            <motion.div
+              key="customBackground"
+              custom={navDirection.current}
+              variants={pageVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              className="h-full"
+            >
+              <CustomBackgroundScreen
+                uploadedImage={uploadedImage}
+                language={language}
+                onComplete={handleCustomBackgroundComplete}
+                onBack={() => navigateTo('themeSelection', 'back')}
               />
             </motion.div>
           )}
@@ -547,7 +540,7 @@ export function EternalBeamApp() {
             >
               <PaymentScreen
                 language={language}
-                selectedTheme={getPendingThemeInfo()}
+                selectedTheme={getCheckoutThemeInfo()}
                 onComplete={handlePaymentComplete}
                 onSkip={handlePaymentSkip}
                 onBack={() => navigateTo('themeSelection', 'back')}
@@ -657,7 +650,10 @@ export function EternalBeamApp() {
             >
               <DeviceScreen
                 onBack={() => navigateTo('settings', 'back')}
-                onReconnect={() => navigateTo('qrConnection')}
+                onReconnect={() => {
+                  setQrBackTarget('device')
+                  navigateTo('qrConnection')
+                }}
               />
             </motion.div>
           )}

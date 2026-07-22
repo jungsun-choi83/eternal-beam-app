@@ -7,6 +7,7 @@ import { memorialT } from "@/components/memorial/memorial-i18n";
 
 interface QRConnectionScreenProps {
   language?: string;
+  showBack?: boolean;
   onComplete: () => void;
   onBack: () => void;
   onSkip: () => void;
@@ -14,6 +15,7 @@ interface QRConnectionScreenProps {
 
 export function QRConnectionScreen({
   language = "ko",
+  showBack = true,
   onComplete,
   onBack,
   onSkip,
@@ -43,11 +45,15 @@ export function QRConnectionScreen({
   }, [isConnected, onComplete]);
 
   return (
-    <div className="h-full flex flex-col bg-[#0a0a0a] relative overflow-hidden min-h-0">
+    <div className="h-full flex flex-col relative overflow-hidden min-h-0">
       <header className="px-6 pt-8 pb-4 flex items-center justify-between relative shrink-0">
-        <button type="button" onClick={onBack} className="p-2 -ml-2" aria-label={c.back}>
-          <ChevronLeft className="w-5 h-5" style={{ color: "#F5F5F7" }} />
-        </button>
+        {showBack ? (
+          <button type="button" onClick={onBack} className="p-2 -ml-2" aria-label={c.back}>
+            <ChevronLeft className="w-5 h-5" style={{ color: "#F5F5F7" }} />
+          </button>
+        ) : (
+          <div className="w-9" aria-hidden />
+        )}
         <h1 className="screen-title absolute left-1/2 -translate-x-1/2" style={{ color: "#F5F5F7" }}>
           {q.title}
         </h1>
