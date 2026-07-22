@@ -154,7 +154,12 @@ function isSkippableLumaError(message: string): boolean {
     m.includes("404") ||
     m.includes("luma_api_key") ||
     m.includes("luma api") ||
-    m.includes("generate-pet-video")
+    m.includes("generate-pet-video") ||
+    // Render OOM/콜드스타트 등 — 누끼는 이미 완료됐으므로 데모 모드로 배경 선택까지 진행
+    m.includes("pet video server error") ||
+    m.includes("failed to fetch") ||
+    m.includes("network") ||
+    m.includes("load failed")
   );
 }
 

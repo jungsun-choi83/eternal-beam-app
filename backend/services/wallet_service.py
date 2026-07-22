@@ -65,9 +65,17 @@ def seed_dummy_wallets() -> None:
 
 async def get_wallet(user_id: str, *, create_if_missing: bool = False) -> Optional[UserWallet]:
   uid = user_id.strip()
-  if _use_db() and _supabase():
+  sb = None
+  if _use_db():
     try:
       sb = _supabase()
+    except Exception:
+      logger.exception(
+        "wallet_service.get_wallet: Supabase client init failed — 인메모리 목업으로 폴백 (user_id=%s)",
+        uid,
+      )
+  if sb:
+    try:
       r = sb.table(_table()).select("*").eq("user_id", uid).limit(1).execute()
       if r.data:
         row = r.data[0]
