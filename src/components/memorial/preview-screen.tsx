@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, RotateCcw, Move, Maximize2, Film } from "lucide-react";
+import { ArrowLeft, RotateCcw, Move, Maximize2, Film, Minus, Plus } from "lucide-react";
 import {
   ETERNAL_BEAM_PIPELINE_KEY,
   type StoredPipeline,
@@ -87,6 +87,19 @@ export function PreviewScreen({
     onSettingsChange({ scale: 1, posX: 0, posY: 0 });
   }, [onSettingsChange]);
 
+  const handlePreviewWheel = useCallback(
+    (e: React.WheelEvent) => {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -0.1 : 0.1;
+      const next = Math.min(2, Math.max(0.5, settings.scale + delta));
+      onSettingsChange({
+        ...settings,
+        scale: Math.round(next * 10) / 10,
+      });
+    },
+    [onSettingsChange, settings]
+  );
+
   const tryFfmpegPreview = useCallback(async () => {
     if (!cutoutImage || previewThemeId == null) {
       setFfError(p.cutoutMissing);
@@ -140,76 +153,112 @@ export function PreviewScreen({
     step: number;
     onChange: (value: number) => void;
     id: string;
-  }) => (
-    <motion.div
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="space-y-3"
-    >
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Icon className="w-4 h-4" style={{ color: "#A1A1A6" }} strokeWidth={1.5} />
-          <span 
-            className="text-xs font-light tracking-wider"
-            style={{ color: "#A1A1A6" }}
+  }) => {
+    const clamp = (v: number) => Math.min(max, Math.max(min, v));
+    const formatValue = (v: number) =>
+      id === "scale" ? v.toFixed(1) : String(Math.round(v));
+    const bump = (dir: -1 | 1) => {
+      const next = clamp(value + dir * step);
+      onChange(id === "scale" ? Math.round(next * 10) / 10 : Math.round(next));
+    };
+
+    const stepButtonStyle = {
+      background: "#1C1C1E",
+      border: "1px solid #333333",
+      color: "#F5F5F7",
+    } as const;
+
+    return (
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="space-y-2"
+      >
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Icon className="w-4 h-4" style={{ color: "#A1A1A6" }} strokeWidth={1.5} />
+            <span
+              className="text-xs font-light tracking-wider"
+              style={{ color: "#A1A1A6" }}
+            >
+              {label}
+            </span>
+          </div>
+          <span
+            className="text-xs font-light tabular-nums min-w-[2.5rem] text-right"
+            style={{ color: "#c9a227" }}
           >
-            {label}
+            {formatValue(value)}
           </span>
         </div>
-        <span 
-          className="text-xs font-light tabular-nums"
-          style={{ color: "#c9a227" }}
-        >
-          {value.toFixed(id === "scale" ? 1 : 0)}
-        </span>
-      </div>
-      
-      <div className="relative h-10 flex items-center">
-        {/* Track Background */}
-        <div 
-          className="absolute inset-x-0 h-[3px] rounded-full"
-          style={{ background: "#1C1C1E" }}
-        />
-        
-        {/* Active Track */}
-        <div 
-          className="absolute h-[3px] rounded-full transition-all duration-150"
-          style={{ 
-            background: "linear-gradient(90deg, #c9a227, #f5d77a)",
-            width: `${((value - min) / (max - min)) * 100}%`,
-            boxShadow: activeSlider === id ? "0 0 10px rgba(201, 162, 39, 0.3)" : "none",
-          }}
-        />
 
-        {/* Thumb */}
-        <motion.div
-          className="absolute w-5 h-5 rounded-full cursor-grab active:cursor-grabbing"
-          style={{
-            left: `calc(${((value - min) / (max - min)) * 100}% - 10px)`,
-            background: "linear-gradient(135deg, #c9a227, #d4af37)",
-            boxShadow: activeSlider === id 
-              ? "0 0 20px rgba(201, 162, 39, 0.5), 0 2px 10px rgba(0,0,0,0.3)"
-              : "0 2px 10px rgba(0,0,0,0.3)",
-          }}
-          whileHover={{ scale: 1.1 }}
-          whileTap={{ scale: 0.95 }}
-        />
+        <div className="flex items-center gap-2">
+          <motion.button
+            type="button"
+            aria-label={`${label} decrease`}
+            onClick={() => bump(-1)}
+            className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
+            style={stepButtonStyle}
+            whileTap={{ scale: 0.92 }}
+          >
+            <Minus className="w-4 h-4" strokeWidth={1.5} />
+          </motion.button>
 
-        {/* Hidden Range Input */}
-        <input
-          type="range"
-          min={min}
-          max={max}
-          step={step}
-          value={value}
-          onChange={(e) => onChange(parseFloat(e.target.value))}
-          onFocus={() => setActiveSlider(id)}
-          onBlur={() => setActiveSlider(null)}
-          className="absolute inset-0 w-full h-full opacity-0 cursor-grab active:cursor-grabbing"
-        />
-      </div>
-    </motion.div>
-  );
+          <div className="relative h-10 flex-1 flex items-center min-w-0">
+            <div
+              className="absolute inset-x-0 h-[3px] rounded-full"
+              style={{ background: "#1C1C1E" }}
+            />
+            <div
+              className="absolute h-[3px] rounded-full transition-all duration-150"
+              style={{
+                background: "linear-gradient(90deg, #c9a227, #f5d77a)",
+                width: `${((value - min) / (max - min)) * 100}%`,
+                boxShadow:
+                  activeSlider === id
+                    ? "0 0 10px rgba(201, 162, 39, 0.3)"
+                    : "none",
+              }}
+            />
+            <motion.div
+              className="absolute w-5 h-5 rounded-full pointer-events-none"
+              style={{
+                left: `calc(${((value - min) / (max - min)) * 100}% - 10px)`,
+                background: "linear-gradient(135deg, #c9a227, #d4af37)",
+                boxShadow:
+                  activeSlider === id
+                    ? "0 0 20px rgba(201, 162, 39, 0.5), 0 2px 10px rgba(0,0,0,0.3)"
+                    : "0 2px 10px rgba(0,0,0,0.3)",
+              }}
+            />
+            <input
+              type="range"
+              min={min}
+              max={max}
+              step={step}
+              value={value}
+              onChange={(e) => onChange(parseFloat(e.target.value))}
+              onFocus={() => setActiveSlider(id)}
+              onBlur={() => setActiveSlider(null)}
+              className="absolute inset-0 w-full h-full opacity-0 cursor-grab active:cursor-grabbing touch-pan-x"
+              aria-label={label}
+            />
+          </div>
+
+          <motion.button
+            type="button"
+            aria-label={`${label} increase`}
+            onClick={() => bump(1)}
+            className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
+            style={stepButtonStyle}
+            whileTap={{ scale: 0.92 }}
+          >
+            <Plus className="w-4 h-4" strokeWidth={1.5} />
+          </motion.button>
+        </div>
+      </motion.div>
+    );
+  };
 
   return (
     <div className="h-full flex flex-col min-h-0 overflow-hidden">
@@ -263,11 +312,12 @@ export function PreviewScreen({
       </p>
 
       {/* Preview Area */}
-      <div className="px-6 py-4 flex-1 flex flex-col items-center justify-start min-h-0 overflow-y-auto gap-4">
+      <div className="px-6 py-4 flex-1 flex flex-col items-center justify-start min-h-0 overflow-hidden gap-4">
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           className="theme-preview-frame relative w-full aspect-[3/4] max-h-[320px]"
+          onWheel={handlePreviewWheel}
         >
           <div className="memory-cta-card__shine" />
           {previewBgVideo ? (
@@ -427,6 +477,9 @@ export function PreviewScreen({
           step={0.1}
           onChange={(val) => onSettingsChange({ ...settings, scale: val })}
         />
+        <p className="text-[10px] text-center -mt-3" style={{ color: "#6b6b70" }}>
+          {p.scaleWheelHint}
+        </p>
 
         <SliderControl
           id="posX"
