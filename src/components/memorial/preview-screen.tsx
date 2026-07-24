@@ -344,7 +344,7 @@ export function PreviewScreen({
             >
               <IdleLoopVideo
                 src={idleVideoUrl}
-                className="cutout-stage__subject max-h-[62%] max-w-[92%]"
+                className="theme-preview-frame__pet max-h-[62%] max-w-[92%]"
                 style={{
                   filter: `drop-shadow(0 16px 32px ${currentTheme.accent}66)`,
                 }}
@@ -389,6 +389,7 @@ export function PreviewScreen({
                   </span>
                   <IdleLoopVideo
                     src={idleVideoUrl}
+                    transparentComposite={false}
                     className="w-full rounded-lg border border-white/10 max-h-[88px] object-cover bg-black"
                   />
                 </div>
