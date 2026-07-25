@@ -41,6 +41,10 @@ import { IdleLoopVideo } from "@/components/memorial/idle-loop-video";
 export const ETERNAL_BEAM_PIPELINE_KEY = "eternal_beam_pipeline_v1";
 
 const FILM_CONVERSION_SEC = Number(import.meta.env.VITE_FILM_CONVERSION_SEC ?? "0");
+/** Live Luma I2V can take several minutes; fall back to bundled demo mp4 after this wait. */
+const IDLE_GENERATION_TIMEOUT_MS = Number(
+  import.meta.env.VITE_IDLE_GENERATION_TIMEOUT_MS ?? "90000"
+);
 const CLIENT_CUTOUT_FALLBACK = import.meta.env.VITE_CLIENT_CUTOUT_FALLBACK !== "0";
 /** 누끼 전/후 비교를 idle 단계 전에 유지 (ms) */
 const COMPARE_HOLD_MS = Math.max(
@@ -187,7 +191,7 @@ async function generateIdleVideoWithRetry(
   contentId: string,
   onStatus: (line: string) => void,
   t: ProcessingCopy
-): Promise<Awaited<ReturnType<typeof generatePetVideo>>> {
+): Promise<Awaited<ReturnType<typeof generatePetVideo>> | null> {
   const opts = {
     userId: "anonymous" as const,
     contentId: contentId || undefined,
@@ -195,17 +199,43 @@ async function generateIdleVideoWithRetry(
     idleOnly: true,
   };
 
-  try {
+  const run = async () => {
     onStatus(t.serverWaking);
     await warmupVideoApi({ coldStart: true, maxWaitMs: CUTOUT_WARMUP_MAX_MS });
     return await generatePetVideo(cutFile, opts);
+  };
+
+  try {
+    return await run();
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (!isTransientPetVideoError(msg)) throw e;
     onStatus(t.serverRetry);
     await sleep(3000);
-    await warmupVideoApi({ coldStart: true, maxWaitMs: CUTOUT_WARMUP_MAX_MS });
-    return await generatePetVideo(cutFile, opts);
+    return await run();
+  }
+}
+
+async function generateIdleVideoWithTimeout(
+  cutFile: File,
+  contentId: string,
+  onStatus: (line: string) => void,
+  t: ProcessingCopy
+): Promise<Awaited<ReturnType<typeof generatePetVideo>> | null> {
+  if (IDLE_GENERATION_TIMEOUT_MS <= 0) {
+    return generateIdleVideoWithRetry(cutFile, contentId, onStatus, t);
+  }
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      generateIdleVideoWithRetry(cutFile, contentId, onStatus, t),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), IDLE_GENERATION_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
@@ -413,11 +443,15 @@ export function AIProcessingScreen({
 
         let pet: Awaited<ReturnType<typeof generatePetVideo>> | null = null;
         let apiIdleUrl = "";
+        // Idle source:
+        // - VITE_ENABLE_LUMA=1 (or device.eternalbeam.com): POST /api/generate-pet-video
+        //   → backend LUMA_MOCK=1 uses MOCK_LUMA_VIDEO_URL (fast); real LUMA_API_KEY polls Luma (minutes).
+        // - Otherwise: skip API and use bundled /demo/goya_idle_packed.mp4 (pre-made asset, no prompt run).
         const lumaEnabled = isLumaPipelineEnabled();
 
         if (lumaEnabled) {
           try {
-            pet = await generateIdleVideoWithRetry(
+            pet = await generateIdleVideoWithTimeout(
               cutFile,
               cutContentId || "",
               (line) => {
@@ -427,6 +461,10 @@ export function AIProcessingScreen({
             );
             if (pet?.idle_video_url && isLikelyVideoUrl(pet.idle_video_url)) {
               apiIdleUrl = pet.idle_video_url;
+            } else if (!pet) {
+              if (!cancelled && myToken === runTokenRef.current) {
+                setStatusLine(t.idleDemoFallback);
+              }
             }
           } catch {
             if (!cancelled && myToken === runTokenRef.current) {
@@ -434,12 +472,8 @@ export function AIProcessingScreen({
             }
           }
         } else {
-          setStatusLine(t.lumaSkip);
-          await runFilmConversionDemo((pct, line) => {
-            if (cancelled || myToken !== runTokenRef.current) return;
-            setProgress(pct);
-            setStatusLine(line);
-          }, t);
+          setStatusLine(t.idleDemoFallback);
+          setProgress(88);
         }
 
         if (cancelled || myToken !== runTokenRef.current) return;

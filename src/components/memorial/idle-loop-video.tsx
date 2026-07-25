@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createPackedAlphaScratch,
   drawPackedAlphaVideo,
+  isLikelyPackedAlphaSource,
   isPackedAlphaVideo,
 } from "@/lib/packed-alpha-canvas";
 
@@ -27,7 +28,7 @@ function removeNearBlackAlpha(
   y: number,
   w: number,
   h: number,
-  threshold = 28
+  threshold = 24
 ) {
   const ix = Math.round(x);
   const iy = Math.round(y);
@@ -36,7 +37,11 @@ function removeNearBlackAlpha(
   const imageData = ctx.getImageData(ix, iy, iw, ih);
   const { data } = imageData;
   for (let i = 0; i < data.length; i += 4) {
-    if (data[i] <= threshold && data[i + 1] <= threshold && data[i + 2] <= threshold) {
+    const r = data[i];
+    const g = data[i + 1];
+    const b = data[i + 2];
+    const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+    if (lum <= threshold) {
       data[i + 3] = 0;
     }
   }
@@ -100,6 +105,7 @@ export function IdleLoopVideo({
   const blackkeyScratchRef = useRef<HTMLCanvasElement | null>(null);
   const rafRef = useRef(0);
   const modeRef = useRef<RenderMode>("raw");
+  const modeDetectedRef = useRef(false);
   const failCountRef = useRef(0);
   const [useRawFallback, setUseRawFallback] = useState(false);
   const crossOrigin = videoCrossOrigin(src);
@@ -116,7 +122,14 @@ export function IdleLoopVideo({
     const video = videoRef.current;
     const canvas = canvasRef.current;
     const wrap = wrapRef.current;
-    if (!video || !canvas || !wrap || !transparentComposite || modeRef.current === "raw") {
+    if (
+      !video ||
+      !canvas ||
+      !wrap ||
+      !transparentComposite ||
+      modeRef.current === "raw" ||
+      !modeDetectedRef.current
+    ) {
       rafRef.current = requestAnimationFrame(renderFrame);
       return;
     }
@@ -147,6 +160,8 @@ export function IdleLoopVideo({
     }
 
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
     ctx.clearRect(0, 0, cw, ch);
 
     const vw = video.videoWidth;
@@ -176,6 +191,8 @@ export function IdleLoopVideo({
         }
         const sctx = scratch.getContext("2d", { willReadFrequently: true });
         if (!sctx) throw new Error("blackkey scratch context unavailable");
+        sctx.imageSmoothingEnabled = true;
+        sctx.imageSmoothingQuality = "high";
         sctx.clearRect(0, 0, iw, ih);
         sctx.drawImage(video, 0, 0, iw, ih);
         removeNearBlackAlpha(sctx, 0, 0, iw, ih);
@@ -198,6 +215,7 @@ export function IdleLoopVideo({
 
   useEffect(() => {
     failCountRef.current = 0;
+    modeDetectedRef.current = false;
     setUseRawFallback(false);
   }, [src, transparentComposite]);
 
@@ -209,7 +227,12 @@ export function IdleLoopVideo({
     el.playsInline = true;
     if (crossOrigin) el.crossOrigin = crossOrigin;
     else el.removeAttribute("crossorigin");
-    modeRef.current = transparentComposite ? "blackkey" : "raw";
+    modeRef.current = transparentComposite
+      ? isLikelyPackedAlphaSource(src)
+        ? "packed"
+        : "blackkey"
+      : "raw";
+    modeDetectedRef.current = transparentComposite ? isLikelyPackedAlphaSource(src) : true;
 
     const play = () => {
       void el.play().catch(() => {
@@ -222,7 +245,8 @@ export function IdleLoopVideo({
         modeRef.current = "raw";
         return;
       }
-      modeRef.current = isPackedAlphaVideo(el) ? "packed" : "blackkey";
+      modeRef.current = isPackedAlphaVideo(el, src) ? "packed" : "blackkey";
+      modeDetectedRef.current = true;
 
       const vw = el.videoWidth;
       const vh = el.videoHeight;

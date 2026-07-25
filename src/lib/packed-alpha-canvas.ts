@@ -1,4 +1,4 @@
-/** Unity PetHologram packed clip: top half = alpha mask, bottom half = RGB */
+/** Unity PetHologram packed clip: top half = alpha mask, bottom half = RGB (pre-multiplied) */
 
 export type PackedAlphaScratch = {
   color: HTMLCanvasElement
@@ -16,12 +16,23 @@ export function createPackedAlphaScratch(): PackedAlphaScratch {
   }
 }
 
-export function isPackedAlphaVideo(video: HTMLVideoElement): boolean {
+export function isLikelyPackedAlphaSource(src: string): boolean {
+  const path = src.split('?')[0].split('#')[0].toLowerCase()
+  return /(^|\/)demo\/.*packed.*\.mp4$/.test(path) || /_packed\.mp4$/.test(path)
+}
+
+export function isPackedAlphaVideo(video: HTMLVideoElement, src?: string): boolean {
+  if (src && isLikelyPackedAlphaSource(src)) return true
   const w = video.videoWidth
   const h = video.videoHeight
   if (!w || !h) return false
   const frameH = h / 2
   return frameH >= w * 0.45 && h / w >= 1.05
+}
+
+function configureCanvasQuality(ctx: CanvasRenderingContext2D) {
+  ctx.imageSmoothingEnabled = true
+  ctx.imageSmoothingQuality = 'high'
 }
 
 function ensureScratchSize(scratch: PackedAlphaScratch, vw: number, halfH: number) {
@@ -53,6 +64,10 @@ export function drawPackedAlphaVideo(
   const alphaCtx = scratch.alpha.getContext('2d', { willReadFrequently: true })
   if (!colorCtx || !alphaCtx) return
 
+  configureCanvasQuality(colorCtx)
+  configureCanvasQuality(alphaCtx)
+  configureCanvasQuality(destCtx)
+
   colorCtx.drawImage(video, 0, halfH, vw, halfH, 0, 0, vw, halfH)
   alphaCtx.drawImage(video, 0, 0, vw, halfH, 0, 0, vw, halfH)
 
@@ -62,7 +77,15 @@ export function drawPackedAlphaVideo(
 
   for (let i = 0; i < pixels; i++) {
     const i4 = i * 4
-    color.data[i4 + 3] = alpha.data[i4]
+    // PetHologram.shader samples alpha mask .r; bottom RGB is pre-multiplied.
+    const aByte = alpha.data[i4]
+    color.data[i4 + 3] = aByte
+    if (aByte > 0) {
+      const invA = 255 / aByte
+      color.data[i4] = Math.min(255, Math.round(color.data[i4] * invA))
+      color.data[i4 + 1] = Math.min(255, Math.round(color.data[i4 + 1] * invA))
+      color.data[i4 + 2] = Math.min(255, Math.round(color.data[i4 + 2] * invA))
+    }
   }
 
   colorCtx.putImageData(color, 0, 0)

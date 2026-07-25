@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 import { ArrowLeft, RotateCcw, Move, Maximize2, Film, Minus, Plus } from "lucide-react";
 import {
@@ -65,6 +65,8 @@ export function PreviewScreen({
     (previewThemeId != null ? getMemorialTheme(previewThemeId) : undefined) ??
     getMemorialTheme(1)!;
   const previewBgVideo = getEffectiveBgVideo(currentTheme);
+  const settingsRef = useRef(settings);
+  settingsRef.current = settings;
 
   useEffect(() => {
     if (previewThemeId != null) {
@@ -87,17 +89,20 @@ export function PreviewScreen({
     onSettingsChange({ scale: 1, posX: 0, posY: 0 });
   }, [onSettingsChange]);
 
+  const clampScale = (value: number) =>
+    Math.round(Math.min(2, Math.max(0.5, value)) * 100) / 100;
+
   const handlePreviewWheel = useCallback(
     (e: React.WheelEvent) => {
       e.preventDefault();
-      const delta = e.deltaY > 0 ? -0.1 : 0.1;
-      const next = Math.min(2, Math.max(0.5, settings.scale + delta));
+      const delta = -e.deltaY * 0.0025;
+      const next = clampScale(settingsRef.current.scale + delta);
       onSettingsChange({
-        ...settings,
-        scale: Math.round(next * 10) / 10,
+        ...settingsRef.current,
+        scale: next,
       });
     },
-    [onSettingsChange, settings]
+    [onSettingsChange]
   );
 
   const tryFfmpegPreview = useCallback(async () => {
@@ -156,10 +161,10 @@ export function PreviewScreen({
   }) => {
     const clamp = (v: number) => Math.min(max, Math.max(min, v));
     const formatValue = (v: number) =>
-      id === "scale" ? v.toFixed(1) : String(Math.round(v));
+      id === "scale" ? v.toFixed(2) : String(Math.round(v));
     const bump = (dir: -1 | 1) => {
       const next = clamp(value + dir * step);
-      onChange(id === "scale" ? Math.round(next * 10) / 10 : Math.round(next));
+      onChange(id === "scale" ? clampScale(next) : Math.round(next));
     };
 
     const stepButtonStyle = {
@@ -210,10 +215,11 @@ export function PreviewScreen({
               style={{ background: "#1C1C1E" }}
             />
             <div
-              className="absolute h-[3px] rounded-full transition-all duration-150"
+              className="absolute h-[3px] rounded-full"
               style={{
                 background: "linear-gradient(90deg, #c9a227, #f5d77a)",
                 width: `${((value - min) / (max - min)) * 100}%`,
+                transition: activeSlider === id ? "none" : "width 120ms ease-out",
                 boxShadow:
                   activeSlider === id
                     ? "0 0 10px rgba(201, 162, 39, 0.3)"
@@ -237,7 +243,9 @@ export function PreviewScreen({
               max={max}
               step={step}
               value={value}
-              onChange={(e) => onChange(parseFloat(e.target.value))}
+              onChange={(e) =>
+                onChange(id === "scale" ? clampScale(parseFloat(e.target.value)) : parseFloat(e.target.value))
+              }
               onFocus={() => setActiveSlider(id)}
               onBlur={() => setActiveSlider(null)}
               className="absolute inset-0 w-full h-full opacity-0 cursor-grab active:cursor-grabbing touch-pan-x"
@@ -475,8 +483,8 @@ export function PreviewScreen({
           value={settings.scale}
           min={0.5}
           max={2}
-          step={0.1}
-          onChange={(val) => onSettingsChange({ ...settings, scale: val })}
+          step={0.01}
+          onChange={(val) => onSettingsChange({ ...settingsRef.current, scale: val })}
         />
         <p className="text-[10px] text-center -mt-3" style={{ color: "#6b6b70" }}>
           {p.scaleWheelHint}
