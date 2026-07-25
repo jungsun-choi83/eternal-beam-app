@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createPackedAlphaScratch,
   drawPackedAlphaVideo,
+  drawPackedRgbHalfOnly,
   isLikelyPackedAlphaSource,
   isPackedAlphaVideo,
 } from "@/lib/packed-alpha-canvas";
@@ -108,9 +109,16 @@ export function IdleLoopVideo({
   const modeDetectedRef = useRef(false);
   const failCountRef = useRef(0);
   const [useRawFallback, setUseRawFallback] = useState(false);
+  const packedSourceRef = useRef(isLikelyPackedAlphaSource(src));
   const crossOrigin = videoCrossOrigin(src);
 
   const triggerRawFallback = useCallback(() => {
+    if (packedSourceRef.current || isLikelyPackedAlphaSource(src)) {
+      if (import.meta.env.DEV) {
+        console.warn("[IdleLoopVideo] packed composite degraded — keeping canvas (no raw vstack)", src);
+      }
+      return;
+    }
     modeRef.current = "raw";
     setUseRawFallback(true);
     if (import.meta.env.DEV) {
@@ -175,7 +183,14 @@ export function IdleLoopVideo({
       if (modeRef.current === "packed") {
         const frameH = Math.floor(vh / 2);
         const { dx, dy, drawW, drawH } = fitFrameRect(cw, ch, vw, frameH);
-        drawPackedAlphaVideo(ctx, video, dx, dy, drawW, drawH, scratchRef.current);
+        try {
+          drawPackedAlphaVideo(ctx, video, dx, dy, drawW, drawH, scratchRef.current);
+        } catch (packedErr) {
+          if (import.meta.env.DEV) {
+            console.warn("[IdleLoopVideo] packed alpha read failed — RGB half only", packedErr);
+          }
+          drawPackedRgbHalfOnly(ctx, video, dx, dy, drawW, drawH, scratchRef.current);
+        }
       } else {
         const { dx, dy, drawW, drawH } = fitFrameRect(cw, ch, vw, vh);
         const iw = Math.max(1, Math.round(drawW));
@@ -217,6 +232,9 @@ export function IdleLoopVideo({
     failCountRef.current = 0;
     modeDetectedRef.current = false;
     setUseRawFallback(false);
+    packedSourceRef.current = isLikelyPackedAlphaSource(src);
+    scratchRef.current = createPackedAlphaScratch();
+    blackkeyScratchRef.current = null;
   }, [src, transparentComposite]);
 
   useEffect(() => {
@@ -227,12 +245,13 @@ export function IdleLoopVideo({
     el.playsInline = true;
     if (crossOrigin) el.crossOrigin = crossOrigin;
     else el.removeAttribute("crossorigin");
+    packedSourceRef.current = isLikelyPackedAlphaSource(src);
     modeRef.current = transparentComposite
-      ? isLikelyPackedAlphaSource(src)
+      ? packedSourceRef.current
         ? "packed"
         : "blackkey"
       : "raw";
-    modeDetectedRef.current = transparentComposite ? isLikelyPackedAlphaSource(src) : true;
+    modeDetectedRef.current = transparentComposite ? packedSourceRef.current : true;
 
     const play = () => {
       void el.play().catch(() => {
@@ -245,8 +264,10 @@ export function IdleLoopVideo({
         modeRef.current = "raw";
         return;
       }
-      modeRef.current = isPackedAlphaVideo(el, src) ? "packed" : "blackkey";
+      const packed = isPackedAlphaVideo(el, src);
+      modeRef.current = packed ? "packed" : "blackkey";
       modeDetectedRef.current = true;
+      packedSourceRef.current = packed || isLikelyPackedAlphaSource(src);
 
       const vw = el.videoWidth;
       const vh = el.videoHeight;
@@ -259,9 +280,11 @@ export function IdleLoopVideo({
 
     const onVideoError = () => {
       if (import.meta.env.DEV) {
-        console.warn("[IdleLoopVideo] video error — falling back to raw", src, el.error);
+        console.warn("[IdleLoopVideo] video error", src, el.error);
       }
-      triggerRawFallback();
+      if (!isLikelyPackedAlphaSource(src)) {
+        triggerRawFallback();
+      }
     };
 
     play();
@@ -296,7 +319,10 @@ export function IdleLoopVideo({
     };
   }, [src, transparentComposite, useRawFallback, renderFrame]);
 
-  if (!transparentComposite || useRawFallback) {
+  const isPackedSrc = isLikelyPackedAlphaSource(src) || packedSourceRef.current;
+  const useCanvasComposite = transparentComposite && (!useRawFallback || isPackedSrc);
+
+  if (!useCanvasComposite) {
     return (
       <video
         ref={videoRef}
@@ -314,11 +340,17 @@ export function IdleLoopVideo({
   }
 
   return (
-    <div ref={wrapRef} className={`idle-loop-video ${className}`} style={style}>
+    <div
+      ref={wrapRef}
+      className={`idle-loop-video ${className}`}
+      style={style}
+      data-packed-alpha={packedSourceRef.current ? "" : undefined}
+    >
       <video
         ref={videoRef}
         src={src}
         className="idle-loop-video__source"
+        tabIndex={-1}
         autoPlay
         loop
         muted

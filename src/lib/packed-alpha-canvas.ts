@@ -29,8 +29,10 @@ export function isPackedAlphaVideo(video: HTMLVideoElement, src?: string): boole
   const h = video.videoHeight
   if (!w || !h || h % 2 !== 0) return false
   const frameH = h / 2
-  // Require a strong vstack signal so portrait Luma mp4 is not misclassified.
-  return frameH >= w * 0.85 && h / w >= 1.85
+  const stackRatio = h / w
+  // vstack packed: even height, two landscape-ish halves (e.g. goya 1284×1432 → 1284×716 each).
+  // Reject plain portrait Luma mp4 (single full frame, h/w often > 2.5).
+  return frameH >= w * 0.45 && stackRatio >= 1.0 && stackRatio <= 2.5
 }
 
 function configureCanvasQuality(ctx: CanvasRenderingContext2D) {
@@ -126,5 +128,32 @@ export function drawPackedAlphaVideo(
   }
 
   colorCtx.putImageData(color, 0, 0)
+  destCtx.drawImage(scratch.color, 0, 0, vw, halfH, dx, dy, dw, dh)
+}
+
+/** CORS/taint fallback — RGB half only (no alpha read); hides vstack bottom mask. */
+export function drawPackedRgbHalfOnly(
+  destCtx: CanvasRenderingContext2D,
+  video: HTMLVideoElement,
+  dx: number,
+  dy: number,
+  dw: number,
+  dh: number,
+  scratch: PackedAlphaScratch,
+) {
+  const vw = video.videoWidth
+  const halfH = Math.floor(video.videoHeight / 2)
+  if (!vw || !halfH || video.readyState < 2) return
+
+  ensureScratchSize(scratch, vw, halfH)
+  const colorCtx = scratch.color.getContext('2d')
+  if (!colorCtx) return
+
+  configureCanvasQuality(colorCtx)
+  configureCanvasQuality(destCtx)
+
+  const rgbY = scratch.rgbOnTop === false ? halfH : 0
+  colorCtx.clearRect(0, 0, vw, halfH)
+  colorCtx.drawImage(video, 0, rgbY, vw, halfH, 0, 0, vw, halfH)
   destCtx.drawImage(scratch.color, 0, 0, vw, halfH, dx, dy, dw, dh)
 }

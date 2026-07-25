@@ -389,10 +389,15 @@
 
 .idle-loop-video__source {
   position: absolute;
-  width: 0;
-  height: 0;
+  left: -9999px;
+  top: 0;
+  width: 1px;
+  height: 1px;
   opacity: 0;
+  visibility: hidden;
   pointer-events: none;
+  overflow: hidden;
+  clip-path: inset(50%);
 }
 
 .idle-loop-video__canvas {
