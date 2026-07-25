@@ -92,6 +92,9 @@ export function PreviewScreen({
   const clampScale = (value: number) =>
     Math.round(Math.min(2, Math.max(0.5, value)) * 100) / 100;
 
+  const clampPos = (value: number) =>
+    Math.round(Math.min(100, Math.max(-100, value)) * 10) / 10;
+
   const handlePreviewWheel = useCallback(
     (e: React.WheelEvent) => {
       e.preventDefault();
@@ -161,10 +164,17 @@ export function PreviewScreen({
   }) => {
     const clamp = (v: number) => Math.min(max, Math.max(min, v));
     const formatValue = (v: number) =>
-      id === "scale" ? v.toFixed(2) : String(Math.round(v));
+      id === "scale" ? v.toFixed(2) : v.toFixed(1);
+    const normalize = (v: number) =>
+      id === "scale" ? clampScale(v) : clampPos(v);
     const bump = (dir: -1 | 1) => {
       const next = clamp(value + dir * step);
-      onChange(id === "scale" ? clampScale(next) : Math.round(next));
+      onChange(normalize(next));
+    };
+    const handleSliderInput = (raw: string) => {
+      const parsed = Number.parseFloat(raw);
+      if (Number.isNaN(parsed)) return;
+      onChange(normalize(parsed));
     };
 
     const stepButtonStyle = {
@@ -231,6 +241,7 @@ export function PreviewScreen({
               style={{
                 left: `calc(${((value - min) / (max - min)) * 100}% - 10px)`,
                 background: "linear-gradient(135deg, #c9a227, #d4af37)",
+                transition: activeSlider === id ? "none" : "left 120ms ease-out",
                 boxShadow:
                   activeSlider === id
                     ? "0 0 20px rgba(201, 162, 39, 0.5), 0 2px 10px rgba(0,0,0,0.3)"
@@ -243,12 +254,12 @@ export function PreviewScreen({
               max={max}
               step={step}
               value={value}
-              onChange={(e) =>
-                onChange(id === "scale" ? clampScale(parseFloat(e.target.value)) : parseFloat(e.target.value))
-              }
+              onInput={(e) => handleSliderInput(e.currentTarget.value)}
+              onChange={(e) => handleSliderInput(e.target.value)}
+              onPointerDown={() => setActiveSlider(id)}
               onFocus={() => setActiveSlider(id)}
               onBlur={() => setActiveSlider(null)}
-              className="absolute inset-0 w-full h-full opacity-0 cursor-grab active:cursor-grabbing touch-pan-x"
+              className="preview-adjust-slider absolute inset-0 w-full h-full opacity-0 cursor-grab active:cursor-grabbing touch-pan-x"
               aria-label={label}
             />
           </div>
@@ -497,8 +508,8 @@ export function PreviewScreen({
           value={settings.posX}
           min={-100}
           max={100}
-          step={1}
-          onChange={(val) => onSettingsChange({ ...settings, posX: val })}
+          step={0.5}
+          onChange={(val) => onSettingsChange({ ...settingsRef.current, posX: val })}
         />
 
         <SliderControl
@@ -508,8 +519,8 @@ export function PreviewScreen({
           value={settings.posY}
           min={-100}
           max={100}
-          step={1}
-          onChange={(val) => onSettingsChange({ ...settings, posY: val })}
+          step={0.5}
+          onChange={(val) => onSettingsChange({ ...settingsRef.current, posY: val })}
         />
       </div>
 

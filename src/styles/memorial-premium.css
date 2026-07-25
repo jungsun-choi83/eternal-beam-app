@@ -468,6 +468,13 @@
   aspect-ratio: var(--idle-aspect, 4 / 5);
 }
 
+.preview-adjust-slider {
+  touch-action: pan-x;
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
+}
+
 /* Home — add memory card */
 .memory-cta-card {
   border-radius: var(--eb-radius-xl);

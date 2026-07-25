@@ -90,7 +90,7 @@ function videoCrossOrigin(src: string): "" | "anonymous" {
   }
 }
 
-/** Luma idle 루프 — packed alpha·블랙배경 mp4를 투명 PET 레이어로 합성 */
+/** Luma idle 루프 — vstack packed mp4(상단 RGB·하단 알파) 또는 블랙배경 mp4를 투명 PET 레이어로 합성 */
 export function IdleLoopVideo({
   src,
   className = "",
