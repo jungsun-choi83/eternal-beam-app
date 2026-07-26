@@ -2,12 +2,13 @@
 Luma 아이들(Idle) 5종 세트 생성 파이프라인.
 
 SAM2 누끼(vitmatte_service) → Luma 영상 생성(template별) → 검증(mp4 확장자 +
-블랙 배경) → 실패 시 재시도 → seamless loop.
+블랙 배경 + SSIM vs reference) → 실패 시 재시도 → seamless loop.
 
 에러 방지:
   - Luma가 반환한 video URL의 확장자가 .mp4가 아니면 실패로 간주하고 재시도.
   - 생성된 영상의 첫 프레임 모서리 4곳 평균 밝기가 임계값보다 높으면(배경이
     검정이 아님) 프롬프트에 블랙 배경 보강 문구를 추가해 재시도.
+  - 첫 프레임 vs reference cutout SSIM이 낮으면(다른 반려견/큰 포즈 변화) 재시도.
   - ffmpeg가 없거나 프레임 추출에 실패하면 검증을 건너뛰고(경고만) 통과시켜
     파이프라인 전체가 멈추지 않게 한다.
 """
@@ -18,15 +19,20 @@ import io
 import os
 import subprocess
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
+from .idle_validation_service import IdleValidationResult, validate_idle_video
 from .luma_idle_templates import build_idle_variant_prompt
 from .luma_service import create_generation_and_get_video_url, download_video
 
 # 모서리 평균 밝기(0~255)가 이 값 이하면 "블랙 배경"으로 판정.
 BLACK_BG_LUMINANCE_THRESHOLD = float(os.getenv("LUMA_IDLE_BLACK_BG_THRESHOLD", "42"))
+
+
+def _validation_enabled() -> bool:
+    return os.getenv("IDLE_VALIDATION_ENABLED", "true").lower() in ("1", "true", "yes")
 
 
 def _black_bg_check_enabled() -> bool:
@@ -55,6 +61,8 @@ class IdleVariantResult:
     background_luminance: Optional[float]
     is_mp4: bool
     retries_used: int
+    validation: Optional[IdleValidationResult] = None
+    validation_history: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _looks_like_mp4_url(url: str) -> bool:
@@ -137,11 +145,12 @@ async def generate_idle_variant(
     image_url: str,
     template_key: str,
     *,
+    reference_image_bytes: Optional[bytes] = None,
     max_retries: int = 2,
     poll_max_wait: Optional[float] = None,
 ) -> IdleVariantResult:
     """
-    템플릿 1개에 대해: Luma 생성 → 다운로드 → mp4/블랙배경 검증 → 실패 시
+    템플릿 1개에 대해: Luma 생성 → 다운로드 → mp4/블랙배경/SSIM 검증 → 실패 시
     보강 프롬프트로 재시도(최대 max_retries회) → 최종 결과 반환.
     """
     wait = poll_max_wait if poll_max_wait is not None else float(
@@ -150,6 +159,8 @@ async def generate_idle_variant(
 
     attempt = 0
     last_error: Optional[str] = None
+    validation_history: list[dict[str, Any]] = []
+
     while attempt <= max_retries:
         retry_boost = attempt > 0
         prompt = build_idle_variant_prompt(template_key, retry_boost=retry_boost)
@@ -177,7 +188,18 @@ async def generate_idle_variant(
 
         is_black, luminance = check_black_background(video_bytes)
 
-        if is_mp4 and is_black:
+        validation: Optional[IdleValidationResult] = None
+        validation_ok = True
+        if _validation_enabled() and reference_image_bytes:
+            validation = validate_idle_video(
+                video_bytes,
+                reference_image_bytes,
+                template_key=template_key,
+            )
+            validation_history.append(validation.to_dict())
+            validation_ok = validation.passed
+
+        if is_mp4 and is_black and validation_ok:
             return IdleVariantResult(
                 template_key=template_key,
                 prompt=prompt,
@@ -187,6 +209,8 @@ async def generate_idle_variant(
                 background_luminance=luminance,
                 is_mp4=is_mp4,
                 retries_used=attempt,
+                validation=validation,
+                validation_history=validation_history,
             )
 
         if attempt >= max_retries:
@@ -200,6 +224,8 @@ async def generate_idle_variant(
                 background_luminance=luminance,
                 is_mp4=is_mp4,
                 retries_used=attempt,
+                validation=validation,
+                validation_history=validation_history,
             )
 
         attempt += 1

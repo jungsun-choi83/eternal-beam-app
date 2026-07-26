@@ -38,6 +38,8 @@ services:
         value: "1"
       - key: LUMA_MOCK
         value: "1"
+      - key: MOCK_LUMA_USE_KEYFRAME
+        value: "1"
       - key: MOCK_LUMA_VIDEO_URL
         value: https://eternal-beam-app.vercel.app/demo/goya_idle_packed.mp4
       # 아래는 Render 대시보드에서 직접 입력 (Blueprint 적용 후 Environment 탭)

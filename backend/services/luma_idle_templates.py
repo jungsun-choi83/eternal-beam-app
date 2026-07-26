@@ -11,30 +11,45 @@ Constraint 3 (초점/안전): 배경 환경 생성 금지 — 강아지 동작�
 
 from __future__ import annotations
 
-from .luma_prompts import LUMA_AVOID_CLAUSE, LUMA_SUBJECT_RULE
+from .luma_prompts import (
+    IDLE_COMMON_CONSTRAINT,
+    IDLE_COMMON_CONSTRAINT_HEAD_ROTATION,
+    LUMA_AVOID_CLAUSE,
+    LUMA_SUBJECT_RULE,
+)
 
-# Constraint 1 — 고정 5종 아이들 템플릿 (모션 문구는 수정하지 않음).
+# ── 공통 제약 (프리셋 1~4) — luma_prompts.py 에 canonical 정의 ────────────────
+
+# Constraint 1 — 고정 5종 아이들 템플릿 (common + preset-specific).
 IDLE_TEMPLATES: dict[str, str] = {
     "IDLE_BREATH": (
-        "A realistic dog sitting still, breathing softly, chest gently moving "
-        "up and down, subtle focus on fur, black background, 4k, cinematic, "
-        "high quality."
+        f"{IDLE_COMMON_CONSTRAINT} "
+        "Only the chest and rib area rises and falls very subtly, as if breathing "
+        "calmly. The movement is barely visible — no more than a few millimeters of "
+        "expansion. Head, legs, tail, and camera angle do not move at all."
     ),
     "IDLE_HEAD_TILT": (
-        "A dog looking at the viewer, head tilting slightly from left to right, "
-        "curious expression, soft fur motion, black background, 4k, realistic."
+        f"{IDLE_COMMON_CONSTRAINT} "
+        "Only the head tilts gently to one side, as if curiously reacting to a sound, "
+        "then returns to center. The tilt angle should be small (10-15 degrees max). "
+        "Body, legs, and torso remain completely still."
     ),
     "IDLE_TAIL_WAG": (
-        "A dog standing calmly, tail wagging slowly and gently, happy and "
-        "attentive, cinematic lighting, black background, 4k."
+        f"{IDLE_COMMON_CONSTRAINT} "
+        "Only the tail wags gently side to side. The rest of the body — head, torso, "
+        "legs, and overall pose — stays completely static and unchanged."
     ),
     "IDLE_EAR_FLICK": (
-        "A dog sitting, ears flicking slightly, alert and cute, sharp focus "
-        "on eyes, black background, 4k, high resolution."
+        f"{IDLE_COMMON_CONSTRAINT} "
+        "Only the ears flick or twitch slightly, as if reacting to a small sound "
+        "nearby. Head position, body, and camera angle remain completely fixed."
     ),
     "IDLE_LOOK_AROUND": (
-        "A dog looking around slowly, subtle eye movement, calm and peaceful, "
-        "realistic fur, black background, 4k, cinematic."
+        f"{IDLE_COMMON_CONSTRAINT_HEAD_ROTATION} "
+        "The head turns slowly to glance left, then right, then returns exactly to the "
+        "original starting angle by the end of the clip. Body and legs remain still. "
+        "The final frame must match the first frame's angle precisely, so the loop "
+        "can restart seamlessly."
     ),
 }
 
@@ -47,7 +62,7 @@ IDLE_TEMPLATE_ORDER: tuple[str, ...] = (
     "IDLE_LOOK_AROUND",
 )
 
-# Constraint 2 — 모든 프롬프트에 반드시 포함되어야 하는 기술 품질 문구(요청 원문 그대로).
+# Constraint 2 — 모든 프롬프트에 반드시 포함되어야 하는 기술 품질 문구.
 TECH_QUALITY_CLAUSE = (
     "black background, high resolution, 4k, cinematic, realistic fur texture, "
     "clean edges"

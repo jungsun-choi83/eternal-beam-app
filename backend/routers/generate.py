@@ -6,6 +6,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from ..services import supabase_assets
 from ..services.dog_image_preprocessing import build_dog_only_nobg_png_bytes
+from ..services.idle_validation_service import validate_idle_video
 from ..services.luma_idle_pipeline import generate_idle_variant
 from ..services.luma_idle_templates import IDLE_TEMPLATE_ORDER, is_known_template
 from ..services.luma_keyframe import flatten_rgba_to_jpeg_bytes
@@ -101,10 +102,40 @@ async def post_generate_pet_video(
     idle_prompt, action_prompt = build_idle_action_prompts(lum_src)
     poll_max_wait = float(os.getenv("LUMA_POLL_MAX_SEC", "1200"))
 
+    idle_validation = None
+    idle_validation_history: list = []
+    max_idle_retries = int(os.getenv("IDLE_VALIDATION_MAX_RETRIES", "1"))
+
     try:
-        idle_remote = await create_generation_and_get_video_url(
-            key_url, idle_prompt, poll_max_wait=poll_max_wait
-        )
+        idle_remote = None
+        for idle_attempt in range(max_idle_retries + 1):
+            idle_remote = await create_generation_and_get_video_url(
+                key_url, idle_prompt, poll_max_wait=poll_max_wait
+            )
+            idle_local_check = await download_video(idle_remote)
+            try:
+                with open(idle_local_check, "rb") as f:
+                    idle_check_bytes = f.read()
+            finally:
+                try:
+                    os.unlink(idle_local_check)
+                except Exception:
+                    pass
+
+            v = validate_idle_video(
+                idle_check_bytes, dog_bytes, template_key="IDLE_BREATH"
+            )
+            idle_validation_history.append(v.to_dict())
+            idle_validation = v
+            if v.passed or idle_attempt >= max_idle_retries:
+                break
+            logger.warning(
+                "generate-pet-video: idle validation failed (attempt %s/%s): %s",
+                idle_attempt + 1,
+                max_idle_retries + 1,
+                v.message,
+            )
+
         action_remote = (
             None
             if only_idle
@@ -162,6 +193,8 @@ async def post_generate_pet_video(
         "idle_video_url": idle_url,
         "action_video_url": action_url,
         "idle_loop_meta": loop_meta,
+        "idle_validation": idle_validation.to_dict() if idle_validation else None,
+        "idle_validation_history": idle_validation_history,
         "prompts": {
             "idle": idle_prompt[:500],
             **({} if only_idle else {"action": action_prompt[:500]}),
@@ -228,7 +261,10 @@ async def post_generate_idle_variant(
 
     try:
         variant = await generate_idle_variant(
-            key_url, template_key, max_retries=max_retries
+            key_url,
+            template_key,
+            reference_image_bytes=dog_bytes,
+            max_retries=max_retries,
         )
     except Exception as e:
         # OOM이 아니어도 Luma 쪽(키/쿼터/모더레이션/타임아웃) 문제로 502가 날 수 있음 —
@@ -268,4 +304,6 @@ async def post_generate_idle_variant(
         "retries_used": variant.retries_used,
         "loop_meta": loop_meta,
         "prompt": variant.prompt[:500],
+        "validation": variant.validation.to_dict() if variant.validation else None,
+        "validation_history": variant.validation_history,
     }

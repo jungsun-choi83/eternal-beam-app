@@ -8,8 +8,10 @@ Luma AI Dream Machine API - Image-to-Video
 import io
 import os
 import asyncio
+import subprocess
 import tempfile
 import uuid
+from pathlib import Path
 from typing import Optional, Tuple
 
 LUMA_API_KEY = os.getenv("LUMA_API_KEY")
@@ -242,6 +244,68 @@ def build_idle_action_prompts(image_bytes: bytes) -> Tuple[str, str]:
     return idle, action
 
 
+def _mock_use_keyframe_video() -> bool:
+    """LUMA_MOCK일 때 Goya 데모 대신 사용자 keyframe으로 짧은 mp4 생성 (기본 on)."""
+    return os.getenv("MOCK_LUMA_USE_KEYFRAME", "1").strip().lower() in ("1", "true", "yes")
+
+
+async def _mock_idle_video_from_keyframe(image_url: str) -> str:
+    """
+    LUMA_MOCK=1: 사용자 keyframe(frame0)으로 3초 정적 mp4를 만들어 업로드.
+    Goya 데모 영상 대신 업로드한 반려견 cutout이 idle 미리보기에 보이게 한다.
+    """
+    if not requests:
+        raise RuntimeError("requests 필요")
+
+    def _download_image() -> bytes:
+        r = requests.get(image_url, timeout=60)
+        r.raise_for_status()
+        return r.content
+
+    loop = asyncio.get_event_loop()
+    img_bytes = await loop.run_in_executor(None, _download_image)
+
+    from .luma_keyframe import flatten_rgba_to_jpeg_bytes
+
+    jpeg_bytes = flatten_rgba_to_jpeg_bytes(img_bytes)
+
+    with tempfile.TemporaryDirectory(prefix="eb_mock_idle_") as td:
+        td_path = Path(td)
+        jpg_path = td_path / "keyframe.jpg"
+        mp4_path = td_path / "idle.mp4"
+        jpg_path.write_bytes(jpeg_bytes)
+
+        duration = float(os.getenv("MOCK_LUMA_KEYFRAME_SEC", "3"))
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg", "-y", "-loglevel", "error",
+                    "-loop", "1", "-i", str(jpg_path),
+                    "-c:v", "libx264", "-t", str(duration),
+                    "-pix_fmt", "yuv420p",
+                    "-vf", "scale=720:-2:flags=lanczos",
+                    str(mp4_path),
+                ],
+                capture_output=True,
+                timeout=60,
+                check=True,
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"MOCK keyframe mp4 생성 실패(ffmpeg). MOCK_LUMA_USE_KEYFRAME=0 또는 "
+                f"MOCK_LUMA_VIDEO_URL을 설정하세요: {e}"
+            ) from e
+
+        mp4_bytes = mp4_path.read_bytes()
+
+    from . import supabase_assets
+
+    mock_id = uuid.uuid4().hex[:12]
+    return await supabase_assets.upload_asset_to_storage(
+        f"mock_idle/{mock_id}/idle_from_keyframe.mp4", mp4_bytes, "video/mp4"
+    )
+
+
 async def create_generation_and_get_video_url(
     image_url: str,
     prompt: str,
@@ -252,7 +316,18 @@ async def create_generation_and_get_video_url(
 ) -> str:
     """
     Luma I2V: create job, poll until complete, return hosted video URL (no local download).
+    LUMA_MOCK=1이면 실제 Luma 대신 keyframe 기반 mock mp4(기본) 또는 MOCK_LUMA_VIDEO_URL.
     """
+    if _mock_enabled():
+        if _mock_use_keyframe_video():
+            return await _mock_idle_video_from_keyframe(image_url)
+        mock_video = (os.getenv("MOCK_LUMA_VIDEO_URL") or "").strip()
+        if not mock_video:
+            raise RuntimeError(
+                "LUMA_MOCK=1이지만 MOCK_LUMA_VIDEO_URL이 설정되지 않았습니다."
+            )
+        return mock_video
+
     gen_id = await create_generation(
         image_url,
         prompt=prompt,

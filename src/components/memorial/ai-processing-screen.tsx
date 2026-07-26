@@ -34,6 +34,7 @@ import {
   isClientCutoutFirst,
   isLumaPipelineEnabled,
   ensureIdleMp4Url,
+  isIdleTestFallbackEnabled,
 } from "@/lib/device-host-flags";
 import { isLikelyVideoUrl } from "@/lib/video-url";
 import { IdleLoopVideo } from "@/components/memorial/idle-loop-video";
@@ -41,9 +42,9 @@ import { IdleLoopVideo } from "@/components/memorial/idle-loop-video";
 export const ETERNAL_BEAM_PIPELINE_KEY = "eternal_beam_pipeline_v1";
 
 const FILM_CONVERSION_SEC = Number(import.meta.env.VITE_FILM_CONVERSION_SEC ?? "0");
-/** Live Luma I2V can take several minutes; fall back to bundled demo mp4 after this wait. */
+/** Live Luma I2V can take several minutes; 0 = wait until server responds (recommended). */
 const IDLE_GENERATION_TIMEOUT_MS = Number(
-  import.meta.env.VITE_IDLE_GENERATION_TIMEOUT_MS ?? "90000"
+  import.meta.env.VITE_IDLE_GENERATION_TIMEOUT_MS ?? "0"
 );
 const CLIENT_CUTOUT_FALLBACK = import.meta.env.VITE_CLIENT_CUTOUT_FALLBACK !== "0";
 /** 누끼 전/후 비교를 idle 단계 전에 유지 (ms) */
@@ -510,11 +511,19 @@ export function AIProcessingScreen({
 
         if (cancelled || myToken !== runTokenRef.current) return;
 
-        const resolvedIdleUrl = ensureIdleMp4Url(apiIdleUrl);
+        const resolvedIdleUrl = ensureIdleMp4Url(apiIdleUrl, {
+          allowDemoFallback: isIdleTestFallbackEnabled() && !apiIdleUrl,
+        });
 
         if (!cancelled && myToken === runTokenRef.current) {
-          setIdlePreviewUrl(resolvedIdleUrl);
-          if (!apiIdleUrl) setStatusLine(t.idleDemoFallback);
+          setIdlePreviewUrl(resolvedIdleUrl || null);
+          if (!apiIdleUrl) {
+            setStatusLine(
+              lumaEnabled && !isIdleTestFallbackEnabled()
+                ? t.idlePending
+                : t.idleDemoFallback
+            );
+          }
           setProgress(92);
           await sleep(apiIdleUrl ? 300 : 500);
         }
@@ -562,7 +571,8 @@ export function AIProcessingScreen({
   const originalForUi = displayOriginal || uploadedImage;
   const showComparePanel =
     currentStep === 0 && showCompare && originalForUi && cutoutPreview;
-  const showIdlePreview = currentStep >= 1 && Boolean(idlePreviewUrl);
+  const showIdlePreview =
+    currentStep >= 1 && Boolean(idlePreviewUrl || cutoutPreview);
 
   return (
     <div className="ai-processing-screen h-full flex flex-col relative overflow-hidden">
@@ -585,10 +595,19 @@ export function AIProcessingScreen({
               {t.idlePreview}
             </p>
             <CutoutStage className="rounded-xl border border-white/10 overflow-hidden w-full h-full">
-              <IdleLoopVideo
-                src={idlePreviewUrl!}
-                className="cutout-stage__subject w-full h-full object-contain"
-              />
+              {idlePreviewUrl ? (
+                <IdleLoopVideo
+                  src={idlePreviewUrl}
+                  className="cutout-stage__subject w-full h-full object-contain"
+                />
+              ) : cutoutPreview ? (
+                <img
+                  src={cutoutPreview}
+                  alt=""
+                  className="cutout-stage__subject w-full h-full object-contain"
+                  decoding="async"
+                />
+              ) : null}
             </CutoutStage>
           </div>
         ) : originalForUi && currentStep === 0 ? (

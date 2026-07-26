@@ -22,15 +22,31 @@ LUMA_AVOID_CLAUSE = (
     "text, watermark, logo."
 )
 
+# ── 아이들(Idle) 5종 공통 제약 — luma_idle_templates.py 와 동기화 ─────────────
+IDLE_COMMON_CONSTRAINT = (
+    "Camera angle completely fixed, identical to the original photo's exact angle "
+    "and framing. Subject's body position, head orientation, and pose must remain "
+    "unchanged. No rotation, no turning, no shifting of body or head position. "
+    "Same fur pattern, same lighting, same background. Only the specifically "
+    "described micro-movement below is allowed — everything else must stay "
+    "perfectly still."
+)
+
+IDLE_COMMON_CONSTRAINT_HEAD_ROTATION = (
+    "Camera angle completely fixed, identical to the original photo's exact angle "
+    "and framing. Subject's body position and pose must remain unchanged. No body "
+    "rotation, no turning of the torso, no shifting of body position. Same fur "
+    "pattern, same lighting, same background. Head rotation is allowed only as "
+    "specifically described below — everything else must stay perfectly still."
+)
+
 # ── 행동별 (4종) — 크레딧·배치 API용 ─────────────────────────────────────────
 LUMA_ACTION_PROMPTS: dict[str, str] = {
     "IDLE": (
-        "The dog sits calmly in the exact same pose as the reference image, "
-        "with only very subtle idle motion: gentle chest breathing, occasional "
-        "natural blinking, tiny ear twitch, minimal head sway. Static locked-off "
-        "camera, no pan, no zoom, no dolly. The dog stays in place and returns "
-        "close to its starting pose and position by the end of the clip, "
-        "looking toward camera. Nobody enters the scene. No leash visible."
+        f"{IDLE_COMMON_CONSTRAINT} "
+        "Only the chest and rib area rises and falls very subtly, as if breathing "
+        "calmly. The movement is barely visible — no more than a few millimeters of "
+        "expansion. Head, legs, tail, and camera angle do not move at all."
     ),
     "TOUCH": (
         "The dog reacts as if gently petted on the head — happy expression, "
@@ -70,6 +86,42 @@ def build_luma_pet_video_prompt(
         f"{bg}, cinematic 3D depth, extreme fur detail. "
         f"{LUMA_SUBJECT_RULE} {LUMA_AVOID_CLAUSE}"
     )
+
+
+# ── 배경 전용 앰비언트 모션 (custom_photo_bg 파이프라인 전용) ──────────────────
+# 사용자 사진에서 강아지를 지우고 인페인팅(LaMa)으로 채운 "강아지 없는 배경"
+# 이미지에 Luma로 미세한 환경 모션만 입힌다. LUMA_ACTION_PROMPTS["IDLE"]과 같은
+# 스타일(고정 카메라 + 미세 모션 + 반복 가능)로 작성했지만, 대상이 강아지가 아니라
+# 배경(환경) 그 자체라서 LUMA_SUBJECT_RULE(강아지 1마리만 애니메이션)은 붙이지
+# 않는다 — 대신 여기서도 사람/텍스트/로고 금지는 LUMA_AVOID_CLAUSE로 그대로 유지.
+LUMA_BACKGROUND_AMBIENT_PROMPT = (
+    "Animate ONLY subtle, looping environmental motion in this background scene: "
+    "gentle breeze moving leaves, grass or branches, soft light flicker or shimmer, "
+    "slowly drifting clouds, mist, or dust motes where appropriate to the scene. "
+    "The composition, framing, colors and overall scene layout must stay essentially "
+    "unchanged throughout the clip — this is ambient background motion, not a new "
+    "scene. Camera is completely static: no pan, no zoom, no dolly, no rotation. "
+    "No dog, no other animal, no person, no human, no hands ever appear in the frame."
+)
+
+# 재시도 시 "카메라 흔들림/컷 전환" 오검출을 줄이기 위해 덧붙이는 보강 문구.
+LUMA_BACKGROUND_STATIC_CAMERA_BOOST = (
+    "Keep the camera perfectly locked-off and completely static the entire time — "
+    "absolutely no camera pan, tilt, zoom, dolly, shake, or scene cut."
+)
+
+
+def build_background_ambient_prompt(*, retry_boost: bool = False) -> str:
+    """인페인팅된 배경 이미지 1장 → Luma 배경 앰비언트 모션 프롬프트.
+
+    retry_boost=True면(예: 이전 시도에서 카메라가 흔들렸거나 강아지/사람이 다시
+    생성된 경우) 정적 카메라 보강 문구를 추가해 재시도한다.
+    """
+    parts = [LUMA_BACKGROUND_AMBIENT_PROMPT]
+    if retry_boost:
+        parts.append(LUMA_BACKGROUND_STATIC_CAMERA_BOOST)
+    parts.append(LUMA_AVOID_CLAUSE)
+    return " ".join(parts)
 
 
 def build_scenario_luma_prompt(

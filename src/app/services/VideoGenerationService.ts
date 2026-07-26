@@ -34,17 +34,23 @@ import { clientCutoutFromFile, dataUrlToFile } from '@/lib/client-cutout'
 const CLIENT_CUTOUT_FIRST = String(import.meta.env.VITE_CLIENT_CUTOUT ?? '').trim() === '1'
 
 /** Constraint 1 — 5개 고정 아이들(Idle) 모션 템플릿. 순서·문구 변경 금지. */
+const IDLE_COMMON =
+  "Camera angle completely fixed, identical to the original photo's exact angle and framing. Subject's body position, head orientation, and pose must remain unchanged. No rotation, no turning, no shifting of body or head position. Same fur pattern, same lighting, same background. Only the specifically described micro-movement below is allowed — everything else must stay perfectly still."
+
+const IDLE_COMMON_HEAD =
+  "Camera angle completely fixed, identical to the original photo's exact angle and framing. Subject's body position and pose must remain unchanged. No body rotation, no turning of the torso, no shifting of body position. Same fur pattern, same lighting, same background. Head rotation is allowed only as specifically described below — everything else must stay perfectly still."
+
 export const IDLE_PROMPT_TEMPLATES = {
   IDLE_BREATH:
-    'A realistic dog sitting still, breathing softly, chest gently moving up and down, subtle focus on fur, black background, 4k, cinematic, high quality.',
+    `${IDLE_COMMON} Only the chest and rib area rises and falls very subtly, as if breathing calmly. The movement is barely visible — no more than a few millimeters of expansion. Head, legs, tail, and camera angle do not move at all.`,
   IDLE_HEAD_TILT:
-    'A dog looking at the viewer, head tilting slightly from left to right, curious expression, soft fur motion, black background, 4k, realistic.',
+    `${IDLE_COMMON} Only the head tilts gently to one side, as if curiously reacting to a sound, then returns to center. The tilt angle should be small (10-15 degrees max). Body, legs, and torso remain completely still.`,
   IDLE_TAIL_WAG:
-    'A dog standing calmly, tail wagging slowly and gently, happy and attentive, cinematic lighting, black background, 4k.',
+    `${IDLE_COMMON} Only the tail wags gently side to side. The rest of the body — head, torso, legs, and overall pose — stays completely static and unchanged.`,
   IDLE_EAR_FLICK:
-    'A dog sitting, ears flicking slightly, alert and cute, sharp focus on eyes, black background, 4k, high resolution.',
+    `${IDLE_COMMON} Only the ears flick or twitch slightly, as if reacting to a small sound nearby. Head position, body, and camera angle remain completely fixed.`,
   IDLE_LOOK_AROUND:
-    'A dog looking around slowly, subtle eye movement, calm and peaceful, realistic fur, black background, 4k, cinematic.',
+    `${IDLE_COMMON_HEAD} The head turns slowly to glance left, then right, then returns exactly to the original starting angle by the end of the clip. Body and legs remain still. The final frame must match the first frame's angle precisely, so the loop can restart seamlessly.`,
 } as const
 
 export type IdleTemplateKey = keyof typeof IDLE_PROMPT_TEMPLATES
@@ -126,6 +132,8 @@ export interface IdleVariantResult {
   retries_used: number
   loop_meta?: Record<string, unknown>
   prompt: string
+  validation?: Record<string, unknown> | null
+  validation_history?: Record<string, unknown>[]
 }
 
 export interface GenerateIdleVariantOptions {

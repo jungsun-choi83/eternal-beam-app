@@ -48,12 +48,17 @@ export function getIdleTestFallbackUrl(): string {
   return DEFAULT_IDLE_TEST_FALLBACK_URL;
 }
 
-/** idle_video_url은 항상 mp4 — API URL 또는 same-origin 데모 */
-export function ensureIdleMp4Url(apiUrl: string | null | undefined): string {
+/** idle_video_url은 mp4 — API URL 우선; 데모 폴백은 명시적 테스트 모드에서만 */
+export function ensureIdleMp4Url(
+  apiUrl: string | null | undefined,
+  options?: { allowDemoFallback?: boolean }
+): string {
   const u = String(apiUrl ?? "").trim();
   if (u) {
     const path = u.split("?")[0].split("#")[0].toLowerCase();
     if (path.endsWith(".mp4") || path.endsWith(".webm") || path.endsWith(".mov")) return u;
   }
-  return SAME_ORIGIN_IDLE_FALLBACK_URL;
+  const allowFallback = options?.allowDemoFallback ?? isIdleTestFallbackEnabled();
+  if (allowFallback) return SAME_ORIGIN_IDLE_FALLBACK_URL;
+  return "";
 }
