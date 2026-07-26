@@ -27,7 +27,7 @@ export function NFCPlaybackScreen({
 }: NFCPlaybackScreenProps) {
   const n = memorialT(language).nfc;
   const slots = useMemo(
-    () => [1, 2, 3, 4].map((id) => ({ id, name: n.slot(id), occupied: false })),
+    () => [1, 2, 3].map((id) => ({ id, name: n.slot(id), occupied: false })),
     [language]
   );
 
@@ -301,7 +301,7 @@ export function NFCPlaybackScreen({
           {n.insertHint}
         </motion.p>
 
-        <div className="w-full grid grid-cols-2 gap-3">
+        <div className="w-full grid grid-cols-3 gap-3">
           {slots.map((slot, index) => (
             <motion.button
               key={slot.id}
