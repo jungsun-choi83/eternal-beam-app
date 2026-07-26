@@ -5,6 +5,7 @@ import {
 } from "@/components/memorial/themes";
 import { getEternalBeamUserId } from "@/lib/eternal-beam-user";
 import { triggerThemeOnDevice } from "@/lib/pi-sensor-bridge";
+import { syncPetProfileToDevice } from "@/lib/pet-profile";
 import {
   getStoredContentId,
   persistDeviceContentFromPipeline,
@@ -82,5 +83,6 @@ export async function broadcastFreeThemeToDevice(
   theme: MemorialTheme,
   contentId: string
 ): Promise<boolean> {
+  void syncPetProfileToDevice();
   return triggerThemeOnDevice(theme.themeKey, contentId);
 }

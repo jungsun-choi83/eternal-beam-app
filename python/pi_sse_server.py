@@ -106,7 +106,49 @@ class _SseHandler(BaseHTTPRequestHandler):
                 payload["content_id"] = str(content_id)
             self._handle_demo_play(payload)
             return
+        if path == "/pet/wake-names":
+            self._handle_pet_wake_names()
+            return
         self.send_error(404)
+
+    def _handle_pet_wake_names(self) -> None:
+        length = int(self.headers.get("Content-Length", "0") or "0")
+        raw = self.rfile.read(length) if length > 0 else b"{}"
+        try:
+            body = json.loads(raw.decode("utf-8") or "{}")
+        except json.JSONDecodeError:
+            body = {}
+        names_raw = body.get("names") or body.get("wake_names") or []
+        names: list[str] = []
+        if isinstance(names_raw, list):
+            names = [str(n).strip() for n in names_raw if str(n).strip()]
+        elif isinstance(names_raw, str):
+            names = [p.strip() for p in names_raw.replace("，", ",").split(",") if p.strip()]
+        pet_name = str(body.get("pet_name") or (names[0] if names else "")).strip()
+        try:
+            from pet_wake_store import save_wake_names
+
+            saved = save_wake_names(names, pet_name=pet_name or None)
+        except Exception as e:  # noqa: BLE001
+            self.send_error(500, explain=str(e))
+            return
+        broadcast_event(
+            {
+                "event": "pet_wake_updated",
+                "pet_name": pet_name,
+                "wake_names": saved,
+                "source": "app_signup",
+            }
+        )
+        body_out = json.dumps(
+            {"ok": True, "pet_name": pet_name, "wake_names": saved},
+            separators=(",", ":"),
+        )
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self._cors()
+        self.end_headers()
+        self.wfile.write(body_out.encode("utf-8"))
 
     def _handle_demo_play(self, payload: dict[str, Any]) -> None:
         theme_id = str(payload.get("theme_id") or "fresh_forest")
@@ -161,7 +203,7 @@ def start_sse_server(host: str = "0.0.0.0", port: int = 8787) -> ThreadingHTTPSe
     _server = ThreadingHTTPServer((host, port), _SseHandler)
     threading.Thread(target=_server.serve_forever, daemon=True).start()
     print(
-        f"[HTTP/SSE] 웹앱 대기 http://{host}:{port}/events  POST /demo/play /demo/forest",
+        f"[HTTP/SSE] 웹앱 대기 http://{host}:{port}/events  POST /demo/play /demo/forest /pet/wake-names",
         flush=True,
     )
     return _server

@@ -2,11 +2,12 @@
 
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Mail, Lock, User, Eye, EyeOff, ArrowRight } from "lucide-react";
+import { Mail, Lock, User, Eye, EyeOff, ArrowRight, Heart } from "lucide-react";
 import { HolographicBackground } from "./holographic-background";
 import { HologramEffects } from "./hologram-effects";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { setEternalBeamUserId } from "@/lib/eternal-beam-user";
+import { getPetName, setPetName, syncPetProfileToDevice } from "@/lib/pet-profile";
 
 interface AuthScreenProps {
   initialMode?: "login" | "signup";
@@ -30,13 +31,26 @@ export function AuthScreen({
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [name, setName] = useState("");
+  const [petName, setPetNameField] = useState(() =>
+    typeof window !== "undefined" ? getPetName() : ""
+  );
+  const [petNameError, setPetNameError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [focusedField, setFocusedField] = useState<string | null>(null);
 
   const handleSubmit = async () => {
+    if (mode === "signup" && !petName.trim()) {
+      setPetNameError(a.petNameRequired);
+      return;
+    }
+    setPetNameError(null);
     setIsLoading(true);
     await new Promise((resolve) => setTimeout(resolve, 1500));
     setIsLoading(false);
+    if (mode === "signup" && petName.trim()) {
+      setPetName(petName.trim());
+      void syncPetProfileToDevice();
+    }
     const label = (name || email.split("@")[0] || "").trim();
     if (email.trim()) {
       setEternalBeamUserId(email.trim().toLowerCase());
@@ -244,11 +258,59 @@ export function AuthScreen({
                   </motion.div>
                 )}
 
+                {mode === "signup" && (
+                  <motion.div
+                    className="relative"
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.15 }}
+                  >
+                    <Heart
+                      className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 transition-colors duration-300"
+                      style={{ color: focusedField === "petName" ? "#c9a227" : "#6B6B6B" }}
+                      strokeWidth={1.5}
+                    />
+                    <input
+                      type="text"
+                      placeholder={a.petNamePlaceholder}
+                      value={petName}
+                      onChange={(e) => {
+                        setPetNameField(e.target.value);
+                        if (petNameError) setPetNameError(null);
+                      }}
+                      onFocus={() => setFocusedField("petName")}
+                      onBlur={() => setFocusedField(null)}
+                      className="w-full py-4 pl-12 pr-4 rounded-xl text-sm font-medium outline-none transition-all duration-300 placeholder:text-[#4A4A4A]"
+                      style={{
+                        background: "rgba(0, 0, 0, 0.4)",
+                        border:
+                          petNameError || focusedField === "petName"
+                            ? "1px solid rgba(201, 162, 39, 0.5)"
+                            : "1px solid rgba(255, 255, 255, 0.08)",
+                        color: "#F5F5F7",
+                        boxShadow:
+                          focusedField === "petName"
+                            ? "0 0 20px rgba(201, 162, 39, 0.2), inset 0 0 20px rgba(201, 162, 39, 0.05)"
+                            : "none",
+                      }}
+                      autoComplete="off"
+                    />
+                    <p className="mt-2 px-1 text-[11px] leading-relaxed" style={{ color: "#888" }}>
+                      {a.petNameHint}
+                    </p>
+                    {petNameError ? (
+                      <p className="mt-1 px-1 text-[11px]" style={{ color: "#e8a0a0" }}>
+                        {petNameError}
+                      </p>
+                    ) : null}
+                  </motion.div>
+                )}
+
                 <motion.div 
                   className="relative"
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: mode === "signup" ? 0.2 : 0.1 }}
+                  transition={{ delay: mode === "signup" ? 0.25 : 0.1 }}
                 >
                   <Mail
                     className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 transition-colors duration-300"
@@ -280,7 +342,7 @@ export function AuthScreen({
                   className="relative"
                   initial={{ opacity: 0, y: 20 }}
                   animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: mode === "signup" ? 0.3 : 0.2 }}
+                  transition={{ delay: mode === "signup" ? 0.35 : 0.2 }}
                 >
                   <Lock
                     className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 transition-colors duration-300"

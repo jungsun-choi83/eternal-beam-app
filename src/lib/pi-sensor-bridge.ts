@@ -176,6 +176,31 @@ export async function triggerThemeOnDevice(
   }
 }
 
+/** 회원가입 시 등록한 반려 이름 → Pi voice wake 목록 */
+export async function syncPetWakeNamesToPi(
+  names: string[],
+  petName?: string
+): Promise<boolean> {
+  const cleaned = names.map((n) => n.trim()).filter(Boolean);
+  if (!cleaned.length) return false;
+  const base = (await discoverPiHttpBaseCached()) ?? resolvePiHttpBase();
+  if (!base) return false;
+  try {
+    const res = await fetch(`${base}/pet/wake-names`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        names: cleaned,
+        pet_name: (petName ?? cleaned[0]).trim(),
+      }),
+    });
+    if (res.ok) rememberPiBase(base);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 function openPiEventSource(
   base: string,
   onMessage: (payload: PiSensorPayload) => void,

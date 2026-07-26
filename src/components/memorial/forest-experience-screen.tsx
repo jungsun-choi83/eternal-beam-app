@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Mic } from "lucide-react";
 import { memorialT } from "@/components/memorial/memorial-i18n";
-import { getPetName, parseWakeNames } from "@/lib/pet-profile";
+import { getWakeNames } from "@/lib/pet-profile";
 import {
   createPackedAlphaScratch,
   drawPackedAlphaVideo,
@@ -84,8 +84,7 @@ export function ForestExperienceScreen({
   const piSseUrl = useMemo(() => resolvePiSseUrl(), []);
 
   const wakeNames = useMemo(() => {
-    const pet = getPetName();
-    const parsed = parseWakeNames(pet);
+    const parsed = getWakeNames();
     const merged = [...DEFAULT_WAKE, ...parsed];
     return [...new Set(merged)];
   }, []);
