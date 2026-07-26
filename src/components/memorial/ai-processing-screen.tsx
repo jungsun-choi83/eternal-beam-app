@@ -33,8 +33,8 @@ import { useProcessingClock } from "@/lib/use-processing-clock";
 import {
   isClientCutoutFirst,
   isLumaPipelineEnabled,
-  ensureIdleMp4Url,
   isIdleTestFallbackEnabled,
+  isGoyaDemoIdleUrl,
 } from "@/lib/device-host-flags";
 import { isLikelyVideoUrl } from "@/lib/video-url";
 import { IdleLoopVideo } from "@/components/memorial/idle-loop-video";
@@ -511,28 +511,28 @@ export function AIProcessingScreen({
 
         if (cancelled || myToken !== runTokenRef.current) return;
 
-        const resolvedIdleUrl = ensureIdleMp4Url(apiIdleUrl, {
-          allowDemoFallback: isIdleTestFallbackEnabled() && !apiIdleUrl,
-        });
+        // sessionStorage에는 사용자 idle mp4만 저장 — Goya 데모 URL은 저장하지 않음
+        const storedIdleUrl =
+          apiIdleUrl && !isGoyaDemoIdleUrl(apiIdleUrl) ? apiIdleUrl : "";
 
         if (!cancelled && myToken === runTokenRef.current) {
-          setIdlePreviewUrl(resolvedIdleUrl || null);
-          if (!apiIdleUrl) {
+          setIdlePreviewUrl(storedIdleUrl || null);
+          if (!storedIdleUrl) {
             setStatusLine(
               lumaEnabled && !isIdleTestFallbackEnabled()
                 ? t.idlePending
-                : t.idleDemoFallback
+                : t.idleCutoutPreview
             );
           }
           setProgress(92);
-          await sleep(apiIdleUrl ? 300 : 500);
+          await sleep(storedIdleUrl ? 300 : 500);
         }
 
         const stored: StoredPipeline = {
           content_id: pet?.content_id || cutContentId || `fallback_${Date.now()}`,
           cutout_display_url: display,
           dog_only_nobg_url: pet?.dog_only_nobg_url || display,
-          idle_video_url: resolvedIdleUrl,
+          idle_video_url: storedIdleUrl,
           action_video_url: pet?.action_video_url || "",
         };
         try {
@@ -604,7 +604,7 @@ export function AIProcessingScreen({
                 <img
                   src={cutoutPreview}
                   alt=""
-                  className="cutout-stage__subject w-full h-full object-contain"
+                  className="cutout-stage__subject cutout-idle-motion w-full h-full object-contain"
                   decoding="async"
                 />
               ) : null}

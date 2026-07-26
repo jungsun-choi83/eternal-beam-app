@@ -14,8 +14,7 @@ import {
   type MemorialTheme,
 } from "@/components/memorial/themes";
 import { CutoutStage } from "@/components/memorial/cutout-stage";
-import { IdleLoopVideo } from "@/components/memorial/idle-loop-video";
-import { resolveIdleVideoUrl } from "@/app/services/videoProcessingApi";
+import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
 
 interface ThemeSelectionScreenProps {
   cutoutImage: string | null;
@@ -219,7 +218,8 @@ export function ThemeSelectionScreen({
   const freeCarouselRef = useRef<HTMLDivElement | null>(null);
   const premiumCarouselRef = useRef<HTMLDivElement | null>(null);
   const interactionCarouselRef = useRef<"free" | "premium" | null>(null);
-  const [idleVideoUrl, setIdleVideoUrl] = useState<string>(resolveIdleVideoUrl(null));
+  const [pipelineCutout, setPipelineCutout] = useState<string | null>(null);
+  const [idleVideoUrl, setIdleVideoUrl] = useState<string>("");
   const [highlightTheme, setHighlightTheme] = useState<number | null>(selectedTheme);
 
   const isInteractionTarget = useCallback(
@@ -239,13 +239,21 @@ export function ThemeSelectionScreen({
     try {
       const raw = sessionStorage.getItem(ETERNAL_BEAM_PIPELINE_KEY);
       if (!raw) {
-        setIdleVideoUrl(resolveIdleVideoUrl(null));
+        setPipelineCutout(null);
+        setIdleVideoUrl("");
         return;
       }
       const pipeline = JSON.parse(raw) as StoredPipeline;
-      setIdleVideoUrl(resolveIdleVideoUrl(pipeline.idle_video_url));
+      const cutout =
+        cutoutImage ||
+        pipeline.cutout_display_url ||
+        pipeline.dog_only_nobg_url ||
+        null;
+      setPipelineCutout(cutout);
+      setIdleVideoUrl(pipeline.idle_video_url || "");
     } catch {
-      setIdleVideoUrl(resolveIdleVideoUrl(null));
+      setPipelineCutout(null);
+      setIdleVideoUrl("");
     }
   }, [cutoutImage]);
 
@@ -314,8 +322,9 @@ export function ThemeSelectionScreen({
         <div className="px-5 py-2">
           <div className="theme-selection-screen__preview relative aspect-[4/3] mx-auto rounded-2xl overflow-hidden border border-white/10 bg-[#0a0a0c]">
             <CutoutStage className="absolute inset-0">
-              <IdleLoopVideo
-                src={idleVideoUrl}
+              <PetIdleDisplay
+                idleVideoUrl={idleVideoUrl}
+                cutoutUrl={cutoutImage || pipelineCutout}
                 className="cutout-stage__subject"
               />
             </CutoutStage>

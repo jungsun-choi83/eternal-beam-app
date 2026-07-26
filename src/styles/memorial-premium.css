@@ -84,6 +84,26 @@
   min-height: clamp(160px, 32dvh, 260px);
 }
 
+/* Luma idle 대기 — 사용자 cutout 미세 호흡 애니메이션 */
+.cutout-idle-motion {
+  transform-origin: center bottom;
+  animation: cutout-idle-breathe 3.6s ease-in-out infinite;
+  will-change: transform;
+}
+
+@keyframes cutout-idle-breathe {
+  0%,
+  100% {
+    transform: scale(1) translateY(0);
+  }
+  45% {
+    transform: scale(1.018) translateY(-2px);
+  }
+  55% {
+    transform: scale(1.012) translateY(-1px);
+  }
+}
+
 .processing-copy-fade {
   opacity: 1;
   transition: opacity 0.5s ease-in-out;

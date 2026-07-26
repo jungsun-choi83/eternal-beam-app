@@ -48,17 +48,61 @@ export function getIdleTestFallbackUrl(): string {
   return DEFAULT_IDLE_TEST_FALLBACK_URL;
 }
 
-/** idle_video_url은 mp4 — API URL 우선; 데모 폴백은 명시적 테스트 모드에서만 */
+/** Goya 데모 idle mp4 — 사용자 cutout이 있으면 절대 사용하지 않음 */
+export function isGoyaDemoIdleUrl(url: string | null | undefined): boolean {
+  const u = String(url ?? "").trim().toLowerCase();
+  if (!u) return false;
+  return (
+    u.includes("goya_idle") ||
+    u.includes("goya_idle_packed") ||
+    u.includes("/demo/goya")
+  );
+}
+
+export type IdleDisplaySource =
+  | { mode: "video"; src: string }
+  | { mode: "cutout"; src: string };
+
+/** idle mp4 또는 사용자 cutout — Goya 데모는 cutout 있을 때 제외 */
 export function ensureIdleMp4Url(
   apiUrl: string | null | undefined,
-  options?: { allowDemoFallback?: boolean }
+  options?: { allowDemoFallback?: boolean; cutoutUrl?: string | null }
 ): string {
+  const cutout = String(options?.cutoutUrl ?? "").trim();
   const u = String(apiUrl ?? "").trim();
   if (u) {
     const path = u.split("?")[0].split("#")[0].toLowerCase();
-    if (path.endsWith(".mp4") || path.endsWith(".webm") || path.endsWith(".mov")) return u;
+    const isVideo =
+      path.endsWith(".mp4") ||
+      path.endsWith(".webm") ||
+      path.endsWith(".mov");
+    if (isVideo) {
+      if (cutout && isGoyaDemoIdleUrl(u)) return "";
+      return u;
+    }
   }
+  if (cutout) return "";
   const allowFallback = options?.allowDemoFallback ?? isIdleTestFallbackEnabled();
   if (allowFallback) return SAME_ORIGIN_IDLE_FALLBACK_URL;
   return "";
+}
+
+/** 미리보기·테마 선택 — 사용자 cutout 우선, Goya 데모는 cutout 없을 때만 */
+export function resolveIdleDisplaySource(
+  idleVideoUrl: string | null | undefined,
+  cutoutUrl: string | null | undefined,
+  options?: { allowDemoFallback?: boolean }
+): IdleDisplaySource | null {
+  const cutout = String(cutoutUrl ?? "").trim();
+  const video = ensureIdleMp4Url(idleVideoUrl, {
+    allowDemoFallback: options?.allowDemoFallback,
+    cutoutUrl: cutout,
+  });
+  if (video) return { mode: "video", src: video };
+  if (cutout) return { mode: "cutout", src: cutout };
+  const demo = ensureIdleMp4Url(null, {
+    allowDemoFallback: options?.allowDemoFallback ?? isIdleTestFallbackEnabled(),
+  });
+  if (demo) return { mode: "video", src: demo };
+  return null;
 }

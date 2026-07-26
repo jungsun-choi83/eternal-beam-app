@@ -11,6 +11,7 @@ import { generatePreview, getVideoApiBaseUrl, resolveIdleVideoUrl } from "@/app/
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { getMemorialTheme } from "@/components/memorial/themes";
 import { ThemeBackgroundVideo } from "@/components/memorial/theme-background-video";
+import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
 import { IdleLoopVideo } from "@/components/memorial/idle-loop-video";
 import { getEffectiveBgVideo } from "@/lib/custom-background-store";
 import {
@@ -74,7 +75,12 @@ export function PreviewScreen({
     }
   }, [selectedTheme, previewThemeId]);
 
-  const idleVideoUrl = resolveIdleVideoUrl(pipeline?.idle_video_url);
+  const cutoutDisplay =
+    cutoutImage ||
+    pipeline?.cutout_display_url ||
+    pipeline?.dog_only_nobg_url ||
+    null;
+  const idleVideoUrl = resolveIdleVideoUrl(pipeline?.idle_video_url, cutoutDisplay);
 
   useEffect(() => {
     try {
@@ -354,15 +360,16 @@ export function PreviewScreen({
           <div className={`absolute inset-0 bg-gradient-to-b ${currentTheme.gradient} opacity-25`} />
 
           {/* Subject with transformations — first composite with selected theme bg */}
-          {cutoutImage && (
+          {cutoutDisplay && (
             <div
               className="absolute inset-0 flex items-center justify-center p-4"
               style={{
                 transform: `translate(${settings.posX}px, ${settings.posY}px) scale(${settings.scale})`,
               }}
             >
-              <IdleLoopVideo
-                src={idleVideoUrl}
+              <PetIdleDisplay
+                idleVideoUrl={pipeline?.idle_video_url}
+                cutoutUrl={cutoutDisplay}
                 className="theme-preview-frame__pet max-h-[62%] max-w-[92%]"
                 style={{
                   filter: `drop-shadow(0 16px 32px ${currentTheme.accent}66)`,

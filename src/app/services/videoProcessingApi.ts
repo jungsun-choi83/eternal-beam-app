@@ -437,9 +437,12 @@ export async function generatePetVideo(
   return res.json()
 }
 
-/** API idle URL 또는 same-origin 데모 mp4 — 항상 재생 가능한 mp4 반환 */
-export function resolveIdleVideoUrl(apiUrl: string | null | undefined): string {
-  return ensureIdleMp4Url(apiUrl)
+/** API idle URL — cutout 있으면 Goya 데모 폴백 금지 */
+export function resolveIdleVideoUrl(
+  apiUrl: string | null | undefined,
+  cutoutUrl?: string | null
+): string {
+  return ensureIdleMp4Url(apiUrl, { cutoutUrl });
 }
 
 /** 구독 크레딧 지갑 */

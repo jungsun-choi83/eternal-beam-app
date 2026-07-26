@@ -3,6 +3,7 @@ import {
   type StoredPipeline,
 } from "@/components/memorial/ai-processing-screen";
 import { loadCreditSession } from "@/lib/credit-session";
+import { isGoyaDemoIdleUrl } from "@/lib/device-host-flags";
 import { isLikelyVideoUrl } from "@/lib/video-url";
 
 export function readPipeline(): StoredPipeline | null {
@@ -29,9 +30,12 @@ export function persistDeviceContentFromPipeline(
   localStorage.setItem("eternal_beam_content_id", contentId);
   localStorage.setItem("eternal_beam_current_content_id", contentId);
 
+  const idleCandidate = pipeline?.idle_video_url;
   const videoCandidate =
-    pipeline?.idle_video_url && isLikelyVideoUrl(pipeline.idle_video_url)
-      ? pipeline.idle_video_url
+    idleCandidate &&
+    isLikelyVideoUrl(idleCandidate) &&
+    !isGoyaDemoIdleUrl(idleCandidate)
+      ? idleCandidate
       : pipeline?.action_video_url && isLikelyVideoUrl(pipeline.action_video_url)
         ? pipeline.action_video_url
         : null;
