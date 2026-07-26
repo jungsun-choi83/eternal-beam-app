@@ -661,16 +661,11 @@ export function AIProcessingScreen({
           />
         ) : showIdlePreview ? (
           <div className="ai-processing-screen__idle-preview relative z-10 shrink-0">
-            <p className="text-[10px] tracking-wider uppercase text-center mb-1.5" style={{ color: "#888" }}>
-              {t.idlePreview}
-            </p>
-            <CutoutStage plain className="rounded-xl border border-white/10 overflow-hidden w-full h-full max-h-full">
-              <PetIdleDisplay
-                idleVideoUrl={idlePreviewUrl}
-                cutoutUrl={cutoutPreview}
-                className="cutout-stage__subject w-full h-full max-h-full object-contain"
-              />
-            </CutoutStage>
+            <PetIdleDisplay
+              idleVideoUrl={idlePreviewUrl}
+              cutoutUrl={cutoutPreview}
+              className="ai-processing-screen__idle-pet w-full h-full object-contain"
+            />
           </div>
         ) : originalForUi && currentStep === 0 ? (
           <div className="w-36 h-36 mb-4 rounded-2xl overflow-hidden bg-[#141416] flex items-center justify-center shrink-0">
