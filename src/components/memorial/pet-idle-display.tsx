@@ -13,7 +13,7 @@ interface PetIdleDisplayProps {
   allowDemoFallback?: boolean;
 }
 
-/** 사용자 idle mp4 또는 cutout 정적 애니 — Goya 데모는 cutout 있을 때 표시하지 않음 */
+/** idle mp4(데모 목업 포함) 또는 cutout 정적 — 데모 off일 때만 정적 */
 export function PetIdleDisplay({
   idleVideoUrl,
   cutoutUrl,

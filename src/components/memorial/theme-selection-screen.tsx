@@ -321,7 +321,7 @@ export function ThemeSelectionScreen({
 
         <div className="px-5 py-2">
           <div className="theme-selection-screen__preview relative aspect-[4/3] mx-auto rounded-2xl overflow-hidden border border-white/10 bg-[#0a0a0c]">
-            <CutoutStage className="absolute inset-0">
+            <CutoutStage plain className="absolute inset-0">
               <PetIdleDisplay
                 idleVideoUrl={idleVideoUrl}
                 cutoutUrl={cutoutImage || pipelineCutout}

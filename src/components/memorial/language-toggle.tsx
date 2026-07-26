@@ -25,7 +25,7 @@ export function LanguageToggle({
       {(
         [
           { code: "ko" as const, label: "한국어" },
-          { code: "en" as const, label: "EN" },
+          { code: "en" as const, label: "English" },
         ] as const
       ).map(({ code, label }) => {
         const selected = active === code;

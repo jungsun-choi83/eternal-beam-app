@@ -37,7 +37,7 @@ import {
   isGoyaDemoIdleUrl,
 } from "@/lib/device-host-flags";
 import { isLikelyVideoUrl } from "@/lib/video-url";
-import { IdleLoopVideo } from "@/components/memorial/idle-loop-video";
+import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
 
 export const ETERNAL_BEAM_PIPELINE_KEY = "eternal_beam_pipeline_v1";
 
@@ -52,9 +52,10 @@ const COMPARE_HOLD_MS = Math.max(
   2000,
   Number(import.meta.env.VITE_COMPARE_HOLD_MS ?? "4500")
 );
-/** Step 2 (conversion) main copy rotation interval */
-const STEP2_ROTATE_MS = 4500;
-const STEP2_FADE_MS = 500;
+/** Step 1/2 main copy rotation interval */
+const COPY_ROTATE_MS = 4500;
+const COPY_FADE_MS = 500;
+const HEADLINE_ROTATE_MS = 5500;
 
 export interface StoredPipeline {
   content_id: string;
@@ -326,7 +327,7 @@ const CompareImages = memo(function CompareImages({
         </div>
         <div className="compare-panel compare-panel--cutout">
           <p className="compare-panel__label">{afterLabel}</p>
-          <CutoutStage className="aspect-square relative w-full min-h-[120px]">
+          <CutoutStage plain className="aspect-square relative w-full min-h-[120px]">
             <img
               src={cutout}
               alt={afterLabel}
@@ -370,8 +371,12 @@ export function AIProcessingScreen({
   const [showCompare, setShowCompare] = useState(false);
   const [idlePreviewUrl, setIdlePreviewUrl] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
+  const [step1Index, setStep1Index] = useState(0);
+  const [step1Fading, setStep1Fading] = useState(false);
   const [step2Index, setStep2Index] = useState(0);
   const [step2Fading, setStep2Fading] = useState(false);
+  const [headlineIndex, setHeadlineIndex] = useState(0);
+  const [headlineFading, setHeadlineFading] = useState(false);
 
   const runTokenRef = useRef(0);
   const onCompleteRef = useRef(onComplete);
@@ -388,6 +393,57 @@ export function AIProcessingScreen({
     };
   }, [uploadedImage]);
 
+  const step1Lines =
+    t.statusLines.length > 0 ? t.statusLines : [t.step1Main];
+
+  useEffect(() => {
+    if (!processingActive || error) {
+      setHeadlineIndex(0);
+      setHeadlineFading(false);
+      return;
+    }
+
+    const titles = t.titles.length > 0 ? t.titles : [t.headline];
+    if (titles.length <= 1) return;
+
+    setHeadlineIndex(0);
+    setHeadlineFading(false);
+
+    const interval = window.setInterval(() => {
+      setHeadlineFading(true);
+      window.setTimeout(() => {
+        setHeadlineIndex((i) => (i + 1) % titles.length);
+        setHeadlineFading(false);
+      }, COPY_FADE_MS);
+    }, HEADLINE_ROTATE_MS);
+
+    return () => window.clearInterval(interval);
+  }, [processingActive, error, language]);
+
+  useEffect(() => {
+    if (currentStep !== 0) {
+      setStep1Index(0);
+      setStep1Fading(false);
+      return;
+    }
+
+    const lines = t.statusLines.length > 0 ? t.statusLines : [t.step1Main];
+    setStep1Index(0);
+    setStep1Fading(false);
+
+    if (lines.length <= 1) return;
+
+    const interval = window.setInterval(() => {
+      setStep1Fading(true);
+      window.setTimeout(() => {
+        setStep1Index((i) => (i + 1) % lines.length);
+        setStep1Fading(false);
+      }, COPY_FADE_MS);
+    }, COPY_ROTATE_MS);
+
+    return () => window.clearInterval(interval);
+  }, [currentStep, language]);
+
   useEffect(() => {
     if (currentStep !== 1) {
       setStep2Index(0);
@@ -395,10 +451,10 @@ export function AIProcessingScreen({
       return;
     }
 
+    const rotateCount = t.step2Rotate.length;
     setStep2Index(0);
     setStep2Fading(false);
 
-    const rotateCount = t.step2Rotate.length;
     if (rotateCount <= 1) return;
 
     const interval = window.setInterval(() => {
@@ -406,20 +462,28 @@ export function AIProcessingScreen({
       window.setTimeout(() => {
         setStep2Index((i) => (i + 1) % rotateCount);
         setStep2Fading(false);
-      }, STEP2_FADE_MS);
-    }, STEP2_ROTATE_MS);
+      }, COPY_FADE_MS);
+    }, COPY_ROTATE_MS);
 
     return () => window.clearInterval(interval);
-  }, [currentStep, t.step2Rotate.length]);
+  }, [currentStep, language]);
+
+  const headlineCopy =
+    t.titles.length > 0
+      ? t.titles[headlineIndex] ?? t.headline
+      : t.headline;
 
   const mainCopy =
     currentStep === 0
-      ? t.step1Main
+      ? step1Lines[step1Index] ?? t.step1Main
       : currentStep === 1
         ? t.step2Rotate[step2Index] ?? t.step2Rotate[0]
         : currentStep === 2
           ? t.step3Main
           : "";
+
+  const copyFading =
+    (currentStep === 0 && step1Fading) || (currentStep === 1 && step2Fading);
 
   useEffect(() => {
     if (!uploadedImage) return;
@@ -577,7 +641,13 @@ export function AIProcessingScreen({
   return (
     <div className="ai-processing-screen h-full flex flex-col relative overflow-hidden">
       <header className="px-6 pt-[max(2.75rem,env(safe-area-inset-top,0px))] pb-2 text-center relative z-10 shrink-0">
-        <h1 className="processing-headline px-2">{t.headline}</h1>
+        <h1
+          className={`processing-headline px-2 processing-copy-fade ${
+            headlineFading ? "processing-copy-fade--out" : ""
+          }`}
+        >
+          {headlineCopy}
+        </h1>
       </header>
 
       <div className="ai-processing-screen__body flex-1 flex flex-col items-center px-5 relative z-10 min-h-0 hide-scrollbar">
@@ -594,20 +664,12 @@ export function AIProcessingScreen({
             <p className="text-[10px] tracking-wider uppercase text-center mb-2" style={{ color: "#888" }}>
               {t.idlePreview}
             </p>
-            <CutoutStage className="rounded-xl border border-white/10 overflow-hidden w-full h-full">
-              {idlePreviewUrl ? (
-                <IdleLoopVideo
-                  src={idlePreviewUrl}
-                  className="cutout-stage__subject w-full h-full object-contain"
-                />
-              ) : cutoutPreview ? (
-                <img
-                  src={cutoutPreview}
-                  alt=""
-                  className="cutout-stage__subject cutout-idle-motion w-full h-full object-contain"
-                  decoding="async"
-                />
-              ) : null}
+            <CutoutStage plain className="rounded-xl border border-white/10 overflow-hidden w-full h-full">
+              <PetIdleDisplay
+                idleVideoUrl={idlePreviewUrl}
+                cutoutUrl={cutoutPreview}
+                className="cutout-stage__subject w-full h-full object-contain"
+              />
             </CutoutStage>
           </div>
         ) : originalForUi && currentStep === 0 ? (
@@ -665,7 +727,7 @@ export function AIProcessingScreen({
         <div className="text-center mb-3 max-w-[300px] shrink-0">
           <p
             className={`text-sm font-light min-h-[1.25rem] processing-copy-fade ${
-              currentStep === 1 && step2Fading ? "processing-copy-fade--out" : ""
+              copyFading ? "processing-copy-fade--out" : ""
             }`}
             style={{ color: "#F1E5D1" }}
           >

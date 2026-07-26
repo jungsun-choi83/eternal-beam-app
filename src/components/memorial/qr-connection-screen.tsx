@@ -4,9 +4,11 @@ import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { ChevronLeft, Smartphone, CheckCircle2 } from "lucide-react";
 import { memorialT } from "@/components/memorial/memorial-i18n";
+import { LanguageToggle } from "@/components/memorial/language-toggle";
 
 interface QRConnectionScreenProps {
   language?: string;
+  onLanguageChange?: (lang: "ko" | "en") => void;
   showBack?: boolean;
   onComplete: () => void;
   onBack: () => void;
@@ -15,6 +17,7 @@ interface QRConnectionScreenProps {
 
 export function QRConnectionScreen({
   language = "ko",
+  onLanguageChange,
   showBack = true,
   onComplete,
   onBack,
@@ -60,9 +63,14 @@ export function QRConnectionScreen({
         <h1 className="screen-title absolute left-1/2 -translate-x-1/2" style={{ color: "#F5F5F7" }}>
           {q.title}
         </h1>
-        <button type="button" onClick={onSkip} className="text-sm memorial-caption" style={{ color: "#A1A1A6" }}>
-          {q.skip}
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {onLanguageChange ? (
+            <LanguageToggle language={language} onChange={onLanguageChange} />
+          ) : null}
+          <button type="button" onClick={onSkip} className="text-sm memorial-caption" style={{ color: "#A1A1A6" }}>
+            {q.skip}
+          </button>
+        </div>
       </header>
 
       <div className="flex-1 flex flex-col items-center justify-center px-8 min-h-0 overflow-y-auto">

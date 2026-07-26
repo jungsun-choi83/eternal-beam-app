@@ -3,6 +3,7 @@ import { createDisplayCutoutUrl } from '@/lib/display-image'
 import { persistDeviceContentFromPipeline } from '@/lib/persist-device-content'
 import { AnimatePresence, motion } from 'framer-motion'
 import { MobileFrame } from '@/components/memorial/mobile-frame'
+import { LanguageToggle } from '@/components/memorial/language-toggle'
 import { AuthScreen } from '@/components/memorial/auth-screen'
 import { QRConnectionScreen } from '@/components/memorial/qr-connection-screen'
 import { HomeScreen } from '@/components/memorial/home-screen'
@@ -71,6 +72,14 @@ function resolveInitialScreen(): Screen {
 type NavDirection = 'forward' | 'back'
 
 const DEVICE_CONNECTED_KEY = 'eternal_beam_device_connected'
+
+/** 화면 자체 헤더에 언어 토글이 있는 경우 — 전역 토글 중복 방지 */
+const SCREENS_WITH_OWN_LANG_TOGGLE: ReadonlySet<Screen> = new Set([
+  'qrConnection',
+  'home',
+  'signup',
+  'login',
+])
 
 const pageEase = [0.22, 1, 0.36, 1] as const
 
@@ -326,6 +335,15 @@ export function EternalBeamApp() {
 
       <MobileFrame>
         {tapFlash ? <div className="eb-tap-flash absolute inset-0 z-[80] rounded-[inherit]" aria-hidden /> : null}
+        {!SCREENS_WITH_OWN_LANG_TOGGLE.has(screen) ? (
+          <div className="pointer-events-none absolute inset-x-0 top-[max(0.5rem,env(safe-area-inset-top,0px))] z-[60] flex justify-end px-4">
+            <LanguageToggle
+              language={language}
+              onChange={handleLanguageChange}
+              className="pointer-events-auto"
+            />
+          </div>
+        ) : null}
         <AnimatePresence mode="wait" initial={false}>
           {screen === 'signup' && (
             <motion.div
@@ -384,6 +402,7 @@ export function EternalBeamApp() {
             >
               <QRConnectionScreen
                 language={language}
+                onLanguageChange={handleLanguageChange}
                 showBack={qrBackTarget !== null}
                 onComplete={handleQrComplete}
                 onBack={handleQrBack}

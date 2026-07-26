@@ -63,7 +63,7 @@ export type IdleDisplaySource =
   | { mode: "video"; src: string }
   | { mode: "cutout"; src: string };
 
-/** idle mp4 또는 사용자 cutout — Goya 데모는 cutout 있을 때 제외 */
+/** idle mp4 — API URL 우선; 데모 Goya 목업은 cutout 있어도 표시 (session 저장만 제외) */
 export function ensureIdleMp4Url(
   apiUrl: string | null | undefined,
   options?: { allowDemoFallback?: boolean; cutoutUrl?: string | null }
@@ -77,32 +77,31 @@ export function ensureIdleMp4Url(
       path.endsWith(".webm") ||
       path.endsWith(".mov");
     if (isVideo) {
-      if (cutout && isGoyaDemoIdleUrl(u)) return "";
-      return u;
+      if (cutout && isGoyaDemoIdleUrl(u)) {
+        /* 사용자 cutout + API가 Goya mock URL → 아래 데모 폴백으로 */
+      } else {
+        return u;
+      }
     }
   }
-  if (cutout) return "";
   const allowFallback = options?.allowDemoFallback ?? isIdleTestFallbackEnabled();
   if (allowFallback) return SAME_ORIGIN_IDLE_FALLBACK_URL;
   return "";
 }
 
-/** 미리보기·테마 선택 — 사용자 cutout 우선, Goya 데모는 cutout 없을 때만 */
+/** 미리보기·테마 선택 — idle mp4(데모 포함) 우선, 데모 꺼진 경우만 cutout 정적 */
 export function resolveIdleDisplaySource(
   idleVideoUrl: string | null | undefined,
   cutoutUrl: string | null | undefined,
   options?: { allowDemoFallback?: boolean }
 ): IdleDisplaySource | null {
   const cutout = String(cutoutUrl ?? "").trim();
+  const allowFallback = options?.allowDemoFallback ?? isIdleTestFallbackEnabled();
   const video = ensureIdleMp4Url(idleVideoUrl, {
-    allowDemoFallback: options?.allowDemoFallback,
+    allowDemoFallback: allowFallback,
     cutoutUrl: cutout,
   });
   if (video) return { mode: "video", src: video };
-  if (cutout) return { mode: "cutout", src: cutout };
-  const demo = ensureIdleMp4Url(null, {
-    allowDemoFallback: options?.allowDemoFallback ?? isIdleTestFallbackEnabled(),
-  });
-  if (demo) return { mode: "video", src: demo };
+  if (cutout && !allowFallback) return { mode: "cutout", src: cutout };
   return null;
 }

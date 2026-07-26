@@ -437,7 +437,7 @@ export async function generatePetVideo(
   return res.json()
 }
 
-/** API idle URL — cutout 있으면 Goya 데모 폴백 금지 */
+/** API idle URL — 표시용; cutout 있어도 Goya idle 목업 폴백 허용 */
 export function resolveIdleVideoUrl(
   apiUrl: string | null | undefined,
   cutoutUrl?: string | null

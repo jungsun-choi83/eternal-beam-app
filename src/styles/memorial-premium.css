@@ -379,6 +379,15 @@
   background-position: 0 0, 0 6px, 6px -6px, -6px 0;
 }
 
+.cutout-stage--plain {
+  background-color: #0c0c0e;
+  background-image: radial-gradient(
+    ellipse 85% 70% at 50% 88%,
+    rgba(201, 162, 39, 0.07) 0%,
+    transparent 62%
+  );
+}
+
 .cutout-stage__glow {
   position: absolute;
   inset: 10%;
