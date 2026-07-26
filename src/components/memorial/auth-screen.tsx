@@ -66,7 +66,7 @@ export function AuthScreen({
   };
 
   return (
-    <div className="hologram-bg-active h-full flex flex-col bg-[#000000] relative overflow-hidden min-h-0">
+    <div className="hologram-bg-active h-full flex flex-col relative overflow-hidden min-h-0">
       {/* Holographic Background */}
       <HolographicBackground />
       <HologramEffects />

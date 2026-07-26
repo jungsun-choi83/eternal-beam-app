@@ -14,7 +14,7 @@ import {
   Bell,
   Shield,
   CreditCard,
-  Sparkles,
+  Film,
 } from "lucide-react";
 import { languageLabels, memorialLang, memorialT } from "@/components/memorial/memorial-i18n";
 import { SubscriptionTestPanel } from "@/components/memorial/subscription-test-panel";
@@ -70,7 +70,7 @@ export function SettingsScreen({
         },
         { id: "privacy", label: s.privacy, icon: Shield },
         ...(IDLE_TEST_PANEL_ENABLED
-          ? [{ id: "idle-test", label: "아이들 5종 테스트", icon: Sparkles }]
+          ? [{ id: "idle-test", label: "아이들 5종 테스트", icon: Film }]
           : []),
       ],
     },

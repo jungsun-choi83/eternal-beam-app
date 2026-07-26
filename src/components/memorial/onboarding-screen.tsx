@@ -65,7 +65,7 @@ export function OnboardingScreen({
     onComplete();
   };
 
-  const ringSizes = [168, 140, 112] as const;
+  const ringDelays = ["0s", "1.15s", "2.3s"] as const;
 
   return (
     <div
@@ -73,13 +73,59 @@ export function OnboardingScreen({
       className="flex flex-col relative overflow-hidden w-full h-full min-h-full"
     >
       <style>{`
+        @keyframes ob-ring-ripple {
+          0% { transform: scale(0.55); opacity: 0.75; }
+          70% { opacity: 0.15; }
+          100% { transform: scale(1.55); opacity: 0; }
+        }
+        @keyframes ob-glow-breathe {
+          0%, 100% {
+            box-shadow: 0 0 64px 24px rgba(200,155,42,0.1), 0 0 100px 40px rgba(180,130,30,0.05);
+          }
+          50% {
+            box-shadow: 0 0 96px 36px rgba(244,208,63,0.2), 0 0 140px 56px rgba(201,162,39,0.1);
+          }
+        }
+        @keyframes ob-center-light {
+          0%, 100% {
+            box-shadow: inset 0 0 20px rgba(212,175,55,0.15), 0 0 28px rgba(201,162,39,0.12);
+          }
+          50% {
+            box-shadow: inset 0 0 36px rgba(244,208,63,0.35), 0 0 44px rgba(201,162,39,0.22);
+          }
+        }
         @keyframes ob-shooting-star {
           0% { transform: translate(0, 0); opacity: 0; }
           5% { opacity: 1; }
           95% { opacity: 1; }
           100% { transform: translate(-120vw, 70vh); opacity: 0; }
         }
+        .ob-onboarding-hero {
+          animation: ob-glow-breathe 4s ease-in-out infinite;
+        }
+        .ob-ring-pulse {
+          position: absolute;
+          border-radius: 9999px;
+          border: 1.5px solid rgba(212,175,55,0.55);
+          animation: ob-ring-ripple 3.2s ease-out infinite;
+          transform-origin: center center;
+          will-change: transform, opacity;
+        }
+        .ob-center-disc {
+          animation: ob-center-light 3.6s ease-in-out infinite;
+          will-change: box-shadow;
+        }
+        .ob-center-num {
+          font-family: var(--font-headline);
+          font-size: 2rem;
+          font-weight: 300;
+          letter-spacing: 0.04em;
+          color: #d4af37;
+        }
         @media (prefers-reduced-motion: reduce) {
+          .ob-ring-pulse, .ob-onboarding-hero, .ob-center-disc {
+            animation: none !important;
+          }
           .ob-shooting-star { animation: none !important; opacity: 0 !important; }
         }
       `}</style>
@@ -114,49 +160,52 @@ export function OnboardingScreen({
         </div>
       )}
 
-      <div className="flex-1 flex flex-col items-center justify-center px-8 relative z-[3]">
+      <div className="flex-1 flex flex-col items-center justify-center px-8 relative z-[3] min-h-0">
+        {/* 링·중앙 원 — 슬라이드 전환 밖 (transform 충돌 방지) */}
+        <div
+          className="relative flex items-center justify-center mx-auto mb-8 ob-onboarding-hero rounded-full shrink-0"
+          style={{ width: 220, height: 220 }}
+        >
+          <div
+            className="absolute inset-0 flex items-center justify-center pointer-events-none"
+            aria-hidden
+          >
+            {ringDelays.map((delay, i) => (
+              <div
+                key={i}
+                className="ob-ring-pulse"
+                style={{
+                  width: 176,
+                  height: 176,
+                  animationDelay: delay,
+                }}
+              />
+            ))}
+          </div>
+
+          <div
+            className="ob-center-disc w-32 h-32 rounded-full relative z-10"
+            style={{
+              background:
+                "linear-gradient(135deg, rgba(212, 175, 55, 0.14) 0%, rgba(201, 162, 39, 0.06) 100%)",
+              border: "1px solid rgba(212, 175, 55, 0.35)",
+            }}
+          >
+            <div className="absolute inset-0 flex items-center justify-center">
+              <span className="ob-center-num">{currentSlide + 1}</span>
+            </div>
+          </div>
+        </div>
+
         <AnimatePresence mode="wait">
           <motion.div
             key={currentSlide}
-            initial={{ opacity: 0, y: 20 }}
+            initial={{ opacity: 0, y: 16 }}
             animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -20 }}
-            transition={{ duration: 0.4 }}
-            className="text-center relative z-10"
+            exit={{ opacity: 0, y: -12 }}
+            transition={{ duration: 0.35 }}
+            className="text-center relative z-10 w-full"
           >
-            <div
-              className="relative flex items-center justify-center mx-auto mb-10 ob-onboarding-glow rounded-full"
-              style={{ width: 240, height: 240 }}
-            >
-              <div
-                className="absolute inset-0 flex items-center justify-center pointer-events-none"
-                aria-hidden
-              >
-                {ringSizes.map((size, i) => (
-                  <div
-                    key={size}
-                    className={`ob-ring-pulse absolute rounded-full border border-[rgba(212,175,55,0.45)] ${
-                      i === 1 ? "ob-ring-pulse--d1" : i === 2 ? "ob-ring-pulse--d2" : ""
-                    }`}
-                    style={{ width: size, height: size }}
-                  />
-                ))}
-              </div>
-
-              <motion.div
-                className="w-32 h-32 rounded-full relative z-10"
-                style={{
-                  background:
-                    "linear-gradient(135deg, rgba(212, 175, 55, 0.1) 0%, rgba(201, 162, 39, 0.05) 100%)",
-                  border: "1px solid rgba(212, 175, 55, 0.2)",
-                }}
-              >
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <span className="ob-center-num">{currentSlide + 1}</span>
-                </div>
-              </motion.div>
-            </div>
-
             <h1 className="upload-title text-center mb-3 px-2 eb-headline-preline" style={{ color: "#F5F5F7" }}>
               {slides[currentSlide].title}
             </h1>

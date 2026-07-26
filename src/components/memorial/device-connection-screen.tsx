@@ -49,7 +49,7 @@ export function DeviceConnectionScreen({ onComplete, onBack, onSkip }: DeviceCon
   const selectedNetworkData = wifiNetworks.find(n => n.id === selectedNetwork);
 
   return (
-    <div className="h-full flex flex-col bg-[#0a0a0a] relative overflow-hidden">
+    <div className="h-full flex flex-col relative overflow-hidden">
       {/* Header */}
       <header className="px-6 pt-6 pb-4 flex items-center justify-between">
         <button onClick={onBack} className="p-2 -ml-2">

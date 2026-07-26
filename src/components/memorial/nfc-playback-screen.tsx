@@ -2,7 +2,8 @@
 
 import { useState, useMemo } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, Wifi, Check, Sparkles } from "lucide-react";
+import { ArrowLeft, Wifi, Check } from "lucide-react";
+import { EternalBeamLogoIcon } from "@/components/memorial/eternal-beam-brand-mark";
 import { writeToNFCSlot } from "@/app/services/nfcManager";
 import { mapSlotToContent } from "@/app/services/supabaseContentService";
 import { memorialT } from "@/components/memorial/memorial-i18n";
@@ -72,7 +73,7 @@ export function NFCPlaybackScreen({
 
   if (isComplete) {
     return (
-      <div className="h-full flex flex-col bg-[#0a0a0a] items-center justify-center px-8">
+      <div className="h-full flex flex-col items-center justify-center px-8">
         <motion.div
           initial={{ scale: 0, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
@@ -143,7 +144,7 @@ export function NFCPlaybackScreen({
 
   if (isSending) {
     return (
-      <div className="h-full flex flex-col bg-[#0a0a0a] items-center justify-center px-8">
+      <div className="h-full flex flex-col items-center justify-center px-8">
         <motion.div className="relative mb-10">
           {[...Array(3)].map((_, i) => (
             <motion.div
@@ -196,7 +197,7 @@ export function NFCPlaybackScreen({
   }
 
   return (
-    <div className="h-full flex flex-col bg-[#0a0a0a]">
+    <div className="h-full flex flex-col">
       <header className="px-6 pt-14 pb-4 flex items-center justify-between relative">
         <motion.button
           initial={{ opacity: 0, x: -10 }}
@@ -244,7 +245,7 @@ export function NFCPlaybackScreen({
                 boxShadow: "0 4px 16px rgba(201,162,39,0.25)",
               }}
             >
-              <Sparkles className="w-4 h-4 text-[#0a0a0a]" strokeWidth={1.5} />
+              <EternalBeamLogoIcon size={14} />
             </div>
           </motion.div>
 

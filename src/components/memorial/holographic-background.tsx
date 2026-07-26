@@ -8,7 +8,7 @@ export function HolographicBackground() {
 
   if (lite) {
     return (
-      <div className="absolute inset-0 overflow-hidden pointer-events-none bg-[#000000]">
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
         <div
           className="absolute inset-0 opacity-80"
           style={{
@@ -21,7 +21,7 @@ export function HolographicBackground() {
   }
 
   return (
-    <div className="absolute inset-0 overflow-hidden pointer-events-none bg-[#000000]">
+    <div className="absolute inset-0 overflow-hidden pointer-events-none">
       <div
         className="absolute inset-0"
         style={{

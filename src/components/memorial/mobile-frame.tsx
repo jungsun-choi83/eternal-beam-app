@@ -2,6 +2,7 @@
 
 import { ReactNode } from "react";
 import { motion } from "framer-motion";
+import { MemorialSparkleField } from "@/components/memorial/memorial-sparkle-field";
 
 interface MobileFrameProps {
   children: ReactNode;
@@ -42,8 +43,9 @@ export function MobileFrame({ children }: MobileFrameProps) {
           </div>
         </div>
 
-        <div className="memorial-ui w-full h-full overflow-hidden safe-area-top safe-area-bottom">
-          {children}
+        <div className="memorial-ui relative w-full h-full overflow-hidden safe-area-top safe-area-bottom bg-[#0a0a0a]">
+          <MemorialSparkleField />
+          <div className="relative z-[2] h-full w-full overflow-hidden">{children}</div>
         </div>
 
         <div

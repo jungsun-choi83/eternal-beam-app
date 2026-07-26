@@ -8,6 +8,7 @@ import { HologramEffects } from "@/components/memorial/hologram-effects";
 import { ForestExperienceScreen } from "@/components/memorial/forest-experience-screen";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { subscribeNfcActivation } from "@/lib/nfc-activation";
+import { subscribePiNfcEvents } from "@/lib/pi-sensor-bridge";
 
 interface MemorialDevicePlayScreenProps {
   cutoutImage: string | null;
@@ -21,6 +22,7 @@ export function MemorialDevicePlayScreen({
   onBack,
 }: MemorialDevicePlayScreenProps) {
   const [nfcActive, setNfcActive] = useState(false);
+  const [piHint, setPiHint] = useState<string | null>(null);
   const t = memorialT(language).home;
   const waitHint =
     language === "ko"
@@ -28,6 +30,14 @@ export function MemorialDevicePlayScreen({
       : "Tap your NFC card on the reader";
 
   useEffect(() => subscribeNfcActivation(() => setNfcActive(true)), []);
+  useEffect(
+    () =>
+      subscribePiNfcEvents(() => setNfcActive(true), (msg) => {
+        if (msg.includes('실패')) setPiHint(msg);
+        else if (msg.includes('연결됨')) setPiHint(msg);
+      }),
+    [],
+  );
 
   if (nfcActive) {
     return (
@@ -101,6 +111,9 @@ export function MemorialDevicePlayScreen({
               ? "카드 인식 후 숲 배경과 고야가 나타납니다"
               : "Forest and Goya appear after NFC"}
           </p>
+          {piHint ? (
+            <p className="text-xs text-amber-200/70 mt-3 max-w-[260px]">{piHint}</p>
+          ) : null}
         </motion.div>
       </div>
     </div>

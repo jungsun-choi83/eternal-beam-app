@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, Check, Sparkles } from "lucide-react";
+import { ArrowLeft, Check, Flower2 } from "lucide-react";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { dataUrlToFile } from "@/lib/data-url-to-file";
 import {
@@ -197,7 +197,7 @@ export function CustomBackgroundScreen({
               animate={{ rotate: 360 }}
               transition={{ duration: 2.2, repeat: Infinity, ease: "linear" }}
             >
-              <Sparkles className="w-9 h-9 text-[#0a0a0a]" />
+              <Flower2 className="w-9 h-9 text-[#0a0a0a]" strokeWidth={1.5} />
             </motion.div>
             <div>
               <p className="text-base font-light" style={{ color: "#F5F5F7" }}>

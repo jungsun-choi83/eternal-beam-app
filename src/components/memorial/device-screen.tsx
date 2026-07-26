@@ -22,7 +22,7 @@ export function DeviceScreen({ onBack, onReconnect }: DeviceScreenProps) {
   };
 
   return (
-    <div className="h-full flex flex-col bg-[#0a0a0a] relative overflow-hidden">
+    <div className="h-full flex flex-col relative overflow-hidden">
       {/* Header */}
       <header className="px-6 pt-14 pb-4 flex items-center relative">
         <button onClick={onBack} className="p-2 -ml-2">

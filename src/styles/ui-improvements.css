@@ -74,17 +74,52 @@ span {
   bottom: 0;
   border-radius: 50%;
   background: #e8b84b;
-  box-shadow: 0 0 6px rgba(232, 184, 75, 0.6);
-  animation-name: home-dot-rise;
-  animation-timing-function: linear;
-  animation-iteration-count: infinite;
+  box-shadow: 0 0 8px rgba(232, 184, 75, 0.75);
+  animation: home-dot-rise var(--dot-dur, 8s) linear infinite;
+  animation-delay: var(--dot-delay, 0s);
   will-change: transform, opacity;
+}
+
+.memorial-sparkle-field {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.memorial-sparkle-field .home-dot {
+  pointer-events: none;
+}
+
+/* 로고 심볼만 잘라 하단 브랜드 마크에 사용 */
+.eb-brand-mark {
+  display: inline-flex;
+  width: 20px;
+  height: 20px;
+  overflow: hidden;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.eb-brand-mark img {
+  width: 20px;
+  height: auto;
+  max-width: none;
+  margin-top: 1px;
+  object-fit: cover;
+  object-position: top center;
+  filter: drop-shadow(0 0 6px rgba(201, 162, 39, 0.35));
 }
 
 @media (prefers-reduced-motion: reduce) {
   .home-dot {
     animation: none !important;
     opacity: 0.18 !important;
+  }
+
+  .memorial-sparkle-field {
+    display: none;
   }
 }
 

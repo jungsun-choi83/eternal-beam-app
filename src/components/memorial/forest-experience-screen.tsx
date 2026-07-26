@@ -10,6 +10,13 @@ import {
   isPackedAlphaVideo,
 } from "@/lib/packed-alpha-canvas";
 import { forestDemoAssets } from "@/lib/forest-demo-config";
+import {
+  resolvePiSseUrl,
+  subscribePiSensors,
+  triggerForestMachineDemo,
+  resolvePiHttpBase,
+  discoverPiHttpBase,
+} from "@/lib/pi-sensor-bridge";
 
 const DEFAULT_WAKE = ["고야", "고야야"];
 
@@ -74,6 +81,7 @@ export function ForestExperienceScreen({
 
   const [voiceReady, setVoiceReady] = useState(false);
   const [voiceHint, setVoiceHint] = useState<string | null>(null);
+  const piSseUrl = useMemo(() => resolvePiSseUrl(), []);
 
   const wakeNames = useMemo(() => {
     const pet = getPetName();
@@ -177,6 +185,33 @@ export function ForestExperienceScreen({
   }, [resizeCanvas]);
 
   useEffect(() => {
+    void discoverPiHttpBase().then((base) => {
+      if (base) return;
+      if (!resolvePiHttpBase()) return;
+      setVoiceHint(
+        language === "ko"
+          ? "Pi 자동 탐색 중… 안 되면 ?pi=라즈베리IP"
+          : "Scanning for Pi… or add ?pi=RASPBERRY_IP",
+      );
+    });
+    void triggerForestMachineDemo().then((ok) => {
+      if (ok) {
+        setVoiceHint(
+          language === "ko"
+            ? "기계 연결됨 — S23 idle + 터치·음성 대기"
+            : "Machine linked — idle on display, touch or voice",
+        );
+      } else {
+        setVoiceHint(
+          language === "ko"
+            ? "Pi 연결 실패 — URL에 ?pi=라즈베리IP 추가"
+            : "Pi connect failed — add ?pi=RASPBERRY_IP to URL",
+        );
+      }
+    });
+  }, [language]);
+
+  useEffect(() => {
     const bg = bgRef.current;
     const idle = idleRef.current;
     const action = actionRef.current;
@@ -209,6 +244,13 @@ export function ForestExperienceScreen({
   }, [renderDogFrame, startIdle]);
 
   useEffect(() => {
+    if (piSseUrl) {
+      return subscribePiSensors(beginAction, (msg) => {
+        setVoiceHint(msg);
+        if (msg.includes('연결됨')) setVoiceReady(true);
+      });
+    }
+
     const win = window as Window & {
       SpeechRecognition?: SpeechRecognitionCtor;
       webkitSpeechRecognition?: SpeechRecognitionCtor;
@@ -268,7 +310,7 @@ export function ForestExperienceScreen({
       }
       recognitionRef.current = null;
     };
-  }, [beginAction, language, t.micDenied, t.voiceUnavailable, wakeNames]);
+  }, [beginAction, language, piSseUrl, t.micDenied, t.voiceUnavailable, wakeNames]);
 
   return (
     <div
@@ -327,7 +369,13 @@ export function ForestExperienceScreen({
       </div>
 
       <div className="absolute inset-x-0 bottom-0 z-[3] px-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-center pointer-events-none">
-        <p className="text-sm text-white/85 drop-shadow-md">{t.hintWake(primaryWake)}</p>
+        <p className="text-sm text-white/85 drop-shadow-md">
+          {piSseUrl
+            ? language === "ko"
+              ? "손을 가까이 대거나 말하면 고야가 반응합니다"
+              : "Move close or speak — Goya reacts"
+            : t.hintWake(primaryWake)}
+        </p>
         <p className="mt-1 flex items-center justify-center gap-1.5 text-xs text-white/55">
           <Mic className={`h-3.5 w-3.5 ${voiceReady ? "text-emerald-300" : "opacity-50"}`} />
           {voiceHint ?? (voiceReady ? t.listening : t.voiceUnavailable)}

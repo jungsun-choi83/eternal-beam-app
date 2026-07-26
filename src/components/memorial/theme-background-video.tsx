@@ -32,7 +32,7 @@ export function ThemeBackgroundVideo({ src, className = "", poster }: ThemeBackg
       ref={ref}
       src={src}
       poster={poster}
-      className={`absolute inset-0 h-full w-full object-cover ${className}`}
+      className={`pointer-events-none absolute inset-0 h-full w-full object-cover ${className}`}
       autoPlay
       loop
       muted

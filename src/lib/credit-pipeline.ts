@@ -14,7 +14,22 @@ export function isInsufficientCreditsError(err: unknown): boolean {
   return msg.includes("크레딧") || msg.toLowerCase().includes("insufficient credit");
 }
 
-/** Luma용 공개 HTTPS URL (data URL이면 Storage 업로드) */
+export function isCreditSkippableError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    msg.includes("CREDIT_SKIP") ||
+    msg.includes("502") ||
+    msg.includes("503") ||
+    msg.includes("504") ||
+    msg.includes("시간") ||
+    msg.includes("timeout") ||
+    msg.includes("abort") ||
+    msg.includes("Failed to fetch") ||
+    msg.includes("누끼 서버")
+  );
+}
+
+/** Luma용 공개 HTTPS URL (data URL이면 Storage 업로드 — 실패 시 재누끼 호출 안 함) */
 export async function ensureCutoutPublicUrl(
   cutoutDisplay: string,
   userId: string,
@@ -29,11 +44,18 @@ export async function ensureCutoutPublicUrl(
     const raw = sessionStorage.getItem(ETERNAL_BEAM_PIPELINE_KEY);
     if (raw) {
       const pipeline = JSON.parse(raw) as StoredPipeline;
-      const u = pipeline.dog_only_nobg_url || "";
-      if (u.startsWith("http://") || u.startsWith("https://")) return u;
+      for (const u of [pipeline.dog_only_nobg_url, pipeline.cutout_display_url]) {
+        if (u.startsWith("http://") || u.startsWith("https://")) return u;
+      }
     }
   } catch {
     /* ignore */
+  }
+
+  if (trimmed.startsWith("data:")) {
+    throw new Error(
+      "CREDIT_SKIP: 서버 URL 없음 — 미리보기만 진행합니다."
+    );
   }
 
   const res = await fetch(trimmed);
@@ -47,6 +69,7 @@ export async function ensureCutoutPublicUrl(
     contentId,
     saveToStorage: true,
     model: "isnet-general-use",
+    timeoutMs: 45_000,
   });
   if (cut.error) throw new Error(cut.error);
   if (cut.cutout_url) return cut.cutout_url;
