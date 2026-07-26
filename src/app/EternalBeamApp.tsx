@@ -3,7 +3,6 @@ import { createDisplayCutoutUrl } from '@/lib/display-image'
 import { persistDeviceContentFromPipeline } from '@/lib/persist-device-content'
 import { AnimatePresence, motion } from 'framer-motion'
 import { MobileFrame } from '@/components/memorial/mobile-frame'
-import { OnboardingScreen } from '@/components/memorial/onboarding-screen'
 import { AuthScreen } from '@/components/memorial/auth-screen'
 import { QRConnectionScreen } from '@/components/memorial/qr-connection-screen'
 import { HomeScreen } from '@/components/memorial/home-screen'
@@ -41,7 +40,6 @@ import { inferMediaKind } from '@/lib/media-file-kind'
 import type { PickedMedia } from '@/lib/pick-media-file'
 
 type Screen =
-  | 'onboarding'
   | 'signup'
   | 'login'
   | 'qrConnection'
@@ -67,6 +65,8 @@ function resolveInitialScreen(): Screen {
 }
 
 type NavDirection = 'forward' | 'back'
+
+const DEVICE_CONNECTED_KEY = 'eternal_beam_device_connected'
 
 const pageEase = [0.22, 1, 0.36, 1] as const
 
@@ -281,12 +281,18 @@ export function EternalBeamApp() {
   }
 
   const handleQrComplete = () => {
+    try {
+      localStorage.setItem(DEVICE_CONNECTED_KEY, '1')
+    } catch {
+      /* ignore */
+    }
     if (qrBackTarget) {
       const target = qrBackTarget
       setQrBackTarget(null)
       navigateTo(target, 'back')
       return
     }
+    // After first-run QR pairing, go straight to signup — skip onboarding slides 1–4.
     navigateTo('signup')
   }
 
@@ -317,28 +323,6 @@ export function EternalBeamApp() {
       <MobileFrame>
         {tapFlash ? <div className="eb-tap-flash absolute inset-0 z-[80] rounded-[inherit]" aria-hidden /> : null}
         <AnimatePresence mode="wait" initial={false}>
-          {screen === 'onboarding' && (
-            <motion.div
-              key="onboarding"
-              custom={navDirection.current}
-              variants={pageVariants}
-              initial="initial"
-              animate="animate"
-              exit="exit"
-              className="h-full w-full"
-              style={{ position: 'relative', display: 'block', minHeight: '100%' }}
-            >
-              <OnboardingScreen
-                language={language}
-                onLanguageChange={handleLanguageChange}
-                onComplete={() => navigateTo('signup')}
-                onTryForest={
-                  deviceDemo ? () => navigateTo('forestExperience') : undefined
-                }
-              />
-            </motion.div>
-          )}
-
           {screen === 'signup' && (
             <motion.div
               key="signup"
