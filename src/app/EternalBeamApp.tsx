@@ -16,6 +16,7 @@ import { ThemeSelectionScreen } from '@/components/memorial/theme-selection-scre
 import { CustomBackgroundScreen } from '@/components/memorial/custom-background-screen'
 import { PaymentScreen } from '@/components/memorial/payment-screen'
 import { PreviewScreen } from '@/components/memorial/preview-screen'
+import { ShippingAddressScreen } from '@/components/memorial/shipping-address-screen'
 import { NFCPlaybackScreen } from '@/components/memorial/nfc-playback-screen'
 import { ForestExperienceScreen } from '@/components/memorial/forest-experience-screen'
 import { MemorialDevicePlayScreen } from '@/components/memorial/memorial-device-play-screen'
@@ -29,6 +30,8 @@ import {
   freeMemorialThemes,
 } from '@/components/memorial/themes'
 import { clearStoredCustomBgVideoUrl } from '@/lib/custom-background-store'
+import { finalizePreviewContent } from '@/lib/finalize-preview-content'
+import { persistDeviceContentFromPipeline } from '@/lib/persist-device-content'
 import { isForestTheme } from '@/lib/forest-demo-config'
 import { isPublicForestEntry } from '@/lib/app-entry'
 import {
@@ -51,6 +54,7 @@ type Screen =
   | 'customBackground'
   | 'checkout'
   | 'preview'
+  | 'shippingAddress'
   | 'nfcPlayback'
   | 'forestExperience'
   | 'devicePlay'
@@ -337,6 +341,7 @@ export function EternalBeamApp() {
                 language={language}
                 onLanguageChange={handleLanguageChange}
                 initialMode="signup"
+                lockMode="signup"
                 onAuthComplete={(name?: string) => {
                   if (name) setUserName(name)
                   navigateTo('home')
@@ -554,11 +559,17 @@ export function EternalBeamApp() {
                 selectedTheme={selectedTheme}
                 language={language}
                 settings={previewSettings}
+                deliveryMode={
+                  selectedTheme && isPremiumTheme(selectedTheme) ? 'shipping' : 'device'
+                }
                 onSettingsChange={handlePreviewSettingsChange}
                 onComplete={() => {
                   if (!selectedTheme) setSelectedTheme(1)
-                  persistDeviceContentFromPipeline(selectedTheme ?? 1)
-                  navigateTo('nfcPlayback')
+                  if (selectedTheme && isPremiumTheme(selectedTheme)) {
+                    navigateTo('shippingAddress')
+                    return
+                  }
+                  navigateTo('devicePlay')
                 }}
                 onBack={() =>
                   navigateTo(
@@ -566,6 +577,33 @@ export function EternalBeamApp() {
                     'back'
                   )
                 }
+              />
+            </motion.div>
+          )}
+
+          {screen === 'shippingAddress' && (
+            <motion.div
+              key="shippingAddress"
+              custom={navDirection.current}
+              variants={pageVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              className="h-full"
+            >
+              <ShippingAddressScreen
+                language={language}
+                onComplete={async () => {
+                  if (selectedTheme != null) {
+                    try {
+                      await finalizePreviewContent(selectedTheme, previewSettings)
+                    } catch {
+                      persistDeviceContentFromPipeline(selectedTheme)
+                    }
+                  }
+                  navigateTo('nfcPlayback')
+                }}
+                onBack={() => navigateTo('preview', 'back')}
               />
             </motion.div>
           )}
@@ -582,8 +620,9 @@ export function EternalBeamApp() {
             >
               <NFCPlaybackScreen
                 language={language}
+                premiumPhysical
                 onComplete={handleReset}
-                onBack={() => navigateTo('preview', 'back')}
+                onBack={() => navigateTo('shippingAddress', 'back')}
                 onGoPreview={() => navigateTo('preview')}
               />
             </motion.div>
@@ -601,8 +640,11 @@ export function EternalBeamApp() {
             >
               <MemorialDevicePlayScreen
                 cutoutImage={cutoutImage}
+                selectedTheme={selectedTheme}
+                settings={previewSettings}
                 language={language}
-                onBack={() => navigateTo('home', 'back')}
+                onBack={() => navigateTo('preview', 'back')}
+                onComplete={handleReset}
               />
             </motion.div>
           )}

@@ -36,12 +36,12 @@ export function QRConnectionScreen({
   }, [isScanning]);
 
   useEffect(() => {
-    if (isConnected) {
-      const timer = setTimeout(() => {
-        onComplete();
-      }, 1500);
-      return () => clearTimeout(timer);
-    }
+    if (!isConnected) return;
+    // QR 연결 직후 온보딩/중간 화면 없이 회원가입으로 바로 이동
+    const timer = setTimeout(() => {
+      onComplete();
+    }, 450);
+    return () => clearTimeout(timer);
   }, [isConnected, onComplete]);
 
   return (

@@ -1,71 +1,111 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, Nfc } from "lucide-react";
+import { ArrowLeft, Radio, WifiOff } from "lucide-react";
 import { HolographicBackground } from "@/components/memorial/holographic-background";
 import { HologramEffects } from "@/components/memorial/hologram-effects";
-import { ForestExperienceScreen } from "@/components/memorial/forest-experience-screen";
+import {
+  ETERNAL_BEAM_PIPELINE_KEY,
+  type StoredPipeline,
+} from "@/components/memorial/ai-processing-screen";
 import { memorialT } from "@/components/memorial/memorial-i18n";
-import { subscribeNfcActivation } from "@/lib/nfc-activation";
-import { subscribePiNfcEvents } from "@/lib/pi-sensor-bridge";
+import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
+import { ThemeBackgroundVideo } from "@/components/memorial/theme-background-video";
+import { getMemorialTheme } from "@/components/memorial/themes";
+import { getEffectiveBgVideo } from "@/lib/custom-background-store";
+import {
+  broadcastFreeThemeToDevice,
+  finalizePreviewContent,
+  type PreviewFinalizeSettings,
+} from "@/lib/finalize-preview-content";
+import { resolveIdleVideoUrl } from "@/app/services/videoProcessingApi";
+import { resolveSelectedThemeId } from "@/lib/theme-selection-store";
 
 interface MemorialDevicePlayScreenProps {
   cutoutImage: string | null;
+  selectedTheme: number | null;
+  settings: PreviewFinalizeSettings;
   language?: string;
   onBack: () => void;
+  onComplete: () => void;
 }
 
 export function MemorialDevicePlayScreen({
   cutoutImage,
+  selectedTheme,
+  settings,
   language = "ko",
   onBack,
+  onComplete,
 }: MemorialDevicePlayScreenProps) {
-  const [nfcActive, setNfcActive] = useState(false);
-  const [piHint, setPiHint] = useState<string | null>(null);
-  const t = memorialT(language).home;
-  const waitHint =
-    language === "ko"
-      ? "NFC 카드를 리더에 대주세요"
-      : "Tap your NFC card on the reader";
+  const d = memorialT(language).devicePlay;
+  const themeId = resolveSelectedThemeId(selectedTheme);
+  const theme = (themeId != null ? getMemorialTheme(themeId) : undefined) ?? getMemorialTheme(1)!;
+  const bgVideo = getEffectiveBgVideo(theme);
+  const [pipeline, setPipeline] = useState<StoredPipeline | null>(null);
+  const [status, setStatus] = useState<"starting" | "live" | "offline">("starting");
+  const [statusHint, setStatusHint] = useState<string | null>(null);
 
-  useEffect(() => subscribeNfcActivation(() => setNfcActive(true)), []);
-  useEffect(
+  const cutoutDisplay = useMemo(
     () =>
-      subscribePiNfcEvents(() => setNfcActive(true), (msg) => {
-        if (msg.includes('실패')) setPiHint(msg);
-        else if (msg.includes('연결됨')) setPiHint(msg);
-      }),
-    [],
+      cutoutImage ||
+      pipeline?.cutout_display_url ||
+      pipeline?.dog_only_nobg_url ||
+      null,
+    [cutoutImage, pipeline]
   );
 
-  if (nfcActive) {
-    return (
-      <div className="relative h-full w-full">
-        <ForestExperienceScreen
-          language={language}
-          publicDemo={false}
-          onBack={onBack}
-        />
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-[20] px-6 pt-8 text-center">
-          <p className="logo-subtitle text-[11px] tracking-[0.28em] opacity-80">
-            ETERNAL BEAM
-          </p>
-        </div>
-      </div>
-    );
-  }
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(ETERNAL_BEAM_PIPELINE_KEY);
+      if (raw) setPipeline(JSON.parse(raw) as StoredPipeline);
+    } catch {
+      setPipeline(null);
+    }
+  }, [cutoutImage]);
+
+  useEffect(() => {
+    if (themeId == null) return;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const contentId = await finalizePreviewContent(themeId, settings);
+        const ok = await broadcastFreeThemeToDevice(theme, contentId);
+        if (cancelled) return;
+        if (ok) {
+          setStatus("live");
+          setStatusHint(d.liveHint);
+        } else {
+          setStatus("offline");
+          setStatusHint(d.offlineHint);
+        }
+      } catch {
+        if (!cancelled) {
+          setStatus("offline");
+          setStatusHint(d.offlineHint);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [themeId, theme, settings, d.liveHint, d.offlineHint]);
+
+  const idleVideoUrl = resolveIdleVideoUrl(pipeline?.idle_video_url, cutoutDisplay);
 
   return (
     <div className="hologram-bg-active memorial-screen-shell h-full flex flex-col relative overflow-hidden min-h-0">
       <HolographicBackground />
       <HologramEffects />
 
-      <header className="px-6 pt-8 pb-4 relative z-10 shrink-0">
+      <header className="px-6 pt-8 pb-4 relative z-10 shrink-0 flex items-center justify-between">
         <button
           type="button"
           onClick={onBack}
-          className="mem-icon-btn relative shrink-0 mb-4"
+          className="mem-icon-btn relative shrink-0"
           style={{
             background: "rgba(255, 255, 255, 0.08)",
             borderColor: "rgba(255, 255, 255, 0.14)",
@@ -73,48 +113,96 @@ export function MemorialDevicePlayScreen({
         >
           <ArrowLeft className="w-5 h-5" style={{ color: "#E2E2E2" }} />
         </button>
-        <div className="text-center relative">
-          <div className="logo-holo-wrap">
-            <h1 className="logo-title logo-title--holo relative">Eternal Beam</h1>
-          </div>
-          <p className="logo-subtitle">{t.subtitle}</p>
+        <div className="text-center flex-1 px-3">
+          <p className="logo-subtitle text-[11px] tracking-[0.28em] opacity-80">ETERNAL BEAM</p>
+          <p className="text-sm font-light mt-1" style={{ color: "#F5F5F7" }}>
+            {d.title}
+          </p>
         </div>
+        <div className="w-10" aria-hidden />
       </header>
 
-      <div className="flex-1 flex flex-col items-center justify-center px-8 relative z-10 gap-6">
-        {cutoutImage ? (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.92 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="relative w-56 h-56 rounded-full overflow-hidden"
-            style={{
-              boxShadow:
-                "0 0 60px rgba(201, 162, 39, 0.3), inset 0 0 30px rgba(201, 162, 39, 0.1)",
-            }}
-          >
-            <img src={cutoutImage} alt="" className="w-full h-full object-cover" />
-          </motion.div>
-        ) : null}
+      <div className="flex-1 px-6 pb-4 relative z-10 flex flex-col items-center min-h-0">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.96 }}
+          animate={{ opacity: 1, scale: 1 }}
+          className="theme-preview-frame relative w-full aspect-[3/4] max-h-[min(52vh,360px)]"
+        >
+          {bgVideo ? (
+            <ThemeBackgroundVideo
+              key={`live-bg-${theme.id}-${bgVideo}`}
+              src={bgVideo}
+              poster={theme.thumb}
+            />
+          ) : (
+            <div
+              className="absolute inset-0 bg-center bg-cover"
+              style={{ backgroundImage: `url(${theme.thumb})` }}
+            />
+          )}
+          <div className={`absolute inset-0 bg-gradient-to-b ${theme.gradient} opacity-25`} />
+
+          {cutoutDisplay ? (
+            <div
+              className="absolute inset-0 flex items-center justify-center p-4 preview-subject-layer"
+              style={{
+                transform: `translate3d(${settings.posX}px, ${settings.posY}px, 0) scale(${settings.scale})`,
+              }}
+            >
+              <PetIdleDisplay
+                idleVideoUrl={idleVideoUrl ?? pipeline?.idle_video_url}
+                cutoutUrl={cutoutDisplay}
+                className="theme-preview-frame__pet max-h-[62%] max-w-[92%]"
+                style={{
+                  filter: `drop-shadow(0 16px 32px ${theme.accent}66)`,
+                }}
+              />
+            </div>
+          ) : null}
+        </motion.div>
 
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="flex flex-col items-center gap-2 text-center"
+          className="mt-5 flex flex-col items-center gap-2 text-center max-w-[280px]"
         >
-          <Nfc className="w-8 h-8 text-emerald-300/90" strokeWidth={1.25} />
+          {status === "live" ? (
+            <Radio className="w-7 h-7 text-emerald-300/90" strokeWidth={1.25} />
+          ) : status === "offline" ? (
+            <WifiOff className="w-7 h-7 text-amber-200/80" strokeWidth={1.25} />
+          ) : (
+            <motion.div
+              className="w-7 h-7 rounded-full border-2 border-[#c9a227]/40 border-t-[#c9a227]"
+              animate={{ rotate: 360 }}
+              transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+            />
+          )}
           <p className="text-base font-medium" style={{ color: "#F1E5D1" }}>
-            {language === "ko" ? "숲속 테마 · 대기 중" : "Forest theme · waiting"}
+            {status === "starting"
+              ? d.starting
+              : status === "live"
+                ? d.liveTitle(theme.nameKo || theme.name)
+                : d.offlineTitle}
           </p>
-          <p className="text-sm memorial-body max-w-[240px]">{waitHint}</p>
-          <p className="text-xs text-white/40 mt-2">
-            {language === "ko"
-              ? "카드 인식 후 숲 배경과 고야가 나타납니다"
-              : "Forest and Goya appear after NFC"}
-          </p>
-          {piHint ? (
-            <p className="text-xs text-amber-200/70 mt-3 max-w-[260px]">{piHint}</p>
-          ) : null}
+          <p className="text-sm memorial-body">{statusHint ?? d.startingHint}</p>
         </motion.div>
+      </div>
+
+      <div className="px-8 pb-10 shrink-0 relative z-10">
+        <motion.button
+          type="button"
+          onClick={onComplete}
+          className="w-full py-4 rounded-2xl font-normal text-[15px] tracking-wider"
+          style={{
+            background: "linear-gradient(135deg, #b8860b 0%, #c9a227 30%, #d4af37 50%, #f5d77a 70%, #d4af37 100%)",
+            boxShadow: "0 10px 40px rgba(201, 162, 39, 0.25)",
+            color: "#0a0a0a",
+          }}
+          whileHover={{ scale: 1.02 }}
+          whileTap={{ scale: 0.98 }}
+        >
+          {d.done}
+        </motion.button>
       </div>
     </div>
   );

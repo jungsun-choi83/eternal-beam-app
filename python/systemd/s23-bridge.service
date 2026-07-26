@@ -1,0 +1,17 @@
+[Unit]
+Description=Eternal Beam S23 sensor bridge (touch approach + voice)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/pi/eternal-beam/python
+EnvironmentFile=/home/pi/eternal-beam/python/systemd/s23-bridge.env
+ExecStart=/usr/bin/python3 -u /home/pi/eternal-beam/python/s23_bridge_simple.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

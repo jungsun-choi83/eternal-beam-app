@@ -43,14 +43,20 @@ echo " 2) 손 5~12cm = touch / 말하기 = voice"
 echo " 3) NFC 카드 = Pi 터치스크린 숲 배경"
 echo "============================================"
 echo ""
-echo "[*] i2c 확인 (29=거리, 24=NFC):"
-i2cdetect -y 1 || true
+I2C_BUS="$(python3 -c 'from hardware import load_hardware_config; print(load_hardware_config().i2c_bus)' 2>/dev/null || echo 1)"
+echo "[*] i2c 확인 (bus $I2C_BUS, 29=거리, 24=NFC):"
+i2cdetect -y "$I2C_BUS" || true
 echo ""
 
-# 배경은 백그라운드
-nohup python3 -u film_display_simple.py >> /tmp/eb-bg.log 2>&1 &
-sleep 1
-echo "[*] 배경 플레이어 시작 (로그: /tmp/eb-bg.log)"
+if [[ "${NO_BG:-0}" == "1" ]]; then
+  echo "[*] 배경 디스플레이 없음 — film_display_simple.py 건너뜀"
+  NFC_FLAG="--no-nfc"
+else
+  nohup python3 -u film_display_simple.py >> /tmp/eb-bg.log 2>&1 &
+  sleep 1
+  echo "[*] 배경 플레이어 시작 (로그: /tmp/eb-bg.log)"
+  NFC_FLAG=""
+fi
 
 echo "[*] 센서 브리지 시작 (Ctrl+C 종료)"
-exec python3 -u eternal_beam_pi.py --sse-port 0
+exec python3 -u eternal_beam_pi.py --sse-port 0 --host "$S23_IP" $NFC_FLAG

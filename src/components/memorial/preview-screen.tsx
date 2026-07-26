@@ -26,6 +26,8 @@ interface PreviewScreenProps {
   language?: string;
   settings: { scale: number; posX: number; posY: number };
   onSettingsChange: (settings: { scale: number; posX: number; posY: number }) => void;
+  /** free = 기기 즉시 송출, premium = 배송지 입력으로 */
+  deliveryMode?: "device" | "shipping";
   onComplete: () => void;
   onBack: () => void;
 }
@@ -52,11 +54,13 @@ export function PreviewScreen({
   language = "ko",
   settings,
   onSettingsChange,
+  deliveryMode = "device",
   onComplete,
   onBack,
 }: PreviewScreenProps) {
   const p = memorialT(language).preview;
   const [activeSlider, setActiveSlider] = useState<string | null>(null);
+  const [displaySettings, setDisplaySettings] = useState(settings);
   const [pipeline, setPipeline] = useState<StoredPipeline | null>(null);
   const [ffPreviewUrl, setFfPreviewUrl] = useState<string | null>(null);
   const [ffLoading, setFfLoading] = useState(false);
@@ -67,7 +71,23 @@ export function PreviewScreen({
     getMemorialTheme(1)!;
   const previewBgVideo = getEffectiveBgVideo(currentTheme);
   const settingsRef = useRef(settings);
+  const displaySettingsRef = useRef(settings);
+  const subjectLayerRef = useRef<HTMLDivElement>(null);
+  const draggingSliderRef = useRef(false);
   settingsRef.current = settings;
+  displaySettingsRef.current = displaySettings;
+
+  const applySubjectTransform = useCallback((s: { scale: number; posX: number; posY: number }) => {
+    const el = subjectLayerRef.current;
+    if (!el) return;
+    el.style.transform = `translate3d(${s.posX}px, ${s.posY}px, 0) scale(${s.scale})`;
+  }, []);
+
+  useEffect(() => {
+    if (draggingSliderRef.current) return;
+    setDisplaySettings(settings);
+    applySubjectTransform(settings);
+  }, [settings, applySubjectTransform]);
 
   useEffect(() => {
     if (previewThemeId != null) {
@@ -92,8 +112,13 @@ export function PreviewScreen({
   }, [cutoutImage]);
 
   const handleReset = useCallback(() => {
-    onSettingsChange({ scale: 1, posX: 0, posY: 0 });
-  }, [onSettingsChange]);
+    draggingSliderRef.current = false;
+    setActiveSlider(null);
+    const reset = { scale: 1, posX: 0, posY: 0 };
+    setDisplaySettings(reset);
+    applySubjectTransform(reset);
+    onSettingsChange(reset);
+  }, [applySubjectTransform, onSettingsChange]);
 
   const clampScale = (value: number) =>
     Math.round(Math.min(2, Math.max(0.5, value)) * 100) / 100;
@@ -101,17 +126,42 @@ export function PreviewScreen({
   const clampPos = (value: number) =>
     Math.round(Math.min(100, Math.max(-100, value)) * 10) / 10;
 
+  const commitSettings = useCallback(
+    (next: { scale: number; posX: number; posY: number }) => {
+      setDisplaySettings(next);
+      applySubjectTransform(next);
+      onSettingsChange(next);
+    },
+    [applySubjectTransform, onSettingsChange]
+  );
+
+  const previewLiveSettings = useCallback(
+    (partial: Partial<{ scale: number; posX: number; posY: number }>) => {
+      const next = { ...displaySettingsRef.current, ...partial };
+      displaySettingsRef.current = next;
+      setDisplaySettings(next);
+      applySubjectTransform(next);
+    },
+    [applySubjectTransform]
+  );
+
+  const finishSliderDrag = useCallback(() => {
+    draggingSliderRef.current = false;
+    setActiveSlider(null);
+    onSettingsChange(displaySettingsRef.current);
+  }, [onSettingsChange]);
+
   const handlePreviewWheel = useCallback(
     (e: React.WheelEvent) => {
       e.preventDefault();
       const delta = -e.deltaY * 0.0025;
-      const next = clampScale(settingsRef.current.scale + delta);
-      onSettingsChange({
-        ...settingsRef.current,
-        scale: next,
-      });
+      const next = {
+        ...displaySettingsRef.current,
+        scale: clampScale(displaySettingsRef.current.scale + delta),
+      };
+      commitSettings(next);
     },
-    [onSettingsChange]
+    [commitSettings]
   );
 
   const tryFfmpegPreview = useCallback(async () => {
@@ -134,9 +184,9 @@ export function PreviewScreen({
       const { preview_url } = await generatePreview({
         background_id: bgId,
         cutoutFile: file,
-        scale: settings.scale,
-        position_x: settings.posX,
-        position_y: settings.posY,
+        scale: displaySettings.scale,
+        position_x: displaySettings.posX,
+        position_y: displaySettings.posY,
       });
       const base = getVideoApiBaseUrl();
       setFfPreviewUrl(
@@ -147,7 +197,7 @@ export function PreviewScreen({
     } finally {
       setFfLoading(false);
     }
-  }, [cutoutImage, previewThemeId, currentTheme, settings.posX, settings.posY, settings.scale, p.cutoutMissing, p.themeUnknown, p.previewFailed]);
+  }, [cutoutImage, previewThemeId, currentTheme, displaySettings.posX, displaySettings.posY, displaySettings.scale, p.cutoutMissing, p.themeUnknown, p.previewFailed]);
 
   const SliderControl = ({ 
     label, 
@@ -157,6 +207,7 @@ export function PreviewScreen({
     max, 
     step,
     onChange,
+    onCommit,
     id,
   }: { 
     label: string;
@@ -165,7 +216,8 @@ export function PreviewScreen({
     min: number;
     max: number;
     step: number;
-    onChange: (value: number) => void;
+    onChange: (value: number, opts?: { commit?: boolean }) => void;
+    onCommit: () => void;
     id: string;
   }) => {
     const clamp = (v: number) => Math.min(max, Math.max(min, v));
@@ -175,12 +227,15 @@ export function PreviewScreen({
       id === "scale" ? clampScale(v) : clampPos(v);
     const bump = (dir: -1 | 1) => {
       const next = clamp(value + dir * step);
-      onChange(normalize(next));
+      onChange(normalize(next), { commit: true });
     };
     const handleSliderInput = (raw: string) => {
       const parsed = Number.parseFloat(raw);
       if (Number.isNaN(parsed)) return;
-      onChange(normalize(parsed));
+      onChange(normalize(parsed), { commit: false });
+    };
+    const handleSliderCommit = () => {
+      onCommit();
     };
 
     const stepButtonStyle = {
@@ -262,10 +317,26 @@ export function PreviewScreen({
               value={value}
               onInput={(e) => handleSliderInput(e.currentTarget.value)}
               onChange={(e) => handleSliderInput(e.target.value)}
-              onPointerDown={() => setActiveSlider(id)}
+              onPointerDown={(e) => {
+                draggingSliderRef.current = true;
+                setActiveSlider(id);
+                e.currentTarget.setPointerCapture(e.pointerId);
+              }}
+              onPointerUp={(e) => {
+                try {
+                  e.currentTarget.releasePointerCapture(e.pointerId);
+                } catch {
+                  /* ignore */
+                }
+                handleSliderCommit();
+              }}
+              onPointerCancel={handleSliderCommit}
               onFocus={() => setActiveSlider(id)}
-              onBlur={() => setActiveSlider(null)}
-              className="preview-adjust-slider absolute inset-0 w-full h-full opacity-0 cursor-grab active:cursor-grabbing touch-pan-x"
+              onBlur={() => {
+                if (draggingSliderRef.current) handleSliderCommit();
+                else setActiveSlider(null);
+              }}
+              className="preview-adjust-slider absolute inset-0 w-full h-full opacity-0 cursor-grab active:cursor-grabbing touch-none"
               aria-label={label}
             />
           </div>
@@ -337,7 +408,7 @@ export function PreviewScreen({
       </p>
 
       {/* Preview Area */}
-      <div className="px-6 py-4 flex-1 flex flex-col items-center justify-start min-h-0 overflow-hidden gap-4">
+      <div className="px-6 py-4 shrink-0 flex flex-col items-center justify-start gap-4">
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -362,9 +433,10 @@ export function PreviewScreen({
           {/* Subject with transformations — first composite with selected theme bg */}
           {cutoutDisplay && (
             <div
-              className="absolute inset-0 flex items-center justify-center p-4"
+              ref={subjectLayerRef}
+              className="absolute inset-0 flex items-center justify-center p-4 preview-subject-layer"
               style={{
-                transform: `translate(${settings.posX}px, ${settings.posY}px) scale(${settings.scale})`,
+                transform: `translate3d(${displaySettings.posX}px, ${displaySettings.posY}px, 0) scale(${displaySettings.scale})`,
               }}
             >
               <PetIdleDisplay
@@ -487,7 +559,8 @@ export function PreviewScreen({
         ) : null}
       </div>
 
-      {/* Controls + Complete - 하단 고정 */}
+      {/* Controls + Complete — 작은 화면에서도 부드럽게 스크롤 */}
+      <div className="preview-controls-scroll flex-1 min-h-0 overflow-y-auto overscroll-contain">
       <div 
         className="px-8 py-6 space-y-6 shrink-0"
         style={{
@@ -498,11 +571,15 @@ export function PreviewScreen({
           id="scale"
           label={p.scale}
           icon={Maximize2}
-          value={settings.scale}
+          value={displaySettings.scale}
           min={0.5}
           max={2}
           step={0.01}
-          onChange={(val) => onSettingsChange({ ...settingsRef.current, scale: val })}
+          onChange={(val, opts) => {
+            if (opts?.commit) commitSettings({ ...displaySettingsRef.current, scale: val });
+            else previewLiveSettings({ scale: val });
+          }}
+          onCommit={finishSliderDrag}
         />
         <p className="text-[10px] text-center -mt-3" style={{ color: "#6b6b70" }}>
           {p.scaleWheelHint}
@@ -512,22 +589,30 @@ export function PreviewScreen({
           id="posX"
           label={p.posX}
           icon={Move}
-          value={settings.posX}
+          value={displaySettings.posX}
           min={-100}
           max={100}
-          step={0.5}
-          onChange={(val) => onSettingsChange({ ...settingsRef.current, posX: val })}
+          step={0.1}
+          onChange={(val, opts) => {
+            if (opts?.commit) commitSettings({ ...displaySettingsRef.current, posX: val });
+            else previewLiveSettings({ posX: val });
+          }}
+          onCommit={finishSliderDrag}
         />
 
         <SliderControl
           id="posY"
           label={p.posY}
           icon={Move}
-          value={settings.posY}
+          value={displaySettings.posY}
           min={-100}
           max={100}
-          step={0.5}
-          onChange={(val) => onSettingsChange({ ...settingsRef.current, posY: val })}
+          step={0.1}
+          onChange={(val, opts) => {
+            if (opts?.commit) commitSettings({ ...displaySettingsRef.current, posY: val });
+            else previewLiveSettings({ posY: val });
+          }}
+          onCommit={finishSliderDrag}
         />
       </div>
 
@@ -547,8 +632,9 @@ export function PreviewScreen({
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
         >
-          {p.completeSend}
+          {deliveryMode === "shipping" ? p.completeShipping : p.completeDevice}
         </motion.button>
+      </div>
       </div>
     </div>
   );

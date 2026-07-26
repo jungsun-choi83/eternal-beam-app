@@ -6,17 +6,20 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 REPO_RAW="https://raw.githubusercontent.com/jungsun-choi83/eternal-beam-app/main/python"
-S23_IP="${UDP_HOST:-192.168.219.187}"
+S23_IP="${UDP_HOST:-192.168.0.101}"
 
 pull_latest() {
-  for f in eternal_beam_pi.py pi_sensors_to_unity_udp.py voice_to_unity.py pi_sse_server.py film_display_simple.py; do
+  for f in eternal_beam_pi.py pi_sensors_to_unity_udp.py voice_to_unity.py pi_sse_server.py \
+    pi_display_bg.py bg_theme_map.json hardware_config.yaml \
+    hardware/__init__.py hardware/config.py hardware/i2c_bus.py hardware/gpio.py; do
+    mkdir -p "$(dirname "$f")"
     curl -fsSL -o "$f" "${REPO_RAW}/${f}" || true
   done
 }
 
 install_deps() {
   pip install -q -r requirements-pi.txt 2>/dev/null || pip install -q \
-    adafruit-circuitpython-vl53l0x adafruit-circuitpython-pn532 adafruit-blinka pyaudio numpy
+    adafruit-circuitpython-vl53l0x adafruit-circuitpython-pn532 smbus2 gpiod pyyaml pyaudio numpy
 }
 
 mode="${1:-bridge}"
@@ -27,9 +30,10 @@ case "$mode" in
     export DISPLAY="${DISPLAY:-:0}"
     export XAUTHORITY="${XAUTHORITY:-/home/pi/.Xauthority}"
     sudo fuser -k 9999/udp 2>/dev/null || true
+    pkill -f pi_display_bg.py 2>/dev/null || true
     pkill -f film_display_simple.py 2>/dev/null || true
-    echo "[bg] Pi 터치스크린 배경 대기 UDP :9999"
-    exec python3 -u film_display_simple.py
+    echo "[bg] Pi 터치스크린 배경 (pi_display_bg.py) UDP :9999"
+    exec python3 -u pi_display_bg.py --videos-dir ./backgrounds --wait-nfc
     ;;
   bridge)
     pull_latest
@@ -40,8 +44,10 @@ case "$mode" in
     export BG_DISPLAY_HOST="${BG_DISPLAY_HOST:-127.0.0.1}"
     export BG_DISPLAY_PORT="${BG_DISPLAY_PORT:-9999}"
     export NFC_FALLBACK_THEME="${NFC_FALLBACK_THEME:-forest}"
+    export ACTION_MOCK="${ACTION_MOCK:-run}"
     echo "[bridge] S23 Unity → udp://${UDP_HOST}:${UDP_PORT}"
     echo "[bridge] Pi 배경   → udp://${BG_DISPLAY_HOST}:${BG_DISPLAY_PORT}"
+    echo "[bridge] ACTION_MOCK=${ACTION_MOCK} (approach=달려오기 목업)"
     echo "[bridge] 거리센서 + 마이크 + NFC (옵션 끄지 마세요)"
     exec python3 -u eternal_beam_pi.py --sse-port 0
     ;;

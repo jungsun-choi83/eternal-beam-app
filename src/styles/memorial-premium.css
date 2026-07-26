@@ -503,10 +503,21 @@
 }
 
 .preview-adjust-slider {
-  touch-action: pan-x;
+  touch-action: none;
   -webkit-appearance: none;
   appearance: none;
   margin: 0;
+}
+
+.preview-subject-layer {
+  will-change: transform;
+  transform-origin: center center;
+}
+
+.preview-controls-scroll {
+  -webkit-overflow-scrolling: touch;
+  scroll-behavior: smooth;
+  overscroll-behavior: contain;
 }
 
 /* Home — add memory card */

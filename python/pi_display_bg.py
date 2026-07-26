@@ -29,8 +29,14 @@ from pathlib import Path
 from typing import Any
 
 BASE_DIR = Path(__file__).resolve().parent
+if str(BASE_DIR) not in sys.path:
+    sys.path.insert(0, str(BASE_DIR))
 
-BG_DISPLAY_PORT = int(os.getenv("BG_DISPLAY_PORT", "9999"))
+from hardware import load_hardware_config  # noqa: E402
+
+_HW = load_hardware_config()
+
+BG_DISPLAY_PORT = int(os.getenv("BG_DISPLAY_PORT", str(_HW.get("network", "bg_display_port", default=9999))))
 BG_VIDEOS_DIR = Path(os.getenv("BG_VIDEOS_DIR", str(BASE_DIR / "backgrounds")))
 BG_THEME_MAP_PATH = Path(os.getenv("BG_THEME_MAP", str(BASE_DIR / "bg_theme_map.json")))
 
@@ -42,7 +48,7 @@ _current_theme: str | None = None
 def load_bg_map() -> dict[str, str]:
     if not BG_THEME_MAP_PATH.exists():
         print(f"[pi_display_bg] theme map 없음: {BG_THEME_MAP_PATH}", flush=True)
-        return {"_default": "idle.mp4"}
+        return {"_default": "fresh_forest.mp4"}
     with open(BG_THEME_MAP_PATH, encoding="utf-8") as f:
         raw = json.load(f)
     return {str(k): str(v) for k, v in raw.items() if not str(k).startswith("_") or k == "_default"}
@@ -80,15 +86,22 @@ def _pick_player() -> list[str]:
 
 
 def _player_env() -> dict[str, str]:
-    """SSH에서 실행해도 Pi 터치스크린(:0)에 mpv가 뜨도록."""
+    """SSH에서 실행해도 터치스크린에 mpv가 뜨도록 — DISPLAY/XAUTHORITY 기본값은
+    hardware_config.yaml 의 display.env (보드별 홈 디렉터리가 다를 수 있음)."""
+    board_env = _HW.display_env
     env = os.environ.copy()
     if not env.get("DISPLAY"):
-        env["DISPLAY"] = os.getenv("BG_DISPLAY", ":0")
-    xauth = Path(env.get("XAUTHORITY", "/home/pi/.Xauthority"))
+        env["DISPLAY"] = os.getenv("BG_DISPLAY", board_env.get("DISPLAY", ":0"))
+    if not env.get("WAYLAND_DISPLAY"):
+        wayland = os.getenv("BG_WAYLAND_DISPLAY", "wayland-0").strip()
+        if wayland:
+            env["WAYLAND_DISPLAY"] = wayland
+    xauth = Path(env.get("XAUTHORITY", board_env.get("XAUTHORITY", "/home/pi/.Xauthority")))
     if xauth.exists():
         env["XAUTHORITY"] = str(xauth)
     print(
         f"[pi_display_bg] player env DISPLAY={env.get('DISPLAY')!r} "
+        f"WAYLAND={env.get('WAYLAND_DISPLAY', '(없음)')!r} "
         f"XAUTHORITY={env.get('XAUTHORITY', '(없음)')!r}",
         flush=True,
     )
@@ -98,30 +111,28 @@ def _player_env() -> dict[str, str]:
 def _build_cmd(player: list[str], video: Path) -> list[str]:
     extra = os.getenv("BG_MPV_EXTRA", "").strip().split()
     if player[0] == "mpv":
-        # Pi 터치스크린: --panscan=1.0 으로 여백 없이 꽉 채움 (가장자리 약간 잘릴 수 있음)
-        fill = os.getenv("BG_MPV_FILL", "panscan").strip().lower()
+        # 기본 simple — 수동 테스트와 동일 (촬영에서 가장 잘 뜸)
+        fill = os.getenv("BG_MPV_FILL", "simple").strip().lower()
         fill_args: list[str]
         if fill in ("stretch", "noaspect", "distort"):
             fill_args = ["--keepaspect=no"]
-        elif fill == "none":
-            fill_args = []
-        else:
-            # 세로 영상 + 가로 터치스크린: 바닥이 잘리지 않게 아래 정렬
+        elif fill == "panscan":
             fill_args = [
                 "--panscan=1.0",
                 "--keepaspect-window=no",
                 "--video-align-y=1",
             ]
+        elif fill == "wayland":
+            fill_args = ["--gpu-context=wayland"]
+        else:
+            fill_args = ["--ontop"]
 
         return [
             "mpv",
             "--fs",
-            "--fs-screen=0",
             "--loop=inf",
             "--no-audio",
             "--no-terminal",
-            "--no-border",
-            "--ontop",
             *fill_args,
             *extra,
             str(video),
@@ -151,6 +162,7 @@ def _log_player_exit(proc: subprocess.Popen) -> None:
 
 def stop_player() -> None:
     global _player_proc
+    subprocess.run(["pkill", "-9", "mpv"], check=False)
     with _player_lock:
         if _player_proc is None:
             return
@@ -199,7 +211,7 @@ def play_background(theme_id: str | None, bg_map: dict[str, str]) -> None:
             _player_proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
+                stderr=open("/tmp/mpv-bg.err", "a", encoding="utf-8"),
                 env=_player_env(),
             )
         except Exception as e:

@@ -11,9 +11,12 @@ import {
   getStoredContentId,
   persistDeviceContentFromPipeline,
 } from "@/lib/persist-device-content";
+import { readShippingAddress } from "@/lib/finalize-preview-content";
 
 interface NFCPlaybackScreenProps {
   language?: string;
+  /** 유료 배경 — NFC 카드 실물 발송 플로우 */
+  premiumPhysical?: boolean;
   onComplete: () => void;
   onBack: () => void;
   onGoPreview?: () => void;
@@ -21,11 +24,13 @@ interface NFCPlaybackScreenProps {
 
 export function NFCPlaybackScreen({
   language = "ko",
+  premiumPhysical = false,
   onComplete,
   onBack,
   onGoPreview,
 }: NFCPlaybackScreenProps) {
   const n = memorialT(language).nfc;
+  const shipping = readShippingAddress();
   const slots = useMemo(
     () => [1, 2, 3].map((id) => ({ id, name: n.slot(id), occupied: false })),
     [language]
@@ -118,7 +123,7 @@ export function NFCPlaybackScreen({
           className="text-sm font-light text-center mb-14 max-w-[260px]"
           style={{ color: "#A1A1A6" }}
         >
-          {n.completeBody}
+          {premiumPhysical ? n.completeBodyShip : n.completeBody}
         </motion.p>
 
         <motion.button
@@ -295,11 +300,21 @@ export function NFCPlaybackScreen({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.25 }}
-          className="text-xs font-light text-center max-w-[240px] mb-8"
+          className="text-xs font-light text-center max-w-[280px] mb-8"
           style={{ color: "#666666" }}
         >
-          {n.insertHint}
+          {premiumPhysical ? n.premiumShipHint : n.insertHint}
         </motion.p>
+        {premiumPhysical && shipping ? (
+          <motion.p
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="text-[11px] font-light text-center max-w-[280px] -mt-6 mb-8 leading-relaxed"
+            style={{ color: "#888" }}
+          >
+            {n.shippingTo(shipping.recipientName, shipping.addressLine1)}
+          </motion.p>
+        ) : null}
 
         <div className="w-full grid grid-cols-3 gap-3">
           {slots.map((slot, index) => (

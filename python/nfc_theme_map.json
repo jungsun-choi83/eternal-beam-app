@@ -3,5 +3,6 @@
   "_scan": "python nfc_scan_uid.py 로 흰 카드 UID 확인 후 추가",
   "_fallback": "미등록 카드는 eternal-beam-pi.env 의 NFC_FALLBACK_THEME=forest",
   "A1B2C3D4": "forest",
-  "FOREST01": "forest"
+  "FOREST01": "forest",
+  "04E9113DC82A81": "forest"
 }

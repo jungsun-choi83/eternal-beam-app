@@ -11,6 +11,8 @@ import { LanguageToggle } from "./language-toggle";
 
 interface AuthScreenProps {
   initialMode?: "login" | "signup";
+  /** QR 직후 등 — 로그인/회원가입 탭 전환 숨김 */
+  lockMode?: "login" | "signup";
   language?: string;
   onLanguageChange?: (lang: "ko" | "en") => void;
   onAuthComplete: (userName?: string) => void;
@@ -18,12 +20,13 @@ interface AuthScreenProps {
 
 export function AuthScreen({
   initialMode = "login",
+  lockMode,
   language = "ko",
   onLanguageChange,
   onAuthComplete,
 }: AuthScreenProps) {
   const a = memorialT(language).auth;
-  const [mode, setMode] = useState<"login" | "signup">(initialMode);
+  const [mode, setMode] = useState<"login" | "signup">(lockMode ?? initialMode);
   const [showPassword, setShowPassword] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -159,6 +162,7 @@ export function AuthScreen({
             />
 
             {/* Mode Toggle */}
+            {!lockMode ? (
             <motion.div
               variants={itemVariants}
               className="flex rounded-2xl p-1.5 mb-8"
@@ -193,6 +197,15 @@ export function AuthScreen({
                 </button>
               ))}
             </motion.div>
+            ) : (
+              <motion.h2
+                variants={itemVariants}
+                className="text-center text-lg font-light mb-8"
+                style={{ color: "#F5F5F7" }}
+              >
+                {lockMode === "signup" ? a.signUp : a.signIn}
+              </motion.h2>
+            )}
 
             {/* Form Fields with Stagger Animation */}
             <AnimatePresence mode="wait">
