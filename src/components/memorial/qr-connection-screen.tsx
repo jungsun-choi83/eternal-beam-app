@@ -4,11 +4,9 @@ import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 import { ChevronLeft, Smartphone, CheckCircle2 } from "lucide-react";
 import { memorialT } from "@/components/memorial/memorial-i18n";
-import { LanguageToggle } from "@/components/memorial/language-toggle";
 
 interface QRConnectionScreenProps {
   language?: string;
-  onLanguageChange?: (lang: "ko" | "en") => void;
   showBack?: boolean;
   onComplete: () => void;
   onBack: () => void;
@@ -17,7 +15,6 @@ interface QRConnectionScreenProps {
 
 export function QRConnectionScreen({
   language = "ko",
-  onLanguageChange,
   showBack = true,
   onComplete,
   onBack,
@@ -52,25 +49,28 @@ export function QRConnectionScreen({
       data-screen="qrConnection"
       className="h-full flex flex-col relative overflow-hidden min-h-0"
     >
-      <header className="px-6 pt-8 pb-4 flex items-center justify-between relative shrink-0">
+      <header className="px-6 pt-[max(2.75rem,env(safe-area-inset-top,0px))] pb-4 flex items-center justify-between relative shrink-0">
         {showBack ? (
-          <button type="button" onClick={onBack} className="p-2 -ml-2" aria-label={c.back}>
+          <button type="button" onClick={onBack} className="p-2 -ml-2 shrink-0" aria-label={c.back}>
             <ChevronLeft className="w-5 h-5" style={{ color: "#F5F5F7" }} />
           </button>
         ) : (
-          <div className="w-9" aria-hidden />
+          <div className="w-9 shrink-0" aria-hidden />
         )}
-        <h1 className="screen-title absolute left-1/2 -translate-x-1/2" style={{ color: "#F5F5F7" }}>
+        <h1
+          className="screen-title flex-1 text-center px-2 truncate"
+          style={{ color: "#F5F5F7" }}
+        >
           {q.title}
         </h1>
-        <div className="flex items-center gap-2 shrink-0">
-          {onLanguageChange ? (
-            <LanguageToggle language={language} onChange={onLanguageChange} />
-          ) : null}
-          <button type="button" onClick={onSkip} className="text-sm memorial-caption" style={{ color: "#A1A1A6" }}>
-            {q.skip}
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={onSkip}
+          className="text-sm memorial-caption shrink-0 min-w-[3rem] text-right"
+          style={{ color: "#A1A1A6" }}
+        >
+          {q.skip}
+        </button>
       </header>
 
       <div className="flex-1 flex flex-col items-center justify-center px-8 min-h-0 overflow-y-auto">

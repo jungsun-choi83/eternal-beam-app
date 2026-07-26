@@ -7,7 +7,6 @@ import { HolographicBackground } from "./holographic-background";
 import { HologramEffects } from "./hologram-effects";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { setEternalBeamUserId } from "@/lib/eternal-beam-user";
-import { LanguageToggle } from "./language-toggle";
 
 interface AuthScreenProps {
   initialMode?: "login" | "signup";
@@ -76,17 +75,11 @@ export function AuthScreen({
 
       {/* Header with Logo - Fade in up */}
       <motion.header 
-        className="pt-8 pb-4 px-8 shrink-0"
+        className="pt-[max(2.75rem,env(safe-area-inset-top,0px))] pb-4 px-8 shrink-0"
         initial={{ opacity: 0, y: -30 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.7, ease: [0.25, 0.46, 0.45, 0.94] as const }}
       >
-        <div className="flex justify-end mb-4">
-          <LanguageToggle
-            language={language}
-            onChange={(code) => onLanguageChange?.(code)}
-          />
-        </div>
         <div className="text-center relative overflow-hidden">
           {/* Enhanced Gold Glow */}
           <motion.div

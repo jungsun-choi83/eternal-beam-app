@@ -24,8 +24,8 @@ export function LanguageToggle({
     >
       {(
         [
-          { code: "ko" as const, label: "한국어" },
-          { code: "en" as const, label: "English" },
+          { code: "ko" as const, label: "KR" },
+          { code: "en" as const, label: "EN" },
         ] as const
       ).map(({ code, label }) => {
         const selected = active === code;
@@ -34,7 +34,7 @@ export function LanguageToggle({
             key={code}
             type="button"
             onClick={() => onChange(code)}
-            className="px-2.5 py-1.5 rounded-[10px] text-[11px] font-medium transition-colors min-w-[2.75rem]"
+            className="px-2 py-1 rounded-[10px] text-[10px] font-semibold tracking-wide transition-colors min-w-[2rem]"
             style={{
               background: selected ? "rgba(201, 162, 39, 0.28)" : "transparent",
               color: selected ? "#f5d77a" : "#a1a1a6",

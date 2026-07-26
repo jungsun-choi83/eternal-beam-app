@@ -73,14 +73,6 @@ type NavDirection = 'forward' | 'back'
 
 const DEVICE_CONNECTED_KEY = 'eternal_beam_device_connected'
 
-/** 화면 자체 헤더에 언어 토글이 있는 경우 — 전역 토글 중복 방지 */
-const SCREENS_WITH_OWN_LANG_TOGGLE: ReadonlySet<Screen> = new Set([
-  'qrConnection',
-  'home',
-  'signup',
-  'login',
-])
-
 const pageEase = [0.22, 1, 0.36, 1] as const
 
 const pageVariants = {
@@ -335,15 +327,13 @@ export function EternalBeamApp() {
 
       <MobileFrame>
         {tapFlash ? <div className="eb-tap-flash absolute inset-0 z-[80] rounded-[inherit]" aria-hidden /> : null}
-        {!SCREENS_WITH_OWN_LANG_TOGGLE.has(screen) ? (
-          <div className="pointer-events-none absolute inset-x-0 top-[max(0.5rem,env(safe-area-inset-top,0px))] z-[60] flex justify-end px-4">
-            <LanguageToggle
-              language={language}
-              onChange={handleLanguageChange}
-              className="pointer-events-auto"
-            />
-          </div>
-        ) : null}
+        <div className="pointer-events-none absolute inset-x-0 top-[max(0.625rem,env(safe-area-inset-top,0px))] z-[60] flex justify-end px-4">
+          <LanguageToggle
+            language={language}
+            onChange={handleLanguageChange}
+            className="pointer-events-auto"
+          />
+        </div>
         <AnimatePresence mode="wait" initial={false}>
           {screen === 'signup' && (
             <motion.div
@@ -402,7 +392,6 @@ export function EternalBeamApp() {
             >
               <QRConnectionScreen
                 language={language}
-                onLanguageChange={handleLanguageChange}
                 showBack={qrBackTarget !== null}
                 onComplete={handleQrComplete}
                 onBack={handleQrBack}
@@ -425,7 +414,6 @@ export function EternalBeamApp() {
                 cutoutImage={cutoutImage}
                 userName={userName ?? undefined}
                 language={language}
-                onLanguageChange={handleLanguageChange}
                 onMediaFile={handleMediaFile}
                 onGallery={() => navigateTo('gallery')}
                 onSettings={() => navigateTo('settings')}

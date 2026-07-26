@@ -75,13 +75,29 @@
 }
 
 .ai-processing-screen__idle-preview {
-  width: min(100%, 280px);
-  min-height: clamp(160px, 32dvh, 260px);
+  width: min(100%, 220px);
+  max-height: clamp(120px, 22dvh, 200px);
   aspect-ratio: 1 / 1;
+  margin-bottom: 0.75rem;
+}
+
+.ai-processing-screen__idle-preview .cutout-stage {
+  background-color: #0c0c0e;
+  background-image: radial-gradient(
+    ellipse 85% 70% at 50% 88%,
+    rgba(201, 162, 39, 0.07) 0%,
+    transparent 62%
+  );
+  background-size: cover;
 }
 
 .ai-processing-screen__idle-preview .cutout-stage__subject {
-  min-height: clamp(160px, 32dvh, 260px);
+  min-height: 0;
+  max-height: 100%;
+}
+
+.ai-processing-screen__steps {
+  margin-top: 0.25rem;
 }
 
 /* Luma idle 대기 — 사용자 cutout 미세 호흡 애니메이션 */
@@ -380,12 +396,19 @@
 }
 
 .cutout-stage--plain {
-  background-color: #0c0c0e;
+  background-color: #0c0c0e !important;
   background-image: radial-gradient(
     ellipse 85% 70% at 50% 88%,
     rgba(201, 162, 39, 0.07) 0%,
     transparent 62%
-  );
+  ) !important;
+  background-size: cover !important;
+  background-position: center !important;
+}
+
+.cutout-stage--plain .idle-loop-video,
+.cutout-stage--plain .idle-loop-video__canvas {
+  background-color: #0c0c0e;
 }
 
 .cutout-stage__glow {

@@ -640,9 +640,9 @@ export function AIProcessingScreen({
 
   return (
     <div className="ai-processing-screen h-full flex flex-col relative overflow-hidden">
-      <header className="px-6 pt-[max(2.75rem,env(safe-area-inset-top,0px))] pb-2 text-center relative z-10 shrink-0">
+      <header className="px-6 pt-[max(3.25rem,env(safe-area-inset-top,0px))] pb-2 text-center relative z-10 shrink-0">
         <h1
-          className={`processing-headline px-2 processing-copy-fade ${
+          className={`processing-headline px-10 processing-copy-fade ${
             headlineFading ? "processing-copy-fade--out" : ""
           }`}
         >
@@ -660,15 +660,15 @@ export function AIProcessingScreen({
             showCheck={false}
           />
         ) : showIdlePreview ? (
-          <div className="ai-processing-screen__idle-preview mb-3 relative z-10 shrink-0">
-            <p className="text-[10px] tracking-wider uppercase text-center mb-2" style={{ color: "#888" }}>
+          <div className="ai-processing-screen__idle-preview relative z-10 shrink-0">
+            <p className="text-[10px] tracking-wider uppercase text-center mb-1.5" style={{ color: "#888" }}>
               {t.idlePreview}
             </p>
-            <CutoutStage plain className="rounded-xl border border-white/10 overflow-hidden w-full h-full">
+            <CutoutStage plain className="rounded-xl border border-white/10 overflow-hidden w-full h-full max-h-full">
               <PetIdleDisplay
                 idleVideoUrl={idlePreviewUrl}
                 cutoutUrl={cutoutPreview}
-                className="cutout-stage__subject w-full h-full object-contain"
+                className="cutout-stage__subject w-full h-full max-h-full object-contain"
               />
             </CutoutStage>
           </div>
@@ -687,8 +687,8 @@ export function AIProcessingScreen({
           <div className="processing-scanline w-40 h-1 mb-3 rounded-full overflow-hidden bg-white/5 shrink-0" />
         ) : null}
 
-        <div className="w-full max-w-[300px] mb-4 shrink-0">
-          <div className="flex items-center justify-between mb-4">
+        <div className={`w-full max-w-[300px] mb-3 shrink-0 ai-processing-screen__steps ${showIdlePreview ? "mt-1" : ""}`}>
+          <div className="flex items-center justify-between mb-3">
             {t.steps.map((step, index) => (
               <div key={step.id} className="flex flex-col items-center flex-1">
                 <div

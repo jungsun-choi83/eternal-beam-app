@@ -6,13 +6,11 @@ import { Plus, Settings, Grid3X3 } from "lucide-react";
 import { HolographicBackground } from "./holographic-background";
 import { HologramEffects } from "./hologram-effects";
 import { MediaFileTrigger } from "./media-file-trigger";
-import { LanguageToggle } from "./language-toggle";
 
 interface HomeScreenProps {
   cutoutImage: string | null;
   userName?: string;
   language?: string;
-  onLanguageChange?: (lang: string) => void;
   onMediaFile: (file: File) => void;
   onGallery?: () => void;
   onSettings?: () => void;
@@ -24,7 +22,6 @@ export function HomeScreen({
   cutoutImage,
   userName,
   language = "ko",
-  onLanguageChange,
   onMediaFile,
   onGallery,
   onSettings,
@@ -34,20 +31,14 @@ export function HomeScreen({
   const lang = memorialLang(language);
   const texts = memorialT(language).home;
 
-  const handleLanguageSelect = (code: "ko" | "en") => {
-    onLanguageChange?.(code);
-  };
-
   return (
     <div className="hologram-bg-active memorial-screen-shell h-full flex flex-col relative overflow-hidden min-h-0">
       <HolographicBackground />
       <HologramEffects />
 
       {/* Header with Brand */}
-      <header className="px-6 pt-8 pb-4 relative z-10 shrink-0">
-        {/* Top Row - Gallery, Brand, Settings */}
+      <header className="px-6 pt-[max(2.75rem,env(safe-area-inset-top,0px))] pb-4 relative z-10 shrink-0">
         <div className="flex items-center justify-between gap-2 mb-4">
-          {/* Gallery Button */}
           <motion.button
             onClick={onGallery}
             className="mem-icon-btn relative shrink-0"
@@ -63,13 +54,8 @@ export function HomeScreen({
             <Grid3X3 className="w-5 h-5" style={{ color: "#E2E2E2" }} />
           </motion.button>
 
-          <LanguageToggle
-            language={language}
-            onChange={handleLanguageSelect}
-            className="relative z-20"
-          />
+          <div className="flex-1" aria-hidden />
 
-          {/* Settings Button */}
           <motion.button
             onClick={onSettings}
             className="mem-icon-btn relative shrink-0"
