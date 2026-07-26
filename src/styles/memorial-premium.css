@@ -534,22 +534,31 @@
   aspect-ratio: var(--idle-aspect, 4 / 5);
 }
 
-.preview-adjust-slider {
+.preview-adjust-track {
   touch-action: none;
-  -webkit-appearance: none;
-  appearance: none;
-  margin: 0;
+  cursor: grab;
 }
 
-.preview-subject-layer {
-  will-change: transform;
-  transform-origin: center center;
+.preview-adjust-track:active {
+  cursor: grabbing;
 }
 
 .preview-controls-scroll {
   -webkit-overflow-scrolling: touch;
   scroll-behavior: smooth;
   overscroll-behavior: contain;
+  touch-action: pan-y;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.preview-controls-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.preview-subject-layer {
+  will-change: transform;
+  transform-origin: center center;
 }
 
 /* Home — add memory card */

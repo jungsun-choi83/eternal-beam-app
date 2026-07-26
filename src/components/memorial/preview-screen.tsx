@@ -74,6 +74,7 @@ export function PreviewScreen({
   const displaySettingsRef = useRef(settings);
   const subjectLayerRef = useRef<HTMLDivElement>(null);
   const draggingSliderRef = useRef(false);
+  const activeSliderIdRef = useRef<string | null>(null);
   settingsRef.current = settings;
   displaySettingsRef.current = displaySettings;
 
@@ -147,6 +148,7 @@ export function PreviewScreen({
 
   const finishSliderDrag = useCallback(() => {
     draggingSliderRef.current = false;
+    activeSliderIdRef.current = null;
     setActiveSlider(null);
     onSettingsChange(displaySettingsRef.current);
   }, [onSettingsChange]);
@@ -199,42 +201,65 @@ export function PreviewScreen({
     }
   }, [cutoutImage, previewThemeId, currentTheme, displaySettings.posX, displaySettings.posY, displaySettings.scale, p.cutoutMissing, p.themeUnknown, p.previewFailed]);
 
-  const SliderControl = ({ 
-    label, 
-    icon: Icon, 
-    value, 
-    min, 
-    max, 
+  const SliderControl = ({
+    label,
+    icon: Icon,
+    value,
+    min,
+    max,
     step,
+    buttonStep,
     onChange,
     onCommit,
     id,
-  }: { 
+  }: {
     label: string;
     icon: React.ElementType;
     value: number;
     min: number;
     max: number;
     step: number;
+    buttonStep?: number;
     onChange: (value: number, opts?: { commit?: boolean }) => void;
     onCommit: () => void;
     id: string;
   }) => {
+    const trackRef = useRef<HTMLDivElement>(null);
     const clamp = (v: number) => Math.min(max, Math.max(min, v));
     const formatValue = (v: number) =>
       id === "scale" ? v.toFixed(2) : v.toFixed(1);
     const normalize = (v: number) =>
       id === "scale" ? clampScale(v) : clampPos(v);
+
+    const valueFromClientX = (clientX: number) => {
+      const track = trackRef.current;
+      if (!track) return value;
+      const rect = track.getBoundingClientRect();
+      if (rect.width <= 0) return value;
+      const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+      return normalize(min + ratio * (max - min));
+    };
+
     const bump = (dir: -1 | 1) => {
-      const next = clamp(value + dir * step);
+      const delta = buttonStep ?? step;
+      const next = clamp(value + dir * delta);
       onChange(normalize(next), { commit: true });
     };
-    const handleSliderInput = (raw: string) => {
-      const parsed = Number.parseFloat(raw);
-      if (Number.isNaN(parsed)) return;
-      onChange(normalize(parsed), { commit: false });
+
+    const beginDrag = (clientX: number) => {
+      draggingSliderRef.current = true;
+      activeSliderIdRef.current = id;
+      setActiveSlider(id);
+      onChange(valueFromClientX(clientX), { commit: false });
     };
-    const handleSliderCommit = () => {
+
+    const moveDrag = (clientX: number) => {
+      if (!draggingSliderRef.current || activeSliderIdRef.current !== id) return;
+      onChange(valueFromClientX(clientX), { commit: false });
+    };
+
+    const endDrag = () => {
+      if (activeSliderIdRef.current !== id) return;
       onCommit();
     };
 
@@ -244,24 +269,27 @@ export function PreviewScreen({
       color: "#F5F5F7",
     } as const;
 
+    const pct = ((value - min) / (max - min)) * 100;
+    const isActive = activeSlider === id;
+
     return (
       <motion.div
         initial={{ opacity: 0, y: 10 }}
         animate={{ opacity: 1, y: 0 }}
         className="space-y-2"
       >
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Icon className="w-4 h-4" style={{ color: "#A1A1A6" }} strokeWidth={1.5} />
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <Icon className="w-4 h-4 shrink-0" style={{ color: "#A1A1A6" }} strokeWidth={1.5} />
             <span
-              className="text-xs font-light tracking-wider"
+              className="text-xs font-light tracking-wider truncate"
               style={{ color: "#A1A1A6" }}
             >
               {label}
             </span>
           </div>
           <span
-            className="text-xs font-light tabular-nums min-w-[2.5rem] text-right"
+            className="text-xs font-light tabular-nums min-w-[2.5rem] text-right shrink-0"
             style={{ color: "#c9a227" }}
           >
             {formatValue(value)}
@@ -272,80 +300,86 @@ export function PreviewScreen({
           <motion.button
             type="button"
             aria-label={`${label} decrease`}
-            onClick={() => bump(-1)}
-            className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              bump(-1);
+            }}
+            className="w-10 h-10 rounded-full flex items-center justify-center shrink-0"
             style={stepButtonStyle}
             whileTap={{ scale: 0.92 }}
           >
             <Minus className="w-4 h-4" strokeWidth={1.5} />
           </motion.button>
 
-          <div className="relative h-10 flex-1 flex items-center min-w-0">
+          <div
+            ref={trackRef}
+            className="preview-adjust-track relative flex-1 min-w-0 h-11 flex items-center select-none"
+            onPointerDown={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              beginDrag(e.clientX);
+              e.currentTarget.setPointerCapture(e.pointerId);
+            }}
+            onPointerMove={(e) => {
+              if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+              e.preventDefault();
+              moveDrag(e.clientX);
+            }}
+            onPointerUp={(e) => {
+              if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+              e.preventDefault();
+              try {
+                e.currentTarget.releasePointerCapture(e.pointerId);
+              } catch {
+                /* ignore */
+              }
+              endDrag();
+            }}
+            onPointerCancel={(e) => {
+              try {
+                e.currentTarget.releasePointerCapture(e.pointerId);
+              } catch {
+                /* ignore */
+              }
+              endDrag();
+            }}
+          >
             <div
-              className="absolute inset-x-0 h-[3px] rounded-full"
+              className="absolute inset-x-0 h-[3px] rounded-full pointer-events-none"
               style={{ background: "#1C1C1E" }}
             />
             <div
-              className="absolute h-[3px] rounded-full"
+              className="absolute h-[3px] rounded-full pointer-events-none"
               style={{
                 background: "linear-gradient(90deg, #c9a227, #f5d77a)",
-                width: `${((value - min) / (max - min)) * 100}%`,
-                transition: activeSlider === id ? "none" : "width 120ms ease-out",
-                boxShadow:
-                  activeSlider === id
-                    ? "0 0 10px rgba(201, 162, 39, 0.3)"
-                    : "none",
+                width: `${pct}%`,
+                transition: isActive ? "none" : "width 120ms ease-out",
+                boxShadow: isActive ? "0 0 10px rgba(201, 162, 39, 0.3)" : "none",
               }}
             />
-            <motion.div
-              className="absolute w-5 h-5 rounded-full pointer-events-none"
+            <div
+              className="absolute w-6 h-6 rounded-full pointer-events-none"
               style={{
-                left: `calc(${((value - min) / (max - min)) * 100}% - 10px)`,
+                left: `calc(${pct}% - 12px)`,
                 background: "linear-gradient(135deg, #c9a227, #d4af37)",
-                transition: activeSlider === id ? "none" : "left 120ms ease-out",
-                boxShadow:
-                  activeSlider === id
-                    ? "0 0 20px rgba(201, 162, 39, 0.5), 0 2px 10px rgba(0,0,0,0.3)"
-                    : "0 2px 10px rgba(0,0,0,0.3)",
+                transition: isActive ? "none" : "left 120ms ease-out",
+                boxShadow: isActive
+                  ? "0 0 20px rgba(201, 162, 39, 0.5), 0 2px 10px rgba(0,0,0,0.3)"
+                  : "0 2px 10px rgba(0,0,0,0.3)",
               }}
-            />
-            <input
-              type="range"
-              min={min}
-              max={max}
-              step={step}
-              value={value}
-              onInput={(e) => handleSliderInput(e.currentTarget.value)}
-              onChange={(e) => handleSliderInput(e.target.value)}
-              onPointerDown={(e) => {
-                draggingSliderRef.current = true;
-                setActiveSlider(id);
-                e.currentTarget.setPointerCapture(e.pointerId);
-              }}
-              onPointerUp={(e) => {
-                try {
-                  e.currentTarget.releasePointerCapture(e.pointerId);
-                } catch {
-                  /* ignore */
-                }
-                handleSliderCommit();
-              }}
-              onPointerCancel={handleSliderCommit}
-              onFocus={() => setActiveSlider(id)}
-              onBlur={() => {
-                if (draggingSliderRef.current) handleSliderCommit();
-                else setActiveSlider(null);
-              }}
-              className="preview-adjust-slider absolute inset-0 w-full h-full opacity-0 cursor-grab active:cursor-grabbing touch-none"
-              aria-label={label}
             />
           </div>
 
           <motion.button
             type="button"
             aria-label={`${label} increase`}
-            onClick={() => bump(1)}
-            className="w-9 h-9 rounded-full flex items-center justify-center shrink-0"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              bump(1);
+            }}
+            className="w-10 h-10 rounded-full flex items-center justify-center shrink-0"
             style={stepButtonStyle}
             whileTap={{ scale: 0.92 }}
           >
@@ -559,8 +593,8 @@ export function PreviewScreen({
         ) : null}
       </div>
 
-      {/* Controls + Complete — 작은 화면에서도 부드럽게 스크롤 */}
-      <div className="preview-controls-scroll flex-1 min-h-0 overflow-y-auto overscroll-contain">
+      {/* Controls + Complete */}
+      <div className="preview-controls-scroll hide-scrollbar flex-1 min-h-0 overflow-y-auto overscroll-contain touch-pan-y">
       <div 
         className="px-8 py-6 space-y-6 shrink-0"
         style={{
@@ -575,6 +609,7 @@ export function PreviewScreen({
           min={0.5}
           max={2}
           step={0.01}
+          buttonStep={0.05}
           onChange={(val, opts) => {
             if (opts?.commit) commitSettings({ ...displaySettingsRef.current, scale: val });
             else previewLiveSettings({ scale: val });
@@ -593,6 +628,7 @@ export function PreviewScreen({
           min={-100}
           max={100}
           step={0.1}
+          buttonStep={2}
           onChange={(val, opts) => {
             if (opts?.commit) commitSettings({ ...displaySettingsRef.current, posX: val });
             else previewLiveSettings({ posX: val });
@@ -608,6 +644,7 @@ export function PreviewScreen({
           min={-100}
           max={100}
           step={0.1}
+          buttonStep={2}
           onChange={(val, opts) => {
             if (opts?.commit) commitSettings({ ...displaySettingsRef.current, posY: val });
             else previewLiveSettings({ posY: val });
