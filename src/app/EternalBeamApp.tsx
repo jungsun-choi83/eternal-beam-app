@@ -287,7 +287,7 @@ export function EternalBeamApp() {
       navigateTo(target, 'back')
       return
     }
-    navigateTo('onboarding')
+    navigateTo('signup')
   }
 
   const handleQrBack = () => {

@@ -84,6 +84,15 @@
   min-height: clamp(160px, 32dvh, 260px);
 }
 
+.processing-copy-fade {
+  opacity: 1;
+  transition: opacity 0.5s ease-in-out;
+}
+
+.processing-copy-fade--out {
+  opacity: 0;
+}
+
 .theme-selection-screen__preview {
   max-height: clamp(200px, 36dvh, 300px);
   width: min(100%, 340px);

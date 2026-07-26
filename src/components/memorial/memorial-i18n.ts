@@ -41,12 +41,22 @@ const STRINGS = {
       },
     },
     processing: {
+      headline: "영원한 추억을, 빛으로 옮기는 중",
       titles: [
         "사랑하는 이는, 빛이 되어 곁에 머뭅니다",
         "영원한 추억을, 빛으로 옮기는 중",
         "그리움은 사라지지 않고, 빛이 됩니다",
         "다시 만날 준비를 하고 있어요",
       ],
+      step1Main: "그 모습을, 조심스럽게 담는 중…",
+      step2Rotate: [
+        "그 순간의 온기를, 다시 느끼는 중…",
+        "숨결 하나까지, 놓치지 않고 옮기는 중…",
+        "털 결의 온도까지, 살펴보는 중…",
+        "눈빛에 담긴 마음을, 그대로 담는 중…",
+      ],
+      step2Sub: "조금만 기다려주세요. 정성껏 옮기고 있어요.",
+      step3Main: "이제, 다시 마주할 준비가 됐어요",
       steps: [
         { id: 1, name: "누끼", description: "배경을 지우는 중…" },
         { id: 2, name: "변환", description: "홀로그램으로 만드는 중…" },
@@ -372,12 +382,22 @@ const STRINGS = {
       },
     },
     processing: {
+      headline: "Turning cherished memories into light…",
       titles: [
         "Those we love never truly leave us…",
         "Forever in our hearts, now in light…",
         "Memories become eternal moments…",
         "Preparing a bridge between worlds…",
       ],
+      step1Main: "Gently capturing that familiar form…",
+      step2Rotate: [
+        "Bringing back the warmth of that moment…",
+        "Preserving every breath, every detail…",
+        "Even the texture of their fur…",
+        "Capturing the love in their eyes…",
+      ],
+      step2Sub: "Just a moment. We're taking our time with this.",
+      step3Main: "Ready to meet again.",
       steps: [
         { id: 1, name: "Cutout", description: "Removing background…" },
         { id: 2, name: "Convert", description: "Creating hologram…" },

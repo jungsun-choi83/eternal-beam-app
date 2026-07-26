@@ -51,6 +51,9 @@ const COMPARE_HOLD_MS = Math.max(
   2000,
   Number(import.meta.env.VITE_COMPARE_HOLD_MS ?? "4500")
 );
+/** Step 2 (conversion) main copy rotation interval */
+const STEP2_ROTATE_MS = 4500;
+const STEP2_FADE_MS = 500;
 
 export interface StoredPipeline {
   content_id: string;
@@ -358,7 +361,7 @@ export function AIProcessingScreen({
   const [currentStep, setCurrentStep] = useState(0);
   const [progress, setProgress] = useState(10);
   const [processingActive, setProcessingActive] = useState(false);
-  const { seconds: elapsedSec, tick: clockTick } = useProcessingClock(processingActive);
+  const { seconds: elapsedSec } = useProcessingClock(processingActive);
   const [error, setError] = useState<string | null>(null);
   const [statusLine, setStatusLine] = useState("");
   const [displayOriginal, setDisplayOriginal] = useState<string | null>(null);
@@ -366,6 +369,8 @@ export function AIProcessingScreen({
   const [showCompare, setShowCompare] = useState(false);
   const [idlePreviewUrl, setIdlePreviewUrl] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
+  const [step2Index, setStep2Index] = useState(0);
+  const [step2Fading, setStep2Fading] = useState(false);
 
   const runTokenRef = useRef(0);
   const onCompleteRef = useRef(onComplete);
@@ -382,11 +387,38 @@ export function AIProcessingScreen({
     };
   }, [uploadedImage]);
 
-  const titles = t.titles;
-  const statusLines = t.statusLines;
-  const titleIndex = titles.length ? clockTick % titles.length : 0;
-  const statusLineIndex = statusLines.length ? Math.floor(clockTick / 3) % statusLines.length : 0;
-  const rotatingStatus = statusLines[statusLineIndex] ?? t.steps[0].description;
+  useEffect(() => {
+    if (currentStep !== 1) {
+      setStep2Index(0);
+      setStep2Fading(false);
+      return;
+    }
+
+    setStep2Index(0);
+    setStep2Fading(false);
+
+    const rotateCount = t.step2Rotate.length;
+    if (rotateCount <= 1) return;
+
+    const interval = window.setInterval(() => {
+      setStep2Fading(true);
+      window.setTimeout(() => {
+        setStep2Index((i) => (i + 1) % rotateCount);
+        setStep2Fading(false);
+      }, STEP2_FADE_MS);
+    }, STEP2_ROTATE_MS);
+
+    return () => window.clearInterval(interval);
+  }, [currentStep, t.step2Rotate.length]);
+
+  const mainCopy =
+    currentStep === 0
+      ? t.step1Main
+      : currentStep === 1
+        ? t.step2Rotate[step2Index] ?? t.step2Rotate[0]
+        : currentStep === 2
+          ? t.step3Main
+          : "";
 
   useEffect(() => {
     if (!uploadedImage) return;
@@ -535,7 +567,7 @@ export function AIProcessingScreen({
   return (
     <div className="ai-processing-screen h-full flex flex-col relative overflow-hidden">
       <header className="px-6 pt-[max(2.75rem,env(safe-area-inset-top,0px))] pb-2 text-center relative z-10 shrink-0">
-        <h1 className="processing-headline px-2">{titles[titleIndex]}</h1>
+        <h1 className="processing-headline px-2">{t.headline}</h1>
       </header>
 
       <div className="ai-processing-screen__body flex-1 flex flex-col items-center px-5 relative z-10 min-h-0 hide-scrollbar">
@@ -612,16 +644,21 @@ export function AIProcessingScreen({
         </div>
 
         <div className="text-center mb-3 max-w-[300px] shrink-0">
-          <p className="text-sm font-light min-h-[1.25rem]" style={{ color: "#F1E5D1" }}>
-            {currentStep === 0 ? rotatingStatus : t.steps[currentStep]?.description}
+          <p
+            className={`text-sm font-light min-h-[1.25rem] processing-copy-fade ${
+              currentStep === 1 && step2Fading ? "processing-copy-fade--out" : ""
+            }`}
+            style={{ color: "#F1E5D1" }}
+          >
+            {mainCopy}
           </p>
-          {statusLine ? (
+          {currentStep === 1 ? (
+            <p className="text-[11px] mt-2" style={{ color: "#888" }}>
+              {t.step2Sub}
+            </p>
+          ) : statusLine && currentStep === 0 ? (
             <p className="text-[11px] mt-2" style={{ color: "#888" }}>
               {statusLine}
-            </p>
-          ) : currentStep === 0 ? (
-            <p className="text-[11px] mt-2 animate-pulse" style={{ color: "#888" }}>
-              {t.waitHint}
             </p>
           ) : null}
           {!error ? (
