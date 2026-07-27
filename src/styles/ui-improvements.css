@@ -137,9 +137,20 @@ span {
 
 /* 2P 회원가입 — 로고 없이 폼·푸터 분리 */
 .auth-screen-header {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
   padding-top: max(3.25rem, env(safe-area-inset-top, 0px));
   padding-bottom: 0.75rem;
   padding-inline: 1.25rem;
+  text-align: center;
+}
+
+.auth-screen-header .screen-title {
+  width: 100%;
+  max-width: none;
+  text-align: center;
 }
 
 .auth-form-card {
