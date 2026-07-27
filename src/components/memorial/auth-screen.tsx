@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion } from "framer-motion";
 import { Mail, Lock, User, Eye, EyeOff, ArrowRight, Heart } from "lucide-react";
 import { HolographicBackground } from "./holographic-background";
 import { HologramEffects } from "./hologram-effects";
@@ -18,11 +18,22 @@ interface AuthScreenProps {
   onAuthComplete: (userName?: string) => void;
 }
 
+const inputClass =
+  "w-full py-3.5 pl-12 pr-4 rounded-xl text-sm font-medium outline-none transition-all duration-300 placeholder:text-[#4A4A4A]";
+
+function fieldStyle(focused: boolean) {
+  return {
+    background: "rgba(0, 0, 0, 0.4)",
+    border: focused ? "1px solid rgba(201, 162, 39, 0.5)" : "1px solid rgba(255, 255, 255, 0.08)",
+    color: "#F5F5F7",
+    boxShadow: focused ? "0 0 20px rgba(201, 162, 39, 0.2), inset 0 0 20px rgba(201, 162, 39, 0.05)" : "none",
+  } as const;
+}
+
 export function AuthScreen({
   initialMode = "login",
   lockMode,
   language = "ko",
-  onLanguageChange,
   onAuthComplete,
 }: AuthScreenProps) {
   const a = memorialT(language).auth;
@@ -37,6 +48,9 @@ export function AuthScreen({
   const [petNameError, setPetNameError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [focusedField, setFocusedField] = useState<string | null>(null);
+
+  const isSignupFlow = lockMode === "signup" || mode === "signup";
+  const pageTitle = lockMode === "signup" ? a.signUp : lockMode === "login" ? a.signIn : mode === "login" ? a.signIn : a.signUp;
 
   const handleSubmit = async () => {
     if (mode === "signup" && !petName.trim()) {
@@ -60,352 +74,170 @@ export function AuthScreen({
     onAuthComplete(label || undefined);
   };
 
-  // Stagger animation for form elements
-  const containerVariants = {
-    hidden: { opacity: 0 },
-    visible: {
-      opacity: 1,
-      transition: {
-        staggerChildren: 0.1,
-        delayChildren: 0.2,
-      },
-    },
-  };
-
-  const itemVariants = {
-    hidden: { opacity: 0, y: 20 },
-    visible: {
-      opacity: 1,
-      y: 0,
-      transition: { duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] as const },
-    },
-  };
-
-  const pageTitle = lockMode === "signup" ? a.signUp : lockMode === "login" ? a.signIn : mode === "login" ? a.signIn : a.signUp;
-
   return (
-    <div className="hologram-bg-active h-full flex flex-col relative overflow-hidden min-h-0">
+    <div className="auth-screen-shell hologram-bg-active h-full flex flex-col relative overflow-hidden min-h-0">
       <HolographicBackground />
       <HologramEffects />
 
-      <motion.header
-        className="pt-[max(3.25rem,env(safe-area-inset-top,0px))] pb-3 px-6 shrink-0 relative z-10"
-        initial={{ opacity: 0, y: -12 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] as const }}
-      >
-        <h1 className="screen-title text-center text-lg m-0" style={{ color: "#F5F5F7" }}>
+      <header className="auth-screen-header shrink-0 relative z-10">
+        <h1 className="screen-title text-center text-xl m-0" style={{ color: "#F5F5F7" }}>
           {pageTitle}
         </h1>
-        {lockMode === "signup" ? (
-          <p className="logo-subtitle text-center mt-2 mb-0">{a.subtitle}</p>
-        ) : null}
-      </motion.header>
+      </header>
 
-      <motion.div
-        className="flex-1 px-6 flex flex-col min-h-0 overflow-y-auto hide-scrollbar py-1"
-        variants={containerVariants}
-        initial="hidden"
-        animate="visible"
-      >
-        <motion.div variants={itemVariants} className="relative">
-          {/* Double Glass Layer - Back layer */}
-          <div
-            className="absolute -inset-3 rounded-[28px]"
-            style={{
-              background: "linear-gradient(145deg, rgba(255, 255, 255, 0.06) 0%, rgba(255, 255, 255, 0.01) 100%)",
-              backdropFilter: "blur(25px)",
-              WebkitBackdropFilter: "blur(25px)",
-              border: "1px solid rgba(255, 255, 255, 0.06)",
-            }}
-          />
-          
-          {/* Glass Card - Front layer - Strong Glassmorphism */}
-          <div
-            className="rounded-3xl p-6 relative overflow-hidden"
-            style={{
-              background: "linear-gradient(145deg, rgba(60, 60, 65, 0.65) 0%, rgba(45, 45, 50, 0.7) 30%, rgba(28, 28, 30, 0.85) 100%)",
-              backdropFilter: "blur(60px)",
-              WebkitBackdropFilter: "blur(60px)",
-              border: "1px solid rgba(255, 255, 255, 0.12)",
-              boxShadow: `
-                0 8px 32px rgba(0, 0, 0, 0.5),
-                0 0 0 1px rgba(255, 255, 255, 0.08) inset,
-                0 40px 80px -16px rgba(0, 0, 0, 0.6),
-                inset 0 1px 0 rgba(255, 255, 255, 0.1)
-              `,
-            }}
-          >
-            {/* Top Glass Highlight - Bright edge for depth */}
+      <div className="auth-screen-body flex-1 min-h-0 overflow-y-auto hide-scrollbar px-5 py-2 relative z-10">
+        <div className="auth-form-card mx-auto w-full max-w-[340px]">
+          {!lockMode ? (
             <div
-              className="absolute top-0 left-6 right-6 h-px"
-              style={{
-                background: "linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.35) 20%, rgba(255,255,255,0.5) 50%, rgba(255,255,255,0.35) 80%, transparent 100%)",
-              }}
-            />
-            {/* Left Glass Highlight */}
-            <div
-              className="absolute top-6 bottom-6 left-0 w-px"
-              style={{
-                background: "linear-gradient(180deg, rgba(255,255,255,0.35), rgba(255,255,255,0.15) 50%, transparent)",
-              }}
-            />
-            {/* Inner glow - top left corner */}
-            <div
-              className="absolute inset-0 rounded-3xl pointer-events-none"
-              style={{
-                background: "radial-gradient(ellipse at 20% 10%, rgba(255,255,255,0.1) 0%, transparent 40%)",
-              }}
-            />
-
-            {/* Mode Toggle */}
-            {!lockMode ? (
-            <motion.div
-              variants={itemVariants}
-              className="flex rounded-2xl p-1.5 mb-8"
+              className="flex rounded-2xl p-1.5 mb-5"
               style={{
                 background: "rgba(0, 0, 0, 0.4)",
                 border: "1px solid rgba(255, 255, 255, 0.06)",
-                boxShadow: "inset 0 2px 4px rgba(0,0,0,0.3)",
               }}
             >
-              {["login", "signup"].map((m) => (
+              {(["login", "signup"] as const).map((m) => (
                 <button
                   key={m}
-                  onClick={() => setMode(m as "login" | "signup")}
-                  className="flex-1 py-3.5 rounded-xl text-sm font-semibold tracking-wide transition-all duration-300 relative"
-                  style={{
-                    color: mode === m ? "#F5F5F7" : "#6B6B6B",
-                  }}
+                  type="button"
+                  onClick={() => setMode(m)}
+                  className="flex-1 py-3 rounded-xl text-sm font-semibold tracking-wide relative"
+                  style={{ color: mode === m ? "#F5F5F7" : "#6B6B6B" }}
                 >
-                  {mode === m && (
-                    <motion.div
-                      layoutId="activeTab"
+                  {mode === m ? (
+                    <span
                       className="absolute inset-0 rounded-xl"
                       style={{
                         background: "linear-gradient(135deg, rgba(201, 162, 39, 0.2) 0%, rgba(184, 134, 11, 0.15) 100%)",
                         border: "1px solid rgba(201, 162, 39, 0.3)",
-                        boxShadow: "0 4px 12px rgba(201, 162, 39, 0.15)",
                       }}
-                      transition={{ type: "spring", bounce: 0.15, duration: 0.5 }}
                     />
-                  )}
+                  ) : null}
                   <span className="relative z-10">{m === "login" ? a.signIn : a.signUp}</span>
                 </button>
               ))}
-            </motion.div>
+            </div>
+          ) : null}
+
+          <div className="space-y-3">
+            {isSignupFlow ? (
+              <div className="relative">
+                <User
+                  className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5"
+                  style={{ color: focusedField === "name" ? "#c9a227" : "#6B6B6B" }}
+                  strokeWidth={1.5}
+                />
+                <input
+                  type="text"
+                  placeholder={a.name}
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  onFocus={() => setFocusedField("name")}
+                  onBlur={() => setFocusedField(null)}
+                  className={inputClass}
+                  style={fieldStyle(focusedField === "name")}
+                />
+              </div>
             ) : null}
 
-            {/* Form Fields with Stagger Animation */}
-            <AnimatePresence mode="wait">
-              <motion.div
-                key={mode}
-                initial={{ opacity: 0, x: mode === "signup" ? 30 : -30 }}
-                animate={{ opacity: 1, x: 0 }}
-                exit={{ opacity: 0, x: mode === "signup" ? -30 : 30 }}
-                transition={{ duration: 0.35, ease: [0.25, 0.46, 0.45, 0.94] as const }}
-                className="space-y-4"
-              >
-                {mode === "signup" && (
-                  <motion.div 
-                    className="relative"
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.1 }}
-                  >
-                    <User
-                      className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 transition-colors duration-300"
-                      style={{ color: focusedField === "name" ? "#c9a227" : "#6B6B6B" }}
-                      strokeWidth={1.5}
-                    />
-                    <input
-                      type="text"
-                      placeholder={a.name}
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
-                      onFocus={() => setFocusedField("name")}
-                      onBlur={() => setFocusedField(null)}
-                      className="w-full py-4 pl-12 pr-4 rounded-xl text-sm font-medium outline-none transition-all duration-300 placeholder:text-[#4A4A4A]"
-                      style={{
-                        background: "rgba(0, 0, 0, 0.4)",
-                        border: focusedField === "name" 
-                          ? "1px solid rgba(201, 162, 39, 0.5)" 
-                          : "1px solid rgba(255, 255, 255, 0.08)",
-                        color: "#F5F5F7",
-                        boxShadow: focusedField === "name" 
-                          ? "0 0 20px rgba(201, 162, 39, 0.2), inset 0 0 20px rgba(201, 162, 39, 0.05)" 
-                          : "none",
-                      }}
-                    />
-                  </motion.div>
-                )}
-
-                {mode === "signup" && (
-                  <motion.div
-                    className="relative"
-                    initial={{ opacity: 0, y: 20 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ delay: 0.15 }}
-                  >
-                    <Heart
-                      className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 transition-colors duration-300"
-                      style={{ color: focusedField === "petName" ? "#c9a227" : "#6B6B6B" }}
-                      strokeWidth={1.5}
-                    />
-                    <input
-                      type="text"
-                      placeholder={a.petNamePlaceholder}
-                      value={petName}
-                      onChange={(e) => {
-                        setPetNameField(e.target.value);
-                        if (petNameError) setPetNameError(null);
-                      }}
-                      onFocus={() => setFocusedField("petName")}
-                      onBlur={() => setFocusedField(null)}
-                      className="w-full py-4 pl-12 pr-4 rounded-xl text-sm font-medium outline-none transition-all duration-300 placeholder:text-[#4A4A4A]"
-                      style={{
-                        background: "rgba(0, 0, 0, 0.4)",
-                        border:
-                          petNameError || focusedField === "petName"
-                            ? "1px solid rgba(201, 162, 39, 0.5)"
-                            : "1px solid rgba(255, 255, 255, 0.08)",
-                        color: "#F5F5F7",
-                        boxShadow:
-                          focusedField === "petName"
-                            ? "0 0 20px rgba(201, 162, 39, 0.2), inset 0 0 20px rgba(201, 162, 39, 0.05)"
-                            : "none",
-                      }}
-                      autoComplete="off"
-                    />
-                    <p className="mt-2 px-1 text-[11px] leading-relaxed" style={{ color: "#888" }}>
-                      {a.petNameHint}
-                    </p>
-                    {petNameError ? (
-                      <p className="mt-1 px-1 text-[11px]" style={{ color: "#e8a0a0" }}>
-                        {petNameError}
-                      </p>
-                    ) : null}
-                  </motion.div>
-                )}
-
-                <motion.div 
-                  className="relative"
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: mode === "signup" ? 0.25 : 0.1 }}
-                >
-                  <Mail
-                    className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 transition-colors duration-300"
-                    style={{ color: focusedField === "email" ? "#c9a227" : "#6B6B6B" }}
+            {isSignupFlow ? (
+              <div>
+                <div className="relative">
+                  <Heart
+                    className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5"
+                    style={{ color: focusedField === "petName" ? "#c9a227" : "#6B6B6B" }}
                     strokeWidth={1.5}
                   />
                   <input
-                    type="email"
-                    placeholder={a.email}
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    onFocus={() => setFocusedField("email")}
-                    onBlur={() => setFocusedField(null)}
-                    className="w-full py-4 pl-12 pr-4 rounded-xl text-sm font-medium outline-none transition-all duration-300 placeholder:text-[#4A4A4A]"
-                    style={{
-                      background: "rgba(0, 0, 0, 0.4)",
-                      border: focusedField === "email" 
-                        ? "1px solid rgba(201, 162, 39, 0.5)" 
-                        : "1px solid rgba(255, 255, 255, 0.08)",
-                      color: "#F5F5F7",
-                      boxShadow: focusedField === "email" 
-                        ? "0 0 20px rgba(201, 162, 39, 0.2), inset 0 0 20px rgba(201, 162, 39, 0.05)" 
-                        : "none",
+                    type="text"
+                    placeholder={a.petNamePlaceholder}
+                    value={petName}
+                    onChange={(e) => {
+                      setPetNameField(e.target.value);
+                      if (petNameError) setPetNameError(null);
                     }}
-                  />
-                </motion.div>
-
-                <motion.div 
-                  className="relative"
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: mode === "signup" ? 0.35 : 0.2 }}
-                >
-                  <Lock
-                    className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 transition-colors duration-300"
-                    style={{ color: focusedField === "password" ? "#c9a227" : "#6B6B6B" }}
-                    strokeWidth={1.5}
-                  />
-                  <input
-                    type={showPassword ? "text" : "password"}
-                    placeholder={a.password}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    onFocus={() => setFocusedField("password")}
+                    onFocus={() => setFocusedField("petName")}
                     onBlur={() => setFocusedField(null)}
-                    className="w-full py-4 pl-12 pr-12 rounded-xl text-sm font-medium outline-none transition-all duration-300 placeholder:text-[#4A4A4A]"
-                    style={{
-                      background: "rgba(0, 0, 0, 0.4)",
-                      border: focusedField === "password" 
-                        ? "1px solid rgba(201, 162, 39, 0.5)" 
-                        : "1px solid rgba(255, 255, 255, 0.08)",
-                      color: "#F5F5F7",
-                      boxShadow: focusedField === "password" 
-                        ? "0 0 20px rgba(201, 162, 39, 0.2), inset 0 0 20px rgba(201, 162, 39, 0.05)" 
-                        : "none",
-                    }}
+                    className={inputClass}
+                    style={fieldStyle(petNameError !== null || focusedField === "petName")}
+                    autoComplete="off"
                   />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-4 top-1/2 -translate-y-1/2 transition-colors duration-300"
-                  >
-                    {showPassword ? (
-                      <EyeOff className="w-5 h-5" style={{ color: "#6B6B6B" }} strokeWidth={1.5} />
-                    ) : (
-                      <Eye className="w-5 h-5" style={{ color: "#6B6B6B" }} strokeWidth={1.5} />
-                    )}
-                  </button>
-                </motion.div>
-              </motion.div>
-            </AnimatePresence>
+                </div>
+                <p className="auth-field-hint mt-1.5 px-1">{a.petNameHint}</p>
+                {petNameError ? <p className="auth-field-error mt-1 px-1">{petNameError}</p> : null}
+              </div>
+            ) : null}
 
-            {/* Forgot Password */}
-            {mode === "login" && (
-              <motion.button
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: 0.4 }}
-                className="text-xs mt-4 font-medium tracking-wide transition-colors duration-300 hover:text-[#f5d77a]"
-                style={{ color: "#c9a227" }}
+            <div className="relative">
+              <Mail
+                className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5"
+                style={{ color: focusedField === "email" ? "#c9a227" : "#6B6B6B" }}
+                strokeWidth={1.5}
+              />
+              <input
+                type="email"
+                placeholder={a.email}
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                onFocus={() => setFocusedField("email")}
+                onBlur={() => setFocusedField(null)}
+                className={inputClass}
+                style={fieldStyle(focusedField === "email")}
+              />
+            </div>
+
+            <div className="relative">
+              <Lock
+                className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5"
+                style={{ color: focusedField === "password" ? "#c9a227" : "#6B6B6B" }}
+                strokeWidth={1.5}
+              />
+              <input
+                type={showPassword ? "text" : "password"}
+                placeholder={a.password}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                onFocus={() => setFocusedField("password")}
+                onBlur={() => setFocusedField(null)}
+                className={`${inputClass} pr-12`}
+                style={fieldStyle(focusedField === "password")}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-4 top-1/2 -translate-y-1/2"
+                aria-label={showPassword ? "Hide password" : "Show password"}
               >
-                {a.forgotPassword}
-              </motion.button>
-            )}
-
+                {showPassword ? (
+                  <EyeOff className="w-5 h-5" style={{ color: "#6B6B6B" }} strokeWidth={1.5} />
+                ) : (
+                  <Eye className="w-5 h-5" style={{ color: "#6B6B6B" }} strokeWidth={1.5} />
+                )}
+              </button>
+            </div>
           </div>
-        </motion.div>
-      </motion.div>
 
-      {/* Next 버튼 - 하단 고정 (항상 보임) */}
-      <motion.div
-        className="px-6 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] shrink-0 relative z-10"
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.5, duration: 0.4 }}
-      >
+          {mode === "login" && !lockMode ? (
+            <button type="button" className="text-xs mt-4 font-medium" style={{ color: "#c9a227" }}>
+              {a.forgotPassword}
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      <footer className="auth-screen-footer shrink-0 relative z-10 px-5 pb-[max(1rem,env(safe-area-inset-bottom,0px))] pt-2">
         <motion.button
+          type="button"
           onClick={handleSubmit}
           disabled={isLoading}
-          className="w-full py-4 rounded-2xl font-bold text-base tracking-wide flex items-center justify-center gap-2 relative overflow-hidden"
+          className="w-full max-w-[340px] mx-auto py-4 rounded-2xl font-bold text-base tracking-wide flex items-center justify-center gap-2"
           style={{
             background: "linear-gradient(135deg, #b8860b 0%, #c9a227 30%, #d4af37 50%, #f5d77a 70%, #d4af37 100%)",
-            boxShadow: "0 8px 32px rgba(201, 162, 39, 0.3), 0 4px 12px rgba(201, 162, 39, 0.2)",
+            boxShadow: "0 8px 32px rgba(201, 162, 39, 0.3)",
           }}
-          whileHover={{ scale: 1.02, boxShadow: "0 12px 40px rgba(201, 162, 39, 0.4)" }}
-          whileTap={{ scale: 0.95 }}
+          whileTap={{ scale: 0.98 }}
         >
           {isLoading ? (
-            <motion.div
-              className="w-5 h-5 border-2 border-[#0a0a0a]/30 border-t-[#0a0a0a] rounded-full"
-              animate={{ rotate: 360 }}
-              transition={{ duration: 0.8, repeat: Infinity, ease: "linear" }}
-            />
+            <span className="w-5 h-5 border-2 border-[#0a0a0a]/30 border-t-[#0a0a0a] rounded-full animate-spin" />
           ) : (
             <>
               <span className="text-[#0a0a0a] memorial-btn-label">
@@ -415,19 +247,10 @@ export function AuthScreen({
             </>
           )}
         </motion.button>
-      </motion.div>
-
-      {/* Terms - 하단 고정 */}
-      <motion.div
-        className="px-6 pb-[max(1rem,env(safe-area-inset-bottom,0px))] shrink-0 relative z-10"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ delay: 0.7, duration: 0.5 }}
-      >
-        <p className="memorial-caption text-center px-2" style={{ color: "#6B6B6B" }}>
+        <p className="memorial-caption text-center px-2 mt-3 max-w-[340px] mx-auto" style={{ color: "#6B6B6B" }}>
           {a.terms}
         </p>
-      </motion.div>
+      </footer>
     </div>
   );
 }

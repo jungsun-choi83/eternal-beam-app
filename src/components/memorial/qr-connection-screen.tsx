@@ -4,7 +4,11 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { HolographicBackground } from "@/components/memorial/holographic-background";
 import { HologramEffects } from "@/components/memorial/hologram-effects";
-import { EternalBeamLogoHero } from "@/components/memorial/eternal-beam-brand-mark";
+
+/** 1P 로고 표시 시간 */
+export const SPLASH_HOLD_MS = 2000;
+/** 1P → 2P 페이드·화면 전환 (~2초) */
+export const SPLASH_FADE_MS = 2000;
 
 interface QRConnectionScreenProps {
   language?: string;
@@ -14,18 +18,19 @@ interface QRConnectionScreenProps {
   onSkip: () => void;
 }
 
-/** 기계 QR → 앱 첫 진입: 로고만 표시 후 회원가입으로 이동 */
+/** 기계 QR → 앱 첫 진입: 브랜드 PNG 로고 → 회원가입 */
 export function QRConnectionScreen({
-  language = "ko",
   onComplete,
 }: QRConnectionScreenProps) {
-  const [ready, setReady] = useState(false);
+  const [phase, setPhase] = useState<"idle" | "shown" | "exit">("idle");
 
   useEffect(() => {
-    const reveal = window.setTimeout(() => setReady(true), 80);
-    const auto = window.setTimeout(() => onComplete(), 2400);
+    const reveal = window.setTimeout(() => setPhase("shown"), 80);
+    const fade = window.setTimeout(() => setPhase("exit"), SPLASH_HOLD_MS);
+    const auto = window.setTimeout(() => onComplete(), SPLASH_HOLD_MS + SPLASH_FADE_MS);
     return () => {
       window.clearTimeout(reveal);
+      window.clearTimeout(fade);
       window.clearTimeout(auto);
     };
   }, [onComplete]);
@@ -46,17 +51,25 @@ export function QRConnectionScreen({
       <HologramEffects />
 
       <motion.div
-        initial={{ opacity: 0, scale: 0.94 }}
-        animate={{ opacity: ready ? 1 : 0, scale: ready ? 1 : 0.94 }}
-        transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
+        initial={{ opacity: 0, scale: 0.96 }}
+        animate={{
+          opacity: phase === "exit" ? 0 : phase === "shown" ? 1 : 0,
+          scale: phase === "exit" ? 0.98 : phase === "shown" ? 1 : 0.96,
+        }}
+        transition={{
+          duration: phase === "exit" ? SPLASH_FADE_MS / 1000 : 0.85,
+          ease: [0.22, 1, 0.36, 1],
+        }}
         className="relative z-10 px-8"
       >
-        <EternalBeamLogoHero
-          size="splash"
-          showGlow
-          showSubtitle={false}
-          language={language}
-        />
+        <div className="logo-holo-img-wrap splash-logo-wrap">
+          <img
+            src="/eternal-beam-logo-full.png?v=2"
+            alt="Eternal Beam"
+            className="splash-logo-full"
+            draggable={false}
+          />
+        </div>
       </motion.div>
     </div>
   );

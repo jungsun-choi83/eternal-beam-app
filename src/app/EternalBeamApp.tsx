@@ -5,7 +5,7 @@ import { AnimatePresence, motion } from 'framer-motion'
 import { MobileFrame } from '@/components/memorial/mobile-frame'
 import { LanguageToggle } from '@/components/memorial/language-toggle'
 import { AuthScreen } from '@/components/memorial/auth-screen'
-import { QRConnectionScreen } from '@/components/memorial/qr-connection-screen'
+import { QRConnectionScreen, SPLASH_FADE_MS } from '@/components/memorial/qr-connection-screen'
 import { HomeScreen } from '@/components/memorial/home-screen'
 import { GalleryScreen } from '@/components/memorial/gallery-screen'
 import { PhotoUploadScreen } from '@/components/memorial/photo-upload-screen'
@@ -76,23 +76,22 @@ const DEVICE_CONNECTED_KEY = 'eternal_beam_device_connected'
 
 const pageEase = [0.22, 1, 0.36, 1] as const
 
+type PageMotionCustom = { dir: NavDirection; duration: number }
+
 const pageVariants = {
-  initial: (dir: NavDirection) => ({
+  initial: ({ dir }: PageMotionCustom) => ({
     opacity: 0,
     x: dir === 'forward' ? 28 : -28,
   }),
-  animate: {
+  animate: ({ duration }: PageMotionCustom) => ({
     opacity: 1,
     x: 0,
-    transition: { duration: 0.38, ease: pageEase },
-  },
-  exit: (dir: NavDirection) => ({
+    transition: { duration, ease: pageEase },
+  }),
+  exit: ({ dir, duration }: PageMotionCustom) => ({
     opacity: 0,
     x: dir === 'forward' ? -28 : 28,
-    transition: {
-      duration: dir === 'forward' ? 0.38 : 0.32,
-      ease: pageEase,
-    },
+    transition: { duration, ease: pageEase },
   }),
 }
 
@@ -131,6 +130,12 @@ export function EternalBeamApp() {
   const [qrBackTarget, setQrBackTarget] = useState<Screen | null>(null)
   const [tapFlash, setTapFlash] = useState(false)
   const navDirection = useRef<NavDirection>('forward')
+  const pageTransitionSec = useRef(0.38)
+
+  const pageMotionCustom = (): PageMotionCustom => ({
+    dir: navDirection.current,
+    duration: pageTransitionSec.current,
+  })
 
   useEffect(() => {
     if (!deviceDemo) return
@@ -146,6 +151,11 @@ export function EternalBeamApp() {
 
   const navigateTo = (nextScreen: Screen, direction: NavDirection = 'forward') => {
     navDirection.current = direction
+    if (screen === 'qrConnection' && nextScreen === 'signup' && direction === 'forward') {
+      pageTransitionSec.current = SPLASH_FADE_MS / 1000
+    } else {
+      pageTransitionSec.current = direction === 'forward' ? 0.38 : 0.32
+    }
     setTapFlash(true)
     window.setTimeout(() => setTapFlash(false), 150)
     setScreen(nextScreen)
@@ -341,7 +351,7 @@ export function EternalBeamApp() {
           {screen === 'signup' && (
             <motion.div
               key="signup"
-              custom={navDirection.current}
+              custom={pageMotionCustom()}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -364,7 +374,7 @@ export function EternalBeamApp() {
           {screen === 'login' && (
             <motion.div
               key="login"
-              custom={navDirection.current}
+              custom={pageMotionCustom()}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -386,7 +396,7 @@ export function EternalBeamApp() {
           {screen === 'qrConnection' && (
             <motion.div
               key="qrConnection"
-              custom={navDirection.current}
+              custom={pageMotionCustom()}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -406,7 +416,7 @@ export function EternalBeamApp() {
           {screen === 'home' && (
             <motion.div
               key="home"
-              custom={navDirection.current}
+              custom={pageMotionCustom()}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -439,7 +449,7 @@ export function EternalBeamApp() {
           {screen === 'gallery' && (
             <motion.div
               key="gallery"
-              custom={navDirection.current}
+              custom={pageMotionCustom()}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -457,7 +467,7 @@ export function EternalBeamApp() {
           {screen === 'photoUpload' && (
             <motion.div
               key="photoUpload"
-              custom={navDirection.current}
+              custom={pageMotionCustom()}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -477,7 +487,7 @@ export function EternalBeamApp() {
           {screen === 'aiProcessing' && (
             <motion.div
               key="aiProcessing"
-              custom={navDirection.current}
+              custom={pageMotionCustom()}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -495,7 +505,7 @@ export function EternalBeamApp() {
           {screen === 'themeSelection' && (
             <motion.div
               key="themeSelection"
-              custom={navDirection.current}
+              custom={pageMotionCustom()}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -518,7 +528,7 @@ export function EternalBeamApp() {
           {screen === 'customBackground' && (
             <motion.div
               key="customBackground"
-              custom={navDirection.current}
+              custom={pageMotionCustom()}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -537,7 +547,7 @@ export function EternalBeamApp() {
           {screen === 'checkout' && (
             <motion.div
               key="checkout"
-              custom={navDirection.current}
+              custom={pageMotionCustom()}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -557,7 +567,7 @@ export function EternalBeamApp() {
           {screen === 'preview' && (
             <motion.div
               key="preview"
-              custom={navDirection.current}
+              custom={pageMotionCustom()}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -594,7 +604,7 @@ export function EternalBeamApp() {
           {screen === 'shippingAddress' && (
             <motion.div
               key="shippingAddress"
-              custom={navDirection.current}
+              custom={pageMotionCustom()}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -621,7 +631,7 @@ export function EternalBeamApp() {
           {screen === 'nfcPlayback' && (
             <motion.div
               key="nfcPlayback"
-              custom={navDirection.current}
+              custom={pageMotionCustom()}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -641,7 +651,7 @@ export function EternalBeamApp() {
           {screen === 'devicePlay' && (
             <motion.div
               key="devicePlay"
-              custom={navDirection.current}
+              custom={pageMotionCustom()}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -662,7 +672,7 @@ export function EternalBeamApp() {
           {screen === 'forestExperience' && (
             <motion.div
               key="forestExperience"
-              custom={navDirection.current}
+              custom={pageMotionCustom()}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -689,7 +699,7 @@ export function EternalBeamApp() {
           {screen === 'device' && (
             <motion.div
               key="device"
-              custom={navDirection.current}
+              custom={pageMotionCustom()}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -709,7 +719,7 @@ export function EternalBeamApp() {
           {screen === 'settings' && (
             <motion.div
               key="settings"
-              custom={navDirection.current}
+              custom={pageMotionCustom()}
               variants={pageVariants}
               initial="initial"
               animate="animate"

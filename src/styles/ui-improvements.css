@@ -122,6 +122,50 @@ span {
   width: min(11.5rem, 70vw) !important;
 }
 
+.splash-logo-wrap {
+  border-radius: 0;
+  background: transparent;
+}
+
+.splash-logo-full {
+  display: block;
+  width: min(17.5rem, 82vw);
+  height: auto;
+  object-fit: contain;
+  background: transparent;
+}
+
+/* 2P 회원가입 — 로고 없이 폼·푸터 분리 */
+.auth-screen-header {
+  padding-top: max(3.25rem, env(safe-area-inset-top, 0px));
+  padding-bottom: 0.75rem;
+  padding-inline: 1.25rem;
+}
+
+.auth-form-card {
+  border-radius: 1.25rem;
+  padding: 1.25rem 1rem 1rem;
+  background: linear-gradient(
+    145deg,
+    rgba(60, 60, 65, 0.72) 0%,
+    rgba(28, 28, 30, 0.88) 100%
+  );
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+}
+
+.auth-field-hint {
+  font-size: 0.6875rem;
+  line-height: 1.45;
+  color: #888;
+}
+
+.auth-field-error {
+  font-size: 0.6875rem;
+  color: #e8a0a0;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .home-dot {
     animation: none !important;
