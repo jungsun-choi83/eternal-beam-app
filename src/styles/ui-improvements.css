@@ -223,7 +223,8 @@ span {
   object-fit: contain;
   background: transparent;
   animation: none !important;
-  filter: drop-shadow(0 0 24px rgba(212, 175, 55, 0.2));
+  filter: none !important;
+  box-shadow: none !important;
   -webkit-user-select: none;
   user-select: none;
 }

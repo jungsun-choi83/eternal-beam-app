@@ -1,13 +1,15 @@
 "use client";
 
-import { EternalBeamLogoSymbol } from "@/components/memorial/eternal-beam-logo-symbol";
-
-/** 1P 스플래시 — 래퍼·글로우·PNG 없이 로고만 */
+/** 1P 스플래시 — 브랜드 원본 PNG (심볼+타이포 일체) */
 export function EternalBeamSplashLogo() {
   return (
-    <div className="splash-brand-mark flex flex-col items-center gap-3">
-      <EternalBeamLogoSymbol size={128} variant="splash" className="splash-brand-symbol" />
-      <p className="splash-brand-title m-0">Eternal Beam</p>
+    <div className="splash-logo-wrap">
+      <img
+        src="/eternal-beam-logo-full.png?v=3"
+        alt="Eternal Beam"
+        className="splash-logo-full"
+        draggable={false}
+      />
     </div>
   );
 }
