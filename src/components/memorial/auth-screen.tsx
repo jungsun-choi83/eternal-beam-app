@@ -96,15 +96,6 @@ export function AuthScreen({
         transition={{ duration: 0.7, ease: [0.25, 0.46, 0.45, 0.94] as const }}
       >
         <div className="text-center relative overflow-hidden">
-          {/* Enhanced Gold Glow */}
-          <motion.div
-            className="absolute inset-0 blur-[60px]"
-            style={{
-              background: "radial-gradient(ellipse at center, #c9a227 0%, transparent 60%)",
-            }}
-            animate={{ opacity: [0.3, 0.5, 0.3] }}
-            transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
-          />
           <EternalBeamLogoHero size="hero" className="mb-1" />
           <p className="logo-subtitle">{a.subtitle}</p>
         </div>

@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { ChevronLeft, Smartphone, CheckCircle2 } from "lucide-react";
+import { HolographicBackground } from "@/components/memorial/holographic-background";
+import { HologramEffects } from "@/components/memorial/hologram-effects";
+import { EternalBeamLogoHero } from "@/components/memorial/eternal-beam-brand-mark";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 
 interface QRConnectionScreenProps {
@@ -13,170 +15,124 @@ interface QRConnectionScreenProps {
   onSkip: () => void;
 }
 
+/** 기계 QR → 앱 첫 진입: 스캔 카메라 대신 브랜드 로고 스플래시 → 회원가입 */
 export function QRConnectionScreen({
   language = "ko",
-  showBack = true,
+  showBack = false,
   onComplete,
-  onBack,
   onSkip,
 }: QRConnectionScreenProps) {
   const q = memorialT(language).qr;
-  const c = memorialT(language).common;
-  const [isScanning, setIsScanning] = useState(false);
-  const [isConnected, setIsConnected] = useState(false);
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
-    if (isScanning) {
-      const timer = setTimeout(() => {
-        setIsScanning(false);
-        setIsConnected(true);
-      }, 3000);
-      return () => clearTimeout(timer);
-    }
-  }, [isScanning]);
-
-  useEffect(() => {
-    if (!isConnected) return;
-    // QR 연결 직후 온보딩/중간 화면 없이 회원가입으로 바로 이동
-    const timer = setTimeout(() => {
-      onComplete();
-    }, 450);
-    return () => clearTimeout(timer);
-  }, [isConnected, onComplete]);
+    const reveal = window.setTimeout(() => setReady(true), 120);
+    const auto = window.setTimeout(() => onComplete(), 2800);
+    return () => {
+      window.clearTimeout(reveal);
+      window.clearTimeout(auto);
+    };
+  }, [onComplete]);
 
   return (
     <div
       data-screen="qrConnection"
-      className="h-full flex flex-col relative overflow-hidden min-h-0"
+      className="hologram-bg-active memorial-screen-shell h-full flex flex-col relative overflow-hidden min-h-0 bg-[#050505]"
     >
-      <header className="px-6 pt-[max(2.75rem,env(safe-area-inset-top,0px))] pb-4 flex items-center justify-between relative shrink-0">
-        {showBack ? (
-          <button type="button" onClick={onBack} className="p-2 -ml-2 shrink-0" aria-label={c.back}>
-            <ChevronLeft className="w-5 h-5" style={{ color: "#F5F5F7" }} />
-          </button>
-        ) : (
-          <div className="w-9 shrink-0" aria-hidden />
-        )}
-        <h1
-          className="screen-title flex-1 text-center px-2 truncate"
-          style={{ color: "#F5F5F7" }}
+      <HolographicBackground />
+      <HologramEffects />
+
+      <div className="flex-1 flex flex-col items-center justify-center px-8 min-h-0 relative z-10">
+        <motion.div
+          initial={{ opacity: 0, scale: 0.92, y: 12 }}
+          animate={{ opacity: ready ? 1 : 0, scale: ready ? 1 : 0.92, y: ready ? 0 : 12 }}
+          transition={{ duration: 0.85, ease: [0.22, 1, 0.36, 1] }}
+          className="relative w-[min(17rem,78vw)] aspect-square flex items-center justify-center"
         >
-          {q.title}
-        </h1>
-        <button
-          type="button"
-          onClick={onSkip}
-          className="text-sm memorial-caption shrink-0 min-w-[3rem] text-right"
+          {/* 골드 프레임 — 예전 QR 스캔 박스 자리 */}
+          <div
+            className="absolute inset-0 rounded-[2rem]"
+            style={{
+              background:
+                "radial-gradient(ellipse at 50% 42%, rgba(212, 175, 55, 0.12) 0%, rgba(0,0,0,0) 62%)",
+              border: "1px solid rgba(255, 255, 255, 0.07)",
+              boxShadow:
+                "0 0 0 1px rgba(212, 175, 55, 0.08) inset, 0 24px 64px rgba(0,0,0,0.55)",
+            }}
+          />
+          <motion.div
+            className="absolute inset-0 rounded-[2rem] pointer-events-none"
+            animate={{ opacity: [0.35, 0.7, 0.35] }}
+            transition={{ duration: 3.2, repeat: Infinity, ease: "easeInOut" }}
+            style={{
+              boxShadow: "0 0 48px rgba(212, 175, 55, 0.22)",
+            }}
+          />
+
+          <div className="absolute top-4 left-4 w-9 h-9 border-t-2 border-l-2 rounded-tl-lg border-[#d4af37]/80" />
+          <div className="absolute top-4 right-4 w-9 h-9 border-t-2 border-r-2 rounded-tr-lg border-[#d4af37]/80" />
+          <div className="absolute bottom-4 left-4 w-9 h-9 border-b-2 border-l-2 rounded-bl-lg border-[#d4af37]/80" />
+          <div className="absolute bottom-4 right-4 w-9 h-9 border-b-2 border-r-2 rounded-br-lg border-[#d4af37]/80" />
+
+          <div className="relative z-10 px-6 py-4 w-full flex items-center justify-center">
+            <EternalBeamLogoHero size="hero" showGlow className="splash-logo" />
+          </div>
+        </motion.div>
+
+        <motion.p
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: ready ? 1 : 0, y: ready ? 0 : 8 }}
+          transition={{ delay: 0.35, duration: 0.6 }}
+          className="mt-8 text-center memorial-body max-w-[16rem] leading-relaxed"
           style={{ color: "#A1A1A6" }}
         >
-          {q.skip}
-        </button>
-      </header>
+          {q.splashHint}
+        </motion.p>
 
-      <div className="flex-1 flex flex-col items-center justify-center px-8 min-h-0 overflow-y-auto">
-        {!isConnected ? (
-          <>
-            <motion.div
-              className="w-56 h-56 rounded-3xl mb-8 relative overflow-hidden"
-              style={{
-                background: "rgba(255, 255, 255, 0.03)",
-                backdropFilter: "blur(40px)",
-                border: "1px solid rgba(255, 255, 255, 0.08)",
-              }}
-              animate={isScanning ? { borderColor: "rgba(212, 175, 55, 0.5)" } : {}}
-            >
-              <div className="absolute inset-6 grid grid-cols-7 gap-1">
-                {Array.from({ length: 49 }).map((_, i) => (
-                  <motion.div
-                    key={i}
-                    className="rounded-sm"
-                    style={{
-                      background: Math.random() > 0.5 ? "#F5F5F7" : "transparent",
-                    }}
-                    animate={isScanning ? { opacity: [1, 0.5, 1] } : {}}
-                    transition={{
-                      duration: 0.8,
-                      repeat: isScanning ? Infinity : 0,
-                      delay: i * 0.02,
-                    }}
-                  />
-                ))}
-              </div>
-
-              {isScanning && (
-                <motion.div
-                  className="absolute left-0 right-0 h-0.5"
-                  style={{ background: "linear-gradient(90deg, transparent, #d4af37, transparent)" }}
-                  animate={{ top: ["10%", "90%", "10%"] }}
-                  transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
-                />
-              )}
-
-              <div className="absolute top-3 left-3 w-8 h-8 border-t-2 border-l-2 rounded-tl" style={{ borderColor: "#d4af37" }} />
-              <div className="absolute top-3 right-3 w-8 h-8 border-t-2 border-r-2 rounded-tr" style={{ borderColor: "#d4af37" }} />
-              <div className="absolute bottom-3 left-3 w-8 h-8 border-b-2 border-l-2 rounded-bl" style={{ borderColor: "#d4af37" }} />
-              <div className="absolute bottom-3 right-3 w-8 h-8 border-b-2 border-r-2 rounded-br" style={{ borderColor: "#d4af37" }} />
-            </motion.div>
-
-            <h2 className="upload-title text-center mb-3">{q.scanTitle}</h2>
-            <p className="memorial-body text-center mb-6 max-w-[17rem]">{q.scanHint}</p>
-
-            <motion.button
-              type="button"
-              onClick={() => setIsScanning(true)}
-              disabled={isScanning}
-              className="w-full py-4 rounded-2xl flex items-center justify-center gap-3"
-              style={{
-                background: isScanning
-                  ? "rgba(212, 175, 55, 0.2)"
-                  : "linear-gradient(135deg, #d4af37 0%, #c9a227 100%)",
-                boxShadow: isScanning ? "none" : "0 8px 32px rgba(212, 175, 55, 0.3)",
-              }}
-              whileHover={!isScanning ? { scale: 1.02 } : {}}
-              whileTap={!isScanning ? { scale: 0.98 } : {}}
-            >
-              <Smartphone className="w-5 h-5" style={{ color: isScanning ? "#d4af37" : "#0a0a0a" }} />
-              <span className="memorial-btn-label" style={{ color: isScanning ? "#d4af37" : "#0a0a0a" }}>
-                {isScanning ? q.scanning : q.startScan}
-              </span>
-            </motion.button>
-          </>
-        ) : (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: ready ? 1 : 0 }}
+          transition={{ delay: 0.55, duration: 0.5 }}
+          className="mt-6 h-0.5 w-24 rounded-full overflow-hidden bg-white/10"
+          aria-hidden
+        >
           <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="text-center"
-          >
-            <motion.div
-              initial={{ scale: 0 }}
-              animate={{ scale: 1 }}
-              transition={{ type: "spring", damping: 15 }}
-              className="w-24 h-24 mx-auto mb-6 rounded-full flex items-center justify-center"
-              style={{ background: "rgba(212, 175, 55, 0.1)" }}
-            >
-              <CheckCircle2 className="w-12 h-12" style={{ color: "#d4af37" }} />
-            </motion.div>
-            <h2 className="upload-title mb-2">{q.connected}</h2>
-            <p className="memorial-body">{q.connectedHint}</p>
-          </motion.div>
-        )}
+            className="h-full origin-left bg-gradient-to-r from-[#d4af37] to-[#f5e6b8]"
+            initial={{ scaleX: 0 }}
+            animate={{ scaleX: 1 }}
+            transition={{ duration: 2.6, ease: "easeInOut" }}
+          />
+        </motion.div>
       </div>
 
-      <div className="shrink-0 px-6 pb-8 pt-4">
+      <div className="shrink-0 px-6 pb-[max(2rem,env(safe-area-inset-bottom,0px))] pt-2 relative z-10">
         <motion.button
           type="button"
           onClick={onComplete}
-          className="w-full py-4 rounded-2xl flex items-center justify-center memorial-btn-label"
+          className="w-full py-4 rounded-2xl memorial-btn-label"
           style={{
             background: "linear-gradient(135deg, #d4af37 0%, #c9a227 100%)",
-            boxShadow: "0 8px 32px rgba(212, 175, 55, 0.3)",
+            boxShadow: "0 8px 32px rgba(212, 175, 55, 0.28)",
             color: "#0a0a0a",
           }}
           whileHover={{ scale: 1.02 }}
           whileTap={{ scale: 0.98 }}
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: ready ? 1 : 0, y: ready ? 0 : 10 }}
+          transition={{ delay: 0.45, duration: 0.5 }}
         >
-          {q.next}
+          {q.splashContinue}
         </motion.button>
+        {showBack ? (
+          <button
+            type="button"
+            onClick={onSkip}
+            className="w-full mt-3 py-2 text-sm memorial-caption"
+            style={{ color: "#666" }}
+          >
+            {q.skip}
+          </button>
+        ) : null}
       </div>
     </div>
   );

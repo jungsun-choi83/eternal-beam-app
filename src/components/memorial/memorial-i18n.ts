@@ -371,6 +371,8 @@ const STRINGS = {
     qr: {
       title: "기기 연결",
       skip: "건너뛰기",
+      splashHint: "빛으로 이어지는 영원한 추억",
+      splashContinue: "시작하기",
       scanTitle: "기기를 깨워주세요",
       scanHint: "기기 화면의 QR 코드를 비춰주시면\n아이가 돌아옵니다",
       scanning: "스캔 중…",
@@ -745,6 +747,8 @@ const STRINGS = {
     qr: {
       title: "Connect Device",
       skip: "Skip",
+      splashHint: "Cherished memories, held in light",
+      splashContinue: "Get started",
       scanTitle: "Scan QR Code",
       scanHint: "Scan the QR code on your Eternal Beam device",
       scanning: "Scanning…",

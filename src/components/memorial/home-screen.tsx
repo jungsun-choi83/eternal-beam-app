@@ -80,14 +80,6 @@ export function HomeScreen({
           transition={{ delay: 0.2 }}
           className="text-center relative"
         >
-          {/* Bloom Effect behind title */}
-          <div
-            className="absolute inset-0 blur-[40px] opacity-50 pointer-events-none"
-            style={{
-              background: "radial-gradient(ellipse at center, rgba(212, 175, 55, 0.4) 0%, rgba(241, 229, 209, 0.1) 40%, transparent 70%)",
-            }}
-          />
-
           <EternalBeamLogoHero size="hero" className="mb-1" />
           <p className="logo-subtitle">
             {texts.subtitle}

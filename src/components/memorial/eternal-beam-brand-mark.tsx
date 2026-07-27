@@ -2,8 +2,8 @@
 
 import { memorialT } from "@/components/memorial/memorial-i18n";
 
-const LOGO_FULL_SRC = "/eternal-beam-logo-full.png?v=1";
-const LOGO_ICON_SRC = "/eternal-beam-logo.png?v=1";
+const LOGO_FULL_SRC = "/eternal-beam-logo-full.png?v=2";
+const LOGO_ICON_SRC = "/eternal-beam-logo.png?v=2";
 
 interface EternalBeamLogoIconProps {
   size?: number;
@@ -59,7 +59,7 @@ export function EternalBeamLogoHero({
         src={LOGO_FULL_SRC}
         alt="Eternal Beam"
         draggable={false}
-        className="relative w-full h-auto select-none"
+        className="relative w-full h-auto select-none eb-logo-cutout"
         style={{ objectFit: "contain" }}
       />
     </div>

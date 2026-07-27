@@ -112,6 +112,19 @@ span {
   filter: drop-shadow(0 0 6px rgba(201, 162, 39, 0.35));
 }
 
+.eb-logo-cutout {
+  background: transparent !important;
+  filter: drop-shadow(0 0 22px rgba(212, 175, 55, 0.32));
+}
+
+.splash-logo {
+  width: min(11.5rem, 70vw) !important;
+}
+
+.splash-logo .eb-logo-cutout {
+  filter: drop-shadow(0 0 28px rgba(212, 175, 55, 0.45));
+}
+
 @media (prefers-reduced-motion: reduce) {
   .home-dot {
     animation: none !important;
