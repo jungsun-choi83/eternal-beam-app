@@ -2,8 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
-import { HolographicBackground } from "@/components/memorial/holographic-background";
-import { HologramEffects } from "@/components/memorial/hologram-effects";
+import { EternalBeamSplashLogo } from "@/components/memorial/eternal-beam-splash-logo";
 
 /** 1P 로고 표시 시간 */
 export const SPLASH_HOLD_MS = 2000;
@@ -18,7 +17,7 @@ interface QRConnectionScreenProps {
   onSkip: () => void;
 }
 
-/** 기계 QR → 앱 첫 진입: 브랜드 PNG 로고 → 회원가입 */
+/** 기계 QR → 앱 첫 진입: 그라데이션 SVG 로고 → 회원가입 */
 export function QRConnectionScreen({
   onComplete,
 }: QRConnectionScreenProps) {
@@ -44,12 +43,9 @@ export function QRConnectionScreen({
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") onComplete();
       }}
-      className="hologram-bg-active memorial-screen-shell h-full flex items-center justify-center relative overflow-hidden min-h-0 bg-[#050505] cursor-pointer"
+      className="splash-screen memorial-screen-shell h-full flex items-center justify-center relative overflow-hidden min-h-0 bg-[#050505] cursor-pointer"
       aria-label="Eternal Beam"
     >
-      <HolographicBackground />
-      <HologramEffects />
-
       <motion.div
         initial={{ opacity: 0, scale: 0.96 }}
         animate={{
@@ -60,16 +56,9 @@ export function QRConnectionScreen({
           duration: phase === "exit" ? SPLASH_FADE_MS / 1000 : 0.85,
           ease: [0.22, 1, 0.36, 1],
         }}
-        className="relative z-10 px-8"
+        className="relative z-10"
       >
-        <div className="logo-holo-img-wrap splash-logo-wrap">
-          <img
-            src="/eternal-beam-logo-full.png?v=2"
-            alt="Eternal Beam"
-            className="splash-logo-full"
-            draggable={false}
-          />
-        </div>
+        <EternalBeamSplashLogo />
       </motion.div>
     </div>
   );

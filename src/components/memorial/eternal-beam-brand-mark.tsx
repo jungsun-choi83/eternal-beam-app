@@ -26,6 +26,8 @@ interface EternalBeamLogoHeroProps {
   className?: string;
   showGlow?: boolean;
   showSubtitle?: boolean;
+  /** splash: 홀로 shimmer 없이 정적 골드 타이포 */
+  titleVariant?: "holo" | "brand";
   language?: string;
 }
 
@@ -35,14 +37,20 @@ export function EternalBeamLogoHero({
   className = "",
   showGlow = true,
   showSubtitle = true,
+  titleVariant = "holo",
   language = "ko",
 }: EternalBeamLogoHeroProps) {
   const symbolPx = size === "splash" ? 132 : size === "hero" ? 92 : 56;
   const subtitle = memorialT(language).auth.subtitle;
+  const titleClass =
+    titleVariant === "brand"
+      ? "logo-title logo-title--splash m-0"
+      : "logo-title logo-title--holo m-0";
+  const useBackdropGlow = showGlow && size !== "splash";
 
   return (
     <div className={`eb-logo-hero relative mx-auto text-center ${className}`}>
-      {showGlow ? (
+      {useBackdropGlow ? (
         <div
           className="absolute left-1/2 top-[20%] -translate-x-1/2 w-[150%] aspect-square pointer-events-none"
           style={{
@@ -55,10 +63,18 @@ export function EternalBeamLogoHero({
       ) : null}
 
       <div className="relative flex flex-col items-center gap-3">
-        <EternalBeamLogoSymbol size={symbolPx} className="eb-logo-symbol select-none" />
-        <div className="logo-holo-wrap">
-          <p className="logo-title logo-title--holo m-0">Eternal Beam</p>
-        </div>
+        <EternalBeamLogoSymbol
+          size={symbolPx}
+          sharp={size === "splash"}
+          className="eb-logo-symbol select-none"
+        />
+        {titleVariant === "brand" ? (
+          <p className={titleClass}>Eternal Beam</p>
+        ) : (
+          <div className="logo-holo-wrap">
+            <p className={titleClass}>Eternal Beam</p>
+          </div>
+        )}
         {showSubtitle ? (
           <p className="logo-subtitle m-0 mt-0.5">{subtitle}</p>
         ) : null}

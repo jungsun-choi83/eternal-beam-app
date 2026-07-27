@@ -125,14 +125,98 @@ span {
 .splash-logo-wrap {
   border-radius: 0;
   background: transparent;
+  overflow: visible;
+  isolation: isolate;
+}
+
+/* 1P 스플래시 — 로고만, 박스·그림자·PNG 없음 */
+.splash-brand-mark {
+  background: transparent;
+  overflow: visible;
+}
+
+.splash-brand-symbol {
+  display: block;
+  filter: none !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.splash-brand-title {
+  font-family: var(--font-headline);
+  font-weight: 500;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  font-size: clamp(0.8125rem, 3.4vw, 0.9375rem);
+  background: linear-gradient(
+    180deg,
+    #f8f0dc 0%,
+    #e8d5a3 38%,
+    #d4af37 72%,
+    #b8922a 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  text-shadow: none;
+  animation: none !important;
+}
+
+.splash-logo-hero .logo-title--splash {
+  background: linear-gradient(
+    180deg,
+    #f8f0dc 0%,
+    #e8d5a3 38%,
+    #d4af37 72%,
+    #b8922a 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  animation: none !important;
+  text-shadow: none;
+  letter-spacing: 0.24em;
+  font-size: clamp(0.8125rem, 3.4vw, 0.9375rem);
+  font-weight: 500;
+}
+
+/* 스플래시 — 심볼만 선명, 상단 네모 글로우/그림자 없음 */
+.splash-logo-hero .eb-logo-symbol {
+  filter: none;
+  background: transparent !important;
+}
+
+.splash-logo-hero .eb-logo-hero,
+.splash-logo-hero {
+  background: transparent;
+  overflow: visible;
+}
+
+/* 1P 스플래시 — 순수 검정, 상단 초록/홀로 배경 없음 */
+.splash-screen {
+  background: #050505 !important;
+}
+
+.memorial-ui:has(.splash-screen) {
+  background: #050505 !important;
+}
+
+.memorial-ui:has(.splash-screen) .memorial-sparkle-field {
+  display: none;
 }
 
 .splash-logo-full {
   display: block;
-  width: min(17.5rem, 82vw);
+  width: min(16.5rem, 78vw);
   height: auto;
   object-fit: contain;
   background: transparent;
+  animation: none !important;
+  filter: drop-shadow(0 0 24px rgba(212, 175, 55, 0.2));
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 /* 2P 회원가입 — 로고 없이 폼·푸터 분리 */
