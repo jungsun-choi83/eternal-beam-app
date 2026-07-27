@@ -62,25 +62,11 @@ type Screen =
   | 'device'
   | 'settings'
 
-function hasCompletedMemorialSession(): boolean {
-  try {
-    const contentId = localStorage.getItem('eternal_beam_content_id')
-    const hasPhoto =
-      localStorage.getItem('eternal_beam_main_photo') ||
-      localStorage.getItem('eternal_beam_main_video_url')
-    const hasPipeline = sessionStorage.getItem(ETERNAL_BEAM_PIPELINE_KEY)
-    return Boolean(contentId && (hasPhoto || hasPipeline))
-  } catch {
-    return false
-  }
-}
-
 function resolveInitialScreen(): Screen {
   if (typeof window === 'undefined') return 'qrConnection'
   if (isPublicForestEntry()) return 'forestExperience'
   if (isDeviceKickstarterDemo()) return 'home'
-  // 기계 QR 진입 — 완성된 추모 세션만 홈, 나머지는 로고 스플래시부터
-  if (hasCompletedMemorialSession()) return 'home'
+  // 기계 QR 진입 — 1P 로고 → 2P 회원가입 → 3P 사진 업로드 (홈은 이후 단계)
   return 'qrConnection'
 }
 
@@ -312,8 +298,8 @@ export function EternalBeamApp() {
       navigateTo(target, 'back')
       return
     }
-    // 로고 스플래시 → (미완료) 회원가입 → 사진 업로드
-    navigateTo(hasCompletedMemorialSession() ? 'home' : 'signup')
+    // 1P 로고 → 2P 회원가입 → 3P 사진 업로드
+    navigateTo('signup')
   }
 
   const handleQrBack = () => {
@@ -483,7 +469,7 @@ export function EternalBeamApp() {
                 language={language}
                 onImageUpload={handleImageUpload}
                 onContinue={() => navigateTo('aiProcessing')}
-                onBack={() => navigateTo('home', 'back')}
+                onBack={() => navigateTo('signup', 'back')}
               />
             </motion.div>
           )}
