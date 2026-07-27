@@ -2,8 +2,8 @@
 
 import { memorialT } from "@/components/memorial/memorial-i18n";
 
-const LOGO_FULL_SRC = "/eternal-beam-logo-full.png?v=2";
-const LOGO_ICON_SRC = "/eternal-beam-logo.png?v=2";
+const LOGO_SYMBOL_SRC = "/eternal-beam-logo-symbol.png?v=1";
+const LOGO_ICON_SRC = "/eternal-beam-logo-symbol.png?v=1";
 
 interface EternalBeamLogoIconProps {
   size?: number;
@@ -22,46 +22,65 @@ export function EternalBeamLogoIcon({ size = 20, className = "" }: EternalBeamLo
         src={LOGO_ICON_SRC}
         alt=""
         draggable={false}
-        style={{ width: size, height: size, objectFit: "contain" }}
+        className="eb-logo-symbol"
+        style={{ width: size, height: size }}
       />
     </span>
   );
 }
 
 interface EternalBeamLogoHeroProps {
-  /** hero: 회원가입·홈 상단, compact: 작은 헤더 */
-  size?: "hero" | "compact";
+  /** hero: 스플래시·홈·회원가입, compact: 작은 헤더 */
+  size?: "hero" | "compact" | "splash";
   className?: string;
   showGlow?: boolean;
+  showSubtitle?: boolean;
+  language?: string;
 }
 
-/** 누끼 PNG — 심볼 + ETERNAL BEAM (검정 배경 위) */
+/**
+ * 심볼 PNG(투명) + CSS 타이포 — full PNG 회색 박스 문제 회피
+ */
 export function EternalBeamLogoHero({
   size = "hero",
   className = "",
   showGlow = true,
+  showSubtitle = true,
+  language = "ko",
 }: EternalBeamLogoHeroProps) {
-  const width = size === "hero" ? 240 : 168;
+  const symbolPx = size === "splash" ? 128 : size === "hero" ? 88 : 56;
+  const subtitle = memorialT(language).auth.subtitle;
 
   return (
-    <div className={`relative mx-auto ${className}`} style={{ width, maxWidth: "88vw" }}>
+    <div className={`eb-logo-hero relative mx-auto text-center ${className}`}>
       {showGlow ? (
         <div
-          className="absolute inset-0 blur-[48px] opacity-40 pointer-events-none"
+          className="absolute left-1/2 top-[18%] -translate-x-1/2 w-[140%] aspect-square pointer-events-none"
           style={{
             background:
-              "radial-gradient(ellipse at center, rgba(212, 175, 55, 0.55) 0%, transparent 70%)",
+              "radial-gradient(circle, rgba(212, 175, 55, 0.38) 0%, rgba(212, 175, 55, 0.08) 42%, transparent 68%)",
+            filter: "blur(18px)",
           }}
           aria-hidden
         />
       ) : null}
-      <img
-        src={LOGO_FULL_SRC}
-        alt="Eternal Beam"
-        draggable={false}
-        className="relative w-full h-auto select-none eb-logo-cutout"
-        style={{ objectFit: "contain" }}
-      />
+
+      <div className="relative flex flex-col items-center gap-3">
+        <img
+          src={LOGO_SYMBOL_SRC}
+          alt=""
+          draggable={false}
+          aria-hidden
+          className="eb-logo-symbol select-none"
+          style={{ width: symbolPx, height: symbolPx }}
+        />
+        <div className="logo-holo-wrap">
+          <p className="logo-title logo-title--holo m-0">Eternal Beam</p>
+        </div>
+        {showSubtitle ? (
+          <p className="logo-subtitle m-0 mt-0.5">{subtitle}</p>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -82,9 +101,7 @@ export function EternalBeamBrandMark({
 
   return (
     <div className={`flex items-center justify-center gap-2 ${className}`}>
-      <span className="eb-brand-mark shrink-0" aria-hidden>
-        <img src={LOGO_ICON_SRC} alt="" draggable={false} />
-      </span>
+      <EternalBeamLogoIcon size={18} />
       <span className={textClassName}>{label}</span>
     </div>
   );

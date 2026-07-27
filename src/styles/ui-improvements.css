@@ -92,37 +92,31 @@ span {
   pointer-events: none;
 }
 
-/* 로고 심볼만 잘라 하단 브랜드 마크에 사용 */
+/* 로고 심볼 — PNG는 투명만, 텍스트는 CSS */
 .eb-brand-mark {
   display: inline-flex;
-  width: 20px;
-  height: 20px;
-  overflow: hidden;
-  align-items: flex-start;
+  align-items: center;
   justify-content: center;
+  overflow: visible;
 }
 
-.eb-brand-mark img {
-  width: 20px;
-  height: auto;
-  max-width: none;
-  margin-top: 1px;
-  object-fit: cover;
-  object-position: top center;
-  filter: drop-shadow(0 0 6px rgba(201, 162, 39, 0.35));
-}
-
-.eb-logo-cutout {
+.eb-brand-mark img,
+.eb-logo-symbol {
+  display: block;
+  object-fit: contain;
   background: transparent !important;
-  filter: drop-shadow(0 0 22px rgba(212, 175, 55, 0.32));
+  filter: drop-shadow(0 0 14px rgba(212, 175, 55, 0.42));
+}
+
+.eb-logo-hero .logo-title--holo {
+  background: linear-gradient(180deg, #f5ecd4 0%, #d4af37 48%, #b8922a 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
 }
 
 .splash-logo {
   width: min(11.5rem, 70vw) !important;
-}
-
-.splash-logo .eb-logo-cutout {
-  filter: drop-shadow(0 0 28px rgba(212, 175, 55, 0.45));
 }
 
 @media (prefers-reduced-motion: reduce) {

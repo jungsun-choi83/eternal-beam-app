@@ -333,11 +333,13 @@ export function EternalBeamApp() {
       <MobileFrame>
         {tapFlash ? <div className="eb-tap-flash absolute inset-0 z-[80] rounded-[inherit]" aria-hidden /> : null}
         <div className="pointer-events-none absolute inset-x-0 top-[max(0.625rem,env(safe-area-inset-top,0px))] z-[60] flex justify-end px-4">
-          <LanguageToggle
-            language={language}
-            onChange={handleLanguageChange}
-            className="pointer-events-auto"
-          />
+          {screen !== 'qrConnection' ? (
+            <LanguageToggle
+              language={language}
+              onChange={handleLanguageChange}
+              className="pointer-events-auto"
+            />
+          ) : null}
         </div>
         <AnimatePresence mode="wait" initial={false}>
           {screen === 'signup' && (
@@ -357,7 +359,7 @@ export function EternalBeamApp() {
                 lockMode="signup"
                 onAuthComplete={(name?: string) => {
                   if (name) setUserName(name)
-                  navigateTo('home')
+                  navigateTo('photoUpload')
                 }}
               />
             </motion.div>

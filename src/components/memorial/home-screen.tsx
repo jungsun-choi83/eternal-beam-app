@@ -80,7 +80,7 @@ export function HomeScreen({
           transition={{ delay: 0.2 }}
           className="text-center relative"
         >
-          <EternalBeamLogoHero size="hero" className="mb-1" />
+          <EternalBeamLogoHero size="hero" className="mb-1" language={language} showSubtitle={false} />
           <p className="logo-subtitle">
             {texts.subtitle}
           </p>
