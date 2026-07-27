@@ -1,0 +1,105 @@
+# Eternal Beam — 하드웨어 설정 (보드별 GPIO/I2C 등을 코드에서 분리)
+#
+# 코드는 이 파일만 보고 동작합니다. 보드를 바꿀 때(RPi5 → RK3566 등)는
+# 이 파일의 값만 바꾸면 되고, python/*.py 는 수정할 필요가 없습니다.
+#
+# 활성 보드 선택:
+#   1) 아래 active_board 값을 바꾸거나
+#   2) 환경변수 HARDWARE_BOARD=rk3566 로 override (systemd .env 에 추가 가능)
+#
+# 설정 파일 경로 자체를 바꾸려면 환경변수 HARDWARE_CONFIG=/path/to/other.yaml
+#
+# 새 보드로 이식할 때 확인할 명령:
+#   i2cdetect -l              → I2C 버스 번호 목록 (예: i2c-3)
+#   i2cdetect -y <bus>        → 0x29(VL53L0X) / 0x24(PN532) 주소 확인
+#   gpiodetect                → GPIO 칩 이름 목록 (예: gpiochip1)
+#   gpioinfo <chip>           → 칩의 라인(offset) 목록
+#   arecord -l                → ALSA 마이크 카드 번호
+
+active_board: rpi5 # rpi5 | rk3566
+
+boards:
+  rpi5:
+    label: "Raspberry Pi 5"
+    i2c:
+      bus: 1 # /dev/i2c-1 (raspi-config → Interface Options → I2C → Enable)
+    gpio:
+      chip: gpiochip0 # /dev/gpiochip0 (Pi 5는 RP1 칩 경유, 커널이 자동 매핑)
+    audio:
+      alsa_card: "2" # arecord -l 로 확인한 INMP441/I2S 카드 번호
+    display:
+      env:
+        DISPLAY: ":0"
+        XAUTHORITY: "/home/pi/.Xauthority"
+
+  rk3566:
+    label: "RK3566 Custom Board"
+    i2c:
+      # RK3566 보드는 I2C 버스 번호가 보드마다 다름 — i2cdetect -l 로 확인 후 수정.
+      bus: 3
+    gpio:
+      # RK3566 GPIO 뱅크(GPIO0~GPIO4)는 보드마다 다른 gpiochipN 에 매핑됨 — gpiodetect 로 확인 후 수정.
+      chip: gpiochip1
+    audio:
+      # Yocto/Buildroot/Armbian 등에서는 온보드 코덱이 보통 card 0.
+      alsa_card: "0"
+    display:
+      env:
+        DISPLAY: ":0"
+        # Yocto/Buildroot 계열은 홈 디렉터리가 /home/pi 가 아닐 수 있음 — 실제 로그인 계정으로 수정.
+        XAUTHORITY: "/home/root/.Xauthority"
+
+# 보드에 관계없이 공통으로 쓰는 값(센서 주소/임계값/포트 등).
+# 필요하면 boards.<board> 아래에 같은 키를 추가해 특정 보드에서만 override 할 수 있음.
+common:
+  i2c:
+    vl53l0x_address: 0x29 # ToF 거리 센서
+    pn532_address: 0x24 # NFC 리더
+
+  # GPIO 라인 — 현재 조립본은 사용하지 않음(전부 enabled: false).
+  # 상태 LED/리셋 버튼 등을 실제로 연결하면 offset 을 채우고 enabled: true 로 켜세요.
+  gpio:
+    lines:
+      status_led:
+        enabled: false
+        offset: 17
+        direction: out
+        active_low: false
+      test_button:
+        enabled: false
+        offset: 27
+        direction: in
+        active_low: true
+        edge: falling
+
+  distance:
+    touch_min_mm: 28
+    touch_max_mm: 40
+    approach_threshold_mm: 300
+    poll_sec: 0.05
+    approach_cooldown_sec: 2.0
+
+  nfc:
+    poll_sec: 0.15
+    debounce_sec: 1.5
+
+  voice:
+    rms_threshold: 1200
+    hold_ms: 350
+    cooldown_sec: 3
+    rate: 48000
+    channels: 2
+    mic_channel: 0
+    chunk: 1024
+    device_keywords: [i2s, inmp, snd_rpi, googlevoice, voicehat, seeed]
+
+  network:
+    udp_host: 127.0.0.1
+    udp_port: 5005
+    bg_display_host: 127.0.0.1
+    bg_display_port: 9999
+    sse_port: 8787
+
+  player:
+    binary: auto # auto | mpv | omxplayer
+    fill_mode: simple # simple | stretch | panscan | wayland
