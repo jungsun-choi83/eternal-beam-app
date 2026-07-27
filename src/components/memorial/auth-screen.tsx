@@ -5,7 +5,6 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Mail, Lock, User, Eye, EyeOff, ArrowRight, Heart } from "lucide-react";
 import { HolographicBackground } from "./holographic-background";
 import { HologramEffects } from "./hologram-effects";
-import { EternalBeamLogoHero } from "./eternal-beam-brand-mark";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { setEternalBeamUserId } from "@/lib/eternal-beam-user";
 import { getPetName, setPetName, syncPetProfileToDevice } from "@/lib/pet-profile";
@@ -82,28 +81,29 @@ export function AuthScreen({
     },
   };
 
+  const pageTitle = lockMode === "signup" ? a.signUp : lockMode === "login" ? a.signIn : mode === "login" ? a.signIn : a.signUp;
+
   return (
     <div className="hologram-bg-active h-full flex flex-col relative overflow-hidden min-h-0">
-      {/* Holographic Background */}
       <HolographicBackground />
       <HologramEffects />
 
-      {/* Header with Logo - Fade in up */}
-      <motion.header 
-        className="pt-[max(2.75rem,env(safe-area-inset-top,0px))] pb-4 px-8 shrink-0"
-        initial={{ opacity: 0, y: -30 }}
+      <motion.header
+        className="pt-[max(3.25rem,env(safe-area-inset-top,0px))] pb-3 px-6 shrink-0 relative z-10"
+        initial={{ opacity: 0, y: -12 }}
         animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.7, ease: [0.25, 0.46, 0.45, 0.94] as const }}
+        transition={{ duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] as const }}
       >
-        <div className="text-center relative overflow-hidden">
-          <EternalBeamLogoHero size="hero" className="mb-1" language={language} showSubtitle={false} />
-          <p className="logo-subtitle">{a.subtitle}</p>
-        </div>
+        <h1 className="screen-title text-center text-lg m-0" style={{ color: "#F5F5F7" }}>
+          {pageTitle}
+        </h1>
+        {lockMode === "signup" ? (
+          <p className="logo-subtitle text-center mt-2 mb-0">{a.subtitle}</p>
+        ) : null}
       </motion.header>
 
-      {/* Auth Form Container - Enhanced Glassmorphism */}
-      <motion.div 
-        className="flex-1 px-6 flex flex-col justify-center min-h-0 overflow-y-auto"
+      <motion.div
+        className="flex-1 px-6 flex flex-col min-h-0 overflow-y-auto hide-scrollbar py-1"
         variants={containerVariants}
         initial="hidden"
         animate="visible"
@@ -122,7 +122,7 @@ export function AuthScreen({
           
           {/* Glass Card - Front layer - Strong Glassmorphism */}
           <div
-            className="rounded-3xl p-8 relative overflow-hidden"
+            className="rounded-3xl p-6 relative overflow-hidden"
             style={{
               background: "linear-gradient(145deg, rgba(60, 60, 65, 0.65) 0%, rgba(45, 45, 50, 0.7) 30%, rgba(28, 28, 30, 0.85) 100%)",
               backdropFilter: "blur(60px)",
@@ -194,15 +194,7 @@ export function AuthScreen({
                 </button>
               ))}
             </motion.div>
-            ) : (
-              <motion.h2
-                variants={itemVariants}
-                className="text-center text-lg font-light mb-8"
-                style={{ color: "#F5F5F7" }}
-              >
-                {lockMode === "signup" ? a.signUp : a.signIn}
-              </motion.h2>
-            )}
+            ) : null}
 
             {/* Form Fields with Stagger Animation */}
             <AnimatePresence mode="wait">
@@ -391,8 +383,8 @@ export function AuthScreen({
       </motion.div>
 
       {/* Next 버튼 - 하단 고정 (항상 보임) */}
-      <motion.div 
-        className="px-8 pt-4 pb-6 shrink-0"
+      <motion.div
+        className="px-6 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom,0px))] shrink-0 relative z-10"
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.5, duration: 0.4 }}
@@ -426,8 +418,8 @@ export function AuthScreen({
       </motion.div>
 
       {/* Terms - 하단 고정 */}
-      <motion.div 
-        className="px-8 pb-8 shrink-0"
+      <motion.div
+        className="px-6 pb-[max(1rem,env(safe-area-inset-bottom,0px))] shrink-0 relative z-10"
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ delay: 0.7, duration: 0.5 }}

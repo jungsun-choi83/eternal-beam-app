@@ -10,7 +10,6 @@ import { MediaFileTrigger } from "@/components/memorial/media-file-trigger";
 import { PhotoUploadGuide } from "@/components/memorial/photo-upload-guide";
 import { CutoutStage } from "@/components/memorial/cutout-stage";
 import { MemorialIconButton, MemorialPrimaryButton } from "@/components/memorial/memorial-chrome";
-import { EternalBeamLogoHero } from "@/components/memorial/eternal-beam-brand-mark";
 import { inferMediaKind } from "@/lib/media-file-kind";
 import { CUTOUT_WARMUP_MAX_MS } from "@/lib/cutout-speed-mode";
 import { warmupVideoApi } from "@/lib/video-api-warmup";
@@ -124,7 +123,7 @@ export function PhotoUploadScreen({
     <div className="memorial-screen h-full flex flex-col relative overflow-hidden">
       <HologramEffects />
 
-      <header className="px-6 pt-8 pb-4 flex items-center justify-between relative z-10">
+      <header className="px-6 pt-[max(3.25rem,env(safe-area-inset-top,0px))] pb-3 flex items-center gap-3 relative z-10 shrink-0">
         <MemorialIconButton
           initial={{ opacity: 0, x: -10 }}
           animate={{ opacity: 1, x: 0 }}
@@ -136,23 +135,22 @@ export function PhotoUploadScreen({
           </span>
         </MemorialIconButton>
 
-        <div className="absolute left-1/2 -translate-x-1/2 w-[7.5rem]">
-          <EternalBeamLogoHero size="compact" showGlow={false} />
+        <div className="flex-1 min-w-0 text-center">
+          <p className="memorial-eyebrow mb-1">01 · Photo</p>
+          <h1 className="upload-title m-0 text-[1.125rem] leading-tight">{u.heading}</h1>
         </div>
 
-        <div className="w-10" />
+        <div className="w-10 shrink-0" aria-hidden />
       </header>
 
-      <div className="flex-1 min-h-0 overflow-y-auto px-6 py-2 relative z-10">
+      <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar px-6 py-1 relative z-10">
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
           transition={{ delay: 0.2 }}
           className="w-full max-w-[320px] mx-auto relative z-10"
         >
-          <p className="memorial-eyebrow text-center mb-2">01 · Photo</p>
-          <h2 className="upload-title text-center">{u.heading}</h2>
-          <p className="upload-subtitle text-center mt-1">{u.subtitle}</p>
+          <p className="upload-subtitle text-center mt-0 mb-3">{u.subtitle}</p>
 
           <PhotoUploadGuide language={language} />
 
@@ -253,7 +251,7 @@ export function PhotoUploadScreen({
         </motion.div>
       </div>
 
-      <div className="px-8 pb-10 relative z-10">
+      <div className="px-6 pb-[max(1.25rem,env(safe-area-inset-bottom,0px))] relative z-10 shrink-0">
         <MemorialPrimaryButton
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
