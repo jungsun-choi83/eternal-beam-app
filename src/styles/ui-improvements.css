@@ -105,7 +105,10 @@ span {
   display: block;
   object-fit: contain;
   background: transparent !important;
-  filter: drop-shadow(0 0 14px rgba(212, 175, 55, 0.42));
+}
+
+.eb-logo-symbol {
+  filter: drop-shadow(0 0 16px rgba(212, 175, 55, 0.45));
 }
 
 .eb-logo-hero .logo-title--holo {
