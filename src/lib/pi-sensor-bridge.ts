@@ -5,7 +5,8 @@ import { triggerNfcActivation } from '@/lib/nfc-activation'
 
 const PI_HTTP_PORT = 8787
 const PI_HOST_STORAGE_KEY = 'eternalbeam:pi-http-base'
-const PROBE_TIMEOUT_MS = 1800
+const DEVICE_CONNECTED_KEY = 'eternal_beam_device_connected'
+const PROBE_TIMEOUT_MS = 2500
 
 /** 같은 서브넷에서 흔한 Pi 주소 (핫스팟 DHCP) */
 const DEMO_PI_PROBE_HOSTS = [
@@ -64,6 +65,17 @@ function rememberPiBase(base: string): void {
   }
 }
 
+/** QR 스플래시 완료 또는 ?demo=device — Pi 자동 탐색 대상 */
+export function isDevicePaired(): boolean {
+  if (typeof window === 'undefined') return false
+  if (isDeviceKickstarterDemo()) return true
+  try {
+    return localStorage.getItem(DEVICE_CONNECTED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
 function buildPiCandidates(): string[] {
   const seen = new Set<string>()
   const ordered: string[] = []
@@ -90,7 +102,7 @@ function buildPiCandidates(): string[] {
     for (const h of hosts.split(',')) push(h.trim())
   }
 
-  if (isDeviceKickstarterDemo()) {
+  if (isDevicePaired()) {
     for (const h of DEMO_PI_PROBE_HOSTS) push(h)
   }
 
@@ -121,11 +133,26 @@ export async function discoverPiHttpBase(): Promise<string | null> {
   const candidates = buildPiCandidates()
   if (!candidates.length) return null
 
-  for (const base of candidates) {
+  const stored = readStoredPiBase()
+  const fromUrl = readUrlPiHost()
+  const fastFirst = [fromUrl, stored].filter(Boolean) as string[]
+  for (const base of fastFirst) {
     if (await probePiBase(base)) {
       rememberPiBase(base)
       return base
     }
+  }
+
+  const rest = candidates.filter((c) => !fastFirst.includes(c))
+  if (!rest.length) return null
+
+  const hits = await Promise.all(
+    rest.map(async (base) => ((await probePiBase(base)) ? base : null)),
+  )
+  const found = hits.find(Boolean)
+  if (found) {
+    rememberPiBase(found)
+    return found
   }
   return null
 }

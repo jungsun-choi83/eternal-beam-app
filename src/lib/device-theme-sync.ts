@@ -1,8 +1,9 @@
 import { getMemorialTheme } from "@/components/memorial/themes";
-import { isDeviceKickstarterDemo } from "@/lib/device-demo-config";
-import { triggerThemeOnDevice, resolvePiHttpBase } from "@/lib/pi-sensor-bridge";
-
-const DEVICE_CONNECTED_KEY = "eternal_beam_device_connected";
+import {
+  triggerThemeOnDevice,
+  resolvePiHttpBase,
+  isDevicePaired,
+} from "@/lib/pi-sensor-bridge";
 
 let lastSyncedThemeKey: string | null = null;
 let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -10,13 +11,8 @@ let debounceTimer: ReturnType<typeof setTimeout> | null = null;
 /** QR 스플래시·데모 모드 등 기기 연동 대상인지 */
 export function shouldSyncThemeToDevice(): boolean {
   if (typeof window === "undefined") return false;
-  if (isDeviceKickstarterDemo()) return true;
-  if (resolvePiHttpBase()) return true;
-  try {
-    return localStorage.getItem(DEVICE_CONNECTED_KEY) === "1";
-  } catch {
-    return false;
-  }
+  if (isDevicePaired()) return true;
+  return resolvePiHttpBase() != null;
 }
 
 /**

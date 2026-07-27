@@ -46,6 +46,8 @@ class _SseHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "*")
+        # HTTPS 웹앱 → 로컬 Pi (Private Network Access)
+        self.send_header("Access-Control-Allow-Private-Network", "true")
 
     def do_GET(self) -> None:
         path = self.path.split("?", 1)[0]

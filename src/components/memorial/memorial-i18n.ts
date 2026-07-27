@@ -223,7 +223,7 @@ const STRINGS = {
       liveTitle: (themeName: string) => `${themeName} · 기기에서 재생 중`,
       liveHint: "기기 화면에서 홀로그램을 확인하세요.",
       offlineTitle: "기기를 찾지 못했습니다",
-      offlineHint: "기기 Wi-Fi와 QR 연결을 확인한 뒤, 화면에서 미리보기는 계속 볼 수 있습니다.",
+      offlineHint: "폰과 라즈베리 파이가 같은 Wi‑Fi인지 확인하세요. 주소 끝에 ?pi=라즈베리IP 를 붙이면 연결됩니다.",
       done: "완료 · 홈으로",
     },
     payment: {
@@ -600,7 +600,7 @@ const STRINGS = {
       liveTitle: (themeName: string) => `${themeName} · playing on device`,
       liveHint: "Check the hologram on your device screen.",
       offlineTitle: "Device not found",
-      offlineHint: "Check Wi-Fi and QR pairing. You can still preview on this screen.",
+      offlineHint: "Phone and Pi must be on the same Wi‑Fi. Add ?pi=RASPBERRY_IP to the URL if needed.",
       done: "Done · Home",
     },
     payment: {
