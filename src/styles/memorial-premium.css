@@ -560,6 +560,23 @@
 .preview-subject-layer {
   will-change: transform;
   transform-origin: center center;
+  pointer-events: none;
+}
+
+.preview-gesture-surface {
+  touch-action: none;
+  cursor: grab;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.preview-gesture-surface:active {
+  cursor: grabbing;
+}
+
+.preview-touch-hint {
+  pointer-events: none;
+  user-select: none;
 }
 
 /* Home — add memory card */

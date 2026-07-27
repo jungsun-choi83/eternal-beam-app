@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, RotateCcw, Move, Maximize2, Film, Minus, Plus } from "lucide-react";
+import { ArrowLeft, RotateCcw, Film } from "lucide-react";
 import {
   ETERNAL_BEAM_PIPELINE_KEY,
   type StoredPipeline,
@@ -48,6 +48,12 @@ function assertPreviewTheme(selectedTheme: number | null, resolvedId: number) {
   }
 }
 
+function pinchDistance(points: Map<number, { x: number; y: number }>) {
+  const pts = [...points.values()];
+  if (pts.length < 2) return 0;
+  return Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+}
+
 export function PreviewScreen({
   cutoutImage,
   selectedTheme,
@@ -59,8 +65,8 @@ export function PreviewScreen({
   onBack,
 }: PreviewScreenProps) {
   const p = memorialT(language).preview;
-  const [activeSlider, setActiveSlider] = useState<string | null>(null);
   const [displaySettings, setDisplaySettings] = useState(settings);
+  const [hasGestured, setHasGestured] = useState(false);
   const [pipeline, setPipeline] = useState<StoredPipeline | null>(null);
   const [ffPreviewUrl, setFfPreviewUrl] = useState<string | null>(null);
   const [ffLoading, setFfLoading] = useState(false);
@@ -73,8 +79,12 @@ export function PreviewScreen({
   const settingsRef = useRef(settings);
   const displaySettingsRef = useRef(settings);
   const subjectLayerRef = useRef<HTMLDivElement>(null);
-  const draggingSliderRef = useRef(false);
-  const activeSliderIdRef = useRef<string | null>(null);
+  const gestureRef = useRef({
+    pointers: new Map<number, { x: number; y: number }>(),
+    startPoints: new Map<number, { x: number; y: number }>(),
+    anchor: { scale: 1, posX: 0, posY: 0 },
+    pinchStartDistance: null as number | null,
+  });
   settingsRef.current = settings;
   displaySettingsRef.current = displaySettings;
 
@@ -85,7 +95,6 @@ export function PreviewScreen({
   }, []);
 
   useEffect(() => {
-    if (draggingSliderRef.current) return;
     setDisplaySettings(settings);
     applySubjectTransform(settings);
   }, [settings, applySubjectTransform]);
@@ -113,8 +122,6 @@ export function PreviewScreen({
   }, [cutoutImage]);
 
   const handleReset = useCallback(() => {
-    draggingSliderRef.current = false;
-    setActiveSlider(null);
     const reset = { scale: 1, posX: 0, posY: 0 };
     setDisplaySettings(reset);
     applySubjectTransform(reset);
@@ -147,11 +154,92 @@ export function PreviewScreen({
   );
 
   const finishSliderDrag = useCallback(() => {
-    draggingSliderRef.current = false;
-    activeSliderIdRef.current = null;
-    setActiveSlider(null);
     onSettingsChange(displaySettingsRef.current);
   }, [onSettingsChange]);
+
+  const reanchorGesture = useCallback(() => {
+    const g = gestureRef.current;
+    g.anchor = { ...displaySettingsRef.current };
+    g.startPoints = new Map(g.pointers);
+    g.pinchStartDistance = g.pointers.size >= 2 ? pinchDistance(g.pointers) : null;
+  }, []);
+
+  const applyGestureFrame = useCallback(() => {
+    const g = gestureRef.current;
+    const count = g.pointers.size;
+    if (count === 0) return;
+
+    if (count >= 2 && g.pinchStartDistance && g.pinchStartDistance > 0) {
+      const ratio = pinchDistance(g.pointers) / g.pinchStartDistance;
+      previewLiveSettings({
+        scale: clampScale(g.anchor.scale * ratio),
+      });
+      return;
+    }
+
+    if (count === 1) {
+      const [id, point] = [...g.pointers.entries()][0];
+      const start = g.startPoints.get(id);
+      if (!start) return;
+      previewLiveSettings({
+        posX: clampPos(g.anchor.posX + (point.x - start.x)),
+        posY: clampPos(g.anchor.posY + (point.y - start.y)),
+      });
+    }
+  }, [previewLiveSettings]);
+
+  const handlePreviewPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!cutoutDisplay) return;
+      e.preventDefault();
+      setHasGestured(true);
+      const g = gestureRef.current;
+      g.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      g.startPoints.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (g.pointers.size === 1) {
+        reanchorGesture();
+      } else if (g.pointers.size === 2) {
+        reanchorGesture();
+      }
+      e.currentTarget.setPointerCapture(e.pointerId);
+    },
+    [cutoutDisplay, reanchorGesture]
+  );
+
+  const handlePreviewPointerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const g = gestureRef.current;
+      if (!g.pointers.has(e.pointerId)) return;
+      if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
+      e.preventDefault();
+      g.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      applyGestureFrame();
+    },
+    [applyGestureFrame]
+  );
+
+  const handlePreviewPointerEnd = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const g = gestureRef.current;
+      if (!g.pointers.has(e.pointerId)) return;
+      try {
+        if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+          e.currentTarget.releasePointerCapture(e.pointerId);
+        }
+      } catch {
+        /* ignore */
+      }
+      g.pointers.delete(e.pointerId);
+      g.startPoints.delete(e.pointerId);
+      if (g.pointers.size === 0) {
+        g.pinchStartDistance = null;
+        finishSliderDrag();
+        return;
+      }
+      reanchorGesture();
+    },
+    [finishSliderDrag, reanchorGesture]
+  );
 
   const handlePreviewWheel = useCallback(
     (e: React.WheelEvent) => {
@@ -200,195 +288,6 @@ export function PreviewScreen({
       setFfLoading(false);
     }
   }, [cutoutImage, previewThemeId, currentTheme, displaySettings.posX, displaySettings.posY, displaySettings.scale, p.cutoutMissing, p.themeUnknown, p.previewFailed]);
-
-  const SliderControl = ({
-    label,
-    icon: Icon,
-    value,
-    min,
-    max,
-    step,
-    buttonStep,
-    onChange,
-    onCommit,
-    id,
-  }: {
-    label: string;
-    icon: React.ElementType;
-    value: number;
-    min: number;
-    max: number;
-    step: number;
-    buttonStep?: number;
-    onChange: (value: number, opts?: { commit?: boolean }) => void;
-    onCommit: () => void;
-    id: string;
-  }) => {
-    const trackRef = useRef<HTMLDivElement>(null);
-    const clamp = (v: number) => Math.min(max, Math.max(min, v));
-    const formatValue = (v: number) =>
-      id === "scale" ? v.toFixed(2) : v.toFixed(1);
-    const normalize = (v: number) =>
-      id === "scale" ? clampScale(v) : clampPos(v);
-
-    const valueFromClientX = (clientX: number) => {
-      const track = trackRef.current;
-      if (!track) return value;
-      const rect = track.getBoundingClientRect();
-      if (rect.width <= 0) return value;
-      const ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
-      return normalize(min + ratio * (max - min));
-    };
-
-    const bump = (dir: -1 | 1) => {
-      const delta = buttonStep ?? step;
-      const next = clamp(value + dir * delta);
-      onChange(normalize(next), { commit: true });
-    };
-
-    const beginDrag = (clientX: number) => {
-      draggingSliderRef.current = true;
-      activeSliderIdRef.current = id;
-      setActiveSlider(id);
-      onChange(valueFromClientX(clientX), { commit: false });
-    };
-
-    const moveDrag = (clientX: number) => {
-      if (!draggingSliderRef.current || activeSliderIdRef.current !== id) return;
-      onChange(valueFromClientX(clientX), { commit: false });
-    };
-
-    const endDrag = () => {
-      if (activeSliderIdRef.current !== id) return;
-      onCommit();
-    };
-
-    const stepButtonStyle = {
-      background: "#1C1C1E",
-      border: "1px solid #333333",
-      color: "#F5F5F7",
-    } as const;
-
-    const pct = ((value - min) / (max - min)) * 100;
-    const isActive = activeSlider === id;
-
-    return (
-      <motion.div
-        initial={{ opacity: 0, y: 10 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="space-y-2"
-      >
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2 min-w-0">
-            <Icon className="w-4 h-4 shrink-0" style={{ color: "#A1A1A6" }} strokeWidth={1.5} />
-            <span
-              className="text-xs font-light tracking-wider truncate"
-              style={{ color: "#A1A1A6" }}
-            >
-              {label}
-            </span>
-          </div>
-          <span
-            className="text-xs font-light tabular-nums min-w-[2.5rem] text-right shrink-0"
-            style={{ color: "#c9a227" }}
-          >
-            {formatValue(value)}
-          </span>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <motion.button
-            type="button"
-            aria-label={`${label} decrease`}
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              bump(-1);
-            }}
-            className="w-10 h-10 rounded-full flex items-center justify-center shrink-0"
-            style={stepButtonStyle}
-            whileTap={{ scale: 0.92 }}
-          >
-            <Minus className="w-4 h-4" strokeWidth={1.5} />
-          </motion.button>
-
-          <div
-            ref={trackRef}
-            className="preview-adjust-track relative flex-1 min-w-0 h-11 flex items-center select-none"
-            onPointerDown={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              beginDrag(e.clientX);
-              e.currentTarget.setPointerCapture(e.pointerId);
-            }}
-            onPointerMove={(e) => {
-              if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
-              e.preventDefault();
-              moveDrag(e.clientX);
-            }}
-            onPointerUp={(e) => {
-              if (!e.currentTarget.hasPointerCapture(e.pointerId)) return;
-              e.preventDefault();
-              try {
-                e.currentTarget.releasePointerCapture(e.pointerId);
-              } catch {
-                /* ignore */
-              }
-              endDrag();
-            }}
-            onPointerCancel={(e) => {
-              try {
-                e.currentTarget.releasePointerCapture(e.pointerId);
-              } catch {
-                /* ignore */
-              }
-              endDrag();
-            }}
-          >
-            <div
-              className="absolute inset-x-0 h-[3px] rounded-full pointer-events-none"
-              style={{ background: "#1C1C1E" }}
-            />
-            <div
-              className="absolute h-[3px] rounded-full pointer-events-none"
-              style={{
-                background: "linear-gradient(90deg, #c9a227, #f5d77a)",
-                width: `${pct}%`,
-                transition: isActive ? "none" : "width 120ms ease-out",
-                boxShadow: isActive ? "0 0 10px rgba(201, 162, 39, 0.3)" : "none",
-              }}
-            />
-            <div
-              className="absolute w-6 h-6 rounded-full pointer-events-none"
-              style={{
-                left: `calc(${pct}% - 12px)`,
-                background: "linear-gradient(135deg, #c9a227, #d4af37)",
-                transition: isActive ? "none" : "left 120ms ease-out",
-                boxShadow: isActive
-                  ? "0 0 20px rgba(201, 162, 39, 0.5), 0 2px 10px rgba(0,0,0,0.3)"
-                  : "0 2px 10px rgba(0,0,0,0.3)",
-              }}
-            />
-          </div>
-
-          <motion.button
-            type="button"
-            aria-label={`${label} increase`}
-            onPointerDown={(e) => e.stopPropagation()}
-            onClick={(e) => {
-              e.stopPropagation();
-              bump(1);
-            }}
-            className="w-10 h-10 rounded-full flex items-center justify-center shrink-0"
-            style={stepButtonStyle}
-            whileTap={{ scale: 0.92 }}
-          >
-            <Plus className="w-4 h-4" strokeWidth={1.5} />
-          </motion.button>
-        </div>
-      </motion.div>
-    );
-  };
 
   return (
     <div className="h-full flex flex-col min-h-0 overflow-hidden">
@@ -441,13 +340,17 @@ export function PreviewScreen({
         {p.adjustHint}
       </p>
 
-      {/* Preview Area */}
-      <div className="px-6 py-4 shrink-0 flex flex-col items-center justify-start gap-4">
+      {/* Preview Area — 드래그·핀치로 직접 조절 */}
+      <div className="px-6 py-2 flex-1 min-h-0 flex flex-col items-center justify-center">
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="theme-preview-frame relative w-full aspect-[3/4] max-h-[320px]"
+          className="preview-gesture-surface theme-preview-frame relative w-full aspect-[3/4] max-h-[min(52dvh,420px)]"
           onWheel={handlePreviewWheel}
+          onPointerDown={handlePreviewPointerDown}
+          onPointerMove={handlePreviewPointerMove}
+          onPointerUp={handlePreviewPointerEnd}
+          onPointerCancel={handlePreviewPointerEnd}
         >
           <div className="memory-cta-card__shine" />
           {previewBgVideo ? (
@@ -486,7 +389,7 @@ export function PreviewScreen({
 
           {/* Corner Guides */}
           {["top-3 left-3", "top-3 right-3", "bottom-3 left-3", "bottom-3 right-3"].map((pos, i) => (
-            <div key={i} className={`absolute ${pos} w-4 h-4`}>
+            <div key={i} className={`absolute ${pos} w-4 h-4 pointer-events-none`}>
               <div 
                 className={`absolute ${i < 2 ? "top-0" : "bottom-0"} ${i % 2 === 0 ? "left-0" : "right-0"} w-3 h-[1px]`}
                 style={{ background: `${currentTheme.accent}40` }}
@@ -497,6 +400,21 @@ export function PreviewScreen({
               />
             </div>
           ))}
+
+          {!hasGestured ? (
+            <div className="preview-touch-hint absolute inset-x-0 bottom-4 flex justify-center px-4 z-20">
+              <span
+                className="rounded-full px-3 py-1.5 text-[10px] font-light tracking-wide text-center"
+                style={{
+                  color: "rgba(245,245,247,0.88)",
+                  background: "rgba(0,0,0,0.55)",
+                  border: "1px solid rgba(255,255,255,0.12)",
+                }}
+              >
+                {p.touchAdjustHint}
+              </span>
+            </div>
+          ) : null}
         </motion.div>
 
         {SHOW_PIPELINE_DEBUG ? (
@@ -593,72 +511,16 @@ export function PreviewScreen({
         ) : null}
       </div>
 
-      {/* Controls + Complete */}
-      <div className="preview-controls-scroll hide-scrollbar flex-1 min-h-0 overflow-y-auto overscroll-contain touch-pan-y">
-      <div 
-        className="px-8 py-6 space-y-6 shrink-0"
-        style={{
-          background: "linear-gradient(to top, rgba(0,0,0,0.9) 0%, transparent 100%)",
-        }}
-      >
-        <SliderControl
-          id="scale"
-          label={p.scale}
-          icon={Maximize2}
-          value={displaySettings.scale}
-          min={0.5}
-          max={2}
-          step={0.01}
-          buttonStep={0.05}
-          onChange={(val, opts) => {
-            if (opts?.commit) commitSettings({ ...displaySettingsRef.current, scale: val });
-            else previewLiveSettings({ scale: val });
-          }}
-          onCommit={finishSliderDrag}
-        />
-        <p className="text-[10px] text-center -mt-3" style={{ color: "#6b6b70" }}>
-          {p.scaleWheelHint}
+      {/* 하단 — 슬라이더 없이 완료 버튼만 */}
+      <div className="px-8 pb-10 pt-2 shrink-0 space-y-3">
+        <p className="text-[10px] text-center font-light" style={{ color: "#6b6b70" }}>
+          {p.touchAdjustHint}
+          <span className="hidden sm:inline"> · {p.scaleWheelHint}</span>
         </p>
-
-        <SliderControl
-          id="posX"
-          label={p.posX}
-          icon={Move}
-          value={displaySettings.posX}
-          min={-100}
-          max={100}
-          step={0.1}
-          buttonStep={2}
-          onChange={(val, opts) => {
-            if (opts?.commit) commitSettings({ ...displaySettingsRef.current, posX: val });
-            else previewLiveSettings({ posX: val });
-          }}
-          onCommit={finishSliderDrag}
-        />
-
-        <SliderControl
-          id="posY"
-          label={p.posY}
-          icon={Move}
-          value={displaySettings.posY}
-          min={-100}
-          max={100}
-          step={0.1}
-          buttonStep={2}
-          onChange={(val, opts) => {
-            if (opts?.commit) commitSettings({ ...displaySettingsRef.current, posY: val });
-            else previewLiveSettings({ posY: val });
-          }}
-          onCommit={finishSliderDrag}
-        />
-      </div>
-
-      {/* Complete Button - 항상 보임 */}
-      <div className="px-8 pb-10 shrink-0">
         <motion.button
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
+          transition={{ delay: 0.2 }}
           onClick={onComplete}
           className="w-full py-4 rounded-2xl font-normal text-[15px] tracking-wider"
           style={{
@@ -671,7 +533,6 @@ export function PreviewScreen({
         >
           {deliveryMode === "shipping" ? p.completeShipping : p.completeDevice}
         </motion.button>
-      </div>
       </div>
     </div>
   );
