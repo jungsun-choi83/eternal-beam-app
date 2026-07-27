@@ -10,13 +10,15 @@ interface EternalBeamLogoIconProps {
 
 /** 로고 심볼만 (버튼·배지·NFC 태그 등) */
 export function EternalBeamLogoIcon({ size = 20, className = "" }: EternalBeamLogoIconProps) {
+  const height = Math.round(size * (72 / 80));
+
   return (
     <span
-      className={`eb-brand-mark shrink-0 inline-flex ${className}`}
-      style={{ width: size, height: size }}
+      className={`eb-brand-mark shrink-0 inline-flex items-center justify-center ${className}`}
+      style={{ width: size, height }}
       aria-hidden
     >
-      <EternalBeamLogoSymbol size={size} className="eb-logo-symbol" />
+      <EternalBeamLogoSymbol size={size} variant="icon" className="eb-logo-symbol eb-logo-symbol--icon" />
     </span>
   );
 }
@@ -65,7 +67,7 @@ export function EternalBeamLogoHero({
       <div className="relative flex flex-col items-center gap-3">
         <EternalBeamLogoSymbol
           size={symbolPx}
-          sharp={size === "splash"}
+          variant={size === "splash" ? "splash" : "default"}
           className="eb-logo-symbol select-none"
         />
         {titleVariant === "brand" ? (
@@ -98,7 +100,7 @@ export function EternalBeamBrandMark({
 
   return (
     <div className={`flex items-center justify-center gap-2 ${className}`}>
-      <EternalBeamLogoIcon size={18} />
+      <EternalBeamLogoIcon size={20} />
       <span className={textClassName}>{label}</span>
     </div>
   );

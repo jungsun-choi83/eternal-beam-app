@@ -6,7 +6,7 @@ import { EternalBeamLogoSymbol } from "@/components/memorial/eternal-beam-logo-s
 export function EternalBeamSplashLogo() {
   return (
     <div className="splash-brand-mark flex flex-col items-center gap-3">
-      <EternalBeamLogoSymbol size={128} sharp className="splash-brand-symbol" />
+      <EternalBeamLogoSymbol size={128} variant="splash" className="splash-brand-symbol" />
       <p className="splash-brand-title m-0">Eternal Beam</p>
     </div>
   );

@@ -111,6 +111,15 @@ span {
   filter: drop-shadow(0 0 16px rgba(212, 175, 55, 0.45));
 }
 
+/* 하단·배지 아이콘 — 작은 크기에서 blur/찌그러짐 방지 */
+.eb-logo-symbol--icon,
+.eb-brand-mark .eb-logo-symbol {
+  filter: none;
+  width: 100%;
+  height: 100%;
+  flex-shrink: 0;
+}
+
 .eb-logo-hero .logo-title--holo {
   background: linear-gradient(180deg, #f5ecd4 0%, #d4af37 48%, #b8922a 100%);
   -webkit-background-clip: text;
