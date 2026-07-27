@@ -10,6 +10,7 @@ import { MediaFileTrigger } from "@/components/memorial/media-file-trigger";
 import { PhotoUploadGuide } from "@/components/memorial/photo-upload-guide";
 import { CutoutStage } from "@/components/memorial/cutout-stage";
 import { MemorialIconButton, MemorialPrimaryButton } from "@/components/memorial/memorial-chrome";
+import { EternalBeamLogoHero } from "@/components/memorial/eternal-beam-brand-mark";
 import { inferMediaKind } from "@/lib/media-file-kind";
 import { CUTOUT_WARMUP_MAX_MS } from "@/lib/cutout-speed-mode";
 import { warmupVideoApi } from "@/lib/video-api-warmup";
@@ -135,14 +136,9 @@ export function PhotoUploadScreen({
           </span>
         </MemorialIconButton>
 
-        <motion.h1
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="screen-title absolute left-1/2 -translate-x-1/2"
-          style={{ color: "#F5F5F7" }}
-        >
-          {u.title}
-        </motion.h1>
+        <div className="absolute left-1/2 -translate-x-1/2 w-[7.5rem]">
+          <EternalBeamLogoHero size="compact" showGlow={false} />
+        </div>
 
         <div className="w-10" />
       </header>

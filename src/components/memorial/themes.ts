@@ -25,6 +25,18 @@ export const CUSTOM_PHOTO_BG_THEME_KEY = "custom_photo_bg";
 
 export const memorialThemes: MemorialTheme[] = [
   {
+    id: 8,
+    name: "Forest",
+    nameKo: "숲속",
+    themeKey: "fresh_forest",
+    gradient: "from-emerald-950 via-green-900 to-black",
+    accent: "#34d399",
+    premium: false,
+    price: "",
+    thumb: "/theme-thumbs/fresh_forest.jpg",
+    bgVideo: "/demo/forest.mp4",
+  },
+  {
     id: 1,
     name: "Snow Forest",
     nameKo: "눈 숲",
@@ -101,18 +113,6 @@ export const memorialThemes: MemorialTheme[] = [
     premium: true,
     price: "$2.99",
     thumb: "/theme-thumbs/ocean_deep.jpg",
-  },
-  {
-    id: 8,
-    name: "Forest",
-    nameKo: "숲속",
-    themeKey: "fresh_forest",
-    gradient: "from-emerald-950 via-green-900 to-black",
-    accent: "#34d399",
-    premium: false,
-    price: "",
-    thumb: "/theme-thumbs/fresh_forest.jpg",
-    bgVideo: "/demo/forest.mp4",
   },
   {
     id: CUSTOM_PHOTO_BG_THEME_ID,

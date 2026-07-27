@@ -5,6 +5,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Mail, Lock, User, Eye, EyeOff, ArrowRight, Heart } from "lucide-react";
 import { HolographicBackground } from "./holographic-background";
 import { HologramEffects } from "./hologram-effects";
+import { EternalBeamLogoHero } from "./eternal-beam-brand-mark";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { setEternalBeamUserId } from "@/lib/eternal-beam-user";
 import { getPetName, setPetName, syncPetProfileToDevice } from "@/lib/pet-profile";
@@ -104,9 +105,7 @@ export function AuthScreen({
             animate={{ opacity: [0.3, 0.5, 0.3] }}
             transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
           />
-          <div className="logo-holo-wrap">
-            <h1 className="logo-title logo-title--holo relative">Eternal Beam</h1>
-          </div>
+          <EternalBeamLogoHero size="hero" className="mb-1" />
           <p className="logo-subtitle">{a.subtitle}</p>
         </div>
       </motion.header>

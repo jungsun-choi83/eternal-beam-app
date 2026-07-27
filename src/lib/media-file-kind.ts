@@ -11,4 +11,6 @@ export function inferMediaKind(file: File): MediaKind | null {
   return null;
 }
 
-export const MEDIA_FILE_ACCEPT = "image/*,video/*";
+/** 갤러리만 — capture 미사용, image/* 는 모바일에서 카메라 옵션을 띄우는 경우가 있음 */
+export const MEDIA_FILE_ACCEPT =
+  "image/jpeg,image/png,image/webp,image/heic,image/heif,.jpg,.jpeg,.png,.webp,.heic,.heif,video/mp4,video/quicktime,video/webm,.mp4,.mov,.webm";

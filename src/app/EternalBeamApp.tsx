@@ -63,10 +63,21 @@ type Screen =
   | 'settings'
 
 function resolveInitialScreen(): Screen {
-  if (typeof window === 'undefined') return 'qrConnection'
+  if (typeof window === 'undefined') return 'signup'
   if (isPublicForestEntry()) return 'forestExperience'
   if (isDeviceKickstarterDemo()) return 'home'
-  return 'qrConnection'
+  // 기계 QR로 앱 진입 — 별도 QR 스캔·카메라 화면 없이 바로 시작
+  try {
+    localStorage.setItem(DEVICE_CONNECTED_KEY, '1')
+  } catch {
+    /* ignore */
+  }
+  try {
+    if (localStorage.getItem('eternal_beam_user_id')) return 'home'
+  } catch {
+    /* ignore */
+  }
+  return 'signup'
 }
 
 type NavDirection = 'forward' | 'back'
@@ -282,7 +293,7 @@ export function EternalBeamApp() {
     setCutoutImage(null)
     setSelectedTheme(null)
     setPreviewSettings({ scale: 1, posX: 0, posY: 0 })
-    setScreen('qrConnection')
+    setScreen('signup')
   }
 
   const handleQrComplete = () => {

@@ -5,6 +5,7 @@ import { motion } from "framer-motion";
 import { Plus, Settings, Grid3X3 } from "lucide-react";
 import { HolographicBackground } from "./holographic-background";
 import { HologramEffects } from "./hologram-effects";
+import { EternalBeamLogoHero } from "./eternal-beam-brand-mark";
 import { MediaFileTrigger } from "./media-file-trigger";
 
 interface HomeScreenProps {
@@ -87,9 +88,7 @@ export function HomeScreen({
             }}
           />
 
-          <div className="logo-holo-wrap">
-            <h1 className="logo-title logo-title--holo relative">Eternal Beam</h1>
-          </div>
+          <EternalBeamLogoHero size="hero" className="mb-1" />
           <p className="logo-subtitle">
             {texts.subtitle}
           </p>
