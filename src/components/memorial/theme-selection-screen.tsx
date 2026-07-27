@@ -13,6 +13,7 @@ import {
   isPremiumTheme,
   type MemorialTheme,
 } from "@/components/memorial/themes";
+import { resetThemeBackgroundSyncCache } from "@/lib/device-theme-sync";
 import { CutoutStage } from "@/components/memorial/cutout-stage";
 import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
 
@@ -234,6 +235,10 @@ export function ThemeSelectionScreen({
   useEffect(() => {
     setHighlightTheme(selectedTheme);
   }, [selectedTheme]);
+
+  useEffect(() => {
+    resetThemeBackgroundSyncCache();
+  }, []);
 
   useEffect(() => {
     try {

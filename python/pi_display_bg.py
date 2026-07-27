@@ -85,6 +85,15 @@ def _pick_player() -> list[str]:
     raise RuntimeError("mpv 또는 omxplayer 가 PATH에 없습니다. apt install mpv")
 
 
+def _session_is_wayland() -> bool:
+    if os.getenv("WAYLAND_DISPLAY", "").strip():
+        return True
+    run_user = Path(f"/run/user/{os.getuid()}")
+    if run_user.is_dir():
+        return any(run_user.glob("wayland-*"))
+    return False
+
+
 def _player_env() -> dict[str, str]:
     """SSH에서 실행해도 터치스크린에 mpv가 뜨도록 — DISPLAY/XAUTHORITY 기본값은
     hardware_config.yaml 의 display.env (보드별 홈 디렉터리가 다를 수 있음)."""
@@ -92,10 +101,13 @@ def _player_env() -> dict[str, str]:
     env = os.environ.copy()
     if not env.get("DISPLAY"):
         env["DISPLAY"] = os.getenv("BG_DISPLAY", board_env.get("DISPLAY", ":0"))
-    if not env.get("WAYLAND_DISPLAY"):
-        wayland = os.getenv("BG_WAYLAND_DISPLAY", "wayland-0").strip()
-        if wayland:
-            env["WAYLAND_DISPLAY"] = wayland
+    if not env.get("WAYLAND_DISPLAY") and _session_is_wayland():
+        run_user = Path(f"/run/user/{os.getuid()}")
+        sockets = sorted(run_user.glob("wayland-*"))
+        env["WAYLAND_DISPLAY"] = os.getenv(
+            "BG_WAYLAND_DISPLAY",
+            sockets[0].name if sockets else "wayland-0",
+        )
     xauth = Path(env.get("XAUTHORITY", board_env.get("XAUTHORITY", "/home/pi/.Xauthority")))
     if xauth.exists():
         env["XAUTHORITY"] = str(xauth)
@@ -111,8 +123,10 @@ def _player_env() -> dict[str, str]:
 def _build_cmd(player: list[str], video: Path) -> list[str]:
     extra = os.getenv("BG_MPV_EXTRA", "").strip().split()
     if player[0] == "mpv":
-        # 기본 simple — 수동 테스트와 동일 (촬영에서 가장 잘 뜸)
+        # 기본 simple — Wayland 세션이면 gpu-context=wayland (Pi 5 Bookworm)
         fill = os.getenv("BG_MPV_FILL", "simple").strip().lower()
+        if fill == "simple" and _session_is_wayland():
+            fill = "wayland"
         fill_args: list[str]
         if fill in ("stretch", "noaspect", "distort"):
             fill_args = ["--keepaspect=no"]
@@ -123,9 +137,14 @@ def _build_cmd(player: list[str], video: Path) -> list[str]:
                 "--video-align-y=1",
             ]
         elif fill == "wayland":
-            fill_args = ["--gpu-context=wayland"]
+            fill_args = ["--gpu-context=wayland", "--fs"]
         else:
-            fill_args = ["--ontop"]
+            # film_display_simple 과 동일 — Pi 터치스크린에서 잘 뜸
+            fill_args = [
+                "--panscan=0",
+                "--background=color",
+                "--background-color=#142814",
+            ]
 
         return [
             "mpv",
@@ -153,28 +172,44 @@ def _log_player_exit(proc: subprocess.Popen) -> None:
         f"[pi_display_bg] 플레이어 즉시 종료 exit={code}",
         flush=True,
     )
+    err_path = Path("/tmp/mpv-bg.err")
+    if err_path.exists():
+        tail = err_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-8:]
+        if tail:
+            print("[pi_display_bg] mpv stderr (마지막 줄):", flush=True)
+            for line in tail:
+                print(f"  {line}", flush=True)
     print(
-        "[pi_display_bg] 힌트: Pi 터치스크린 앞에서 실행하거나 "
-        "DISPLAY=:0 python3 pi_display_bg.py … 를 시도하세요.",
+        "[pi_display_bg] 힌트: "
+        "1) fresh_forest.mp4 있는지 ls backgrounds/ "
+        "2) export DISPLAY=:0 XAUTHORITY=/home/eternalbeam/.Xauthority "
+        "3) Wayland면 BG_MPV_FILL=wayland "
+        "4) python3 pi_display_bg.py --test-forest",
         flush=True,
     )
 
 
-def stop_player() -> None:
+def _stop_player_unlocked() -> None:
+    """락을 잡은 상태에서만 호출 (play_background 내부)."""
     global _player_proc
     subprocess.run(["pkill", "-9", "mpv"], check=False)
-    with _player_lock:
-        if _player_proc is None:
-            return
+    if _player_proc is None:
+        return
+    try:
+        _player_proc.terminate()
+        _player_proc.wait(timeout=3)
+    except Exception:
         try:
-            _player_proc.terminate()
-            _player_proc.wait(timeout=3)
+            _player_proc.kill()
         except Exception:
-            try:
-                _player_proc.kill()
-            except Exception:
-                pass
-        _player_proc = None
+            pass
+    _player_proc = None
+
+
+def stop_player() -> None:
+    global _player_proc
+    with _player_lock:
+        _stop_player_unlocked()
 
 
 def play_background(theme_id: str | None, bg_map: dict[str, str]) -> None:
@@ -205,7 +240,7 @@ def play_background(theme_id: str | None, bg_map: dict[str, str]) -> None:
     cmd = _build_cmd(player, video)
 
     with _player_lock:
-        stop_player()
+        _stop_player_unlocked()
         print(f"[pi_display_bg] 재생 시작 theme={tid!r} cmd={' '.join(cmd)}", flush=True)
         try:
             _player_proc = subprocess.Popen(
@@ -230,9 +265,9 @@ def handle_payload(payload: dict[str, Any], bg_map: dict[str, str]) -> None:
         return
 
     event = str(payload.get("event", "")).strip().lower()
-    if event != "nfc_tagged":
+    if event not in ("nfc_tagged", "theme_play"):
         print(
-            f"[pi_display_bg] 무시: event={event!r} (nfc_tagged 만 처리, keys={list(payload.keys())})",
+            f"[pi_display_bg] 무시: event={event!r} (nfc_tagged/theme_play 만 처리, keys={list(payload.keys())})",
             flush=True,
         )
         return

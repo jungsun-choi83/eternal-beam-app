@@ -1,10 +1,17 @@
 {
-  "_comment": "theme_id → Pi 디스플레이 배경 mp4 (python/backgrounds/ 기준). 촬영은 전부 숲만.",
+  "_comment": "themeKey → Pi 배경 mp4 (python/backgrounds/). 추가 영상 없으면 _default.",
   "_default": "fresh_forest.mp4",
   "forest": "fresh_forest.mp4",
   "fresh_forest": "fresh_forest.mp4",
   "goya_bg": "fresh_forest.mp4",
   "snow_forest": "fresh_forest.mp4",
+  "celestial": "fresh_forest.mp4",
+  "golden_meadow": "fresh_forest.mp4",
+  "starlight": "fresh_forest.mp4",
+  "aurora": "fresh_forest.mp4",
+  "sunset": "fresh_forest.mp4",
+  "ocean_deep": "fresh_forest.mp4",
+  "custom_photo_bg": "fresh_forest.mp4",
   "bg02": "fresh_forest.mp4",
   "BG_02": "fresh_forest.mp4"
 }

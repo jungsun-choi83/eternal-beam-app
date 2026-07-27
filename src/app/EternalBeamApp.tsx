@@ -33,6 +33,7 @@ import {
 import { clearStoredCustomBgVideoUrl } from '@/lib/custom-background-store'
 import { finalizePreviewContent } from '@/lib/finalize-preview-content'
 import { persistDeviceContentFromPipeline } from '@/lib/persist-device-content'
+import { scheduleThemeBackgroundSync } from '@/lib/device-theme-sync'
 import { isForestTheme } from '@/lib/forest-demo-config'
 import { isPublicForestEntry } from '@/lib/app-entry'
 import {
@@ -215,6 +216,7 @@ export function EternalBeamApp() {
   const handleThemeSelect = (themeId: number) => {
     setSelectedTheme(themeId)
     persistThemeChoice(themeId)
+    scheduleThemeBackgroundSync(themeId)
   }
 
   // "내 사진으로 나만의 배경 만들기" 카드 탭 — 일반 테마 선택과 달리 결제 전에
@@ -232,6 +234,7 @@ export function EternalBeamApp() {
   const handleThemeContinue = (themeId: number) => {
     setSelectedTheme(themeId)
     persistThemeChoice(themeId)
+    scheduleThemeBackgroundSync(themeId)
     if (deviceDemo && isForestTheme(themeId)) {
       navigateTo('devicePlay')
       return

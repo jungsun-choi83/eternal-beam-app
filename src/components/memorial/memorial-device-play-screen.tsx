@@ -19,6 +19,7 @@ import {
   finalizePreviewContent,
   type PreviewFinalizeSettings,
 } from "@/lib/finalize-preview-content";
+import { resetThemeBackgroundSyncCache } from "@/lib/device-theme-sync";
 import { resolveIdleVideoUrl } from "@/app/services/videoProcessingApi";
 import { resolveSelectedThemeId } from "@/lib/theme-selection-store";
 
@@ -71,6 +72,7 @@ export function MemorialDevicePlayScreen({
 
     (async () => {
       try {
+        resetThemeBackgroundSyncCache();
         const contentId = await finalizePreviewContent(themeId, settings);
         const ok = await broadcastFreeThemeToDevice(theme, contentId);
         if (cancelled) return;
