@@ -33,7 +33,7 @@ import {
 import { clearStoredCustomBgVideoUrl } from '@/lib/custom-background-store'
 import { finalizePreviewContent } from '@/lib/finalize-preview-content'
 import { persistDeviceContentFromPipeline } from '@/lib/persist-device-content'
-import { scheduleThemeBackgroundSync } from '@/lib/device-theme-sync'
+import { scheduleThemeBackgroundSync, shouldSyncThemeToDevice } from '@/lib/device-theme-sync'
 import { schedulePiDiscovery } from '@/lib/pi-sensor-bridge'
 import { isForestTheme } from '@/lib/forest-demo-config'
 import { isPublicForestEntry } from '@/lib/app-entry'
@@ -249,6 +249,16 @@ export function EternalBeamApp() {
       navigateTo('devicePlay')
       return
     }
+    const theme = getMemorialTheme(themeId)
+    if (
+      shouldSyncThemeToDevice() &&
+      theme &&
+      !theme.premium &&
+      !theme.requiresGeneration
+    ) {
+      navigateTo('devicePlay')
+      return
+    }
     navigateTo(isPremiumTheme(themeId) ? 'checkout' : 'preview')
   }
 
@@ -256,7 +266,13 @@ export function EternalBeamApp() {
     const themeId = freeMemorialThemes[0]?.id ?? 1
     setSelectedTheme(themeId)
     persistThemeChoice(themeId)
+    scheduleThemeBackgroundSync(themeId)
     if (deviceDemo && isForestTheme(themeId)) {
+      navigateTo('devicePlay')
+      return
+    }
+    const theme = getMemorialTheme(themeId)
+    if (shouldSyncThemeToDevice() && theme && !theme.requiresGeneration) {
       navigateTo('devicePlay')
       return
     }
@@ -530,6 +546,7 @@ export function EternalBeamApp() {
                 cutoutImage={cutoutImage}
                 selectedTheme={selectedTheme}
                 language={language}
+                deviceLinked={shouldSyncThemeToDevice()}
                 onSelectTheme={handleThemeSelect}
                 onSelectCustomBackground={handleSelectCustomBackground}
                 onContinue={handleThemeContinue}

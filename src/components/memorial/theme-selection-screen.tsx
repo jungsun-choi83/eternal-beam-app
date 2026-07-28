@@ -21,6 +21,8 @@ interface ThemeSelectionScreenProps {
   cutoutImage: string | null;
   selectedTheme: number | null;
   language?: string;
+  /** QR·?pi= 연결 — 무료 배경 CTA를 기기 재생으로 */
+  deviceLinked?: boolean;
   onSelectTheme: (themeId: number) => void;
   /** requiresGeneration 테마(예: custom_photo_bg) 카드를 탭했을 때 */
   onSelectCustomBackground?: (theme: MemorialTheme) => void;
@@ -207,6 +209,7 @@ export function ThemeSelectionScreen({
   cutoutImage,
   selectedTheme,
   language = "ko",
+  deviceLinked = false,
   onSelectTheme,
   onSelectCustomBackground,
   onContinue,
@@ -381,7 +384,9 @@ export function ThemeSelectionScreen({
           {activeTheme
             ? isPremiumTheme(activeTheme)
               ? tc.continuePremium
-              : tc.continueFree
+              : deviceLinked
+                ? tc.continueDevicePlay
+                : tc.continueFree
             : tc.selectFirst}
         </button>
         <button type="button" onClick={onSkip} className="w-full py-2.5 text-sm text-[#888]">

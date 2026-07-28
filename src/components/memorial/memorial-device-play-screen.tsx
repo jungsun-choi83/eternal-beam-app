@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { ArrowLeft, Radio, WifiOff } from "lucide-react";
 import { HolographicBackground } from "@/components/memorial/holographic-background";
@@ -19,7 +19,7 @@ import {
   finalizePreviewContent,
   type PreviewFinalizeSettings,
 } from "@/lib/finalize-preview-content";
-import { resetThemeBackgroundSyncCache } from "@/lib/device-theme-sync";
+import { resetThemeBackgroundSyncCache, scheduleThemeBackgroundSync } from "@/lib/device-theme-sync";
 import { resolveIdleVideoUrl } from "@/app/services/videoProcessingApi";
 import { resolveSelectedThemeId } from "@/lib/theme-selection-store";
 
@@ -66,35 +66,31 @@ export function MemorialDevicePlayScreen({
     }
   }, [cutoutImage]);
 
-  useEffect(() => {
+  const rebroadcastToDevice = useCallback(async () => {
     if (themeId == null) return;
-    let cancelled = false;
-
-    (async () => {
-      try {
-        resetThemeBackgroundSyncCache();
-        const contentId = await finalizePreviewContent(themeId, settings);
-        const ok = await broadcastFreeThemeToDevice(theme, contentId);
-        if (cancelled) return;
-        if (ok) {
-          setStatus("live");
-          setStatusHint(d.liveHint);
-        } else {
-          setStatus("offline");
-          setStatusHint(d.offlineHint);
-        }
-      } catch {
-        if (!cancelled) {
-          setStatus("offline");
-          setStatusHint(d.offlineHint);
-        }
+    setStatus("starting");
+    setStatusHint(d.startingHint);
+    resetThemeBackgroundSyncCache();
+    scheduleThemeBackgroundSync(themeId);
+    try {
+      const contentId = await finalizePreviewContent(themeId, settings);
+      const ok = await broadcastFreeThemeToDevice(theme, contentId);
+      if (ok) {
+        setStatus("live");
+        setStatusHint(d.liveHint);
+      } else {
+        setStatus("offline");
+        setStatusHint(d.offlineHint);
       }
-    })();
+    } catch {
+      setStatus("offline");
+      setStatusHint(d.offlineHint);
+    }
+  }, [themeId, theme, settings, d.startingHint, d.liveHint, d.offlineHint]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [themeId, theme, settings, d.liveHint, d.offlineHint]);
+  useEffect(() => {
+    void rebroadcastToDevice();
+  }, [rebroadcastToDevice]);
 
   const idleVideoUrl = resolveIdleVideoUrl(pipeline?.idle_video_url, cutoutDisplay);
 
@@ -168,6 +164,12 @@ export function MemorialDevicePlayScreen({
           animate={{ opacity: 1, y: 0 }}
           className="mt-5 flex flex-col items-center gap-2 text-center max-w-[280px]"
         >
+          <button
+            type="button"
+            onClick={() => void rebroadcastToDevice()}
+            className="flex flex-col items-center gap-2 text-center bg-transparent border-0 p-2 cursor-pointer"
+            aria-label={d.liveTitle(theme.nameKo || theme.name)}
+          >
           {status === "live" ? (
             <Radio className="w-7 h-7 text-emerald-300/90" strokeWidth={1.25} />
           ) : status === "offline" ? (
@@ -187,6 +189,7 @@ export function MemorialDevicePlayScreen({
                 : d.offlineTitle}
           </p>
           <p className="text-sm memorial-body">{statusHint ?? d.startingHint}</p>
+          </button>
         </motion.div>
       </div>
 
