@@ -38,6 +38,7 @@ import {
 } from "@/lib/device-host-flags";
 import { isLikelyVideoUrl } from "@/lib/video-url";
 import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
+import { schedulePetReadyToDevice } from "@/lib/device-pet-sync";
 
 export const ETERNAL_BEAM_PIPELINE_KEY = "eternal_beam_pipeline_v1";
 
@@ -603,8 +604,23 @@ export function AIProcessingScreen({
           sessionStorage.setItem(ETERNAL_BEAM_PIPELINE_KEY, JSON.stringify(stored));
           localStorage.setItem("eternal_beam_content_id", stored.content_id);
           localStorage.setItem("eternal_beam_current_content_id", stored.content_id);
+          if (storedIdleUrl) {
+            localStorage.setItem("eternal_beam_hologram_video_id", storedIdleUrl);
+            localStorage.setItem("eternal_beam_current_video_id", storedIdleUrl);
+          }
         } catch {
           /* ignore */
+        }
+
+        if (storedIdleUrl) {
+          schedulePetReadyToDevice({
+            contentId: stored.content_id,
+            idleUrl: storedIdleUrl,
+            cutoutUrl: display,
+          });
+          if (!cancelled && myToken === runTokenRef.current) {
+            setStatusLine(t.petReadySent);
+          }
         }
 
         setProgress(100);

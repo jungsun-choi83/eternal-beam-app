@@ -260,6 +260,52 @@ async function postThemeToPi(
   }
 }
 
+export type PetReadyRequest = {
+  contentId: string
+  idleUrl?: string | null
+  cutoutUrl?: string | null
+}
+
+/** idle 완료 → S23 Unity(VFX) — POST /demo/pet-ready (Pi 배경은 변경하지 않음) */
+export async function triggerPetReadyOnDevice(
+  payload: PetReadyRequest,
+): Promise<boolean> {
+  const contentId = payload.contentId.trim()
+  if (!contentId) return false
+
+  const quick = readUrlPiHost() ?? readStoredPiBase()
+  if (quick && (await probePiBase(quick))) {
+    return postPetReadyToPi(quick, payload)
+  }
+
+  const base = (await discoverPiHttpBaseCached()) ?? resolvePiHttpBase()
+  if (!base) return false
+  return postPetReadyToPi(base, payload)
+}
+
+async function postPetReadyToPi(
+  base: string,
+  payload: PetReadyRequest,
+): Promise<boolean> {
+  try {
+    const body: Record<string, string> = { content_id: payload.contentId.trim() }
+    const idleUrl = payload.idleUrl?.trim()
+    const cutoutUrl = payload.cutoutUrl?.trim()
+    if (idleUrl) body.idle_url = idleUrl
+    if (cutoutUrl) body.cutout_url = cutoutUrl
+
+    const res = await fetch(`${base}/demo/pet-ready`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    if (res.ok) rememberPiBase(base)
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
 /** 회원가입 시 등록한 반려 이름 → Pi voice wake 목록 */
 export async function syncPetWakeNamesToPi(
   names: string[],

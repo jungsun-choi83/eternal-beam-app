@@ -108,6 +108,15 @@ class _SseHandler(BaseHTTPRequestHandler):
                 payload["content_id"] = str(content_id)
             self._handle_demo_play(payload)
             return
+        if path == "/demo/pet-ready":
+            length = int(self.headers.get("Content-Length", "0") or "0")
+            raw = self.rfile.read(length) if length > 0 else b"{}"
+            try:
+                body = json.loads(raw.decode("utf-8") or "{}")
+            except json.JSONDecodeError:
+                body = {}
+            self._handle_pet_ready(body)
+            return
         if path == "/pet/wake-names":
             self._handle_pet_wake_names()
             return
@@ -144,6 +153,45 @@ class _SseHandler(BaseHTTPRequestHandler):
         )
         body_out = json.dumps(
             {"ok": True, "pet_name": pet_name, "wake_names": saved},
+            separators=(",", ":"),
+        )
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self._cors()
+        self.end_headers()
+        self.wfile.write(body.encode("utf-8"))
+
+    def _handle_pet_ready(self, body: dict[str, Any]) -> None:
+        """idle 완료 → Unity(S23)만 — 배경(Pi)은 건드리지 않음."""
+        content_id = str(body.get("content_id") or "").strip()
+        if not content_id:
+            self.send_error(400, explain="content_id required")
+            return
+
+        idle_url = body.get("idle_url") or body.get("video_url")
+        cutout_url = body.get("cutout_url")
+        base: dict[str, Any] = {
+            "content_id": content_id,
+            "source": "app_idle_ready",
+        }
+        if idle_url:
+            url = str(idle_url).strip()
+            base["idle_url"] = url
+            base["video_url"] = url
+        if cutout_url:
+            base["cutout_url"] = str(cutout_url).strip()
+
+        broadcast_event({**base, "event": "pet_ready"})
+        if _udp_forward is not None:
+            for event in ("nfc_match", "idle"):
+                cmd = {**base, "event": event}
+                try:
+                    _udp_forward(cmd)
+                except Exception as e:  # noqa: BLE001
+                    print(f"[HTTP /demo/pet-ready] UDP {event} 실패: {e}", flush=True)
+
+        body_out = json.dumps(
+            {"ok": True, "event": "pet_ready", "content_id": content_id},
             separators=(",", ":"),
         )
         self.send_response(200)
@@ -205,7 +253,8 @@ def start_sse_server(host: str = "0.0.0.0", port: int = 8787) -> ThreadingHTTPSe
     _server = ThreadingHTTPServer((host, port), _SseHandler)
     threading.Thread(target=_server.serve_forever, daemon=True).start()
     print(
-        f"[HTTP/SSE] 웹앱 대기 http://{host}:{port}/events  POST /demo/play /demo/forest /pet/wake-names",
+        f"[HTTP/SSE] 웹앱 대기 http://{host}:{port}/events  "
+        f"POST /demo/play /demo/pet-ready /demo/forest /pet/wake-names",
         flush=True,
     )
     return _server
