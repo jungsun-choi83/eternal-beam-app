@@ -6,7 +6,9 @@ import { triggerNfcActivation } from '@/lib/nfc-activation'
 const PI_HTTP_PORT = 8787
 const PI_HOST_STORAGE_KEY = 'eternalbeam:pi-http-base'
 const DEVICE_CONNECTED_KEY = 'eternal_beam_device_connected'
-const PROBE_TIMEOUT_MS = 2500
+const PROBE_TIMEOUT_MS = 1200
+const DISCOVERY_BUDGET_MS = 6000
+const MAX_PARALLEL_PROBES = 3
 
 /** 같은 서브넷에서 흔한 Pi 주소 (핫스팟 DHCP) */
 const DEMO_PI_PROBE_HOSTS = [
@@ -126,10 +128,30 @@ async function probePiBase(base: string): Promise<boolean> {
   }
 }
 
-let discoveryPromise: Promise<string | null> | null = null
+function prioritizeCandidates(candidates: string[]): string[] {
+  const ips: string[] = []
+  const locals: string[] = []
+  for (const base of candidates) {
+    if (base.includes('.local')) locals.push(base)
+    else ips.push(base)
+  }
+  return [...ips, ...locals]
+}
 
-/** Pi HTTP 주소 자동 탐색 (URL ?pi=IP, localStorage, mDNS, 서브넷 후보) */
-export async function discoverPiHttpBase(): Promise<string | null> {
+async function probeCandidatesBatched(candidates: string[]): Promise<string | null> {
+  const ordered = prioritizeCandidates(candidates)
+  for (let i = 0; i < ordered.length; i += MAX_PARALLEL_PROBES) {
+    const batch = ordered.slice(i, i + MAX_PARALLEL_PROBES)
+    const hits = await Promise.all(
+      batch.map(async (base) => ((await probePiBase(base)) ? base : null)),
+    )
+    const found = hits.find(Boolean)
+    if (found) return found
+  }
+  return null
+}
+
+async function discoverPiHttpBaseInner(): Promise<string | null> {
   const candidates = buildPiCandidates()
   if (!candidates.length) return null
 
@@ -146,15 +168,37 @@ export async function discoverPiHttpBase(): Promise<string | null> {
   const rest = candidates.filter((c) => !fastFirst.includes(c))
   if (!rest.length) return null
 
-  const hits = await Promise.all(
-    rest.map(async (base) => ((await probePiBase(base)) ? base : null)),
-  )
-  const found = hits.find(Boolean)
+  const found = await probeCandidatesBatched(rest)
   if (found) {
     rememberPiBase(found)
     return found
   }
   return null
+}
+
+let discoveryPromise: Promise<string | null> | null = null
+
+/** Pi HTTP 주소 자동 탐색 (URL ?pi=IP, localStorage, mDNS, 서브넷 후보) */
+export async function discoverPiHttpBase(): Promise<string | null> {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  try {
+    return await Promise.race([
+      discoverPiHttpBaseInner(),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), DISCOVERY_BUDGET_MS)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+/** 백그라운드 Pi 탐색 — UI 블로킹 방지 */
+export function schedulePiDiscovery(delayMs = 800): void {
+  if (typeof window === 'undefined') return
+  window.setTimeout(() => {
+    void discoverPiHttpBase()
+  }, delayMs)
 }
 
 function discoverPiHttpBaseCached(): Promise<string | null> {
@@ -185,21 +229,34 @@ export async function triggerThemeOnDevice(
   themeKey: string,
   contentId?: string | null
 ): Promise<boolean> {
-  const base = (await discoverPiHttpBaseCached()) ?? resolvePiHttpBase();
-  if (!base) return false;
+  const quick = readUrlPiHost() ?? readStoredPiBase()
+  if (quick && (await probePiBase(quick))) {
+    return postThemeToPi(quick, themeKey, contentId)
+  }
+
+  const base = (await discoverPiHttpBaseCached()) ?? resolvePiHttpBase()
+  if (!base) return false
+  return postThemeToPi(base, themeKey, contentId)
+}
+
+async function postThemeToPi(
+  base: string,
+  themeKey: string,
+  contentId?: string | null,
+): Promise<boolean> {
   try {
     const res = await fetch(`${base}/demo/play`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         theme_id: themeKey,
         content_id: contentId ?? undefined,
       }),
-    });
-    if (res.ok) rememberPiBase(base);
-    return res.ok;
+    })
+    if (res.ok) rememberPiBase(base)
+    return res.ok
   } catch {
-    return false;
+    return false
   }
 }
 

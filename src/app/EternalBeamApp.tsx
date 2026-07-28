@@ -34,7 +34,7 @@ import { clearStoredCustomBgVideoUrl } from '@/lib/custom-background-store'
 import { finalizePreviewContent } from '@/lib/finalize-preview-content'
 import { persistDeviceContentFromPipeline } from '@/lib/persist-device-content'
 import { scheduleThemeBackgroundSync } from '@/lib/device-theme-sync'
-import { discoverPiHttpBase } from '@/lib/pi-sensor-bridge'
+import { schedulePiDiscovery } from '@/lib/pi-sensor-bridge'
 import { isForestTheme } from '@/lib/forest-demo-config'
 import { isPublicForestEntry } from '@/lib/app-entry'
 import {
@@ -157,7 +157,7 @@ export function EternalBeamApp() {
     } catch {
       return
     }
-    void discoverPiHttpBase()
+    schedulePiDiscovery(1200)
   }, [])
 
   const navigateTo = (nextScreen: Screen, direction: NavDirection = 'forward') => {
@@ -315,7 +315,7 @@ export function EternalBeamApp() {
     } catch {
       /* ignore */
     }
-    void discoverPiHttpBase()
+    schedulePiDiscovery(600)
     if (qrBackTarget) {
       const target = qrBackTarget
       setQrBackTarget(null)
