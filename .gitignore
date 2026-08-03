@@ -62,3 +62,30 @@ python/out_depth.png
 새 폴더/
 
 .vercel
+
+# 로컬 디버그·스크래치 (루트에 쌓이기 쉬움)
+/_device_poll*
+/_poll_*
+/_prod_bundle.js
+/build_log.txt
+/curl_verbose.txt
+/git_out.txt
+/tsconfig.tsbuildinfo
+/*.apk
+/Pet.apk
+/*_test_result*.json
+/cutout_*test*.json
+/live_*resp*.json
+/live_idle_*.json
+/post_deploy_*.json
+/final_idle_verify.json
+/body.png
+/head.png
+/forest.mp4
+/public/eternal-beam-logo-restored.png
+/Eternal Beam-logo.png
+/eternal-beam-blacklogo.png.png
+/eternal-beam-logo.png.png
+/*_cutout_debug.png
+/*_split_debug.png
+/*-removebg-preview.png

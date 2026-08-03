@@ -1,86 +1,54 @@
-"""Extract transparent logo symbol from brand PNG."""
-from __future__ import annotations
-
-from collections import deque
 from pathlib import Path
 
 import numpy as np
-from PIL import Image, ImageFilter
+from PIL import Image
 
-ROOT = Path(__file__).resolve().parents[1]
-SRC = Path(
-    r"C:\Users\choi jungsun\.cursor\projects\c-Users-choi-jungsun-Desktop-eternal-beam-app\assets"
-    r"\c__Users_choi_jungsun_AppData_Roaming_Cursor_User_workspaceStorage_empty-window_images___"
-    r"-02f83c7d-9ff8-4bf6-a797-8cc8f8ca56f5.png"
+src = Path(
+    r"C:\Users\choi jungsun\.cursor\projects\c-Users-choi-jungsun-Desktop-eternal-beam-app\assets\c__Users_choi_jungsun_AppData_Roaming_Cursor_User_workspaceStorage_empty-window_images___-02f83c7d-9ff8-4bf6-a797-8cc8f8ca56f5.png"
 )
-OUT = ROOT / "public" / "eternal-beam-logo-symbol.png"
+out_sym = Path(__file__).resolve().parents[1] / "public" / "eternal-beam-logo-symbol.png"
 
+im = Image.open(src).convert("RGBA")
+arr = np.array(im, dtype=np.float32)
+h, w = arr.shape[:2]
+r, g, b, a = arr[..., 0], arr[..., 1], arr[..., 2], arr[..., 3]
+lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
 
-def is_background(r: float, g: float, b: float, a: float) -> bool:
-    if a < 12:
-        return True
-    lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
-    warm = r + g * 0.88 - b * 1.08
-    return lum < 118 and warm < 68
+col = (lum > 35).sum(axis=0)
+cx = np.where(col > col.max() * 0.05)[0]
+x0, x1 = int(max(0, cx.min() - 24)), int(min(w, cx.max() + 24))
 
+sub = arr[:, x0:x1]
+sr, sg, sb, sa = sub[..., 0], sub[..., 1], sub[..., 2], sub[..., 3]
+slum = 0.2126 * sr + 0.7152 * sg + 0.0722 * sb
+ssat = np.maximum.reduce([np.abs(sr - sg), np.abs(sg - sb), np.abs(sr - sb)])
 
-def flood_clear_background(img: Image.Image) -> Image.Image:
-    arr = np.array(img.convert("RGBA"))
-    h, w = arr.shape[:2]
-    visited = np.zeros((h, w), dtype=bool)
-    q: deque[tuple[int, int]] = deque()
+row = (slum > 35).sum(axis=1)
+ry = np.where(row > row.max() * 0.05)[0]
+y0_all, y1_all = int(ry.min()), int(ry.max())
+sym_h = int((y1_all - y0_all) * 0.62)
+y0, y1 = y0_all, y0_all + sym_h
 
-    for x in range(w):
-        q.append((x, 0))
-        q.append((x, h - 1))
-    for y in range(h):
-        q.append((0, y))
-        q.append((w - 1, y))
+patch = sub[y0:y1]
+pr, pg, pb, pa = patch[..., 0], patch[..., 1], patch[..., 2], patch[..., 3]
+plum = 0.2126 * pr + 0.7152 * pg + 0.0722 * pb
+psat = np.maximum.reduce([np.abs(pr - pg), np.abs(pg - pb), np.abs(pr - pb)])
 
-    while q:
-        x, y = q.popleft()
-        if x < 0 or y < 0 or x >= w or y >= h or visited[y, x]:
-            continue
-        visited[y, x] = True
-        px = arr[y, x]
-        if not is_background(float(px[0]), float(px[1]), float(px[2]), float(px[3])):
-            continue
-        arr[y, x, 3] = 0
-        q.extend([(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)])
+alpha = np.where((plum < 42) & (psat < 28), 0.0, pa)
+alpha = np.where((plum < 58) & (psat < 16), 0.0, alpha)
+alpha = np.clip(alpha, 0, 255)
 
-    return Image.fromarray(arr)
+out = np.zeros_like(patch, dtype=np.uint8)
+out[..., 0] = np.clip(pr, 0, 255).astype(np.uint8)
+out[..., 1] = np.clip(pg, 0, 255).astype(np.uint8)
+out[..., 2] = np.clip(pb, 0, 255).astype(np.uint8)
+out[..., 3] = alpha.astype(np.uint8)
 
+mask = out[..., 3] > 8
+ys, xs = np.where(mask)
+cy0, cy1 = max(0, ys.min() - 6), min(out.shape[0], ys.max() + 6)
+cx0, cx1 = max(0, xs.min() - 6), min(out.shape[1], xs.max() + 6)
+final = out[cy0:cy1, cx0:cx1]
 
-def main() -> None:
-    if not SRC.exists():
-        raise SystemExit(f"Missing source: {SRC}")
-
-    img = Image.open(SRC).convert("RGBA")
-    target_w = 640
-    target_h = max(1, int(img.height * (target_w / img.width)))
-    img = img.resize((target_w, target_h), Image.LANCZOS)
-
-    clean = flood_clear_background(img)
-    w, h = clean.size
-
-    # Icon only — above ETERNAL BEAM text
-    sym = clean.crop((int(w * 0.10), int(h * 0.04), int(w * 0.90), int(h * 0.54)))
-    bbox = sym.getbbox()
-    if not bbox:
-        raise SystemExit("Symbol bbox empty")
-    sym = sym.crop(bbox)
-
-    pad = max(8, int(max(sym.size) * 0.06))
-    side = max(sym.size) + pad * 2
-    canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
-    canvas.paste(sym, ((side - sym.width) // 2, (side - sym.height) // 2), sym)
-    canvas = canvas.resize((512, 512), Image.LANCZOS)
-
-    alpha = canvas.split()[3].filter(ImageFilter.GaussianBlur(radius=0.4))
-    canvas.putalpha(alpha)
-    canvas.save(OUT)
-    print(f"Wrote {OUT} ({canvas.size[0]}x{canvas.size[1]})")
-
-
-if __name__ == "__main__":
-    main()
+Image.fromarray(final).save(out_sym, optimize=True)
+print(f"symbol {final.shape[1]}x{final.shape[0]} -> {out_sym}")

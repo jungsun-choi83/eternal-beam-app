@@ -1,0 +1,96 @@
+# Eternal Beam Device — 하드웨어 설정
+#
+# python/hardware_config.yaml 과 동일한 스키마입니다. 이 프로세스가 결국
+# python/*.py UDP 브리지를 대체할 것을 염두에 두고 같은 형식을 유지했습니다.
+# 코드는 이 파일만 보고 동작하므로, 보드를 바꿀 때(RPi5 → RK3566 등)는
+# 이 파일의 값만 바꾸면 되고 src/hardware/*.cpp 는 건드릴 필요가 없습니다.
+#
+# 활성 보드 선택:
+#   1) 아래 active_board 값을 바꾸거나
+#   2) 환경변수 HARDWARE_BOARD=rk3566 로 override
+#
+# 설정 파일 경로 자체를 바꾸려면 환경변수 HARDWARE_CONFIG=/path/to/other.yaml
+
+active_board: rpi5 # rpi5 | rk3566
+
+boards:
+  rpi5:
+    label: "Raspberry Pi 5"
+    i2c:
+      bus: 1
+    gpio:
+      chip: gpiochip0
+    audio:
+      alsa_card: "2"
+    display:
+      env:
+        DISPLAY: ":0"
+        XAUTHORITY: "/home/pi/.Xauthority"
+
+  rk3566:
+    label: "RK3566 Custom Board"
+    i2c:
+      bus: 3
+    gpio:
+      chip: gpiochip1
+    audio:
+      alsa_card: "0"
+    display:
+      env:
+        DISPLAY: ":0"
+        XAUTHORITY: "/home/root/.Xauthority"
+
+  # 실제 GPIO/I2C에 직접 붙지 않고, 기존 Python 센서 브릿지
+  # (python/pi_sensors_to_unity_udp.py, voice_to_unity.py, eternal_beam_pi.py)가
+  # 그대로 UDP로 보내는 이벤트를 받아서 쓰는 보드. HARDWARE_BOARD=udp_bridge 로 선택.
+  # "기존 UDP 이벤트 처리 루틴은 그대로 유지"하고 렌더러만 교체하는 배치에서 사용.
+  udp_bridge:
+    label: "UDP Sensor Bridge (Python 브릿지 그대로 사용)"
+
+common:
+  i2c:
+    vl53l0x_address: 0x29
+    pn532_address: 0x24
+
+  gpio:
+    lines:
+      status_led:
+        enabled: false
+        offset: 17
+        direction: out
+        active_low: false
+      test_button:
+        enabled: false
+        offset: 27
+        direction: in
+        active_low: true
+        edge: falling
+
+  distance:
+    touch_min_mm: 28
+    touch_max_mm: 40
+    approach_threshold_mm: 300
+    poll_sec: 0.05
+    approach_cooldown_sec: 2.0
+
+  nfc:
+    poll_sec: 0.15
+    debounce_sec: 1.5
+
+  voice:
+    rms_threshold: 1200
+    hold_ms: 350
+    cooldown_sec: 3
+
+  assets:
+    root: "assets"
+    sync_endpoint: "/v1/device/sync"
+
+  # udp_bridge 보드(위)가 리슨하는 주소/포트 — python/hardware_config.yaml의
+  # network.udp_host/udp_port(발신 쪽)와 같은 포트를 맞춰야 한다(기본 5005).
+  # 이 프로세스는 수신자이므로 host는 "보낼 주소"가 아니라 "바인딩 주소"다.
+  network:
+    udp_bind_host: "0.0.0.0"
+    udp_port: 5005
+    # GET /v1/device/sync 를 호출할 기존(변경 없음) 백엔드 주소.
+    backend_base_url: "http://127.0.0.1:8000"

@@ -21,6 +21,12 @@ def _normalize_supabase_url(raw: str) -> str:
     return u
 
 
+def get_client() -> Optional[Client]:
+    """다른 서비스(예: action_video_jobs.py)가 같은 Supabase 클라이언트 설정을
+    재사용할 수 있도록 노출하는 얇은 public 래퍼."""
+    return _client()
+
+
 def _client() -> Optional[Client]:
     url = _normalize_supabase_url(
         os.getenv("SUPABASE_URL") or os.getenv("VITE_SUPABASE_URL") or ""
@@ -93,6 +99,24 @@ async def ensure_user_asset_row(
         supabase.table("user_assets").insert(row).execute()
     except Exception:
         pass
+
+
+async def record_theme_purchase(
+    user_id: str, theme_key: str, payment_id: Optional[str] = None
+) -> None:
+    """PayPal 결제 확정(capture 성공) 후 purchased_slots에 upsert."""
+    supabase = _client()
+    if not supabase:
+        raise RuntimeError("Supabase가 설정되지 않았습니다.")
+    supabase.table("purchased_slots").upsert(
+        {
+            "user_id": user_id,
+            "theme_id": theme_key,
+            "payment_id": payment_id,
+            "payment_status": True,
+        },
+        on_conflict="user_id,theme_id",
+    ).execute()
 
 
 async def get_purchased_themes(user_id: str) -> list[str]:

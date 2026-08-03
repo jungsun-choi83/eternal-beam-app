@@ -74,4 +74,8 @@ class DeviceSyncResponse(BaseModel):
   user_id: str
   pet_id: str
   place_id: str
+  # "video" (기본값, Luma 영상 파이프라인) | "spine" (스켈레톤 리깅 데이터 준비됨).
+  # device-renderer(C++)의 CreateRendererForAssetDir()가 이 값으로 SpineRenderer /
+  # VideoLayerRenderer 를 고른다 — 기존 클라이언트와의 호환을 위해 항상 기본값 "video".
+  asset_type: str = "video"
   motions: list[DeviceMotionItem]

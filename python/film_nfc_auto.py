@@ -16,6 +16,13 @@ import time
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
+if str(BASE) not in sys.path:
+    sys.path.insert(0, str(BASE))
+
+from hardware import load_hardware_config  # noqa: E402
+
+_HW = load_hardware_config()
+
 VIDEO = BASE / "backgrounds" / "fresh_forest.mp4"
 NFC_DEBOUNCE_SEC = 1.5
 
@@ -26,9 +33,11 @@ MPV_EXTRA = os.getenv(
 
 
 def env() -> dict[str, str]:
+    """DISPLAY/XAUTHORITY 기본값은 hardware_config.yaml 의 display.env (보드별 홈 디렉터리 다름)."""
+    board_env = _HW.display_env
     e = os.environ.copy()
-    e.setdefault("DISPLAY", ":0")
-    e.setdefault("XAUTHORITY", "/home/pi/.Xauthority")
+    e.setdefault("DISPLAY", board_env.get("DISPLAY", ":0"))
+    e.setdefault("XAUTHORITY", board_env.get("XAUTHORITY", "/home/pi/.Xauthority"))
     return e
 
 

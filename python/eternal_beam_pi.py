@@ -135,13 +135,15 @@ def make_sender(
     def send(payload: dict[str, Any]) -> None:
         event = str(payload.get("event", "")).strip().lower()
 
-        if event == "nfc_tagged":
+        if event in ("nfc_tagged", "theme_play"):
             theme_id = str(payload.get("theme_id", "")).strip()
             _send_udp(
                 (bg_host, bg_port),
                 f"Pi 터치스크린(배경) {bg_host}:{bg_port}",
                 payload,
             )
+            if event != "nfc_tagged":
+                return
             _send_udp(
                 (unity_host, unity_port),
                 f"Unity 폰(피사체) {unity_host}:{unity_port}",
@@ -218,7 +220,10 @@ def run_distance(send, *, simulate: bool) -> None:
     except Exception as e:  # noqa: BLE001
         print(f"[VL53L0X] 비활성화 (init 실패): {e}", flush=True)
         return
-    _distance_loop(send, sensor, touch_min_mm=t_min, touch_max_mm=t_max)
+    try:
+        _distance_loop(send, sensor, touch_min_mm=t_min, touch_max_mm=t_max)
+    except TypeError:
+        _distance_loop(send, sensor)
 
 
 def run_nfc(send, theme_map: dict[str, str], *, simulate: bool) -> None:

@@ -108,9 +108,11 @@ def _player_env() -> dict[str, str]:
             "BG_WAYLAND_DISPLAY",
             sockets[0].name if sockets else "wayland-0",
         )
-    xauth = Path(env.get("XAUTHORITY", board_env.get("XAUTHORITY", "/home/pi/.Xauthority")))
+    xauth = Path(env.get("XAUTHORITY") or board_env.get("XAUTHORITY", "/home/pi/.Xauthority"))
     if xauth.exists():
         env["XAUTHORITY"] = str(xauth)
+    else:
+        env.pop("XAUTHORITY", None)
     print(
         f"[pi_display_bg] player env DISPLAY={env.get('DISPLAY')!r} "
         f"WAYLAND={env.get('WAYLAND_DISPLAY', '(없음)')!r} "
@@ -159,7 +161,13 @@ def _build_cmd(player: list[str], video: Path) -> list[str]:
     return ["omxplayer", "--loop", "--no-osd", str(video)]
 
 
-def _log_player_exit(proc: subprocess.Popen) -> None:
+def _mpv_err_path() -> Path:
+    override = os.getenv("BG_MPV_ERR", "").strip()
+    if override:
+        return Path(override)
+    return Path(f"/tmp/mpv-bg-{os.getuid()}.err")
+
+
     """mpv가 바로 죽었는지 확인 (DISPLAY 없을 때 흔함)."""
     import time
 
@@ -172,7 +180,7 @@ def _log_player_exit(proc: subprocess.Popen) -> None:
         f"[pi_display_bg] 플레이어 즉시 종료 exit={code}",
         flush=True,
     )
-    err_path = Path("/tmp/mpv-bg.err")
+    err_path = _mpv_err_path()
     if err_path.exists():
         tail = err_path.read_text(encoding="utf-8", errors="replace").strip().splitlines()[-8:]
         if tail:
@@ -246,7 +254,7 @@ def play_background(theme_id: str | None, bg_map: dict[str, str]) -> None:
             _player_proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,
-                stderr=open("/tmp/mpv-bg.err", "a", encoding="utf-8"),
+                stderr=open(_mpv_err_path(), "a", encoding="utf-8"),
                 env=_player_env(),
             )
         except Exception as e:

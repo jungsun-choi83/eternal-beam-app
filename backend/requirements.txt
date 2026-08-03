@@ -43,3 +43,18 @@ requests>=2.31.0
 
 # Modal (GPU 원격 호출, 선택)
 modal>=0.64.0
+
+# LivePortrait 액션 20종 파이프라인(backend/services/live_portrait_*.py,
+# backend/workers/live_portrait_worker.py): LivePortrait 자체는 pip 패키지가 아니라
+# 별도 리포를 clone해서 서브프로세스로 호출하므로 여기 추가 의존성은 없음 — SAM2
+# 후처리(torch/transformers/opencv/numpy/Pillow)와 ffmpeg는 위에서 이미 요구됨.
+# 로컬 GPU 워커를 켤 머신에는 LivePortrait 리포 자체 설치가 별도로 필요
+# (docs/LivePortrait_설치_가이드.md 참고).
+
+# 배경 인페인팅 파이프라인("내 사진으로 나만의 배경 만들기", backend/services/
+# background_inpaint_service.py / background_video_pipeline.py / backend/workers/
+# background_video_worker.py): LaMa(big-lama, Apache-2.0) 인페인팅 — pip 패키지라
+# LivePortrait처럼 별도 리포 clone이 필요 없음. 최초 추론 시 체크포인트(~200MB)를
+# 자동 다운로드한다(로컬 RTX 4090 워커 머신에만 필요 — Render 등 경량 배포에는
+# 설치하지 않아도 됨. 이 기능도 로컬 GPU 워커에서만 돎).
+simple-lama-inpainting>=0.1.2

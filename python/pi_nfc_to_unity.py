@@ -14,12 +14,19 @@ Usage:
 JSON format sent: {"slot": 1, "content_id": "optional-uuid", "theme": "Celestial"}
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import socket
 import sys
 import time
 from pathlib import Path
+
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from hardware import GpioLine, load_hardware_config, open_line  # noqa: E402
 
 # Optional: pyserial for serial mode
 try:
@@ -28,15 +35,13 @@ try:
 except ImportError:
     HAS_SERIAL = False
 
-# Optional: RPi.GPIO + SPI for RC522 NFC (when hardware present)
-try:
-    import RPi.GPIO as GPIO
-    HAS_RPI = True
-except ImportError:
-    HAS_RPI = False
-
 BASE_DIR = Path(__file__).resolve().parent
 SLOT_MAP_PATH = BASE_DIR / "slot_map.json"
+
+# RC522(SPI) 대신 이 브리지가 실제로 쓰는 건 PN532(I2C, pi_sensors_to_unity_udp._init_pn532)다.
+# GPIO(RPi.GPIO 전용 API였던 부분)는 표준 libgpiod 래퍼(hardware.gpio)로 대체 — 예: 리더 옆
+# "스캔 감지" 알림 LED. hardware_config.yaml 의 gpio.lines.status_led.enabled: true 로만 켜짐.
+_status_led: GpioLine | None = None
 
 
 def load_slot_map():
@@ -56,13 +61,19 @@ def read_nfc_mock():
 
 
 def read_nfc_rc522():
+    """실제 NFC 리더 — PN532(I2C, hardware_config.yaml 의 i2c 설정 사용).
+
+    카드가 있으면 (slot, content_id) 를 반환, 없으면 None.
+    UID→슬롯 매핑은 pi_nfc_slot.py 의 nfc_uid_slot.json 을 그대로 사용(단일 매핑 파일 유지).
     """
-    Real NFC: read from RC522/PN532 (requires mfrc522 or similar).
-    Returns (slot, content_id) or None.
-    """
-    # Placeholder for actual RC522/PN532 integration
-    # Example with mfrc522: uid = reader.read_id() -> map to slot
-    return None
+    from pi_nfc_slot import read_nfc_slot_from_pn532  # type: ignore
+
+    slot = read_nfc_slot_from_pn532()
+    if slot is None:
+        return None
+    if _status_led is not None:
+        _status_led.set_value(True)
+    return slot, ""
 
 
 def send_via_socket(host: str, port: int, data: dict) -> bool:
@@ -114,6 +125,10 @@ def main():
     if args.mode == "serial" and args.port != 9999:
         args.serial_port = args.port if isinstance(args.port, str) else args.serial_port
 
+    global _status_led
+    if args.mode != "mock":
+        _status_led = open_line("status_led", load_hardware_config())
+
     slot_map = load_slot_map()
     last_slot = None
     last_sent = 0.0
@@ -163,11 +178,19 @@ def main():
     else:
         print(f"  Serial: {args.serial_port} @ {args.baud} baud")
 
-    while True:
-        slot, content_id = read_nfc_rc522() or (None, "")
-        if slot is not None:
-            send_to_unity(slot, content_id)
-        time.sleep(0.2)
+    try:
+        while True:
+            result = read_nfc_rc522()
+            slot, content_id = result if result else (None, "")
+            if slot is not None:
+                send_to_unity(slot, content_id)
+            else:
+                if _status_led is not None:
+                    _status_led.set_value(False)
+            time.sleep(0.2)
+    finally:
+        if _status_led is not None:
+            _status_led.close()
 
 
 if __name__ == "__main__":

@@ -5,9 +5,11 @@ Wants=network-online.target graphical.target
 
 [Service]
 Type=simple
+User=eternalbeam
+Group=eternalbeam
 WorkingDirectory=__APP_DIR__/python
 Environment=DISPLAY=:0
-Environment=XAUTHORITY=/home/pi/.Xauthority
+Environment=XAUTHORITY=/home/eternalbeam/.Xauthority
 EnvironmentFile=-__APP_DIR__/python/systemd/eternal-beam-pi.env
 ExecStart=/usr/bin/python3 -u __APP_DIR__/python/pi_display_bg.py --videos-dir __APP_DIR__/python/backgrounds --wait-nfc
 Restart=always

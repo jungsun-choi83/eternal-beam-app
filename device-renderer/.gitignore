@@ -1,0 +1,14 @@
+build/
+bin/
+compile_commands.json
+.cache/
+*.o
+*.a
+*.so
+
+# Assets are downloaded at runtime from the device-sync API; don't commit
+# per-pet rigging data, only the folder structure and manifest schema.
+assets/*/
+assets/manifest.json
+!assets/.gitkeep
+!assets/README.md

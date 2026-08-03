@@ -22,7 +22,7 @@ boards:
   rpi5:
     label: "Raspberry Pi 5"
     i2c:
-      bus: 1 # /dev/i2c-1 (raspi-config → Interface Options → I2C → Enable)
+      bus: 1 # Pi 5 GPIO I2C: i2cdetect -l → i2c-1 (0x29 VL53, 0x24 PN532)
     gpio:
       chip: gpiochip0 # /dev/gpiochip0 (Pi 5는 RP1 칩 경유, 커널이 자동 매핑)
     audio:
@@ -30,7 +30,7 @@ boards:
     display:
       env:
         DISPLAY: ":0"
-        XAUTHORITY: "/home/pi/.Xauthority"
+        XAUTHORITY: "/home/eternalbeam/.Xauthority"
 
   rk3566:
     label: "RK3566 Custom Board"
@@ -60,6 +60,11 @@ common:
   # 상태 LED/리셋 버튼 등을 실제로 연결하면 offset 을 채우고 enabled: true 로 켜세요.
   gpio:
     lines:
+      vl53_xshut:
+        enabled: false
+        offset: 17 # BCM17 — XSHUT 연결 시 enabled: true 또는 VL53_XSHUT_GPIO=17
+        direction: out
+        active_low: false
       status_led:
         enabled: false
         offset: 17

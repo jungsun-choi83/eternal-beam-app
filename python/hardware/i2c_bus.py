@@ -38,11 +38,17 @@ class LinuxI2CBus:
         self._lock = threading.Lock()
 
     def try_lock(self) -> bool:
-        return self._lock.acquire(blocking=False)
+        self._lock.acquire(blocking=True)
+        return True
 
     def unlock(self) -> None:
         if self._lock.locked():
             self._lock.release()
+
+    def readfrom(self, address: int, nbytes: int) -> bytes:
+        buf = bytearray(nbytes)
+        self.readfrom_into(address, buf)
+        return bytes(buf)
 
     def scan(self) -> list[int]:
         found: list[int] = []

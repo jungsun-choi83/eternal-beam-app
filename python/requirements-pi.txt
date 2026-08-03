@@ -1,6 +1,10 @@
-# Eternal Beam — Raspberry Pi 5 센서 브리지 의존성
+# Eternal Beam — 센서 브리지 의존성 (RPi5 / RK3566 등 Linux 보드 공용)
 # 설치: pip install -r requirements-pi.txt
-#   (먼저: sudo apt install -y python3-pip portaudio19-dev alsa-utils i2c-tools)
+#   (먼저: sudo apt install -y python3-pip portaudio19-dev alsa-utils i2c-tools
+#          gpiod libgpiod2  # GPIO(선택, status_led 등 사용 시)
+
+# 하드웨어 설정 (hardware_config.yaml)
+pyyaml
 
 # ToF 거리 센서 (VL53L0X, I2C)
 adafruit-circuitpython-vl53l0x
@@ -8,9 +12,14 @@ adafruit-circuitpython-vl53l0x
 # NFC 리더 (PN532, I2C)
 adafruit-circuitpython-pn532
 
-# I2C/보드 핀 추상화 (Blinka)
-adafruit-blinka
+# I2C 접근 — 표준 Linux i2c-dev(/dev/i2c-N). RPi 전용 Blinka(board/busio) 대체 —
+# python/hardware/i2c_bus.py 가 이 위에 busio.I2C 호환 shim 을 제공해서
+# adafruit-circuitpython-* 드라이버는 그대로 재사용한다.
+smbus2
 
-# 마이크(INMP441, I2S) 음성 감지
+# GPIO 접근 — 표준 Linux libgpiod(/dev/gpiochipN). RPi.GPIO 대체(선택, 상태 LED/버튼 등).
+gpiod
+
+# 마이크(INMP441 등, I2S) 음성 감지
 pyaudio
 numpy
