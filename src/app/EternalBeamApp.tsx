@@ -42,6 +42,7 @@ import {
 } from '@/lib/device-demo-config'
 import { FOREST_THEME_ID } from '@/lib/forest-demo-config'
 import { inferMediaKind } from '@/lib/media-file-kind'
+import { traceImage } from '@/lib/image-trace' // [IMAGE-TRACE]
 import type { PickedMedia } from '@/lib/pick-media-file'
 
 type Screen =
@@ -185,11 +186,15 @@ export function EternalBeamApp() {
 
     localStorage.setItem('eternal_beam_media_type', kind)
 
+    // [IMAGE-TRACE] 홈 화면 경로의 파일 선택 지점.
+    void traceImage('file-selected (home picker)', file, 'original-upload', `kind=${kind}`)
+
     if (kind === 'image') {
       const reader = new FileReader()
       reader.onload = (ev) => {
         const result = String(ev.target?.result || '')
         if (!result) return
+        void traceImage('state:uploadedImage', result, 'original-upload') // [IMAGE-TRACE]
         setUploadedImage(result)
         localStorage.setItem('eternal_beam_main_photo', result)
         localStorage.removeItem('eternal_beam_main_video_url')

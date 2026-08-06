@@ -5,6 +5,7 @@ import uuid
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from ..services import supabase_assets
+from ..services.cutout_errors import CutoutError
 from ..services.dog_image_preprocessing import build_dog_only_nobg_png_bytes
 from ..services.idle_validation_service import validate_idle_video
 from ..services.luma_idle_pipeline import generate_idle_variant
@@ -16,10 +17,25 @@ from ..services.luma_service import (
     download_video,
 )
 from ..services.seamless_loop_service import make_seamless_loop_mp4
+from ..services.vitmatte_service import DEBUG_ARTIFACTS_ENABLED, validate_cutout_alpha
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _cutout_error_response(cid: str, exc: CutoutError) -> HTTPException:
+    """누끼 실패 → 422. 유료 Luma 생성으로 넘어가기 전에 여기서 멈춘다."""
+    logger.warning(
+        "generate-pet-video rejected before generation (cid=%s, code=%s): %s | diagnostics=%s",
+        cid,
+        exc.code,
+        exc.message,
+        exc.diagnostics,
+    )
+    detail = exc.to_detail(include_diagnostics=DEBUG_ARTIFACTS_ENABLED)
+    detail["content_id"] = cid
+    return HTTPException(status_code=exc.http_status, detail=detail)
 
 
 async def _cutout_to_dog_bytes(raw: bytes, *, skip: bool) -> bytes:
@@ -67,9 +83,14 @@ async def post_generate_pet_video(
 
     try:
         if skip:
+            # 클라이언트가 이미 누끼를 떴다고 주장하는 경로 — 최소 검증만 한다.
+            # 완전 투명한 PNG 가 그대로 Luma(유료)로 넘어가는 걸 막기 위함.
+            validate_cutout_alpha(raw)
             dog_bytes = raw
         else:
             dog_bytes = build_dog_only_nobg_png_bytes(raw)
+    except CutoutError as e:
+        raise _cutout_error_response(cid, e) from e
     except Exception as e:
         logger.exception("generate-pet-video: cutout/preprocessing failed (cid=%s)", cid)
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -240,7 +261,11 @@ async def post_generate_idle_variant(
     skip = str(skip_preprocessing).lower() in ("1", "true", "yes")
 
     try:
+        if skip:
+            validate_cutout_alpha(raw)
         dog_bytes = await _cutout_to_dog_bytes(raw, skip=skip)
+    except CutoutError as e:
+        raise _cutout_error_response(cid, e) from e
     except Exception as e:
         logger.exception(
             "generate-idle-variant(%s): cutout failed (cid=%s)", template_key, cid

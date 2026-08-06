@@ -341,16 +341,20 @@ def _derive_mask_for_pipeline(rgba: np.ndarray) -> tuple[np.ndarray, str]:
         return alpha, "alpha_channel"
 
     rgb = rgba[:, :, :3]
+    # 입력이 이미 크롭된 누끼라 프레임 전체가 대상 — 예전에는 bbox=None 을 넘겨
+    # "중앙 80% 사각형" 폴백을 탔지만, 이제는 전체 프레임 박스를 명시한다.
     try:
-        from .vitmatte_service import _get_device, _sam2_mask
+        from .vitmatte_service import _get_device, _sam2_mask, full_frame_bbox
 
-        mask = _sam2_mask(rgb, None, "facebook/sam2.1-hiera-tiny", _get_device())
+        mask, _score = _sam2_mask(
+            rgb, full_frame_bbox(rgb), "facebook/sam2.1-hiera-tiny", _get_device()
+        )
         return mask, "sam2"
-    except Exception as e:
-        logger.warning("SAM2 마스크 생성 실패(%s) — GrabCut으로 폴백", e)
-        from .vitmatte_service import _grabcut_mask
+    except Exception:
+        logger.exception("SAM2 segmentation failed — falling back to GrabCut")
+        from .vitmatte_service import _grabcut_mask, full_frame_bbox
 
-        return _grabcut_mask(rgb, None), "grabcut"
+        return _grabcut_mask(rgb, full_frame_bbox(rgb)), "grabcut"
 
 
 def run_auto_rigging_pipeline(

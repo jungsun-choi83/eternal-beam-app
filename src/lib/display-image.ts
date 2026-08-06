@@ -127,6 +127,18 @@ export async function createDisplayImageUrl(
       ctx.drawImage(img, 0, 0, cw, ch);
 
       const outCanvas = trimAlpha ? trimCanvasAlpha(canvas, ctx) : canvas;
+      // [IMAGE-TRACE] 표시용 축소 + 알파 여백 크롭. trimAlpha 는 상수가 아니라
+      // 피사체 bbox 크기에 따라 임의의 값(예: 225)을 만들어 낸다.
+      if (import.meta.env.DEV) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `%c[IMAGE-TRACE]%c display-resize                ${w}x${h} -> ${cw}x${ch}` +
+            (trimAlpha ? ` -> trimAlpha ${outCanvas.width}x${outCanvas.height}` : "") +
+            `  (maxEdge=${maxEdge}) origin=display-thumbnail`,
+          "color:#c9a227;font-weight:bold",
+          "color:inherit"
+        );
+      }
       const url = canvasToDisplayUrl(outCanvas, preserveAlpha);
       resolve(url || source);
     };

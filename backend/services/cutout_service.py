@@ -1,11 +1,14 @@
 """Rembg + Alpha Matting: 배경 제거, 머리카락 한 올까지 정교한 알파"""
 
 import io
+import logging
 import os
 from typing import Optional, Tuple
 
 from PIL import Image
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 try:
     _LANCZOS = Image.Resampling.LANCZOS
@@ -143,6 +146,7 @@ def remove_background(
     alpha_matting_base_size: int = 1000,
     post_refine_feather: bool = True,
     bgcolor: Optional[Tuple[int, int, int, int]] = None,
+    meta_out: Optional[dict] = None,
 ) -> bytes:
     """
     배경 제거 + 알파 매팅.
@@ -151,6 +155,9 @@ def remove_background(
     - background_threshold: 낮을수록 배경 완전 제거 (0~5)
     - erode_size: 작을수록 털 디테일 유지, edge feather 최소화 (3~5)
     - post_refine_feather: False면 halo 최소화
+    - meta_out: dict를 넘기면 실제로 무슨 일이 있었는지 기록한다
+      (alpha_matting_used / downscaled_to / oom_retry). 응답의 `refined` 를
+      정직하게 채우기 위한 것 — 요청값이 아니라 실제 수행 여부를 담는다.
     """
     if not REMBG_AVAILABLE:
         raise RuntimeError("rembg가 설치되지 않았습니다. pip install rembg[gpu]")
@@ -163,13 +170,33 @@ def remove_background(
     alpha_pixel_budget = int(os.getenv("CUTOUT_ALPHA_MAT_MAX_PIXELS", "1200000"))
 
     input_img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    _decoded_size = input_img.size
     input_img = _downscale_for_rembg(input_img, max_side)
     w, h = input_img.size
     pixels = w * h
+    # [IMAGE-TRACE] rembg 경로의 유일한 리사이즈 지점 (CUTOUT_MAX_PIXEL 상한).
+    if _decoded_size != (w, h):
+        logger.info(
+            "[IMAGE-TRACE] rembg downscale: %dx%d -> %dx%d (CUTOUT_MAX_PIXEL=%d)",
+            _decoded_size[0],
+            _decoded_size[1],
+            w,
+            h,
+            max_side,
+        )
+    else:
+        logger.info("[IMAGE-TRACE] rembg no downscale: %dx%d", w, h)
 
     use_am = use_alpha_matting
     if use_am and not force_alpha and pixels > alpha_pixel_budget:
         use_am = False
+
+    if meta_out is not None:
+        meta_out["alpha_matting_requested"] = bool(use_alpha_matting)
+        meta_out["alpha_matting_used"] = bool(use_am)
+        meta_out["processing_width"] = int(w)
+        meta_out["processing_height"] = int(h)
+        meta_out["oom_retry"] = False
 
     session = _get_session(model_name, ["CUDAExecutionProvider", "CPUExecutionProvider"])
     cpu_session = None
@@ -199,9 +226,16 @@ def remove_background(
     except Exception as first_err:
         if not _oomish(first_err):
             raise
-        # CUDA/provider 메모리 이슈일 때 CPU 세션으로 재시도
+        # CUDA/provider 메모리 이슈일 때 CPU 세션으로 재시도.
+        # 이 경로에서는 알파 매팅이 꺼지므로 meta_out 도 실제 값으로 갱신한다.
         cpu_session = _get_session(model_name, ["CPUExecutionProvider"])
         input_img = _downscale_for_rembg(input_img, max(512, max_side // 2))
+        use_am = False
+        if meta_out is not None:
+            meta_out["alpha_matting_used"] = False
+            meta_out["oom_retry"] = True
+            meta_out["processing_width"] = int(input_img.size[0])
+            meta_out["processing_height"] = int(input_img.size[1])
         try:
             out_img = _rembg_call(
                 input_img,
@@ -216,6 +250,9 @@ def remove_background(
             if not _oomish(second_err):
                 raise second_err
             input_img = _downscale_for_rembg(input_img, 512)
+            if meta_out is not None:
+                meta_out["processing_width"] = int(input_img.size[0])
+                meta_out["processing_height"] = int(input_img.size[1])
             out_img = _rembg_call(
                 input_img,
                 cpu_session,
@@ -245,6 +282,7 @@ def remove_background_high_quality(
     image_bytes: bytes,
     model_name: str = "isnet-general-use",
     bgcolor: Optional[Tuple[int, int, int, int]] = None,
+    meta_out: Optional[dict] = None,
 ) -> bytes:
     """
     고품질 프리셋: 털 디테일 유지, 배경 완전 제거, halo 최소화.
@@ -260,4 +298,5 @@ def remove_background_high_quality(
         alpha_matting_base_size=1000,
         post_refine_feather=False,
         bgcolor=bgcolor,
+        meta_out=meta_out,
     )

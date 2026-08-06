@@ -7,6 +7,7 @@ import {
   normalizeImageForCutout,
   normalizeImageToJpegFile,
 } from "@/lib/normalize-image";
+import { traceImage } from "@/lib/image-trace"; // [IMAGE-TRACE]
 
 /** 폰 WASM — 해상도 낮출수록 8분+ → 1~3분대 */
 const CLIENT_CUTOUT_MAX_EDGE = 768;
@@ -128,6 +129,8 @@ export async function clientCutoutFromFile(
   }
 
   onStatus?.(p.cutoutDone);
+  // [IMAGE-TRACE] 브라우저 WASM 누끼 출력 (입력은 normalize:OUT @768).
+  await traceImage("client-cutout:OUT", blob, "cutout-result");
   return blobToDataUrl(blob);
 }
 

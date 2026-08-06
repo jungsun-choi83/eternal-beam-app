@@ -85,17 +85,19 @@ def _derive_mask(rgba: np.ndarray, *, use_sam2: bool) -> np.ndarray:
         return alpha
 
     rgb = rgba[:, :, :3]
+    # 이미 크롭된 누끼가 입력이므로 프레임 전체를 박스 프롬프트로 준다.
     if use_sam2:
         print("  마스크 소스: SAM2(vitmatte_service._sam2_mask) 재사용 — 최초 실행 시 모델 다운로드로 오래 걸릴 수 있습니다")
-        from ..services.vitmatte_service import _get_device, _sam2_mask
+        from ..services.vitmatte_service import _get_device, _sam2_mask, full_frame_bbox
 
         device = _get_device()
-        return _sam2_mask(rgb, None, "facebook/sam2.1-hiera-tiny", device)
+        mask, _score = _sam2_mask(rgb, full_frame_bbox(rgb), "facebook/sam2.1-hiera-tiny", device)
+        return mask
 
     print("  마스크 소스: GrabCut(vitmatte_service._grabcut_mask 재사용, 오프라인) — 알파채널이 없어 기본 폴백 사용")
-    from ..services.vitmatte_service import _grabcut_mask
+    from ..services.vitmatte_service import _grabcut_mask, full_frame_bbox
 
-    return _grabcut_mask(rgb, None)
+    return _grabcut_mask(rgb, full_frame_bbox(rgb))
 
 
 def _draw_debug_overlay(rgb: np.ndarray, pose, rig) -> Image.Image:

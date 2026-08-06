@@ -22,7 +22,12 @@
  *     그 결과(is_black_background/retries_used)를 그대로 넘겨준다.
  */
 
-import { cutoutImage, getVideoApiBaseUrl, type CutoutResult } from './videoProcessingApi'
+import {
+  assertUsableCutout,
+  cutoutImage,
+  getVideoApiBaseUrl,
+  type CutoutResult,
+} from './videoProcessingApi'
 import { clientCutoutFromFile, dataUrlToFile } from '@/lib/client-cutout'
 
 /**
@@ -104,8 +109,13 @@ async function runClientCutout(
   return { cutout, cutoutFile }
 }
 
-/** SAM2 누끼 결과(URL 또는 base64)를 Luma 업로드용 File로 변환. */
+/** SAM2 누끼 결과(URL 또는 base64)를 Luma 업로드용 File로 변환.
+ *
+ * 실패한 누끼를 빈 File로 만들어 업로드/생성으로 흘려보내지 않도록, 변환 전에
+ * 항상 게이트를 통과시킨다 (subject_detected / error / 이미지 존재 여부).
+ */
 async function cutoutResultToFile(result: CutoutResult): Promise<File> {
+  assertUsableCutout(result)
   if (result.cutout_url) {
     const res = await fetch(result.cutout_url)
     if (!res.ok) throw new Error(`누끼 이미지를 불러오지 못했습니다 (${res.status}).`)
@@ -265,9 +275,8 @@ export async function generateIdleAnimationSet(
       contentId: options.contentId,
       saveToStorage: false,
     })
-    if (cutout.error) {
-      throw new Error(`SAM2 누끼 실패: ${cutout.error}`)
-    }
+    // cutoutImage()가 이미 assertUsableCutout()을 통과시키지만, 이 헬퍼가 다른
+    // 경로에서 호출될 수도 있으므로 변환 직전에 한 번 더 확인한다.
     cutoutFile = await cutoutResultToFile(cutout)
   }
   options.onCutoutComplete?.(cutout)

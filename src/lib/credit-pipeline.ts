@@ -1,4 +1,5 @@
 import {
+  assertUsableCutout,
   cutoutImage,
   generateWithCredit,
   type GenerateWithCreditResult,
@@ -71,7 +72,8 @@ export async function ensureCutoutPublicUrl(
     model: "isnet-general-use",
     timeoutMs: 45_000,
   });
-  if (cut.error) throw new Error(cut.error);
+  // 실패한 누끼를 Supabase에 올리거나 Luma로 넘기지 않는다.
+  assertUsableCutout(cut);
   if (cut.cutout_url) return cut.cutout_url;
   throw new Error(
     "누끼 URL을 만들 수 없습니다. Render에 SUPABASE_URL·Storage 버킷을 설정해 주세요."
