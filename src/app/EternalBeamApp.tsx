@@ -32,7 +32,6 @@ import {
 } from '@/components/memorial/themes'
 import { clearStoredCustomBgVideoUrl } from '@/lib/custom-background-store'
 import { finalizePreviewContent } from '@/lib/finalize-preview-content'
-import { persistDeviceContentFromPipeline } from '@/lib/persist-device-content'
 import { scheduleThemeBackgroundSync, shouldSyncThemeToDevice } from '@/lib/device-theme-sync'
 import { schedulePiDiscovery } from '@/lib/pi-sensor-bridge'
 import { isForestTheme } from '@/lib/forest-demo-config'

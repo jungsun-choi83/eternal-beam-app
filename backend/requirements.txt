@@ -57,4 +57,4 @@ modal>=0.64.0
 # LivePortrait처럼 별도 리포 clone이 필요 없음. 최초 추론 시 체크포인트(~200MB)를
 # 자동 다운로드한다(로컬 RTX 4090 워커 머신에만 필요 — Render 등 경량 배포에는
 # 설치하지 않아도 됨. 이 기능도 로컬 GPU 워커에서만 돎).
-simple-lama-inpainting>=0.1.2
+# simple-lama-inpainting>=0.1.2

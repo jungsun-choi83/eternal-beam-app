@@ -23,13 +23,45 @@ type RenderMode = "packed" | "blackkey" | "raw";
 
 const COMPOSITE_FAIL_THRESHOLD = 8;
 
-function removeNearBlackAlpha(
+function estimateCornerBackgroundLuminance(
+  ctx: CanvasRenderingContext2D,
+  w: number,
+  h: number
+): number {
+  // Sample small patches in 4 corners (before we zero alpha).
+  // If corners are bright => the video background is bright; else dark.
+  const s = Math.max(2, Math.floor(Math.min(w, h) / 20));
+  const corners: Array<[number, number]> = [
+    [0, 0],
+    [Math.max(0, w - s), 0],
+    [0, Math.max(0, h - s)],
+    [Math.max(0, w - s), Math.max(0, h - s)],
+  ];
+
+  let sum = 0;
+  let count = 0;
+  for (const [cx, cy] of corners) {
+    const { data } = ctx.getImageData(cx, cy, s, s);
+    for (let i = 0; i < data.length; i += 4) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+      sum += lum;
+      count += 1;
+    }
+  }
+  return count > 0 ? sum / count : 0;
+}
+
+function removeNearBackgroundAlpha(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
   w: number,
   h: number,
-  threshold = 24
+  bgLuminance: number,
+  delta = 18
 ) {
   const ix = Math.round(x);
   const iy = Math.round(y);
@@ -42,7 +74,13 @@ function removeNearBlackAlpha(
     const g = data[i + 1];
     const b = data[i + 2];
     const lum = 0.299 * r + 0.587 * g + 0.114 * b;
-    if (lum <= threshold) {
+    // Decide whether the background is near-black or near-white based on corner luminance.
+    // Then remove only pixels close to that background level.
+    const isBrightBg = bgLuminance >= 128;
+    const shouldRemove = isBrightBg
+      ? lum >= bgLuminance - delta
+      : lum <= bgLuminance + delta;
+    if (shouldRemove) {
       data[i + 3] = 0;
     }
   }
@@ -210,7 +248,8 @@ export function IdleLoopVideo({
         sctx.imageSmoothingQuality = "high";
         sctx.clearRect(0, 0, iw, ih);
         sctx.drawImage(video, 0, 0, iw, ih);
-        removeNearBlackAlpha(sctx, 0, 0, iw, ih);
+        const bgLum = estimateCornerBackgroundLuminance(sctx, iw, ih);
+        removeNearBackgroundAlpha(sctx, 0, 0, iw, ih, bgLum);
         ctx.drawImage(scratch, dx, dy, drawW, drawH);
       }
       failCountRef.current = 0;
