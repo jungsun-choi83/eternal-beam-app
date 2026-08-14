@@ -19,6 +19,34 @@ def register_udp_forward(fn: Callable[[dict[str, Any]], None]) -> None:
     _udp_forward = fn
 
 
+def build_pet_ready_base(body: dict[str, Any], content_id: str) -> dict[str, Any]:
+    """
+    /demo/pet-ready 본문 → SSE·UDP 로 실어 보낼 공통 필드 (순수 함수).
+
+    화이트리스트 방식이라 모르는 키는 버린다. packed_url 은 **추가** 필드다 —
+    idle_url/video_url 을 절대 덮어쓰지 않는다. packed 를 모르는 기존 S23 빌드는
+    지금까지처럼 video_url 을 읽어 휘도 키 모드로 재생하고, packed 를 아는 빌드만
+    packed_url 을 우선 선택한다(VideoLayer.IsPackedAlphaUrl).
+    """
+    base: dict[str, Any] = {
+        "content_id": content_id,
+        "source": "app_idle_ready",
+    }
+    idle_url = body.get("idle_url") or body.get("video_url")
+    if idle_url:
+        url = str(idle_url).strip()
+        base["idle_url"] = url
+        base["video_url"] = url
+    cutout_url = body.get("cutout_url")
+    if cutout_url:
+        base["cutout_url"] = str(cutout_url).strip()
+    # 공백만 있는 값도 "없음"으로 본다 — strip 후 판정.
+    packed_url = str(body.get("packed_url") or "").strip()
+    if packed_url:
+        base["packed_url"] = packed_url
+    return base
+
+
 def broadcast_event(payload: dict[str, Any]) -> None:
     data = json.dumps(payload, separators=(",", ":"))
     with _lock:
@@ -168,18 +196,7 @@ class _SseHandler(BaseHTTPRequestHandler):
             self.send_error(400, explain="content_id required")
             return
 
-        idle_url = body.get("idle_url") or body.get("video_url")
-        cutout_url = body.get("cutout_url")
-        base: dict[str, Any] = {
-            "content_id": content_id,
-            "source": "app_idle_ready",
-        }
-        if idle_url:
-            url = str(idle_url).strip()
-            base["idle_url"] = url
-            base["video_url"] = url
-        if cutout_url:
-            base["cutout_url"] = str(cutout_url).strip()
+        base = build_pet_ready_base(body, content_id)
 
         broadcast_event({**base, "event": "pet_ready"})
         if _udp_forward is not None:

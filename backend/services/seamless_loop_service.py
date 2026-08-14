@@ -40,6 +40,24 @@ def _probe_duration_sec(path: str) -> float:
     return h * 3600 + mi * 60 + s + cs / 100.0
 
 
+def _probe_fps(path: str, default: float = 24.0) -> float:
+    """소스 프레임레이트. xfade 가 CFR 을 요구하므로 필터에 명시해야 한다."""
+    proc = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-i", path],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    m = re.search(r"(\d+(?:\.\d+)?)\s*fps", proc.stderr or "")
+    if not m:
+        return default
+    try:
+        fps = float(m.group(1))
+    except ValueError:
+        return default
+    return fps if 1.0 <= fps <= 120.0 else default
+
+
 def make_seamless_loop_mp4(
     mp4_bytes: bytes,
     *,
@@ -74,10 +92,16 @@ def make_seamless_loop_mp4(
         body_end = max(0.05, dur - fade)
 
         # [body 0..body_end] + xfade(tail, head)
+        #
+        # 각 스트림에 fps 를 명시하는 것이 필수다. trim + setpts 를 거치면 프레임레이트
+        # 메타데이터가 미정(1/0)이 되는데 xfade 는 CFR 을 요구해서 그대로 두면
+        # "The inputs needs to be a constant frame rate; current rate of 1/0 is invalid"
+        # 로 필터 그래프 구성 자체가 실패한다(→ 조용히 원본 패스스루, 루프 없음).
+        fps = _probe_fps(str(inp))
         fc = (
-            f"[0:v]trim=end={body_end:.4f},setpts=PTS-STARTPTS[body];"
-            f"[0:v]trim=start={body_end:.4f},setpts=PTS-STARTPTS[tail];"
-            f"[0:v]trim=end={fade:.4f},setpts=PTS-STARTPTS[head];"
+            f"[0:v]trim=end={body_end:.4f},setpts=PTS-STARTPTS,fps={fps:g}[body];"
+            f"[0:v]trim=start={body_end:.4f},setpts=PTS-STARTPTS,fps={fps:g}[tail];"
+            f"[0:v]trim=end={fade:.4f},setpts=PTS-STARTPTS,fps={fps:g}[head];"
             f"[tail][head]xfade=transition=fade:duration={fade:.4f}:offset=0[x];"
             f"[body][x]concat=n=2:v=1:a=0[vout]"
         )

@@ -498,6 +498,8 @@ export interface GeneratePetVideoResult {
   dog_only_nobg_url: string
   idle_video_url: string
   action_video_url: string | null
+  /** COME_CLOSER (웹 전용 프리미엄 액션). 아직 없으면 null. */
+  come_closer_video_url?: string | null
   idle_validation?: Record<string, unknown> | null
   idle_validation_history?: Record<string, unknown>[]
   prompts?: { idle: string; action?: string }

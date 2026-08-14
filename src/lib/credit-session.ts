@@ -1,4 +1,5 @@
 import type { GenerateWithCreditResult } from "@/app/services/videoProcessingApi";
+import { setAuthoritativePetId } from "@/lib/pet-identity";
 
 export const ETERNAL_BEAM_CREDIT_KEY = "eternal_beam_credit_v1";
 
@@ -31,7 +32,9 @@ export function saveCreditSession(
   };
   try {
     sessionStorage.setItem(ETERNAL_BEAM_CREDIT_KEY, JSON.stringify(stored));
-    localStorage.setItem("eternal_beam_pet_id", result.pet_id);
+    // 서버가 준 pet_id 는 권위 있다 — 다만 **현재 content 에 묶어서** 기록해야
+    // 다음 업로드(새 content_id)의 조회키를 오염시키지 않는다.
+    setAuthoritativePetId(result.pet_id);
     localStorage.setItem("eternal_beam_place_id", result.place_id);
   } catch {
     /* ignore quota */

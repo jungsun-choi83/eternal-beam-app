@@ -8,7 +8,7 @@ import {
   ETERNAL_BEAM_PIPELINE_KEY,
   type StoredPipeline,
 } from "@/components/memorial/ai-processing-screen";
-import { getMemorialTheme } from "@/components/memorial/themes";
+import { getMemorialTheme, DEFAULT_THEME_KEY } from "@/components/memorial/themes";
 
 export function isInsufficientCreditsError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
@@ -91,7 +91,7 @@ export async function runCreditMotionGeneration(params: {
   contentId?: string;
 }): Promise<{ result: GenerateWithCreditResult; petImageUrl: string }> {
   const theme = getMemorialTheme(params.themeId);
-  const placeId = theme?.themeKey ?? "snow_forest";
+  const placeId = theme?.themeKey ?? DEFAULT_THEME_KEY;
 
   const petImageUrl = await ensureCutoutPublicUrl(
     params.cutoutDisplay,

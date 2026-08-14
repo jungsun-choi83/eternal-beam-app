@@ -382,3 +382,35 @@ async def image_to_video_full(
         shutil.move(tmp_path, output_path)
         return output_path
     return tmp_path
+
+
+async def fetch_status(generation_id: str) -> dict:
+    """
+    단발 상태 조회 (대기하지 않는다) — 리컨사일러용.
+
+    Returns: {"state": <luma state>, "video_url": <완료 시>, "error": <실패 시>}
+    """
+    if generation_id.startswith("mock_"):
+        return {"state": "completed", "video_url": (os.getenv("MOCK_LUMA_VIDEO_URL") or "").strip() or None, "error": None}
+
+    key = (os.getenv("LUMA_API_KEY") or "").strip()
+    if not key or not requests:
+        raise RuntimeError("LUMA_API_KEY 및 requests 필요")
+
+    def _get():
+        r = requests.get(
+            f"{LUMA_API_BASE}/generations/{generation_id}",
+            headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        return r.json()
+
+    body = await asyncio.get_event_loop().run_in_executor(None, _get)
+    state = str(body.get("state") or "").lower()
+    assets = body.get("assets") if isinstance(body.get("assets"), dict) else {}
+    return {
+        "state": state,
+        "video_url": (assets or {}).get("video"),
+        "error": body.get("failure_reason") or body.get("failureReason"),
+    }

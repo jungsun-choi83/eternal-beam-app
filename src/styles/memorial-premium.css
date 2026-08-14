@@ -109,15 +109,17 @@
 }
 
 @keyframes cutout-idle-breathe {
+  /* translateY 제거 — 위아래로 뜨면 접지감이 깨진다. 스케일 호흡만 남긴다.
+     transform-origin: center bottom 이라 발은 고정된 채 몸통만 미세하게 부푼다. */
   0%,
   100% {
-    transform: scale(1) translateY(0);
+    transform: scale(1);
   }
   45% {
-    transform: scale(1.018) translateY(-2px);
+    transform: scale(1.018);
   }
   55% {
-    transform: scale(1.012) translateY(-1px);
+    transform: scale(1.012);
   }
 }
 
@@ -559,8 +561,29 @@
 
 .preview-subject-layer {
   will-change: transform;
-  transform-origin: center center;
+  /* 발 기준으로 확대/축소 — center center 였을 때는 키우면 발이 같이 떠올랐다. */
+  transform-origin: center bottom;
   pointer-events: none;
+}
+
+/* 접지 그림자 — 피사체와 형제 요소라 호흡 애니메이션의 영향을 받지 않는다.
+   top 은 테마 floorY 로, 가로 이동/크기는 인라인 transform 으로 제어한다. */
+.preview-contact-shadow {
+  position: absolute;
+  left: 50%;
+  z-index: 0;
+  width: 46%;
+  height: 4.5%;
+  border-radius: 50%;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse at center,
+    rgba(0, 0, 0, 0.55) 0%,
+    rgba(0, 0, 0, 0.32) 45%,
+    rgba(0, 0, 0, 0) 72%
+  );
+  filter: blur(6px);
+  will-change: transform, opacity;
 }
 
 .preview-gesture-surface {

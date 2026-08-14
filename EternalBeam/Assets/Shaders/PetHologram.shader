@@ -5,6 +5,11 @@ Shader "Custom/PetHologram"
         _MainTex      ("RGB Video",  2D) = "black" {}
         _AlphaTex     ("Alpha Mask", 2D) = "white" {}
         _UseAlphaTex  ("Use Alpha Tex", Float) = 1
+        // packed vstack: _MainTex 한 장의 위/아래 절반에 RGB 와 매트가 같이 들어 있다.
+        // 웹(src/lib/packed-alpha-canvas.ts)과 같은 규약 — RGB 는 premultiplied.
+        // 디코더가 하나뿐이라 RGB/알파가 절대 어긋날 수 없다.
+        _PackedAlpha    ("Packed vstack RGB+Alpha", Float) = 0
+        _PackedRgbOnTop ("Packed: RGB Is Top Half", Float) = 1
         _PremulRGB    ("MainTex Is Pre-multiplied", Float) = 0
         _Brightness   ("Brightness", Range(0.5, 3)) = 1.3
         _Cutoff       ("Alpha Cutoff", Range(0, 1)) = 0.48
@@ -66,6 +71,8 @@ Shader "Custom/PetHologram"
                 float4 _MainTex_ST;
                 float4 _AlphaTex_ST;
                 half   _UseAlphaTex;
+                half   _PackedAlpha;
+                half   _PackedRgbOnTop;
                 half   _PremulRGB;
                 half   _Brightness;
                 half   _Cutoff;
@@ -90,10 +97,26 @@ Shader "Custom/PetHologram"
 
             half4 frag(Varyings IN) : SV_Target
             {
-                half4 col = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, IN.uv);
+                // packed vstack 이면 같은 텍스처의 두 절반을 각각 샘플링한다.
+                // Unity UV 는 v=0 이 아래쪽이므로 "이미지 상단" = v [0.5, 1].
+                float2 rgbUV = IN.uv;
+                float2 packedAlphaUV = IN.uv;
+                if (_PackedAlpha > 0.5h)
+                {
+                    half topOffset = _PackedRgbOnTop > 0.5h ? 0.5h : 0.0h;
+                    rgbUV         = float2(IN.uv.x, IN.uv.y * 0.5h + topOffset);
+                    packedAlphaUV = float2(IN.uv.x, IN.uv.y * 0.5h + (0.5h - topOffset));
+                }
+
+                half4 col = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, rgbUV);
 
                 half a;
-                if (_UseAlphaTex > 0.5h)
+                if (_PackedAlpha > 0.5h)
+                {
+                    // 매트 절반은 그레이스케일(R=G=B) — 웹과 동일하게 R 채널만 쓴다.
+                    a = SAMPLE_TEXTURE2D(_MainTex, sampler_MainTex, packedAlphaUV).r;
+                }
+                else if (_UseAlphaTex > 0.5h)
                 {
                     float2 auv = TRANSFORM_TEX(IN.uv, _AlphaTex);
                     a = SAMPLE_TEXTURE2D(_AlphaTex, sampler_AlphaTex, auv).r;

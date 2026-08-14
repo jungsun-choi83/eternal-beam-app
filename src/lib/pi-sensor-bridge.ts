@@ -2,6 +2,7 @@
 
 import { isDeviceKickstarterDemo } from '@/lib/device-demo-config'
 import { triggerNfcActivation } from '@/lib/nfc-activation'
+import { buildPetReadyBody, type PetReadyRequest } from '@/lib/pet-ready-payload'
 
 const PI_HTTP_PORT = 8787
 const PI_HOST_STORAGE_KEY = 'eternalbeam:pi-http-base'
@@ -260,11 +261,7 @@ async function postThemeToPi(
   }
 }
 
-export type PetReadyRequest = {
-  contentId: string
-  idleUrl?: string | null
-  cutoutUrl?: string | null
-}
+export type { PetReadyRequest } from '@/lib/pet-ready-payload'
 
 /** idle 완료 → S23 Unity(VFX) — POST /demo/pet-ready (Pi 배경은 변경하지 않음) */
 export async function triggerPetReadyOnDevice(
@@ -288,11 +285,7 @@ async function postPetReadyToPi(
   payload: PetReadyRequest,
 ): Promise<boolean> {
   try {
-    const body: Record<string, string> = { content_id: payload.contentId.trim() }
-    const idleUrl = payload.idleUrl?.trim()
-    const cutoutUrl = payload.cutoutUrl?.trim()
-    if (idleUrl) body.idle_url = idleUrl
-    if (cutoutUrl) body.cutout_url = cutoutUrl
+    const body = buildPetReadyBody(payload)
 
     const res = await fetch(`${base}/demo/pet-ready`, {
       method: 'POST',

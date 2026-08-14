@@ -166,6 +166,12 @@ if _enable_generate:
     from .routers import generate
     app.include_router(generate.router, prefix="/api", tags=["generate"])
 
+# 개발 전용 프리미엄 액션 트리거(COME_CLOSER). 기본 꺼짐 —
+# 켜지 않으면 라우트 자체가 앱에 존재하지 않는다.
+if os.getenv("ENABLE_DEV_PREMIUM_TRIGGER", "0").strip().lower() in ("1", "true", "yes"):
+    from .routers import dev_premium
+    app.include_router(dev_premium.router, prefix="/api", tags=["pet-dev"])
+
 # 프리뷰 출력 디렉토리 (main.py와 같은 위치 기준)
 _output_dir = os.path.join(os.path.dirname(__file__), "..", "outputs")
 if not os.path.exists(_output_dir):

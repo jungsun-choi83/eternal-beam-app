@@ -38,9 +38,19 @@ import { clientCutoutFromFile, dataUrlToFile } from '@/lib/client-cutout'
  */
 const CLIENT_CUTOUT_FIRST = String(import.meta.env.VITE_CLIENT_CUTOUT ?? '').trim() === '1'
 
-/** Constraint 1 — 5개 고정 아이들(Idle) 모션 템플릿. 순서·문구 변경 금지. */
+/**
+ * Constraint 1 — 5개 고정 아이들(Idle) 모션 템플릿. 순서·문구 변경 금지.
+ *
+ * ⚠️ 이 아래 상수들은 **참조용 사본(reference-only)** 이다.
+ * 실제 Luma/Wan 으로 나가는 최종 프롬프트는 항상 백엔드에서 조립된다:
+ *   backend/services/luma_prompts.py       — IDLE_COMMON_CONSTRAINT (source of truth)
+ *   backend/services/luma_idle_templates.py — build_idle_variant_prompt()
+ * 프론트는 template_key 만 보내고 문자열은 보내지 않으므로, 여기를 고쳐도
+ * 런타임 동작은 바뀌지 않는다. 백엔드 문구가 바뀌면 문서 드리프트를 없애기
+ * 위해 이 사본도 같이 갱신할 것.
+ */
 const IDLE_COMMON =
-  "Camera angle completely fixed, identical to the original photo's exact angle and framing. Subject's body position, head orientation, and pose must remain unchanged. No rotation, no turning, no shifting of body or head position. Same fur pattern, same lighting, same background. Only the specifically described micro-movement below is allowed — everything else must stay perfectly still."
+  "Camera angle completely fixed, identical to the reference keyframe's exact angle and framing. The dog must remain exactly as visible in the reference throughout the entire clip. Preserve the visible crop, pose, scale, position, head orientation, and silhouette. Every body part that is visible in the reference must remain visible and structurally consistent in every frame. Do not zoom out, widen the framing, reveal additional body parts, or invent anatomy that is not visible in the reference. Do not crop, hide, dissolve, fade, morph, shorten, remove, replace, or extend any visible part of the dog. No rotation, no turning, no shifting of the body or head position. Same fur pattern, same lighting, same background. Only the specifically described micro-movement below is allowed — everything else must stay perfectly still. The clip must begin and end in the identical resting pose. The final frame must match the first frame's pose, position, scale, and head orientation as closely as possible so the video can loop naturally. Any allowed micro-movement must complete a full cycle and return to its starting state before the clip ends."
 
 const IDLE_COMMON_HEAD =
   "Camera angle completely fixed, identical to the original photo's exact angle and framing. Subject's body position and pose must remain unchanged. No body rotation, no turning of the torso, no shifting of body position. Same fur pattern, same lighting, same background. Head rotation is allowed only as specifically described below — everything else must stay perfectly still."

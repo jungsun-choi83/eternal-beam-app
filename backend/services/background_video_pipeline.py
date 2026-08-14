@@ -29,7 +29,8 @@ from typing import Callable, Optional, Union
 from . import background_video_sync, supabase_assets
 from .background_inpaint_service import inpaint_background_from_photo
 from .luma_prompts import build_background_ambient_prompt
-from .luma_service import create_generation_and_get_video_url, download_video
+from .luma_service import download_video  # HTTP GET — 프로바이더 무관
+from .video_generation import create_generation_and_get_video_url
 from .seamless_loop_service import make_seamless_loop_mp4
 
 logger = logging.getLogger(__name__)

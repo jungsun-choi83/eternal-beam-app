@@ -6,7 +6,6 @@ import { EternalBeamBrandMark } from "@/components/memorial/eternal-beam-brand-m
 import {
   assertUsableCutout,
   cutoutImage,
-  generatePetVideo,
   isCutoutApiUnreachableError,
   isCutoutRejectedError,
   type CutoutResult,
@@ -36,24 +35,14 @@ import { memorialT } from "@/components/memorial/memorial-i18n";
 import { isLiteUI } from "@/lib/ui-performance";
 import { CutoutStage } from "@/components/memorial/cutout-stage";
 import { useProcessingClock } from "@/lib/use-processing-clock";
-import {
-  isClientCutoutFirst,
-  isLumaPipelineEnabled,
-  isIdleTestFallbackEnabled,
-  isGoyaDemoIdleUrl,
-} from "@/lib/device-host-flags";
-import { isLikelyVideoUrl } from "@/lib/video-url";
+import { isClientCutoutFirst } from "@/lib/device-host-flags";
 import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
-import { schedulePetReadyToDevice } from "@/lib/device-pet-sync";
+import { setPendingCutout } from "@/lib/pending-generation";
 import { traceImage, dumpImageTrace } from "@/lib/image-trace"; // [IMAGE-TRACE]
 
 export const ETERNAL_BEAM_PIPELINE_KEY = "eternal_beam_pipeline_v1";
 
 const FILM_CONVERSION_SEC = Number(import.meta.env.VITE_FILM_CONVERSION_SEC ?? "0");
-/** Live Luma I2V can take several minutes; 0 = wait until server responds (recommended). */
-const IDLE_GENERATION_TIMEOUT_MS = Number(
-  import.meta.env.VITE_IDLE_GENERATION_TIMEOUT_MS ?? "0"
-);
 const CLIENT_CUTOUT_FALLBACK = import.meta.env.VITE_CLIENT_CUTOUT_FALLBACK !== "0";
 /** 누끼 전/후 비교를 idle 단계 전에 유지 (ms) */
 const COMPARE_HOLD_MS = Math.max(
@@ -71,6 +60,8 @@ export interface StoredPipeline {
   dog_only_nobg_url: string;
   idle_video_url: string;
   action_video_url: string;
+  /** COME_CLOSER (웹 전용 프리미엄 액션). 미생성 시 없음. */
+  come_closer_video_url?: string | null;
 }
 
 interface AIProcessingScreenProps {
@@ -195,82 +186,11 @@ async function runCutoutWithFallback(
   }
 }
 
-function cutoutOutcomeCanGenerate(outcome: CutoutOutcome): boolean {
-  return outcome.subjectDetected !== false && Boolean(outcome.display) && outcome.cutFile.size > 0;
-}
-
 function cutoutDisplayUrl(result: CutoutResult): string {
   if (result.cutout_url) return result.cutout_url;
   if (result.cutout_png_base64)
     return `data:image/png;base64,${result.cutout_png_base64}`;
   return "";
-}
-
-function isTransientPetVideoError(message: string): boolean {
-  const m = message.toLowerCase();
-  return (
-    m.includes("pet video server error") ||
-    m.includes("failed to fetch") ||
-    m.includes("network") ||
-    m.includes("load failed") ||
-    m.includes("timeout") ||
-    m.includes("502") ||
-    m.includes("503") ||
-    m.includes("504")
-  );
-}
-
-async function generateIdleVideoWithRetry(
-  cutFile: File,
-  contentId: string,
-  onStatus: (line: string) => void,
-  t: ProcessingCopy
-): Promise<Awaited<ReturnType<typeof generatePetVideo>> | null> {
-  const opts = {
-    userId: "anonymous" as const,
-    contentId: contentId || undefined,
-    skipPreprocessing: true,
-    idleOnly: true,
-  };
-
-  const run = async () => {
-    onStatus(t.serverWaking);
-    await warmupVideoApi({ coldStart: true, maxWaitMs: CUTOUT_WARMUP_MAX_MS });
-    return await generatePetVideo(cutFile, opts);
-  };
-
-  try {
-    return await run();
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (!isTransientPetVideoError(msg)) throw e;
-    onStatus(t.serverRetry);
-    await sleep(3000);
-    return await run();
-  }
-}
-
-async function generateIdleVideoWithTimeout(
-  cutFile: File,
-  contentId: string,
-  onStatus: (line: string) => void,
-  t: ProcessingCopy
-): Promise<Awaited<ReturnType<typeof generatePetVideo>> | null> {
-  if (IDLE_GENERATION_TIMEOUT_MS <= 0) {
-    return generateIdleVideoWithRetry(cutFile, contentId, onStatus, t);
-  }
-
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      generateIdleVideoWithRetry(cutFile, contentId, onStatus, t),
-      new Promise<null>((resolve) => {
-        timer = setTimeout(() => resolve(null), IDLE_GENERATION_TIMEOUT_MS);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 function isCutoutMemoryError(message: string): boolean {
@@ -571,96 +491,29 @@ export function AIProcessingScreen({
         await sleep(COMPARE_HOLD_MS);
         if (cancelled || myToken !== runTokenRef.current) return;
 
-        setCurrentStep(1);
-        setProgress(42);
-        setStatusLine(t.converting);
-
-        let pet: Awaited<ReturnType<typeof generatePetVideo>> | null = null;
-        let apiIdleUrl = "";
-        // Idle source:
-        // - VITE_ENABLE_LUMA=1 (or device.eternalbeam.com): POST /api/generate-pet-video
-        //   → backend LUMA_MOCK=1 uses MOCK_LUMA_VIDEO_URL (fast); real LUMA_API_KEY polls Luma (minutes).
-        // - Otherwise: skip API and use bundled /demo/goya_idle_packed.mp4 (pre-made asset, no prompt run).
-        // 누끼가 유효할 때만 유료 생성으로 넘어간다 (Phase 1 게이트).
-        const lumaEnabled = isLumaPipelineEnabled() && cutoutOutcomeCanGenerate(cutout);
-
-        if (lumaEnabled) {
-          try {
-            pet = await generateIdleVideoWithTimeout(
-              cutFile,
-              cutContentId || "",
-              (line) => {
-                if (!cancelled && myToken === runTokenRef.current) setStatusLine(line);
-              },
-              t
-            );
-            if (pet?.idle_video_url && isLikelyVideoUrl(pet.idle_video_url)) {
-              apiIdleUrl = pet.idle_video_url;
-            } else if (!pet) {
-              if (!cancelled && myToken === runTokenRef.current) {
-                setStatusLine(t.idleDemoFallback);
-              }
-            }
-          } catch (petErr) {
-            // 서버가 생성 직전에 누끼를 거절했으면 데모 폴백으로 덮지 않는다 —
-            // 사용자에게 다른 사진을 쓰라고 알려야 한다.
-            if (isCutoutRejectedError(petErr)) throw petErr;
-            if (!cancelled && myToken === runTokenRef.current) {
-              setStatusLine(t.idleDemoFallback);
-            }
-          }
-        } else {
-          setStatusLine(t.idleDemoFallback);
-          setProgress(88);
-        }
-
+        // ── 여기서 멈춘다 ────────────────────────────────────────────────
+        // 예전에는 누끼 직후 곧바로 generatePetVideo() 를 호출했다. 이제는
+        // 누끼까지만 하고, 실제 생성은 사용자가 미리보기에서 확인을 누를 때
+        // preview-screen.tsx 가 시작한다(업로드 → 누끼 → 테마 → 미리보기 →
+        // 확인 → 생성). 원본 해상도 누끼는 그때 다시 필요하므로 보관해 둔다.
         if (cancelled || myToken !== runTokenRef.current) return;
 
-        // sessionStorage에는 사용자 idle mp4만 저장 — Goya 데모 URL은 저장하지 않음
-        const storedIdleUrl =
-          apiIdleUrl && !isGoyaDemoIdleUrl(apiIdleUrl) ? apiIdleUrl : "";
-
-        if (!cancelled && myToken === runTokenRef.current) {
-          setIdlePreviewUrl(storedIdleUrl || null);
-          if (!storedIdleUrl) {
-            setStatusLine(
-              lumaEnabled && !isIdleTestFallbackEnabled()
-                ? t.idlePending
-                : t.idleCutoutPreview
-            );
-          }
-          setProgress(92);
-          await sleep(storedIdleUrl ? 300 : 500);
-        }
+        const contentId = cutContentId || `cut_${Date.now()}`;
+        setPendingCutout(cutFile, contentId, display);
 
         const stored: StoredPipeline = {
-          content_id: pet?.content_id || cutContentId || `fallback_${Date.now()}`,
+          content_id: contentId,
           cutout_display_url: display,
-          dog_only_nobg_url: pet?.dog_only_nobg_url || display,
-          idle_video_url: storedIdleUrl,
-          action_video_url: pet?.action_video_url || "",
+          dog_only_nobg_url: display,
+          idle_video_url: "", // 아직 생성 전 — 확인 후에 채워진다
+          action_video_url: "",
         };
         try {
           sessionStorage.setItem(ETERNAL_BEAM_PIPELINE_KEY, JSON.stringify(stored));
           localStorage.setItem("eternal_beam_content_id", stored.content_id);
           localStorage.setItem("eternal_beam_current_content_id", stored.content_id);
-          if (storedIdleUrl) {
-            localStorage.setItem("eternal_beam_hologram_video_id", storedIdleUrl);
-            localStorage.setItem("eternal_beam_current_video_id", storedIdleUrl);
-          }
         } catch {
           /* ignore */
-        }
-
-        if (storedIdleUrl) {
-          schedulePetReadyToDevice({
-            contentId: stored.content_id,
-            idleUrl: storedIdleUrl,
-            cutoutUrl: display,
-          });
-          if (!cancelled && myToken === runTokenRef.current) {
-            setStatusLine(t.petReadySent);
-          }
         }
 
         setProgress(100);
@@ -726,6 +579,8 @@ export function AIProcessingScreen({
             <PetIdleDisplay
               idleVideoUrl={idlePreviewUrl}
               cutoutUrl={cutoutPreview}
+              // 생성 전 화면 — 데모 mp4 로 채우지 않는다(정적 누끼만).
+              allowDemoFallback={false}
               className="ai-processing-screen__idle-pet w-full h-full object-contain"
             />
           </div>
