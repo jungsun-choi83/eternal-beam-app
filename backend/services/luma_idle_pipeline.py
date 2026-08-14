@@ -25,7 +25,13 @@ from typing import Any, Optional
 
 from .idle_validation_service import IdleValidationResult, validate_idle_video
 from .luma_idle_templates import build_idle_variant_prompt
-from .luma_service import create_generation_and_get_video_url, download_video
+from .luma_service import download_video  # HTTP GET — 프로바이더 무관
+from .video_generation import (
+    create_generation_and_get_video_url,
+    is_luma,
+    looks_like_video_url,
+    sniff_video_container,
+)
 
 # 모서리 평균 밝기(0~255)가 이 값 이하면 "블랙 배경"으로 판정.
 BLACK_BG_LUMINANCE_THRESHOLD = float(os.getenv("LUMA_IDLE_BLACK_BG_THRESHOLD", "42"))
@@ -174,7 +180,10 @@ async def generate_idle_variant(
             attempt += 1
             continue
 
-        is_mp4 = _looks_like_mp4_url(remote_url)
+        # Luma 는 예전과 똑같이 URL 의 .mp4 접미사로 판정한다.
+        # 다른 프로바이더(fal 등)는 확장자 없는 CDN URL 을 주는 게 정상이라
+        # 접미사만으로 실패 처리하면 성공한 유료 생성을 버리고 재생성이 돈다.
+        is_mp4 = looks_like_video_url(remote_url)
 
         local_path = await download_video(remote_url)
         try:
@@ -185,6 +194,11 @@ async def generate_idle_variant(
                 os.unlink(local_path)
             except Exception:
                 pass
+
+        # 비-Luma 프로바이더에서 URL 로 판정하지 못했을 때만 실제 바이트로 확인.
+        # Luma 경로는 예전 그대로 URL 판정 결과를 유지한다(재시도 동작 보존).
+        if not is_mp4 and not is_luma():
+            is_mp4 = sniff_video_container(video_bytes) is not None
 
         is_black, luminance = check_black_background(video_bytes)
 

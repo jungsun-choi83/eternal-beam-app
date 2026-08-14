@@ -5,6 +5,7 @@ import {
 import { loadCreditSession } from "@/lib/credit-session";
 import { isGoyaDemoIdleUrl } from "@/lib/device-host-flags";
 import { isLikelyVideoUrl } from "@/lib/video-url";
+import { setAuthoritativePetId } from "@/lib/pet-identity";
 
 export function readPipeline(): StoredPipeline | null {
   try {
@@ -52,7 +53,8 @@ export function persistDeviceContentFromPipeline(
   }
 
   if (credit?.pet_id) {
-    localStorage.setItem("eternal_beam_pet_id", credit.pet_id);
+    // 위와 같은 이유로 현재 content 에 묶어서 기록한다.
+    setAuthoritativePetId(credit.pet_id, contentId);
   }
   if (credit?.place_id) {
     localStorage.setItem("eternal_beam_place_id", credit.place_id);

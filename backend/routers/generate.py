@@ -13,9 +13,9 @@ from ..services.luma_idle_templates import IDLE_TEMPLATE_ORDER, is_known_templat
 from ..services.luma_keyframe import flatten_rgba_to_jpeg_bytes, resolve_keyframe_bg_rgb
 from ..services.luma_service import (
     build_idle_action_prompts,
-    create_generation_and_get_video_url,
     download_video,
 )
+from ..services.video_generation import create_generation_and_get_video_url
 from ..services.seamless_loop_service import make_seamless_loop_mp4
 from ..services.vitmatte_service import DEBUG_ARTIFACTS_ENABLED, validate_cutout_alpha
 

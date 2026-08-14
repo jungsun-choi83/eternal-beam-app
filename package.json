@@ -9,7 +9,10 @@
     "preview": "vite preview",
     "server": "node server/index.js",
     "server:dev": "node --watch server/index.js",
-    "video-api": "python -m uvicorn backend.main:app --reload --port 8000"
+    "test:renderer": "node --test src/lib/packed-alpha-canvas.test.ts",
+    "video-api": "python -m uvicorn backend.main:app --reload --port 8000",
+    "test:flow": "node --test src/lib/idle-generation-request.test.ts",
+    "test": "node --test src/lib/*.test.ts"
   },
   "dependencies": {
     "@imgly/background-removal": "^1.7.0",

@@ -333,6 +333,8 @@ export function ThemeSelectionScreen({
               <PetIdleDisplay
                 idleVideoUrl={idleVideoUrl}
                 cutoutUrl={cutoutImage || pipelineCutout}
+                // 테마 선택은 확인 전 단계 — 데모 mp4 폴백 없이 정적 누끼로 보여준다.
+                allowDemoFallback={false}
                 className="cutout-stage__subject"
               />
             </CutoutStage>

@@ -31,6 +31,21 @@ namespace EternalBeam
         private static readonly int MainTexId = Shader.PropertyToID("_MainTex");
         private static readonly int AlphaTexId = Shader.PropertyToID("_AlphaTex");
         private static readonly int UseAlphaTexId = Shader.PropertyToID("_UseAlphaTex");
+        private static readonly int PackedAlphaId = Shader.PropertyToID("_PackedAlpha");
+
+        /// <summary>
+        /// packed vstack(한 파일에 RGB+매트) 여부. 웹 규약과 동일하며,
+        /// 디코더가 하나뿐이라 RGB/알파 동기화 문제가 원천적으로 없다.
+        /// 파일명 규약(_packed.mp4 또는 /demo/..packed..mp4)으로만 판정한다 —
+        /// 픽셀 chroma 판정은 웹(packed-alpha-canvas.ts)에만 있고, 여기서는
+        /// 오탐으로 평범한 영상이 반토막 나는 위험을 피하려 이름만 믿는다.
+        /// </summary>
+        public static bool IsPackedAlphaUrl(string url)
+        {
+            if (string.IsNullOrEmpty(url)) return false;
+            string path = url.Split('?')[0].Split('#')[0].ToLowerInvariant();
+            return path.EndsWith("_packed.mp4") || (path.Contains("/demo/") && path.Contains("packed") && path.EndsWith(".mp4"));
+        }
 
         private void Awake()
         {
@@ -100,6 +115,14 @@ namespace EternalBeam
             _player.Stop();
             if (_alphaPlayer != null) _alphaPlayer.Stop();
 
+            // packed 이면 VideoPlayer 하나만 쓴다 — 별도 알파 스트림은 무시한다.
+            bool packed = IsPackedAlphaUrl(rgbUrl);
+            if (packed) alphaUrl = null;
+
+            // 모드 플래그는 매 클립 처음에 확정한다. 아래 준비 단계에서 실패해도
+            // 이전 클립의 값이 남아 잘못된 모드로 렌더링되는 일이 없어야 한다.
+            if (material != null) material.SetFloat(PackedAlphaId, packed ? 1f : 0f);
+
             _player.source = VideoSource.Url;
             _player.url = rgbUrl;
             _player.Prepare();
@@ -135,6 +158,13 @@ namespace EternalBeam
                 _renderTexture.Create();
                 _player.targetTexture = _renderTexture;
 
+                // 기본은 항상 "분리 알파 없음". 아래에서 실제로 준비된 경우에만 켠다.
+                // 예전에는 alphaUrl 이 있는데 준비에 실패하면 어느 분기도 타지 않아
+                // 이전 클립의 _UseAlphaTex=1 이 남았고, 이미 Release 된 알파 RT 를
+                // 샘플링하거나 기본 "white" 텍스처(a=1)를 읽어 화면 전체가 불투명해졌다.
+                useAlphaTex = false;
+                if (material != null) material.SetFloat(UseAlphaTexId, 0f);
+
                 if (_alphaPlayer != null && !string.IsNullOrEmpty(alphaUrl))
                 {
                     float ta = 15f;
@@ -151,11 +181,11 @@ namespace EternalBeam
                         useAlphaTex = true;
                         if (material != null) material.SetFloat(UseAlphaTexId, 1f);
                     }
-                }
-                else
-                {
-                    useAlphaTex = false;
-                    if (material != null) material.SetFloat(UseAlphaTexId, 0f);
+                    else
+                    {
+                        // 알파 스트림 실패 → 휘도 키 모드로 안전하게 폴백.
+                        Debug.LogWarning("알파 영상 준비 실패 — 휘도 키 모드로 폴백: " + alphaUrl);
+                    }
                 }
 
                 _player.Play();
