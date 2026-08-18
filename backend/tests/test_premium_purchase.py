@@ -431,3 +431,61 @@ async def test_asset_state_never_charges_or_generates(world):
         await premium_purchase.asset_state(USER, PET, tuple(IDLE_EVENTS))
     assert await _balance(USER) == 3
     assert world.submitted == []
+
+
+# ── 테스트 전용 IAP 상품 가드 ────────────────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_test_only_products_require_payment_mock(monkeypatch: pytest.MonkeyPatch):
+    """
+    0원 테스트 상품은 어느 스토어에도 없다. 목업이 꺼진 채로 실 검증 경로에 보내면
+    "GOOGLE_PACKAGE_NAME not configured" 같은 엉뚱한 400 이 나서 원인을 찾기 어렵다.
+    실패한다면 이유는 하나뿐이므로 그렇게 말해야 한다.
+    """
+    from backend.data.iap_products import TEST_ONLY_PRODUCT_IDS
+    from backend.services.iap_charge_service import (
+        PaymentVerificationError,
+        verify_and_charge,
+    )
+
+    monkeypatch.setenv("PAYMENT_MOCK", "0")
+    for pid in TEST_ONLY_PRODUCT_IDS:
+        with pytest.raises(PaymentVerificationError) as e:
+            await verify_and_charge(
+                user_id="u", receipt_data="receipt_abcdef12",
+                store_type="google", product_id=pid,
+            )
+        assert "PAYMENT_MOCK=1" in e.value.message
+        assert "GOOGLE_PACKAGE_NAME" not in e.value.message
+
+
+@pytest.mark.anyio
+async def test_test_only_products_charge_the_declared_credits_under_mock(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from backend.data.iap_products import IAP_PRODUCTS, TEST_ONLY_PRODUCT_IDS
+    from backend.services.iap_charge_service import verify_and_charge
+
+    monkeypatch.setenv("PAYMENT_MOCK", "1")
+    monkeypatch.setenv("HYBRID_USE_SUPABASE", "0")
+    for i, pid in enumerate(sorted(TEST_ONLY_PRODUCT_IDS)):
+        r = await verify_and_charge(
+            user_id="topup_user",
+            receipt_data=f"receipt_{pid}_{i}_abcdef12",
+            store_type="google",
+            product_id=pid,
+        )
+        assert r.credits_added == IAP_PRODUCTS[pid].credits
+        assert r.status == "success"
+        # 0원 상품이 CHECK(amount_krw >= 0) 를 통과한다.
+        assert r.amount_krw == 0
+
+
+def test_two_credit_pack_exactly_covers_the_unlock_total():
+    """잠금 해제 총액 = IDLE_BUNDLE 1 + COME_CLOSER 1 = 2."""
+    from backend.data.iap_products import IAP_PRODUCTS
+
+    assert IAP_PRODUCTS["credit_pack_test_2"].credits == (
+        premium_purchase.IDLE_BUNDLE_CREDITS + premium_purchase.ACTION_EVENT_CREDITS
+    )

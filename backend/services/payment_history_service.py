@@ -170,7 +170,10 @@ async def process_charge_mock(
   raw_meta: Optional[dict[str, Any]] = None,
 ) -> tuple[int, int]:
   """메모리 MOCK: (payment_id, credits_remaining)."""
-  from .wallet_service import get_wallet
+  # add_credits 가 빠져 있어 이 경로가 NameError 로 죽었다 — Supabase 없이
+  # (HYBRID_USE_SUPABASE=0) 돌리면 충전이 통째로 실패한다. get_wallet 만 가져오고
+  # 아래에서 add_credits 를 부르고 있었다.
+  from .wallet_service import add_credits, get_wallet
 
   if receipt_fingerprint in _MOCK_HISTORY:
     existing = _MOCK_HISTORY[receipt_fingerprint]
