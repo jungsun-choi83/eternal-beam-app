@@ -19,6 +19,7 @@ from ..scenarios.pet_scenarios import place_public_id, resolve_place_id
 from .credit_keyframe import prepare_black_plate_keyframe
 from .credit_luma_batch import credit_cost, submit_place_motion_set
 from . import generated_motions_service as motions_svc
+from . import premium_generation
 from .wallet_service import InsufficientCreditsError, deduct_credits, refund_credits
 
 
@@ -139,6 +140,42 @@ async def _finalize_session_if_terminal(session_id: str) -> dict[str, Any]:
   return {"session_status": status.value, "finalized": terminal, "refunded": refunded}
 
 
+async def _advance_premium_queue(job, session: dict[str, Any]) -> list[str]:
+  """
+  프리미엄 작업이 종료됐다 → 슬롯이 비었으니 다음 우선순위를 **즉시 제출**한다.
+
+  예전에는 이 일을 브라우저의 20초 스윕이 했다. 생성 1건이 45~130초라 3~5번째
+  이벤트는 사용자가 조정 화면에 3~6분 머물러야 제출됐고, 실제로는 2~3개에서 멈췄다.
+  이제 브라우저는 상태만 조회하고, 큐 전진은 서버가 책임진다.
+
+  레거시 4종(IDLE/TOUCH/VOICE/NFC)에서는 아무것도 하지 않는다 — 그쪽은 4코인
+  파이프라인이 자기 동시성을 따로 관리한다.
+  """
+  if not premium_generation.is_queued_action(job.action_id):
+    return []
+
+  # 종료 환불 판정 — 이 구매의 대상이 **전부 종료됐는데 승격이 0건**이면 환불한다.
+  # 큐 전진보다 먼저 부르지 않는다: 전진이 새 작업을 만들면 아직 종료가 아니다.
+  advanced = await premium_generation.advance_generation_queue(
+    user_id=job.user_id,
+    pet_id=job.pet_id,
+    pet_image_url=(session or {}).get("pet_image_url"),
+    api_base=premium_generation.webhook_base_url(),
+  )
+  try:
+    from . import premium_purchase
+
+    await premium_purchase.reconcile_after_terminal(job.user_id, job.pet_id, job.action_id)
+  except Exception:  # noqa: BLE001 — 환불 판정 실패가 승격을 500 으로 뒤집으면 안 된다
+    import logging
+
+    logging.getLogger(__name__).exception(
+      "프리미엄 환불 판정 실패 (user=%s pet=%s action=%s)",
+      job.user_id, job.pet_id, job.action_id,
+    )
+  return advanced
+
+
 async def handle_luma_webhook_for_credit(
   luma_generation_id: str,
   state: str,
@@ -179,9 +216,10 @@ async def handle_luma_webhook_for_credit(
     await motions_svc.mark_job_failed(luma_generation_id, error or "failed")
     retry = await _maybe_retry_action(job, session, webhook_base)
     summary = await _finalize_session_if_terminal(job.session_id)
+    advanced = await _advance_premium_queue(job, session)
     return {
       "session_id": job.session_id, "action_id": job.action_id, "status": "failed",
-      "retry": retry, **summary,
+      "retry": retry, "queue_advanced": advanced, **summary,
     }
 
   if state_l == "completed" and video_url:
@@ -199,13 +237,16 @@ async def handle_luma_webhook_for_credit(
       await motions_svc.mark_job_rejected(luma_generation_id, meta)
       retry = await _maybe_retry_action(job, session, webhook_base)
       summary = await _finalize_session_if_terminal(job.session_id)
+      advanced = await _advance_premium_queue(job, session)
       return {
         "session_id": job.session_id, "action_id": job.action_id, "status": "rejected",
-        "candidate_url": _cand, "validation": meta, "retry": retry, **summary,
+        "candidate_url": _cand, "validation": meta, "retry": retry,
+        "queue_advanced": advanced, **summary,
       }
 
     motion = await motions_svc.promote_candidate(job, mp4)
     summary = await _finalize_session_if_terminal(job.session_id)
+    advanced = await _advance_premium_queue(job, session)
     return {
       "session_id": job.session_id,
       "action_id": job.action_id,
@@ -214,6 +255,7 @@ async def handle_luma_webhook_for_credit(
       "place_id": motion.place_id,
       "candidate_url": _cand,
       "validation": meta,
+      "queue_advanced": advanced,
       **summary,
     }
 

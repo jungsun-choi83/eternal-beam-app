@@ -14,8 +14,20 @@ import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
 import { ThemeBackgroundVideo } from "@/components/memorial/theme-background-video";
 import { getMemorialTheme, DEFAULT_THEME_ID } from "@/components/memorial/themes";
 import { usePetGrounding } from "@/components/memorial/use-pet-grounding";
+import { useIdleEventAssets } from "@/components/memorial/use-idle-event-assets";
+import { useIdleEventScheduler } from "@/components/memorial/use-idle-event-scheduler";
+import { hasRealIdleVideo } from "@/lib/pending-generation";
 import { subjectTransform } from "@/lib/pet-grounding";
-import type { PetRuntimeTrigger } from "@/lib/pet-runtime-events";
+import { resolveIdleDisplaySource } from "@/lib/device-host-flags";
+import {
+  formatPlaybackSourceReport,
+  playbackSourceRows,
+} from "@/lib/playback-source-report";
+import {
+  registeredIdleEvents,
+  type IdleEvent,
+  type PetRuntimeTrigger,
+} from "@/lib/pet-runtime-events";
 import { getEffectiveBgVideo } from "@/lib/custom-background-store";
 import {
   broadcastFreeThemeToDevice,
@@ -29,7 +41,11 @@ import {
   isComeCloserCacheValid,
   mergeComeCloserIntoPipeline,
 } from "@/lib/come-closer-asset";
-import { ensureComeCloser } from "@/lib/come-closer-autogen";
+import {
+  ensureComeCloser,
+  pollComeCloserUntilReady,
+  type ComeCloserState,
+} from "@/lib/come-closer-autogen";
 import { getEternalBeamUserId } from "@/lib/eternal-beam-user";
 import { getEternalBeamPetId } from "@/lib/pet-identity";
 import { recognizeTap, type TapPoint } from "@/lib/double-tap";
@@ -90,27 +106,78 @@ export function MemorialDevicePlayScreen({
     if (isComeCloserCacheValid(pipeline, petId)) return;
     let cancelled = false;
     // 테마 독립 — placeId 를 넘기지 않고, 의존성에도 테마가 없다.
-    void ensureComeCloser({
-      userId: getEternalBeamUserId(),
-      petId,
-      pipeline,
-      onState: (st) => {
-        if (import.meta.env.DEV) console.info("[COME_CLOSER/devicePlay] state =", st);
-      },
-    }).then((r) => {
+    const params = { userId: getEternalBeamUserId(), petId, pipeline };
+    const onState = (st: ComeCloserState) => {
+      if (import.meta.env.DEV) console.info("[COME_CLOSER/devicePlay] state =", st);
+    };
+
+    void (async () => {
+      const r = await ensureComeCloser({ ...params, onState });
       if (cancelled) return;
+
       if (r.url) {
         if (r.url !== pipeline.come_closer_video_url || pipeline.come_closer_pet_id !== petId) {
           setPipeline(mergeComeCloserIntoPipeline(pipeline, r.url, petId));
         }
-      } else if (pipeline.come_closer_video_url) {
-        setPipeline(mergeComeCloserIntoPipeline(pipeline, null, null)); // 다른 펫 캐시 제거
+        return;
       }
-    });
+
+      if (pipeline.come_closer_video_url) {
+        setPipeline(mergeComeCloserIntoPipeline(pipeline, null, null)); // 다른 펫 캐시 제거
+        return; // 파이프라인이 바뀌어 이 effect 가 다시 돈다 — 폴링은 그 회차에서 시작한다
+      }
+
+      // ⚠️ 여기가 빠져 있어서 COME_CLOSER 가 no-source 로 굳었다.
+      //
+      // 이 화면은 ensure 를 **한 번** 부르고 끝이었다. 그런데 사용자가 조정 화면에서
+      // 넘어온 직후에는 COME_CLOSER 가 아직 queued/generating 인 경우가 흔하고, 그때
+      // r.url 은 null 이다. 그러면 come_closer_video_url 이 영영 채워지지 않아
+      // mountableEvents 가 COME_CLOSER 를 빼고, 더블탭은 decideTrigger 에서
+      // hasSource=false → "no-source" 로 거절된다. 자산이 나중에 승격돼도 이 화면은
+      // 다시 물어보지 않으므로 새로고침 없이는 절대 재생되지 않았다.
+      //
+      // queued 도 폴링으로 해결된다 — 서버가 종료 이벤트마다 큐를 전진시키고
+      // (premium_generation.advance_generation_queue) COME_CLOSER 는 GENERATION_ORDER
+      // 1순위라, 슬롯이 비면 제출된다. 그래서 이 화면은 재제출하지 않고 기다리기만 한다.
+      if (r.state !== "queued" && r.state !== "generating") return;
+      const url = await pollComeCloserUntilReady({
+        ...params,
+        onState,
+        isCancelled: () => cancelled,
+      });
+      if (cancelled || !url) return;
+      setPipeline(mergeComeCloserIntoPipeline(pipeline, url, petId));
+    })();
+
     return () => {
       cancelled = true;
     };
   }, [pipeline]);
+
+  // ── 아이들 이벤트 4종 (BLINKING / EAR_TWITCHING / HEAD_TILTING / TAIL_WAGGING) ──
+  //
+  // preview-screen 과 **완전히 같은 배선**이다: 같은 자산 훅, 같은 스케줄러, 같은
+  // 트리거 핸들(comeCloserTriggerRef). 런타임(pet-runtime-events / idle-loop-video /
+  // 이음매 전환 / 우선순위)은 화면을 모른다 — 소스 표만 채워 주면 그대로 동작한다.
+  //
+  // 게이트는 **실제 BREATH 자산**이다. 이 화면의 petIdleSrc 는 resolveIdleVideoUrl 을
+  // 거치므로 데모 폴백 mp4 일 수 있어(device-host-flags) 재생 소스로는 판정 근거가
+  // 되지 못한다. 데모를 근거로 켜면 (1) BREATH 가 없는 펫에 유료 생성 4건이 나가고
+  // (2) 이벤트의 seam-aligned 복귀가 다른 개의 휴지 자세에 맞춰져 이음매가 보인다.
+  const hasIdle = hasRealIdleVideo(pipeline);
+  const { urls: idleEventUrls, availableIds: availableIdleEventIds } = useIdleEventAssets({
+    pipeline,
+    enabled: hasIdle,
+  });
+
+  // 자산이 하나도 없으면 후보가 비어 아무 일도 일어나지 않는다 — BREATHING 유지.
+  // 더블탭 COME_CLOSER 와 진입점을 공유하므로 우선순위·선점 판정은 decideTrigger 가
+  // 단독으로 쥔다(COME_CLOSER 100/non-interruptible vs 아이들 10/interruptible).
+  const { onPlaybackStateChange } = useIdleEventScheduler({
+    enabled: availableIdleEventIds.length > 0,
+    availableIds: availableIdleEventIds,
+    triggerRef: comeCloserTriggerRef,
+  });
 
   const handlePetPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     tapStartRef.current = { x: e.clientX, y: e.clientY };
@@ -167,6 +234,28 @@ export function MemorialDevicePlayScreen({
   // (items-center + 보정 없는 transform) 펫이 테마 지면이 아니라 프레임
   // 한가운데에 떠 있었다.
   const { setFeetMargin, subjectShiftPct } = usePetGrounding(theme, petIdleSrc);
+
+  // ── 재생 소스 진단 (DEV 전용) ─────────────────────────────────────────────
+  // 눈으로는 진짜 자산과 데모/CSS 를 구분할 수 없다 — 셋 다 "숨 쉬는 개"로 보인다.
+  // IdleLoopVideo 에 들어가기 **직전** 값을 그대로 찍어, 어느 소스가 real /
+  // fallback / missing 인지와 BREATH 가 <video> 인지 CutoutIdleMotion(CSS)인지를
+  // 한 번에 읽을 수 있게 한다. 판정만 한다 — 재생 동작에는 영향이 없다.
+  const comeCloserSrc = pipeline?.come_closer_video_url ?? null;
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const display = resolveIdleDisplaySource(petIdleSrc, cutoutDisplay);
+    const rows = playbackSourceRows([
+      ["BREATHING", petIdleSrc],
+      ["COME_CLOSER", comeCloserSrc],
+      ...registeredIdleEvents().map(
+        (def) => [def.id, idleEventUrls[def.id as IdleEvent] ?? null] as const
+      ),
+    ]);
+    console.info(
+      `[devicePlay] 재생 소스 (BREATH mode=${display?.mode ?? "none"}, ` +
+        `hasRealIdleVideo=${hasIdle})\n${formatPlaybackSourceReport(rows)}`
+    );
+  }, [petIdleSrc, cutoutDisplay, comeCloserSrc, idleEventUrls, hasIdle]);
 
   return (
     <div className="hologram-bg-active memorial-screen-shell h-full flex flex-col relative overflow-hidden min-h-0">
@@ -233,7 +322,13 @@ export function MemorialDevicePlayScreen({
                 idleVideoUrl={petIdleSrc}
                 cutoutUrl={cutoutDisplay}
                 comeCloserVideoUrl={pipeline?.come_closer_video_url ?? null}
+                // 아이들 이벤트 — DEV 빌드에서만 채워진다(useIdleEventAssets 가 게이트).
+                idleEventSources={idleEventUrls}
                 actionTriggerRef={comeCloserTriggerRef}
+                // 스케줄러가 "지금 뭔가 재생 중인가"를 아는 유일한 신호다.
+                // 이 prop 없이 스케줄러만 붙이면 COME_CLOSER 재생 중에도 발화해서
+                // 거절 → 재예약 루프를 돈다(busyRef 가 영영 true 가 되지 않는다).
+                onActionStateChange={onPlaybackStateChange}
                 onFeetMarginChange={setFeetMargin}
                 className="theme-preview-frame__pet max-h-[62%] max-w-[92%]"
                 style={{
