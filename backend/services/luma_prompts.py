@@ -129,9 +129,13 @@ IDLE_COMMON_CONSTRAINT = (
     "shoulders, neck, fur, and posture balance may follow the breath. These motions must stay "
     "low-amplitude and must never become locomotion or visible body drift. "
 
-    "The pet may show very subtle signs of awareness such as a tiny gaze adjustment or "
-    "small natural head movement when specifically requested. Such movement should involve "
-    "the neck and upper body naturally rather than looking like an isolated rotating head. "
+    # 여기에는 문장 **조각**이 남아 있었다. 앞의 허용문("작은 고개 돌림을 허용한다")을
+    # 지우면서 뒷절만 살아남아, 모든 BREATH 프롬프트에 주어 없는 비문이 실려 나갔다.
+    # 허용문을 되살리지는 않는다 — 무엇을 움직이는가는 모션 모듈이 정한다. 여기서는
+    # 모션 모듈이 **요청했을 때** 어떻게 움직여야 하는지만 규정한다.
+    "If the motion description explicitly requests a small head or gaze adjustment, that "
+    "movement must involve the neck and upper body naturally rather than looking like an "
+    "isolated rotating head. "
 
     # ── 루프 종료 상태 ────────────────────────────────────────────────────────
     # **약화하면 안 되는 계약이다.** BREATH 클립의 t=0 이 곧 휴지 자세라는 전제 위에
@@ -151,24 +155,58 @@ IDLE_COMMON_CONSTRAINT = (
     "camera movement, anatomy changes, or exaggerated reactions."
 )
 
-IDLE_BREATH_MOTION = (
-    "Natural resting breathing is the primary idle motion. "
-    "The chest, ribcage, and abdomen gently expand during inhalation and relax during exhalation. "
-    "The breathing must come from subtle anatomical expansion and contraction of the torso, "
-    "not from whole-body vertical bobbing. "
-    "The paws and overall body placement remain anchored. "
-    "Tiny secondary motion in the shoulders, neck, fur, and posture balance may follow the breath naturally. "
-    "The breathing should be clearly visible but calm, low-amplitude, and organic."
-)
+# ── 아이들 **이벤트** 전용 공통 제약 ─────────────────────────────────────────
+#
+# IDLE_COMMON_CONSTRAINT 를 이벤트에 그대로 쓸 수 없는 이유가 셋이다.
+#
+# 1) 주역 선언이 충돌한다. 저쪽은 "PRIMARY IDLE MOTION: natural breathing" 으로
+#    **호흡을 주 모션으로 선언**한다 — BREATH 클립에서는 맞다. 그런데 이벤트 모션
+#    모듈도 "the primary motion in this clip is one blink" 라고 선언하므로, 한
+#    프롬프트에 주역이 둘 들어간다. 실측에서 이긴 쪽은 호흡이었다: BLINKING 은
+#    눈을 감지 않았고(프레임 전수 확인), EAR_TWITCHING 은 BREATH 와 구별되지 않았다.
+#
+# 2) 분량이 뒤집혀 있었다. 저쪽은 3,014자로 최종 프롬프트의 42~46% 를 차지하는데,
+#    실제로 요구하는 동작을 담은 모션 모듈은 17~25% 뿐이었다. 같은 내용을 두 번
+#    말하는 문단(보이는 것 보존)과 꼬리의 Avoid 문장(부정 목록은 어차피 따로 붙는다)
+#    을 덜어내 비중을 되돌린다.
+#
+# 3) 호흡은 지우면 안 된다 — 지우면 모델이 얼어붙어 이벤트 한 번 외에는 아무것도
+#    살아 있지 않은 클립이 된다. 그래서 삭제가 아니라 **격하**한다: 계속되지만
+#    이벤트와 경쟁하지 않는 배경 모션으로.
+#
+# ⚠️ "호흡만 있는 클립은 실패다" 류의 문장을 넣지 마라. EAR_TWITCHING /
+# TAIL_WAGGING 의 안전한 실패 지시("귀·꼬리를 확인할 수 없으면 호흡만 남겨라")와
+# 정면으로 모순되는 자기 취소 쌍이 된다 — 이 파일이 반복해서 밟은 함정이다.
+#
+# ⚠️ "the micro-event described above" 는 조립 순서에 의존한다.
+# build_idle_event_prompt 는 **모션 모듈을 먼저** 놓는다. 순서를 뒤집으면 이
+# 문장이 거짓말이 된다 (test_idle_event_prompts.py 가 순서를 고정한다).
+IDLE_EVENT_COMMON_CONSTRAINT = (
+    "Camera angle and framing remain completely fixed: no pan, no tilt, no zoom, no "
+    "dolly, no reframing. "
+    "The pet stays anchored in the same overall resting position throughout the clip. "
+    "Do not translate, rotate, walk, step, or change the pet's overall scale or "
+    "silhouette. Preserve identity, anatomy, the visible crop, fur pattern, markings, "
+    "lighting, and background exactly as in the reference, and keep every body part "
+    "that is visible in the reference visible and structurally consistent in every "
+    "frame. Do not zoom out or widen the framing — any completed anatomy is drawn "
+    "inside the existing frame, never by pulling the camera back. "
+    f"{IDLE_BODY_COMPLETION} "
 
+    "MOTION PRIORITY: the micro-event described above is the primary motion of this "
+    "clip and must be plainly visible on playback. Quiet natural breathing continues "
+    "underneath it as background motion only — a subtle expansion and relaxation of "
+    "the chest and abdomen, low-amplitude, never whole-body vertical bobbing, and "
+    "never large enough to compete with, mask, or stand in for the micro-event. "
+    "Apart from breathing and the micro-event itself, the pet stays quietly still. "
 
-IDLE_HEAD_MICRO_MOTION = (
-    "During the breathing idle, the pet makes one very small curious head or gaze adjustment. "
-    "The movement is slow, subtle, and emotionally natural rather than a deliberate head-turn action. "
-    "The neck and upper chest respond naturally with tiny secondary motion while the paws and overall "
-    "body position remain anchored. "
-    "The pet then calmly settles back toward its resting orientation before the clip ends. "
-    "The head movement must remain secondary to the breathing motion."
+    "LOOP CLOSURE: the clip begins and ends in the identical resting pose. The final "
+    "frame must match the first frame's pose, position, scale, and head orientation as "
+    "closely as possible so the clip can be cut back to the resting loop without a "
+    "visible seam. The micro-event happens once, completes a full cycle, and returns to "
+    "its starting state before the clip ends. "
+
+    "Keep all motion calm, organic, and anatomically natural."
 )
 
 # ── 행동(TOUCH/VOICE/NFC) 공통 제약 ─────────────────────────────────────────
@@ -291,27 +329,14 @@ COME_CLOSER_AVOID_CLAUSE = (
     "camera zoom, camera dolly, camera movement, sudden scale jump."
 )
 
-# LUMA_SUBJECT_RULE 도 모든 프롬프트에 무조건 붙는데, 그 안의
-# "no owner walking the dog" 가 COME_CLOSER 에 또 하나의 'walking' 부정 토큰을
-# 흘려보낸다. 의미(사람이 개를 데리고 다니는 장면 금지)는 유지하되 해당 단어만
 # 피한 전용 변형을 쓴다. 공용 규칙은 손대지 않는다.
 COME_CLOSER_SUBJECT_RULE = LUMA_SUBJECT_RULE.replace(
     "no owner walking the dog", "no owner leading or handling the dog"
 )
 
-# ── 아이들 이벤트(IdleEvent) 모듈 ────────────────────────────────────────────
-# Phase 1A — BLINKING 만. 나머지 3종(EAR_TWITCHING/HEAD_TILTING/TAIL_WAGGING)은
-# 아직 추가하지 않는다.
-#
-# 조립 규칙: IDLE_COMMON_CONSTRAINT + <모션 모듈> + IDLE_AVOID_CLAUSE
-#
-# 프리미엄 액션(COME_CLOSER)과 **다른 계열**이다. 액션은 프레이밍이 변해도 되지만
-# 아이들 이벤트는 BREATH 와 같은 자세·같은 프레이밍을 유지해야 한다 — 런타임이
-# 두 클립의 휴지 자세를 이어 붙여 이음매를 지우기 때문이다(seam-aligned 복귀).
-# 자세가 어긋나면 런타임이 아무리 잘해도 튄다.
-
 IDLE_BLINK_MOTION = (
-    "A clearly visible complete eye blink is the primary motion in this clip. "
+    "The only clearly visible intentional motion in this clip, other than quiet natural "
+    "breathing, is one complete eye blink. "
     "Both eyes visibly close fully and then reopen fully once. The eyelid closure "
     "must be unmistakable on playback — do not substitute a tiny squint, eye narrowing, "
     "facial twitch, or head movement for the blink. "
@@ -445,7 +470,7 @@ IDLE_EVENT_AVOID_BASE = (
     "Also do not show: standing up, sitting down, lying down, crouching, stepping, "
     "pawing, shifting weight, walking, running, approaching camera, moving away from "
     "camera, camera pan, camera tilt, camera zoom, camera dolly, camera shake, "
-    "reframing, scale change, pose change, new framing, "
+    "reframing, overall scale change, whole-body pose change, body repositioning, "
     "winking, squinting, startled expression, wide-eyed alarm, "
     "eyes closed at the end, eyes still closed in the final frame, "
     "reshaped ears, enlarged ears, lengthened ears, straightened ears, perked-up ears, "
@@ -476,6 +501,22 @@ IDLE_EVENT_AVOID_CLAUSE = f"{IDLE_EVENT_AVOID_BASE} {IDLE_EVENT_AVOID_HEAD_LOCKE
 #: 머리 방향 변화가 **의도된** 이벤트. 여기 없는 이벤트는 머리를 고정한다.
 HEAD_MOVING_IDLE_EVENTS: frozenset[str] = frozenset({"HEAD_TILTING"})
 
+#: 귀가 **움직여야** 하는 이벤트.
+#:
+#: HEAD_TILTING 과 똑같은 함정이 귀에도 있었다. 기본 목록의 "ears changing shape
+#: or set" 은 사람에게는 "귀 형태/부착을 바꾸지 마라"로 읽히지만, 부정 토큰으로는
+#: **귀가 원래 자리에서 움직이는 것 자체**를 억제한다 — 그게 EAR_TWITCHING 이
+#: 요구하는 유일한 동작이다. 실측에서 EAR_TWITCHING 이 BREATH 와 구별되지 않은 데는
+#: 이것이 한몫했다(다른 한몫은 IDLE_COMMON_CONSTRAINT 의 호흡 주역 선언).
+EAR_MOVING_IDLE_EVENTS: frozenset[str] = frozenset({"EAR_TWITCHING"})
+
+#: EAR_MOVING_IDLE_EVENTS 에서 기본 목록에서 빼는 문구. **이것만** 뺀다.
+#: 형태·개수 가드(reshaped / enlarged / lengthened / straightened / perked-up /
+#: added / duplicated / missing ears)는 그대로 남긴다 — 그쪽은 **지속적 변형**을
+#: 막는 품질 가드이고, IDLE_EAR_TWITCH_MOTION 도 같은 것을 금지하므로 요구 동작과
+#: 모순되지 않는다.
+_EAR_SET_NEGATION = "ears changing shape or set, "
+
 #: 아이들 이벤트 id → 모션 모듈.
 #: Phase 1A = BLINKING, Phase 2 = EAR_TWITCHING, Phase 4 = HEAD_TILTING / TAIL_WAGGING.
 IDLE_EVENT_MOTIONS: dict[str, str] = {
@@ -496,7 +537,8 @@ def idle_event_avoid_clause(event_key: str) -> str:
     이 아이들 이벤트에 맞는 부정 목록.
 
     머리를 움직이는 이벤트(HEAD_TILTING)에는 머리 고정 금지를 붙이지 않는다 —
-    붙이면 요구 동작 자체를 부정 토큰으로 밀어내게 된다.
+    붙이면 요구 동작 자체를 부정 토큰으로 밀어내게 된다. 귀를 움직이는
+    이벤트(EAR_TWITCHING)에서 귀 위치 고정 문구를 빼는 것도 같은 이유다.
     """
     key = (event_key or "").upper()
     tail = (
@@ -504,12 +546,21 @@ def idle_event_avoid_clause(event_key: str) -> str:
         if key in HEAD_MOVING_IDLE_EVENTS
         else IDLE_EVENT_AVOID_HEAD_LOCKED
     )
-    return f"{IDLE_EVENT_AVOID_BASE} {tail}"
+    base = IDLE_EVENT_AVOID_BASE
+    if key in EAR_MOVING_IDLE_EVENTS:
+        base = base.replace(_EAR_SET_NEGATION, "")
+    return f"{base} {tail}"
 
 
 def build_idle_event_prompt(event_key: str) -> str:
     """
-    아이들 이벤트 모션 문장 = 공통 제약 + 모션 모듈.
+    아이들 이벤트 모션 문장 = **모션 모듈 먼저**, 그 뒤에 이벤트 전용 공통 제약.
+
+    순서가 계약이다. 요구 동작을 맨 앞에 놓아야 모델이 그것을 주역으로 읽고,
+    IDLE_EVENT_COMMON_CONSTRAINT 의 "the micro-event described above" 가 성립한다.
+
+    쓰는 제약이 IDLE_COMMON_CONSTRAINT 가 **아니라는 점**이 중요하다 — 그쪽은
+    호흡을 주 모션으로 선언해서 이벤트 모듈과 경합한다(해당 상수 위 주석 참고).
 
     부정 목록/피사체 규칙은 build_scenario_luma_prompt 가 붙인다 — 다른 액션과
     조립 지점을 통일해 둬야 한 곳만 고치면 전부 반영된다.
@@ -518,7 +569,7 @@ def build_idle_event_prompt(event_key: str) -> str:
     motion = IDLE_EVENT_MOTIONS.get(key)
     if motion is None:
         raise ValueError(f"Unknown idle event: {event_key!r}")
-    return f"{IDLE_COMMON_CONSTRAINT} {motion}"
+    return f"{motion} {IDLE_EVENT_COMMON_CONSTRAINT}"
 
 
 IDLE_COMMON_CONSTRAINT_HEAD_ROTATION = (
@@ -806,8 +857,9 @@ def build_scenario_luma_prompt(
     if action_key == "IDLE":
         common = f"{IDLE_COMMON_CONSTRAINT}"
     elif is_idle_event(action_key):
-        # build_idle_event_prompt() 가 이미 IDLE_COMMON_CONSTRAINT 를 앞에 붙였다.
-        # 여기서 또 붙이면 같은 제약이 두 번 들어간다.
+        # build_idle_event_prompt() 가 이미 IDLE_EVENT_COMMON_CONSTRAINT 를 모션
+        # **뒤에** 붙였다. 여기서 또 붙이면 같은 제약이 두 번 들어가고, 게다가
+        # BREATH 용 제약을 붙이면 주역 선언이 충돌한다.
         common = ""
     elif action_key == "COME_CLOSER":
         common = f"{COME_CLOSER_CONSTRAINT} "

@@ -220,6 +220,8 @@ async def trigger_come_closer(request: Request, body: ComeCloserRequest):
 
     # credits_charged=0 — 이 세션은 과금 대상이 아니다. partial/failed 로 끝나도
     # 환불액이 0 이라 지갑에 아무 영향이 없다.
+    # credits_charged=0 — 이 세션은 과금 대상이 아니다. partial/failed 로 끝나도
+    # 환불액이 0 이라 지갑에 아무 영향이 없다.
     session_id = await motions_svc.create_credit_session(uid, pid, place_key, image_url, 0)
 
     keyframe_url = (body.keyframe_url or "").strip()
@@ -247,7 +249,7 @@ async def trigger_come_closer(request: Request, body: ComeCloserRequest):
             keyframe_url, prompt, provider=provider, callback_url=callback_url
         )
     except Exception as e:
-        logger.exception("dev come-closer 제출 실패")
+        logger.exception("dev premium 제출 실패")
         raise HTTPException(status_code=502, detail=f"submit failed: {e}") from e
 
     # DB 쓰기 **전에** 복구 정보를 먼저 남긴다 (첫 시도가 여기서 실패해 유실됐다).

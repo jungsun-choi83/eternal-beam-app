@@ -15,6 +15,10 @@ import { readFileSync } from 'node:fs'
 const HOOK = readFileSync('src/components/memorial/use-idle-event-scheduler.ts', 'utf8')
 const SCREEN = readFileSync('src/components/memorial/preview-screen.tsx', 'utf8')
 const PLAYER = readFileSync('src/components/memorial/idle-loop-video.tsx', 'utf8')
+/** 자산 스윕 — preview 인라인에서 빠져나온 공유 훅. 두 화면이 이것만 쓴다. */
+const ASSETS = readFileSync('src/components/memorial/use-idle-event-assets.ts', 'utf8')
+/** 프로덕션 재생 화면. preview 와 같은 배선을 갖되 dev 훅은 없어야 한다. */
+const MEMORIAL = readFileSync('src/components/memorial/memorial-device-play-screen.tsx', 'utf8')
 
 /** 주석을 제거한 코드 — 설명 문구가 매칭에 섞이지 않게. */
 const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
@@ -120,4 +124,125 @@ test('플레이어에는 스케줄링이 없다 — 결정은 전부 바깥에�
   assert.doesNotMatch(code, /registeredIdleEvents/)
   const selfCalls = [...code.matchAll(/(?<![.\w])trigger\((?!\{)/g)]
   assert.equal(selfCalls.length, 0, '플레이어가 스스로 trigger() 를 호출한다')
+})
+
+// ── 착수(kickoff): BREATH 성공 직후 두 슬롯을 모두 채운다 ────────────────────
+
+test('kickoff 은 확인 성공 직후 2건을 동시에 넣는다 (슬롯 낭비 금지)', () => {
+  // 한 건만 넣으면 그 작업이 끝날 때까지 슬롯 하나가 놀아 전체가 한 사이클 늦어진다.
+  const code = strip(SCREEN)
+  const i = code.indexOf('void Promise.allSettled([')
+  assert.ok(i > 0, 'kickoff 이 두 건을 동시에 보내지 않는다')
+  const block = code.slice(i, i + 900)
+  assert.match(block, /ensureComeCloser\(/, 'COME_CLOSER 가 착수에 없다')
+  assert.match(block, /ensureIdleEventAsset\(/, '두 번째 슬롯을 채우지 않는다')
+})
+
+test('kickoff 의 두 번째 액션은 하드코딩이 아니라 레지스트리에서 온다', () => {
+  const code = strip(SCREEN)
+  assert.match(
+    code,
+    /const firstIdleEvent = registeredIdleEvents\(\)\[0\]\?\.id/,
+    '아이들 이벤트 순서가 바뀌면 착수도 따라가야 한다',
+  )
+  // 착수 블록에 이벤트 id 문자열이 박혀 있으면 안 된다.
+  const i = code.indexOf('void Promise.allSettled([')
+  const block = code.slice(i, i + 900)
+  for (const id of ['BLINKING', 'EAR_TWITCHING', 'HEAD_TILTING', 'TAIL_WAGGING']) {
+    assert.doesNotMatch(block, new RegExp(`["']${id}["']`), `${id} 를 하드코딩했다`)
+  }
+})
+
+test('kickoff 은 확인(BREATH 성공) 안에서만 일어난다 — 커밋 전 지출 금지', () => {
+  const code = strip(SCREEN)
+  const i = code.indexOf('void Promise.allSettled([')
+  const before = code.slice(0, i)
+  // 착수 직전에 BREATH URL 확인이 있어야 한다.
+  assert.match(before.slice(-700), /if \(next\.idle_video_url\)/, 'BREATH 성공 게이트가 없다')
+  assert.match(before, /const handleConfirm = useCallback/, 'handleConfirm 밖에서 착수하고 있다')
+})
+
+test('확인 전 프리미엄 생성 금지 — COME_CLOSER effect 와 자산 훅 둘 다 게이트된다', () => {
+  // 스윕이 공유 훅으로 빠지면서 게이트도 그쪽으로 갔다. 불변식은 그대로다:
+  // BREATH 가 없으면 어느 경로로도 유료 생성이 나가지 않는다.
+  const code = strip(SCREEN)
+  const gates = [...code.matchAll(/if \(!hasIdle\) return;/g)]
+  assert.equal(gates.length, 1, `preview 의 COME_CLOSER hasIdle 게이트가 ${gates.length}개다`)
+  assert.match(
+    code,
+    /useIdleEventAssets\(\{\s*pipeline,\s*enabled: hasIdle,/,
+    'preview 가 자산 훅에 hasIdle 게이트를 넘기지 않는다',
+  )
+  assert.match(strip(ASSETS), /if \(!enabled\) return;/, '자산 훅에 enabled 게이트가 없다')
+})
+
+// ── 공유 훅 — 두 화면이 스윕을 복제하지 않는다 ───────────────────────────────
+
+test('스윕 구현은 공유 훅에만 있다 — 화면에 복제하지 않는다', () => {
+  // 이 루프는 유료 생성을 제출한다. 사본이 갈라지면 한쪽에서만 중복 지출이 난다.
+  assert.match(strip(ASSETS), /IDLE_ASSET_SWEEP_MS/, '스윕 주기가 훅에 없다')
+  for (const [name, code] of [['preview', SCREEN], ['memorial', MEMORIAL]] as const) {
+    assert.doesNotMatch(
+      strip(code),
+      /const sweep = async/,
+      `${name} 에 스윕 사본이 남아 있다`,
+    )
+  }
+  // memorial 은 자산 확보를 직접 하지 않는다 — 훅을 통해서만 한다.
+  assert.doesNotMatch(strip(MEMORIAL), /ensureIdleEventAsset/, 'memorial 이 직접 제출하고 있다')
+})
+
+test('공유 훅도 이벤트 id 를 하드코딩하지 않는다', () => {
+  const code = strip(ASSETS)
+  for (const id of ['BLINKING', 'EAR_TWITCHING', 'HEAD_TILTING', 'TAIL_WAGGING']) {
+    assert.doesNotMatch(code, new RegExp(`["']${id}["']`), `${id} 를 하드코딩했다`)
+  }
+  assert.match(code, /registeredIdleEvents\(\)/, '레지스트리를 순회하지 않는다')
+})
+
+test('후보 목록은 READY URL 에서만 나온다', () => {
+  // 빈 문자열/누락을 후보로 넣으면 스케줄러가 마운트되지 않은 이벤트를 고른다.
+  assert.match(
+    strip(ASSETS),
+    /typeof url === "string" && url\.length > 0/,
+    '빈 URL 을 후보에서 걸러내지 않는다',
+  )
+})
+
+// ── memorial-device-play-screen — preview 와 같은 배선 ───────────────────────
+
+test('memorial 이 공유 자산 훅과 스케줄러를 쓴다', () => {
+  const code = strip(MEMORIAL)
+  assert.match(code, /useIdleEventAssets\(\{/, '자산 훅을 쓰지 않는다')
+  assert.match(code, /useIdleEventScheduler\(\{/, '스케줄러를 붙이지 않았다')
+  assert.match(code, /idleEventSources=\{idleEventUrls\}/, '소스 표를 플레이어에 넘기지 않는다')
+})
+
+test('memorial 의 스케줄러도 같은 트리거 핸들을 쓴다', () => {
+  // 진입점이 갈라지면 우선순위·이음매 정책이 한쪽에만 적용된다.
+  assert.match(strip(MEMORIAL), /triggerRef: comeCloserTriggerRef/)
+})
+
+test('memorial 이 busy 신호를 연결한다 — 없으면 COME_CLOSER 중에도 발화한다', () => {
+  // 이 prop 이 없으면 busyRef 가 영영 true 가 되지 않아 스케줄러가 COME_CLOSER
+  // 재생 중에 트리거하고, 거절 → 재예약 루프를 돈다.
+  assert.match(strip(MEMORIAL), /onActionStateChange=\{onPlaybackStateChange\}/)
+})
+
+test('memorial 의 게이트는 실제 BREATH 자산이다 — 데모 폴백이 아니다', () => {
+  const code = strip(MEMORIAL)
+  assert.match(code, /const hasIdle = hasRealIdleVideo\(pipeline\)/, 'hasRealIdleVideo 게이트가 없다')
+  assert.match(code, /useIdleEventAssets\(\{\s*pipeline,\s*enabled: hasIdle,/)
+  // petIdleSrc 는 resolveIdleVideoUrl 을 거쳐 데모 mp4 일 수 있다 — 게이트 근거로 금지.
+  assert.doesNotMatch(code, /enabled: Boolean\(petIdleSrc\)|enabled: !!petIdleSrc/)
+})
+
+test('dev 수동 트리거는 preview 전용 — 프로덕션 화면에 없다', () => {
+  // 양쪽이 같은 window 전역을 설치하면 나중에 언마운트되는 쪽이 상대의 핸들을
+  // 지운다(cleanup 이 무조건 delete 한다). 제품 가치는 0 이다.
+  for (const hook of [
+    '__ebBlink', '__ebEarTwitch', '__ebHeadTilt', '__ebTailWag', '__ebIdleEvent',
+  ]) {
+    assert.ok(!MEMORIAL.includes(hook), `${hook} 이 memorial 에 새어 들어갔다`)
+  }
 })

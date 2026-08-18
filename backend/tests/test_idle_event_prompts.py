@@ -3,7 +3,11 @@
 
 지키려는 것:
   * 등록된 아이들 이벤트마다 모션 모듈이 **있다** (한쪽만 추가하는 드리프트 방지)
-  * 조립 규칙 = IDLE_COMMON_CONSTRAINT + <모션> + 이벤트별 부정 목록
+  * 조립 규칙 = <모션> + IDLE_EVENT_COMMON_CONSTRAINT + 이벤트별 부정 목록
+    (순서가 계약이다 — 모션이 먼저 와야 주역으로 읽힌다)
+  * 이벤트는 BREATH 용 IDLE_COMMON_CONSTRAINT 를 쓰지 **않는다** — 그쪽은 호흡을
+    주 모션으로 선언해서 요구 동작과 경합한다
+  * 부정 목록이 요구 동작을 밀어내지 않는다 (자기 취소 쌍 금지)
   * 레거시 4종/COME_CLOSER 의 조립은 아이들 이벤트 경로로 새지 않는다
   * ACTION_ORDER 불변
 
@@ -23,10 +27,12 @@ from backend.scenarios.pet_scenarios import (
     storage_object_name,
 )
 from backend.services.luma_prompts import (
+    EAR_MOVING_IDLE_EVENTS,
     HEAD_MOVING_IDLE_EVENTS,
     IDLE_COMMON_CONSTRAINT,
     IDLE_EAR_TWITCH_MOTION,
     IDLE_EVENT_AVOID_BASE,
+    IDLE_EVENT_COMMON_CONSTRAINT,
     IDLE_EVENT_MOTIONS,
     IDLE_HEAD_TILT_MOTION,
     IDLE_TAIL_WAG_MOTION,
@@ -73,20 +79,110 @@ def test_idle_events_are_theme_independent():
 @pytest.mark.parametrize("event", list(IDLE_EVENTS))
 def test_idle_event_prompt_assembles_from_modules(event: str):
     motion = build_idle_event_prompt(event)
-    assert IDLE_COMMON_CONSTRAINT in motion, "공통 제약이 빠졌다"
+    assert IDLE_EVENT_COMMON_CONSTRAINT in motion, "이벤트 공통 제약이 빠졌다"
     assert IDLE_EVENT_MOTIONS[event] in motion, "모션 모듈이 빠졌다"
+
+
+@pytest.mark.parametrize("event", list(IDLE_EVENTS))
+def test_idle_events_do_not_use_the_breath_constraint(event: str):
+    """
+    가장 중요한 회귀 방어.
+
+    IDLE_COMMON_CONSTRAINT 는 "PRIMARY IDLE MOTION: natural breathing" 으로 호흡을
+    주 모션으로 **선언**한다. 그걸 이벤트 프롬프트에 붙이면 모션 모듈의 주역 선언과
+    경합하고, 실측에서 이긴 쪽은 호흡이었다 — BLINKING 이 눈을 감지 않고
+    EAR_TWITCHING 이 BREATH 와 구별되지 않은 원인이다.
+    """
+    prompt = build_scenario_prompt(KEYFRAME, "any", event)
+    assert IDLE_COMMON_CONSTRAINT not in prompt
+    assert "primary idle motion" not in prompt.lower()
+
+
+@pytest.mark.parametrize("event", list(IDLE_EVENTS))
+def test_motion_module_comes_before_the_constraint(event: str):
+    """
+    순서가 계약이다. IDLE_EVENT_COMMON_CONSTRAINT 가 "the micro-event described
+    above" 라고 앞을 가리키므로, 순서를 뒤집으면 그 문장이 거짓말이 된다.
+    """
+    assembled = build_idle_event_prompt(event)
+    assert assembled.index(IDLE_EVENT_MOTIONS[event]) < assembled.index(
+        IDLE_EVENT_COMMON_CONSTRAINT
+    ), "제약이 모션보다 앞에 왔다 — 요구 동작이 뒤로 밀렸다"
 
 
 @pytest.mark.parametrize("event", list(IDLE_EVENTS))
 def test_full_prompt_uses_idle_event_avoid_clause(event: str):
     prompt = build_scenario_prompt(KEYFRAME, "any", event)
     assert idle_event_avoid_clause(event) in prompt
-    assert IDLE_EVENT_AVOID_BASE in prompt
     # 공용 금지(사람·목줄·워터마크)도 반드시 포함돼야 한다.
     assert LUMA_AVOID_CLAUSE in prompt
     # 공통 제약이 두 번 들어가면 안 된다 (조립 지점이 겹치면 프롬프트가 부풀고
     # 모델이 같은 지시를 두 번 읽는다).
-    assert prompt.count(IDLE_COMMON_CONSTRAINT) == 1
+    assert prompt.count(IDLE_EVENT_COMMON_CONSTRAINT) == 1
+
+
+# ── 이벤트 전용 공통 제약의 계약 ──────────────────────────────────────────────
+
+
+def test_event_constraint_makes_the_micro_event_primary():
+    c = IDLE_EVENT_COMMON_CONSTRAINT.lower()
+    assert "motion priority" in c
+    assert "the micro-event described above is the primary motion" in c
+    assert "plainly visible on playback" in c
+
+
+def test_event_constraint_demotes_breathing_to_background():
+    """
+    호흡을 **지우면** 안 된다 — 지우면 모델이 얼어붙어 이벤트 한 번 외에 아무것도
+    살아 있지 않은 클립이 된다. 격하하되 유지한다.
+    """
+    c = IDLE_EVENT_COMMON_CONSTRAINT.lower()
+    assert "quiet natural breathing continues" in c, "호흡이 통째로 사라졌다"
+    assert "background motion only" in c
+    assert "stand in for the micro-event" in c
+
+
+def test_event_constraint_does_not_cancel_the_safe_failure_instruction():
+    """
+    EAR_TWITCHING / TAIL_WAGGING 은 "귀·꼬리를 확인할 수 없으면 호흡만 남겨라"고
+    지시한다. 제약이 "호흡만 있는 클립은 실패다"라고 말하면 자기 취소 쌍이 된다.
+    """
+    c = IDLE_EVENT_COMMON_CONSTRAINT.lower()
+    for banned in ("failed clip", "is a failure", "only breathing is"):
+        assert banned not in c, f"안전한 실패 지시와 모순되는 문구: {banned!r}"
+
+
+def test_event_constraint_keeps_loop_closure():
+    """IdleEvent 의 seam-aligned 복귀가 이 약속 위에 서 있다."""
+    c = IDLE_EVENT_COMMON_CONSTRAINT.lower()
+    assert "begins and ends in the identical resting pose" in c
+    for attr in ("pose", "position", "scale", "head orientation"):
+        assert attr in c
+    assert "completes a full cycle" in c
+
+
+def test_event_constraint_keeps_camera_identity_and_body_completion():
+    """격하·감량 과정에서 진짜 안전장치를 흘리지 않았는지."""
+    c = IDLE_EVENT_COMMON_CONSTRAINT.lower()
+    assert "framing remain completely fixed" in c
+    assert "stays anchored in the same overall resting position" in c
+    assert "do not translate, rotate" in c
+    assert "body completion:" in c, "신체 완성 정책이 빠졌다"
+    assert "do not invent a full unseen body" in c
+    assert "do not zoom out or widen the framing" in c
+
+
+def test_event_constraint_does_not_dwarf_the_motion_module():
+    """
+    실측 회귀: 예전에는 제약이 3,014자로 최종 프롬프트의 42~46% 를 차지하고
+    요구 동작을 담은 모션 모듈은 17~25% 였다. 비중이 다시 뒤집히면 요구 동작이
+    묻힌다.
+    """
+    assert len(IDLE_EVENT_COMMON_CONSTRAINT) < len(IDLE_COMMON_CONSTRAINT)
+    for event in IDLE_EVENTS:
+        prompt = build_scenario_prompt(KEYFRAME, "any", event)
+        share = len(IDLE_EVENT_MOTIONS[event]) / len(prompt)
+        assert share > 0.15, f"{event}: 모션 모듈 비중이 {share:.1%} 로 주저앉았다"
 
 
 def test_ear_twitch_motion_protects_ear_anatomy():
@@ -117,6 +213,43 @@ def test_avoid_clause_targets_ear_failure_modes():
         assert phrase in a, f"귀 실패 모드 부정 누락: {phrase}"
 
 
+# ── 귀 부정 목록도 이벤트별로 갈린다 (HEAD_TILTING 과 같은 함정) ───────────────
+
+
+def test_ear_twitch_is_the_only_ear_moving_event():
+    assert EAR_MOVING_IDLE_EVENTS == frozenset({"EAR_TWITCHING"})
+
+
+def test_base_still_locks_the_ear_set_so_the_removal_target_cannot_drift():
+    """
+    idle_event_avoid_clause 가 이 문구를 **문자열로 제거**한다. 기본 목록에서
+    문구가 바뀌면 제거가 조용히 실패하므로 여기서 존재를 못 박는다.
+    """
+    assert "ears changing shape or set, " in IDLE_EVENT_AVOID_BASE
+
+
+def test_ear_twitch_avoid_clause_does_not_forbid_ear_movement():
+    """
+    HEAD_TILTING 의 'head tilt' 와 똑같은 자기 취소다: "ears changing shape or set"
+    은 부정 토큰으로는 귀가 제자리에서 움직이는 것 자체를 억제한다 — 그게
+    EAR_TWITCHING 이 요구하는 유일한 동작이다.
+    """
+    avoid = idle_event_avoid_clause("EAR_TWITCHING").lower()
+    assert "ears changing shape or set" not in avoid, "요구 동작이 부정 토큰에 들어갔다"
+    # 지속적 변형 가드는 남아 있어야 한다 — 모션 모듈도 같은 것을 금지한다.
+    for keep in ("reshaped ears", "enlarged ears", "lengthened ears", "duplicated ears"):
+        assert keep in avoid, f"귀 품질 가드가 함께 날아갔다: {keep}"
+
+
+def test_other_events_still_lock_the_ear_set():
+    for event in IDLE_EVENTS:
+        if event in EAR_MOVING_IDLE_EVENTS:
+            continue
+        avoid = idle_event_avoid_clause(event).lower()
+        assert "ears changing shape or set" in avoid, f"{event} 이 귀 이동을 허용하고 있다"
+        assert IDLE_EVENT_AVOID_BASE in idle_event_avoid_clause(event)
+
+
 def test_legacy_actions_do_not_use_idle_event_assembly():
     """레거시 4종과 COME_CLOSER 는 아이들 이벤트 경로로 새면 안 된다."""
     for action in (*ACTION_ORDER, *PET_ACTIONS):
@@ -127,6 +260,28 @@ def test_come_closer_prompt_unaffected_by_idle_event_clause():
     prompt = build_scenario_prompt(KEYFRAME, "any", "COME_CLOSER")
     assert IDLE_EVENT_AVOID_BASE not in prompt
     assert IDLE_COMMON_CONSTRAINT not in prompt
+    assert IDLE_EVENT_COMMON_CONSTRAINT not in prompt
+
+
+def test_breath_path_still_uses_the_breath_constraint():
+    """
+    반대 방향 회귀. 이벤트를 떼어냈다고 BREATH 가 제약을 잃으면 안 된다 —
+    메인 IDLE 경로가 고정 카메라·정체성·루프 종료 상태를 여기서만 받는다.
+    """
+    prompt = build_scenario_prompt(KEYFRAME, "any", "IDLE")
+    assert IDLE_COMMON_CONSTRAINT in prompt
+    assert IDLE_EVENT_COMMON_CONSTRAINT not in prompt
+
+
+def test_breath_constraint_has_no_sentence_fragment():
+    """
+    한동안 IDLE_COMMON_CONSTRAINT 안에 주어 없는 문장 조각이 남아 있었다
+    ("the neck and upper body naturally rather than ..."). 앞의 허용문을 지우면서
+    뒷절만 살아남은 것이고, 그 비문이 모든 BREATH 프롬프트에 실려 나갔다.
+    """
+    c = IDLE_COMMON_CONSTRAINT
+    assert ". the neck and upper body naturally" not in c.lower(), "문장 조각이 돌아왔다"
+    assert "If the motion description explicitly requests a small head or gaze" in c
 
 
 # ── Phase 4 — HEAD_TILTING / TAIL_WAGGING ────────────────────────────────────

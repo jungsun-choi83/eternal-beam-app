@@ -25,6 +25,10 @@ import {
 } from "@/lib/pet-runtime-events";
 import { ensureIdleEventAsset } from "@/lib/idle-event-dev-trigger";
 import { useIdleEventScheduler } from "@/components/memorial/use-idle-event-scheduler";
+import {
+  IDLE_ASSET_SWEEP_MS,
+  useIdleEventAssets,
+} from "@/components/memorial/use-idle-event-assets";
 import { getEternalBeamUserId } from "@/lib/eternal-beam-user";
 import { getEternalBeamPetId } from "@/lib/pet-identity";
 import {
@@ -78,14 +82,6 @@ function assertPreviewTheme(selectedTheme: number | null, resolvedId: number) {
     );
   }
 }
-
-/**
- * 큐가 빠졌는지 다시 물어보는 주기.
- *
- * 짧으면 서버에 헛질문이 늘고, 길면 앞 작업이 끝난 뒤 다음 제출까지 놀게 된다.
- * 생성 자체가 분 단위라 20초면 충분하다.
- */
-const IDLE_ASSET_SWEEP_MS = 20_000;
 
 /**
  * COME_CLOSER 가 큐 대기(queued)일 때 재제출을 시도하는 횟수.
@@ -204,6 +200,18 @@ export function PreviewScreen({
 
   useEffect(() => {
     if (!pipeline) return;
+    // ⚠️ **확인(confirm) 전에는 아무것도 생성하지 않는다.**
+    //
+    // 예전 게이트는 `pipeline` 존재뿐이었다. 그런데 파이프라인은 누끼가 끝나면
+    // ai-processing-screen 이 `idle_video_url: ""` 로 미리 써 둔다. 그래서 사용자가
+    // "이 배경으로 영상 만들기" 를 누르기 **전에** 프리미엄 5종이 생성되기 시작했고,
+    // 되돌아가거나 테마를 바꾸면 그 비용은 그대로 날아갔다. 게다가 그때는 BREATH 가
+    // 없어 재생기가 마운트되지 않으므로, 만든 자산을 보여줄 수도 없었다.
+    //
+    // 이제 BREATH 가 존재할 때만 — 즉 사용자가 확인을 누른 뒤에만 — 동작한다.
+    // 최초 착수는 handleConfirm 이 명시적으로 한다(이 effect 는 그 뒤 재방문 시
+    // 이미 있는 자산을 집어 오는 역할).
+    if (!hasIdle) return;
     const petId = getEternalBeamPetId(pipeline.content_id);
     // 캐시는 **같은 펫의 것일 때만** 신뢰한다. 아니면 조회해서 갱신한다 —
     // 조회는 GET 한 번이고, canonical 이 있으면 프로바이더는 불리지 않는다.
@@ -265,67 +273,19 @@ export function PreviewScreen({
       cancelled = true;
     };
     // 의존성에 테마가 **없다** — 테마 변경이 생성/조회를 유발해선 안 된다.
-  }, [pipeline]);
+  }, [pipeline, hasIdle]);
 
-  // ── 아이들 이벤트 (BLINKING / EAR_TWITCHING) — **개발 빌드 전용** ───────────
-  // 제품 UI 가 아니다. IdleEvent 파이프라인 점검용 수동 경로다.
-  // 자발적 스케줄링은 없다 — 콘솔에서 사람이 부를 때만 재생된다.
+  // ── 아이들 이벤트 자산 (4종) — **개발 빌드 전용** ─────────────────────────
+  // 스윕 구현은 use-idle-event-assets 로 빠졌다. memorial-device-play-screen 이
+  // **같은 훅**을 쓴다 — 이 루프는 유료 생성을 제출하므로 사본이 갈라지면 한쪽에서만
+  // 중복 지출이 난다. DEV 게이트와 스윕 주기도 그 훅이 단독으로 갖는다.
   //
-  // 이벤트마다 state·effect 를 하나씩 늘리지 않는다. 등록된 아이들 이벤트를
-  // 순회하므로, 새 이벤트를 레지스트리에 추가하면 여기 배선은 그대로 따라온다.
-  const [idleEventUrls, setIdleEventUrls] = useState<Partial<Record<IdleEvent, string>>>({});
-  useEffect(() => {
-    if (!import.meta.env.DEV) return;
-    if (!pipeline) return;
-    let cancelled = false;
-    const userId = getEternalBeamUserId();
-    const petId = getEternalBeamPetId(pipeline.content_id);
-
-    // 한 바퀴 = 아직 확보되지 않은 이벤트마다 ensure 한 번.
-    //
-    // 동시 제출 수는 **서버가** 막는다(generation_queue). 여기서 순차 루프를 돌지
-    // 않는 이유가 그것이다 — 브라우저 큐는 탭을 두 개 열면 그대로 뚫린다. 프론트는
-    // "이 펫 자산 좀 챙겨 줘"라고 반복해서 물을 뿐이고, 상한에 걸린 요청은
-    // status=queued 로 조용히 되돌아온다(프로바이더 호출 없음).
-    const sweep = async () => {
-      let pending = false;
-      for (const def of registeredIdleEvents()) {
-        if (cancelled) return false;
-        const eventId = def.id as IdleEvent;
-        const r = await ensureIdleEventAsset({
-          userId,
-          petId,
-          eventId,
-          pipeline,
-          onState: (st) => console.info(`[${eventId}] asset state =`, st),
-        });
-        if (cancelled) return false;
-        if (r.url) {
-          setIdleEventUrls((prev) =>
-            prev[eventId] === r.url ? prev : { ...prev, [eventId]: r.url as string }
-          );
-        } else if (r.state === "queued" || r.state === "generating") {
-          pending = true; // 아직 남았다 — 다음 바퀴에서 다시 물어본다
-        }
-      }
-      return pending;
-    };
-
-    // 큐가 빠지는 속도에 맞춰 주기적으로 다시 훑는다. 남은 게 없으면 멈춘다.
-    let timer: number | null = null;
-    const run = () => {
-      void sweep().then((pending) => {
-        if (cancelled || !pending) return;
-        timer = window.setTimeout(run, IDLE_ASSET_SWEEP_MS);
-      });
-    };
-    run();
-
-    return () => {
-      cancelled = true;
-      if (timer != null) window.clearTimeout(timer);
-    };
-  }, [pipeline]);
+  // enabled 는 **실제 BREATH 자산**으로만 판정한다(hasRealIdleVideo) — 데모 폴백
+  // mp4 를 근거로 켜면 확인 전에 유료 생성이 나가고 이음매 전제도 깨진다.
+  const { urls: idleEventUrls, availableIds: availableIdleEventIds } = useIdleEventAssets({
+    pipeline,
+    enabled: hasIdle,
+  });
 
   // 콘솔에서 부르는 수동 트리거. 프로덕션 빌드에는 존재하지 않는다.
   // 이벤트별 별칭 + 범용 훅을 함께 심는다.
@@ -423,6 +383,52 @@ export function PreviewScreen({
           idleUrl: next.idle_video_url,
           cutoutUrl: next.cutout_display_url,
         });
+
+        // ── 프리미엄 생성 착수 (여기서 **처음** 비용이 발생한다) ─────────────
+        //
+        // effect 가 아니라 여기서 부르는 이유: setPipeline 과 onComplete 가 같은
+        // 배치에서 일어나 화면이 즉시 언마운트된다. 그래서 hasIdle=true 로 바뀐
+        // 렌더의 effect 는 **실행되지 않는다** — effect 에만 맡기면 프리미엄 생성이
+        // 영원히 시작되지 않는다.
+        //
+        // 두 건을 동시에 넣어 서버 상한(펫당 2)을 처음부터 꽉 채운다. 한 건만 넣으면
+        // 그 작업이 끝날 때까지 슬롯 하나가 놀아서 전체가 한 사이클 늦어진다.
+        //
+        // 그 뒤는 서버가 이어받는다 — 작업이 종료될 때마다
+        // premium_generation.advance_generation_queue 가 다음 액션을 제출하므로
+        // 화면을 떠나도 EAR_TWITCHING → HEAD_TILTING → TAIL_WAGGING 이 완성된다.
+        //
+        // 상한·순서 판정은 **서버가** 한다. 여기서 두 건을 동시에 보내도 서버의
+        // 순서 규칙이 남은 슬롯 수만큼만 통과시키므로 초과 제출이 불가능하고,
+        // 거절된 요청은 status=queued 로 돌아온다(프로바이더 호출·세션 생성 없음).
+        const kickoffUserId = getEternalBeamUserId();
+        const kickoffPetId = getEternalBeamPetId(next.content_id);
+        // 두 번째 슬롯에 넣을 액션은 하드코딩하지 않고 레지스트리 순서에서 가져온다 —
+        // 아이들 이벤트가 재정렬되면 여기도 자동으로 따라간다.
+        const firstIdleEvent = registeredIdleEvents()[0]?.id as IdleEvent | undefined;
+        void Promise.allSettled([
+          ensureComeCloser({
+            userId: kickoffUserId,
+            petId: kickoffPetId,
+            pipeline: next,
+            onState: (st) => {
+              if (import.meta.env.DEV) console.info("[COME_CLOSER] 착수 —", st);
+            },
+          }),
+          ...(firstIdleEvent
+            ? [
+                ensureIdleEventAsset({
+                  userId: kickoffUserId,
+                  petId: kickoffPetId,
+                  eventId: firstIdleEvent,
+                  pipeline: next,
+                  onState: (st) => {
+                    if (import.meta.env.DEV) console.info(`[${firstIdleEvent}] 착수 —`, st);
+                  },
+                }),
+              ]
+            : []),
+        ]);
       }
 
       onComplete();
@@ -511,11 +517,8 @@ export function PreviewScreen({
   // 수동 트리거와 **같은 진입점**(comeCloserTriggerRef)을 쓴다. 스케줄러는
   // "무엇을 언제" 만 정하고, 재생·이음매·복귀는 전부 기존 런타임이 담당한다.
   //
-  // 자산이 하나도 없으면 후보가 비어 아무 일도 일어나지 않는다 — BREATHING 유지.
-  const availableIdleEventIds = Object.entries(idleEventUrls)
-    .filter(([, url]) => typeof url === "string" && url.length > 0)
-    .map(([id]) => id as IdleEvent);
-
+  // 후보 목록(availableIdleEventIds)은 useIdleEventAssets 가 READY URL 에서 만든다 —
+  // 자산이 하나도 없으면 비어 있고, 그때는 아무 일도 일어나지 않는다(BREATHING 유지).
   const { onPlaybackStateChange } = useIdleEventScheduler({
     enabled: availableIdleEventIds.length > 0,
     availableIds: availableIdleEventIds,
