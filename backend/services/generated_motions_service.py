@@ -635,14 +635,33 @@ async def mark_session_refunded(session_id: str) -> bool:
   if not sess or sess.get("refunded_at"):
     return False
   stamp = datetime.utcnow().isoformat()
-  if session_id in _MOCK_SESSIONS:
-    _MOCK_SESSIONS[session_id]["refunded_at"] = stamp
+
   if _use_db() and _supabase():
-    _supabase().table(
-      os.getenv("CREDIT_SESSIONS_TABLE", "credit_generation_sessions")
-    ).update({"refunded_at": stamp}).eq("session_id", session_id).is_(
-      "refunded_at", "null"
-    ).execute()
+    # ⚠️ 조건부 UPDATE 의 **영향 행 수**로 판정한다.
+    #
+    # 예전에는 update 를 보내고 무조건 True 를 돌려줬다. 위의 읽기-검사는
+    # TOCTOU 라서, 웹훅이 동시에 두 번 배달되면 둘 다 refunded_at=null 을 읽고
+    # 둘 다 True 를 받는다 — `.is_("refunded_at","null")` 필터가 쓰기는 한 번만
+    # 통과시켜도 **환불은 두 번** 나갔다. 여기가 이중 환불을 막는 유일한 지점이라고
+    # 문서에 적혀 있었지만, 실제로는 막지 못하고 있었다.
+    r = (
+      _supabase()
+      .table(os.getenv("CREDIT_SESSIONS_TABLE", "credit_generation_sessions"))
+      .update({"refunded_at": stamp})
+      .eq("session_id", session_id)
+      .is_("refunded_at", "null")
+      .execute()
+    )
+    won = bool(getattr(r, "data", None))
+    if won and session_id in _MOCK_SESSIONS:
+      _MOCK_SESSIONS[session_id]["refunded_at"] = stamp
+    return won
+
+  # 인메모리 경로 — 단일 프로세스라 이 검사-후-설정이 원자적이다.
+  if session_id in _MOCK_SESSIONS:
+    if _MOCK_SESSIONS[session_id].get("refunded_at"):
+      return False
+    _MOCK_SESSIONS[session_id]["refunded_at"] = stamp
   return True
 
 

@@ -153,12 +153,27 @@ async def _advance_premium_queue(job, session: dict[str, Any]) -> list[str]:
   """
   if not premium_generation.is_queued_action(job.action_id):
     return []
-  return await premium_generation.advance_generation_queue(
+
+  # 종료 환불 판정 — 이 구매의 대상이 **전부 종료됐는데 승격이 0건**이면 환불한다.
+  # 큐 전진보다 먼저 부르지 않는다: 전진이 새 작업을 만들면 아직 종료가 아니다.
+  advanced = await premium_generation.advance_generation_queue(
     user_id=job.user_id,
     pet_id=job.pet_id,
     pet_image_url=(session or {}).get("pet_image_url"),
     api_base=premium_generation.webhook_base_url(),
   )
+  try:
+    from . import premium_purchase
+
+    await premium_purchase.reconcile_after_terminal(job.user_id, job.pet_id, job.action_id)
+  except Exception:  # noqa: BLE001 — 환불 판정 실패가 승격을 500 으로 뒤집으면 안 된다
+    import logging
+
+    logging.getLogger(__name__).exception(
+      "프리미엄 환불 판정 실패 (user=%s pet=%s action=%s)",
+      job.user_id, job.pet_id, job.action_id,
+    )
+  return advanced
 
 
 async def handle_luma_webhook_for_credit(
