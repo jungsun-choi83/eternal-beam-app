@@ -50,6 +50,23 @@ async def verify_and_charge(
     raise ValueError("user_id is required")
 
   product = get_product(product_id)
+
+  # 테스트 전용 상품(0원)은 **실제 스토어 검증 경로로 보내지 않는다.**
+  #
+  # 예전에는 그대로 흘러가서, PAYMENT_MOCK 이 꺼진 환경에서
+  # "GOOGLE_PACKAGE_NAME not configured" 라는 엉뚱한 400 이 났다 — 설정에서
+  # "테스트 크레딧 추가"를 눌렀는데 Google Play 설정 오류가 나오니 원인을 찾기
+  # 어려웠다. 이 상품들은 어느 스토어에도 존재하지 않으므로 실 검증은 성공할 수
+  # 없고, 실패한다면 원인은 언제나 "목업이 꺼져 있다" 하나뿐이다.
+  from ..data.iap_products import TEST_ONLY_PRODUCT_IDS
+  from .iap_verification_service import mock_enabled
+
+  if product.product_id in TEST_ONLY_PRODUCT_IDS and not mock_enabled():
+    raise PaymentVerificationError(
+      f"{product.product_id} 는 테스트 전용 상품입니다. "
+      "PAYMENT_MOCK=1 이 설정된 환경에서만 사용할 수 있습니다."
+    )
+
   st: Literal["apple", "google"] = store_type  # type: ignore[assignment]
   fp = receipt_fingerprint(st, receipt_data)
 

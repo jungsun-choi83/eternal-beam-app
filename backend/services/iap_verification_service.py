@@ -33,6 +33,12 @@ def _mock_enabled() -> bool:
   return os.getenv("PAYMENT_MOCK", "0").strip().lower() in ("1", "true", "yes")
 
 
+#: 공개 별칭 — 호출부가 "지금 목업 모드인가"를 물어볼 수 있게 한다.
+#: (iap_charge_service 가 테스트 전용 상품을 실 검증으로 보내지 않으려고 쓴다.)
+def mock_enabled() -> bool:
+  return _mock_enabled()
+
+
 def _receipt_fingerprint(store_type: str, receipt_data: str) -> str:
   payload = f"{store_type}:{receipt_data.strip()}"
   return hashlib.sha256(payload.encode("utf-8")).hexdigest()
