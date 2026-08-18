@@ -29,11 +29,12 @@ import {
   CUSTOM_PHOTO_BG_THEME_ID,
   isPremiumTheme,
   freeMemorialThemes,
+  DEFAULT_THEME_ID,
 } from '@/components/memorial/themes'
 import { clearStoredCustomBgVideoUrl } from '@/lib/custom-background-store'
 import { finalizePreviewContent } from '@/lib/finalize-preview-content'
-import { persistDeviceContentFromPipeline } from '@/lib/persist-device-content'
 import { scheduleThemeBackgroundSync, shouldSyncThemeToDevice } from '@/lib/device-theme-sync'
+import { resolveSkipThemeId } from '@/lib/theme-skip'
 import { schedulePiDiscovery } from '@/lib/pi-sensor-bridge'
 import { isForestTheme } from '@/lib/forest-demo-config'
 import { isPublicForestEntry } from '@/lib/app-entry'
@@ -43,6 +44,8 @@ import {
 } from '@/lib/device-demo-config'
 import { FOREST_THEME_ID } from '@/lib/forest-demo-config'
 import { inferMediaKind } from '@/lib/media-file-kind'
+import { canEnterDevicePlay, readStoredPipeline } from '@/lib/pending-generation'
+import { traceImage } from '@/lib/image-trace' // [IMAGE-TRACE]
 import type { PickedMedia } from '@/lib/pick-media-file'
 
 type Screen =
@@ -75,6 +78,7 @@ function resolveInitialScreen(): Screen {
 type NavDirection = 'forward' | 'back'
 
 const DEVICE_CONNECTED_KEY = 'eternal_beam_device_connected'
+
 
 const pageEase = [0.22, 1, 0.36, 1] as const
 
@@ -186,11 +190,15 @@ export function EternalBeamApp() {
 
     localStorage.setItem('eternal_beam_media_type', kind)
 
+    // [IMAGE-TRACE] 홈 화면 경로의 파일 선택 지점.
+    void traceImage('file-selected (home picker)', file, 'original-upload', `kind=${kind}`)
+
     if (kind === 'image') {
       const reader = new FileReader()
       reader.onload = (ev) => {
         const result = String(ev.target?.result || '')
         if (!result) return
+        void traceImage('state:uploadedImage', result, 'original-upload') // [IMAGE-TRACE]
         setUploadedImage(result)
         localStorage.setItem('eternal_beam_main_photo', result)
         localStorage.removeItem('eternal_beam_main_video_url')
@@ -254,7 +262,10 @@ export function EternalBeamApp() {
       shouldSyncThemeToDevice() &&
       theme &&
       !theme.premium &&
-      !theme.requiresGeneration
+      !theme.requiresGeneration &&
+      // 실제 idle 영상이 생기기 전에는 기기 송출로 건너뛰지 않는다 —
+      // 미리보기에서 확인을 눌러야 생성이 시작된다.
+      canEnterDevicePlay(readStoredPipeline(), { demo: deviceDemo })
     ) {
       navigateTo('devicePlay')
       return
@@ -263,7 +274,14 @@ export function EternalBeamApp() {
   }
 
   const handleThemeSkip = () => {
-    const themeId = freeMemorialThemes[0]?.id ?? 1
+    // '건너뛰기' 는 "새로 고르지 않겠다" 는 뜻이지 "고른 걸 버리겠다" 가 아니다.
+    // 예전에는 무조건 freeMemorialThemes[0](fresh_forest, id 8)로 덮어써서,
+    // snow_forest 를 고른 뒤 Skip 을 누르면 선택이 사라졌다(localStorage 까지).
+    // 이미 유효한 선택이 있으면 그대로 유지하고, 없을 때만 기본 무료 테마를 쓴다.
+    const themeId = resolveSkipThemeId(selectedTheme, {
+      isValidTheme: (id) => !!getMemorialTheme(id),
+      defaultThemeId: DEFAULT_THEME_ID,
+    })
     setSelectedTheme(themeId)
     persistThemeChoice(themeId)
     scheduleThemeBackgroundSync(themeId)
@@ -272,7 +290,12 @@ export function EternalBeamApp() {
       return
     }
     const theme = getMemorialTheme(themeId)
-    if (shouldSyncThemeToDevice() && theme && !theme.requiresGeneration) {
+    if (
+      shouldSyncThemeToDevice() &&
+      theme &&
+      !theme.requiresGeneration &&
+      canEnterDevicePlay(readStoredPipeline(), { demo: deviceDemo })
+    ) {
       navigateTo('devicePlay')
       return
     }
@@ -620,6 +643,9 @@ export function EternalBeamApp() {
                     navigateTo('shippingAddress')
                     return
                   }
+                  // PreviewScreen 은 생성이 끝난 뒤에만 onComplete 을 부르지만,
+                  // 기기 송출 진입은 여기서도 한 번 더 확인한다.
+                  if (!canEnterDevicePlay(readStoredPipeline(), { demo: deviceDemo })) return
                   navigateTo('devicePlay')
                 }}
                 onBack={() =>

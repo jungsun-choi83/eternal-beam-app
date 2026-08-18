@@ -1,4 +1,5 @@
 import {
+  assertUsableCutout,
   cutoutImage,
   generateWithCredit,
   type GenerateWithCreditResult,
@@ -7,7 +8,7 @@ import {
   ETERNAL_BEAM_PIPELINE_KEY,
   type StoredPipeline,
 } from "@/components/memorial/ai-processing-screen";
-import { getMemorialTheme } from "@/components/memorial/themes";
+import { getMemorialTheme, DEFAULT_THEME_KEY } from "@/components/memorial/themes";
 
 export function isInsufficientCreditsError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
@@ -71,7 +72,8 @@ export async function ensureCutoutPublicUrl(
     model: "isnet-general-use",
     timeoutMs: 45_000,
   });
-  if (cut.error) throw new Error(cut.error);
+  // 실패한 누끼를 Supabase에 올리거나 Luma로 넘기지 않는다.
+  assertUsableCutout(cut);
   if (cut.cutout_url) return cut.cutout_url;
   throw new Error(
     "누끼 URL을 만들 수 없습니다. Render에 SUPABASE_URL·Storage 버킷을 설정해 주세요."
@@ -89,7 +91,7 @@ export async function runCreditMotionGeneration(params: {
   contentId?: string;
 }): Promise<{ result: GenerateWithCreditResult; petImageUrl: string }> {
   const theme = getMemorialTheme(params.themeId);
-  const placeId = theme?.themeKey ?? "snow_forest";
+  const placeId = theme?.themeKey ?? DEFAULT_THEME_KEY;
 
   const petImageUrl = await ensureCutoutPublicUrl(
     params.cutoutDisplay,

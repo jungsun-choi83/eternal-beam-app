@@ -4,14 +4,19 @@ import { useState, useEffect, useRef, memo } from "react";
 import { Check } from "lucide-react";
 import { EternalBeamBrandMark } from "@/components/memorial/eternal-beam-brand-mark";
 import {
+  assertUsableCutout,
   cutoutImage,
-  generatePetVideo,
   isCutoutApiUnreachableError,
+  isCutoutRejectedError,
   type CutoutResult,
 } from "@/app/services/videoProcessingApi";
 import { clientCutoutFromFile, dataUrlToFile } from "@/lib/client-cutout";
 import { createDisplayImageUrl, createDisplayCutoutUrl } from "@/lib/display-image";
-import { friendlyCutoutError, normalizeImageForCutout } from "@/lib/normalize-image";
+import {
+  cutoutRejectionMessage,
+  friendlyCutoutError,
+  normalizeImageForCutout,
+} from "@/lib/normalize-image";
 import { mockCutoutFromFile } from "@/lib/mock-cutout";
 import {
   clearServerCutoutSkipped,
@@ -30,23 +35,14 @@ import { memorialT } from "@/components/memorial/memorial-i18n";
 import { isLiteUI } from "@/lib/ui-performance";
 import { CutoutStage } from "@/components/memorial/cutout-stage";
 import { useProcessingClock } from "@/lib/use-processing-clock";
-import {
-  isClientCutoutFirst,
-  isLumaPipelineEnabled,
-  isIdleTestFallbackEnabled,
-  isGoyaDemoIdleUrl,
-} from "@/lib/device-host-flags";
-import { isLikelyVideoUrl } from "@/lib/video-url";
+import { isClientCutoutFirst } from "@/lib/device-host-flags";
 import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
-import { schedulePetReadyToDevice } from "@/lib/device-pet-sync";
+import { setPendingCutout } from "@/lib/pending-generation";
+import { traceImage, dumpImageTrace } from "@/lib/image-trace"; // [IMAGE-TRACE]
 
 export const ETERNAL_BEAM_PIPELINE_KEY = "eternal_beam_pipeline_v1";
 
 const FILM_CONVERSION_SEC = Number(import.meta.env.VITE_FILM_CONVERSION_SEC ?? "0");
-/** Live Luma I2V can take several minutes; 0 = wait until server responds (recommended). */
-const IDLE_GENERATION_TIMEOUT_MS = Number(
-  import.meta.env.VITE_IDLE_GENERATION_TIMEOUT_MS ?? "0"
-);
 const CLIENT_CUTOUT_FALLBACK = import.meta.env.VITE_CLIENT_CUTOUT_FALLBACK !== "0";
 /** 누끼 전/후 비교를 idle 단계 전에 유지 (ms) */
 const COMPARE_HOLD_MS = Math.max(
@@ -64,6 +60,8 @@ export interface StoredPipeline {
   dog_only_nobg_url: string;
   idle_video_url: string;
   action_video_url: string;
+  /** COME_CLOSER (웹 전용 프리미엄 액션). 미생성 시 없음. */
+  come_closer_video_url?: string | null;
 }
 
 interface AIProcessingScreenProps {
@@ -76,11 +74,24 @@ const CLIENT_CUTOUT_FIRST = isClientCutoutFirst();
 
 type ProcessingCopy = ReturnType<typeof memorialT>["processing"];
 
+/**
+ * subjectDetected:
+ *  - true  → 서버가 지원 동물을 검출하고 품질 게이트를 통과시킴
+ *  - undefined → 브라우저 WASM/목업 경로라 검증되지 않음 (검출기가 없음)
+ * false 는 여기까지 오지 않는다 — 서버가 422로 거절하기 때문.
+ */
+type CutoutOutcome = {
+  display: string;
+  cutFile: File;
+  contentId: string;
+  subjectDetected?: boolean;
+};
+
 async function tryServerCutout(
   file: File,
   onStatus: (line: string) => void,
   t: ProcessingCopy
-): Promise<{ display: string; cutFile: File; contentId: string } | null> {
+): Promise<CutoutOutcome | null> {
   if (isServerCutoutSkipped()) return null;
   try {
     onStatus(t.serverWaking);
@@ -93,19 +104,23 @@ async function tryServerCutout(
       autoRefine: CUTOUT_AUTO_REFINE,
       timeoutMs: CUTOUT_SERVER_TIMEOUT_MS,
     });
-    if (cut.cutout_quality?.refined) {
+    assertUsableCutout(cut);
+    // 실제로 정제 패스가 돈 경우에만 안내 문구를 띄운다.
+    // (예전에는 서버가 refined를 항상 true로 하드코딩해 항상 떴다.)
+    if (cut.cutout_quality?.refined && cut.cutout_quality?.refinement_type) {
       onStatus(t.serverFurRefine);
     }
-    const display = cutoutDisplayUrl(cut);
-    if (display && !cut.error) {
-      return {
-        display,
-        cutFile: await cutoutResultToFile(cut),
-        contentId: cut.content_id || `srv_${Date.now()}`,
-      };
-    }
-    return null;
+    return {
+      display: cutoutDisplayUrl(cut),
+      cutFile: await cutoutResultToFile(cut),
+      contentId: cut.content_id || `srv_${Date.now()}`,
+      subjectDetected: cut.subject_detected !== false,
+    };
   } catch (e) {
+    // 사진 자체가 거절된 경우(피사체 미검출 등)는 폴백으로 우회하지 않는다 —
+    // 브라우저 WASM은 검출기가 없어서 "사람까지 포함된 누끼"를 만들어 낼 뿐이고,
+    // 그게 그대로 유료 생성까지 흘러가는 것이 지금 고치려는 문제다.
+    if (isCutoutRejectedError(e)) throw e;
     const msg = e instanceof Error ? e.message : String(e);
     if (isCutoutApiUnreachableError(msg)) {
       markServerCutoutDisabled();
@@ -119,7 +134,7 @@ async function tryClientCutout(
   onStatus: (line: string) => void,
   t: ProcessingCopy,
   language: string
-): Promise<{ display: string; cutFile: File; contentId: string }> {
+): Promise<CutoutOutcome> {
   onStatus(CUTOUT_SPEED_MODE ? t.waitHintFast : t.waitHint);
   const display = await clientCutoutFromFile(file, onStatus, language);
   return {
@@ -134,7 +149,7 @@ async function runCutoutWithFallback(
   onStatus: (line: string) => void,
   t: ProcessingCopy,
   language: string
-): Promise<{ display: string; cutFile: File; contentId: string }> {
+): Promise<CutoutOutcome> {
   if (MOCK_CUTOUT_ENABLED) {
     onStatus(t.mockCutout);
     const display = await mockCutoutFromFile(file);
@@ -176,73 +191,6 @@ function cutoutDisplayUrl(result: CutoutResult): string {
   if (result.cutout_png_base64)
     return `data:image/png;base64,${result.cutout_png_base64}`;
   return "";
-}
-
-function isTransientPetVideoError(message: string): boolean {
-  const m = message.toLowerCase();
-  return (
-    m.includes("pet video server error") ||
-    m.includes("failed to fetch") ||
-    m.includes("network") ||
-    m.includes("load failed") ||
-    m.includes("timeout") ||
-    m.includes("502") ||
-    m.includes("503") ||
-    m.includes("504")
-  );
-}
-
-async function generateIdleVideoWithRetry(
-  cutFile: File,
-  contentId: string,
-  onStatus: (line: string) => void,
-  t: ProcessingCopy
-): Promise<Awaited<ReturnType<typeof generatePetVideo>> | null> {
-  const opts = {
-    userId: "anonymous" as const,
-    contentId: contentId || undefined,
-    skipPreprocessing: true,
-    idleOnly: true,
-  };
-
-  const run = async () => {
-    onStatus(t.serverWaking);
-    await warmupVideoApi({ coldStart: true, maxWaitMs: CUTOUT_WARMUP_MAX_MS });
-    return await generatePetVideo(cutFile, opts);
-  };
-
-  try {
-    return await run();
-  } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    if (!isTransientPetVideoError(msg)) throw e;
-    onStatus(t.serverRetry);
-    await sleep(3000);
-    return await run();
-  }
-}
-
-async function generateIdleVideoWithTimeout(
-  cutFile: File,
-  contentId: string,
-  onStatus: (line: string) => void,
-  t: ProcessingCopy
-): Promise<Awaited<ReturnType<typeof generatePetVideo>> | null> {
-  if (IDLE_GENERATION_TIMEOUT_MS <= 0) {
-    return generateIdleVideoWithRetry(cutFile, contentId, onStatus, t);
-  }
-
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      generateIdleVideoWithRetry(cutFile, contentId, onStatus, t),
-      new Promise<null>((resolve) => {
-        timer = setTimeout(() => resolve(null), IDLE_GENERATION_TIMEOUT_MS);
-      }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 function isCutoutMemoryError(message: string): boolean {
@@ -511,9 +459,11 @@ export function AIProcessingScreen({
 
       try {
         setStatusLine(t.steps[0].description);
+        // [IMAGE-TRACE] 파이프라인 입구 — 앱 상태에 들어있는 "원본"의 실제 크기.
+        await traceImage("pipeline:uploadedImage", uploadedImage, "original-upload");
         const file = await normalizeImageForCutout(uploadedImage);
 
-        const { display, cutFile, contentId: cutContentId } = await runCutoutWithFallback(
+        const cutout = await runCutoutWithFallback(
           file,
           (line) => {
             if (!cancelled && myToken === runTokenRef.current) setStatusLine(line);
@@ -521,6 +471,12 @@ export function AIProcessingScreen({
           t,
           language
         );
+        const { display, cutFile, contentId: cutContentId } = cutout;
+
+        // [IMAGE-TRACE] 누끼 결과 — 이후 Luma/미리보기로 흘러가는 파일.
+        await traceImage("cutout:result-file", cutFile, "cutout-result");
+        await traceImage("cutout:display-url", display, "cutout-result");
+        dumpImageTrace();
 
         if (cancelled || myToken !== runTokenRef.current) return;
 
@@ -535,92 +491,29 @@ export function AIProcessingScreen({
         await sleep(COMPARE_HOLD_MS);
         if (cancelled || myToken !== runTokenRef.current) return;
 
-        setCurrentStep(1);
-        setProgress(42);
-        setStatusLine(t.converting);
-
-        let pet: Awaited<ReturnType<typeof generatePetVideo>> | null = null;
-        let apiIdleUrl = "";
-        // Idle source:
-        // - VITE_ENABLE_LUMA=1 (or device.eternalbeam.com): POST /api/generate-pet-video
-        //   → backend LUMA_MOCK=1 uses MOCK_LUMA_VIDEO_URL (fast); real LUMA_API_KEY polls Luma (minutes).
-        // - Otherwise: skip API and use bundled /demo/goya_idle_packed.mp4 (pre-made asset, no prompt run).
-        const lumaEnabled = isLumaPipelineEnabled();
-
-        if (lumaEnabled) {
-          try {
-            pet = await generateIdleVideoWithTimeout(
-              cutFile,
-              cutContentId || "",
-              (line) => {
-                if (!cancelled && myToken === runTokenRef.current) setStatusLine(line);
-              },
-              t
-            );
-            if (pet?.idle_video_url && isLikelyVideoUrl(pet.idle_video_url)) {
-              apiIdleUrl = pet.idle_video_url;
-            } else if (!pet) {
-              if (!cancelled && myToken === runTokenRef.current) {
-                setStatusLine(t.idleDemoFallback);
-              }
-            }
-          } catch {
-            if (!cancelled && myToken === runTokenRef.current) {
-              setStatusLine(t.idleDemoFallback);
-            }
-          }
-        } else {
-          setStatusLine(t.idleDemoFallback);
-          setProgress(88);
-        }
-
+        // ── 여기서 멈춘다 ────────────────────────────────────────────────
+        // 예전에는 누끼 직후 곧바로 generatePetVideo() 를 호출했다. 이제는
+        // 누끼까지만 하고, 실제 생성은 사용자가 미리보기에서 확인을 누를 때
+        // preview-screen.tsx 가 시작한다(업로드 → 누끼 → 테마 → 미리보기 →
+        // 확인 → 생성). 원본 해상도 누끼는 그때 다시 필요하므로 보관해 둔다.
         if (cancelled || myToken !== runTokenRef.current) return;
 
-        // sessionStorage에는 사용자 idle mp4만 저장 — Goya 데모 URL은 저장하지 않음
-        const storedIdleUrl =
-          apiIdleUrl && !isGoyaDemoIdleUrl(apiIdleUrl) ? apiIdleUrl : "";
-
-        if (!cancelled && myToken === runTokenRef.current) {
-          setIdlePreviewUrl(storedIdleUrl || null);
-          if (!storedIdleUrl) {
-            setStatusLine(
-              lumaEnabled && !isIdleTestFallbackEnabled()
-                ? t.idlePending
-                : t.idleCutoutPreview
-            );
-          }
-          setProgress(92);
-          await sleep(storedIdleUrl ? 300 : 500);
-        }
+        const contentId = cutContentId || `cut_${Date.now()}`;
+        setPendingCutout(cutFile, contentId, display);
 
         const stored: StoredPipeline = {
-          content_id: pet?.content_id || cutContentId || `fallback_${Date.now()}`,
+          content_id: contentId,
           cutout_display_url: display,
-          dog_only_nobg_url: pet?.dog_only_nobg_url || display,
-          idle_video_url: storedIdleUrl,
-          action_video_url: pet?.action_video_url || "",
+          dog_only_nobg_url: display,
+          idle_video_url: "", // 아직 생성 전 — 확인 후에 채워진다
+          action_video_url: "",
         };
         try {
           sessionStorage.setItem(ETERNAL_BEAM_PIPELINE_KEY, JSON.stringify(stored));
           localStorage.setItem("eternal_beam_content_id", stored.content_id);
           localStorage.setItem("eternal_beam_current_content_id", stored.content_id);
-          if (storedIdleUrl) {
-            localStorage.setItem("eternal_beam_hologram_video_id", storedIdleUrl);
-            localStorage.setItem("eternal_beam_current_video_id", storedIdleUrl);
-          }
         } catch {
           /* ignore */
-        }
-
-        if (storedIdleUrl) {
-          schedulePetReadyToDevice({
-            contentId: stored.content_id,
-            idleUrl: storedIdleUrl,
-            cutoutUrl: display,
-          });
-          if (!cancelled && myToken === runTokenRef.current) {
-            setStatusLine(t.petReadySent);
-          }
         }
 
         setProgress(100);
@@ -632,9 +525,15 @@ export function AIProcessingScreen({
           onCompleteRef.current(display);
         }, lite ? 300 : 500);
       } catch (e) {
-        const msg =
-          e instanceof Error ? e.message : typeof e === "string" ? e : "Processing failed";
-        fail(msg);
+        if (isCutoutRejectedError(e)) {
+          // 사진이 거절된 경우는 서버 장애 문구("깨어나는 중…")로 뭉뚱그리지 않고
+          // 무엇이 문제인지 그대로 알려 준다.
+          fail(cutoutRejectionMessage(e.code, language) ?? e.message);
+        } else {
+          const msg =
+            e instanceof Error ? e.message : typeof e === "string" ? e : "Processing failed";
+          fail(msg);
+        }
       } finally {
         if (!cancelled && myToken === runTokenRef.current) {
           setProcessingActive(false);
@@ -680,6 +579,8 @@ export function AIProcessingScreen({
             <PetIdleDisplay
               idleVideoUrl={idlePreviewUrl}
               cutoutUrl={cutoutPreview}
+              // 생성 전 화면 — 데모 mp4 로 채우지 않는다(정적 누끼만).
+              allowDemoFallback={false}
               className="ai-processing-screen__idle-pet w-full h-full object-contain"
             />
           </div>

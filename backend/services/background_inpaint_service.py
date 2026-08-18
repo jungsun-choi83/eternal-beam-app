@@ -47,11 +47,14 @@ LaMa는 정확히 이 문제만을 위해 만들어진 가볍고 순수 CNN(Four
 from __future__ import annotations
 
 import io
+import logging
 import os
 from typing import Any, Optional
 
 import numpy as np
 from PIL import Image
+
+logger = logging.getLogger(__name__)
 
 try:
     import cv2
@@ -61,9 +64,9 @@ except Exception:
     CV2_AVAILABLE = False
 
 # 요청사항: vitmatte_service의 SAM2 로더/마스크 함수를 그대로 재사용(새로 구현하지 않음).
+from .cutout_errors import SubjectNotDetectedError
 from .vitmatte_service import (
-    _detect_subject_bbox,
-    _expand_bbox,
+    _detect_subject,
     _get_device,
     _grabcut_mask,
     _sam2_mask,
@@ -105,35 +108,77 @@ def _dog_hole_mask(
     segmenter: str,
     device: str,
     dilate_px: int,
-) -> tuple[np.ndarray, str]:
+) -> tuple[np.ndarray, dict]:
     """
     강아지(피사체) 이진 마스크(SAM2 우선, 실패 시 GrabCut 폴백) → dilate해서
     "메꿔야 할 구멍" 마스크(255=인페인팅 대상, 0=원본 유지) 반환.
 
-    Returns: (hole_mask uint8 (H, W), 실제로 쓰인 세그멘터 이름)
+    Returns: (hole_mask uint8 (H, W), 진단 메타)
+
+    Raises:
+        SubjectNotDetectedError: 지울 피사체를 못 찾았을 때. 예전에는 이때 화면
+            중앙 80% 사각형을 시드로 넣어 배경 한복판을 네모나게 지워 버렸다.
     """
     h, w = rgb.shape[:2]
-    raw_bbox = _detect_subject_bbox(rgb, os.getenv("VITMATTE_YOLO_MODEL", "yolov8n.pt"))
-    bbox = _expand_bbox(raw_bbox, w, h, 0.15) if raw_bbox is not None else None
+    detection = _detect_subject(
+        Image.fromarray(rgb),
+        os.getenv("VITMATTE_YOLO_MODEL", "yolov8n.pt"),
+        conf=float(os.getenv("VITMATTE_YOLO_CONF", "0.25")),
+    )
+    if detection is None:
+        logger.warning("background inpaint: no subject to erase (size=%dx%d)", w, h)
+        raise SubjectNotDetectedError(
+            "No supported pet was detected in the image.",
+            diagnostics={
+                "pipeline": "background_inpaint",
+                "subject_detected": False,
+                "input_width": w,
+                "input_height": h,
+            },
+        )
 
-    used_segmenter = segmenter
+    # SAM2 프롬프트는 tight bbox (패딩된 박스를 넣으면 주변 물체까지 삼킨다).
+    # 여백은 아래 dilate 로 준다.
+    prompt_bbox = detection.bbox
+    meta: dict = {
+        "subject_detected": True,
+        "subject_class": detection.class_name,
+        "detection_confidence": detection.confidence,
+        "raw_bbox": list(prompt_bbox),
+        "sam2_prompt_bbox": list(prompt_bbox),
+        "segmenter_requested": segmenter,
+        "segmenter_fallback": False,
+        "fallback_reason": None,
+        "segmenter_error": None,
+        "sam2_score": None,
+    }
+
     if segmenter == "sam2":
         try:
             sam2_model = os.getenv("VITMATTE_SAM2_MODEL", "facebook/sam2.1-hiera-tiny")
-            fg_binary = _sam2_mask(rgb, bbox, sam2_model, device)
-            used_segmenter = "sam2"
-        except Exception:
-            fg_binary = _grabcut_mask(rgb, bbox)
-            used_segmenter = "grabcut"
+            fg_binary, score = _sam2_mask(rgb, prompt_bbox, sam2_model, device)
+            meta["segmenter_used"] = "sam2"
+            meta["sam2_score"] = score
+        except Exception as exc:
+            logger.exception("SAM2 segmentation failed — falling back to GrabCut")
+            fg_binary = _grabcut_mask(rgb, prompt_bbox)
+            meta.update(
+                {
+                    "segmenter_used": "grabcut",
+                    "segmenter_fallback": True,
+                    "fallback_reason": "sam2_failed",
+                    "segmenter_error": f"{type(exc).__name__}: {str(exc)[:300]}",
+                }
+            )
     else:
-        fg_binary = _grabcut_mask(rgb, bbox)
-        used_segmenter = "grabcut"
+        fg_binary = _grabcut_mask(rgb, prompt_bbox)
+        meta["segmenter_used"] = "grabcut"
 
     if dilate_px > 0 and CV2_AVAILABLE:
         kernel = np.ones((dilate_px, dilate_px), np.uint8)
         fg_binary = cv2.dilate(fg_binary, kernel, iterations=1)
 
-    return fg_binary, used_segmenter
+    return fg_binary, meta
 
 
 def inpaint_background_from_photo(
@@ -158,7 +203,7 @@ def inpaint_background_from_photo(
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     rgb = np.array(img)
 
-    hole_mask, used_segmenter = _dog_hole_mask(
+    hole_mask, mask_meta = _dog_hole_mask(
         rgb, segmenter=resolved_segmenter, device=resolved_device, dilate_px=resolved_dilate
     )
 
@@ -173,10 +218,13 @@ def inpaint_background_from_photo(
 
     meta = {
         "method": "lama",
-        "segmenter": used_segmenter,
-        "segmenter_requested": resolved_segmenter,
+        # 하위 호환 키 — 실제 사용된 세그멘터를 가리킨다.
+        "segmenter": mask_meta.get("segmenter_used"),
         "device": resolved_device,
         "mask_dilate_px": resolved_dilate,
         "hole_area_fraction": round(hole_frac, 4),
+        "input_width": int(img.size[0]),
+        "input_height": int(img.size[1]),
+        **mask_meta,
     }
     return out.getvalue(), meta

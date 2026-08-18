@@ -89,3 +89,14 @@ python/out_depth.png
 /*_cutout_debug.png
 /*_split_debug.png
 /*-removebg-preview.png
+# Python virtual environment
+backend/venv/
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Environment variables
+.env
+myenv/

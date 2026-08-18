@@ -3,6 +3,7 @@
  */
 import { CUTOUT_UPLOAD_MAX_EDGE_PX } from "@/lib/cutout-speed-mode";
 import { MOCK_CUTOUT_ENABLED, TEST_APP_MODE } from "@/lib/test-app-flags";
+import { traceImage } from "@/lib/image-trace"; // [IMAGE-TRACE]
 
 /** 누끼 업로드용 — 서버 CUTOUT_MAX_PIXEL과 맞춤 (속도 모드 960) */
 export const CUTOUT_UPLOAD_MAX_EDGE = CUTOUT_UPLOAD_MAX_EDGE_PX;
@@ -12,6 +13,14 @@ export async function normalizeImageToJpegFile(
   maxEdge = 2048,
   jpegQuality = 0.92
 ): Promise<File> {
+  // [IMAGE-TRACE] 정규화 직전 — 여기 크기가 곧 "브라우저가 실제로 받은 원본"이다.
+  await traceImage(
+    "normalize:IN",
+    typeof source === "string" ? source : source,
+    "original-upload",
+    `maxEdge=${maxEdge} q=${jpegQuality}`
+  );
+
   const blob = await loadAsDecodableBlob(source);
   const bitmap = await createImageBitmap(blob).catch(async () => {
     const url = URL.createObjectURL(blob);
@@ -53,7 +62,15 @@ export async function normalizeImageToJpegFile(
     );
   });
 
-  return new File([jpeg], "upload.jpg", { type: "image/jpeg" });
+  const out = new File([jpeg], "upload.jpg", { type: "image/jpeg" });
+  // [IMAGE-TRACE] 정규화 직후 — 캔버스 재인코딩 결과(원본 아님).
+  await traceImage(
+    "normalize:OUT",
+    out,
+    "canvas-export",
+    `src=${w}x${h} -> canvas=${cw}x${ch} (maxEdge=${maxEdge})`
+  );
+  return out;
 }
 
 export function normalizeImageForCutout(source: File | string): Promise<File> {
@@ -112,6 +129,43 @@ async function imageElementToBitmap(img: HTMLImageElement): Promise<ImageBitmap>
   if (!ctx) throw new Error("Canvas unavailable");
   ctx.drawImage(img, 0, 0);
   return createImageBitmap(canvas);
+}
+
+/**
+ * 서버가 사진 자체를 거절했을 때(HTTP 422)의 안내 문구.
+ * 코드는 backend/services/cutout_errors.py 와 1:1 대응.
+ */
+const CUTOUT_REJECTION_COPY: Record<string, { ko: string; en: string }> = {
+  SUBJECT_NOT_DETECTED: {
+    ko: "사진에서 반려동물을 찾지 못했습니다. 반려동물이 크게, 정면에 잘 보이는 사진으로 다시 시도해 주세요.",
+    en: "We couldn't find a pet in this photo. Please use a photo where your pet is large and clearly visible.",
+  },
+  CUTOUT_MASK_TOO_SMALL: {
+    ko: "반려동물이 사진에서 너무 작게 나왔습니다. 더 가까이 찍힌 사진을 사용해 주세요.",
+    en: "Your pet is too small in this photo. Please use a closer shot.",
+  },
+  CUTOUT_MASK_TOO_LARGE: {
+    ko: "배경과 반려동물을 구분하지 못했습니다. 배경이 단순한 사진으로 다시 시도해 주세요.",
+    en: "We couldn't separate your pet from the background. Please try a photo with a simpler background.",
+  },
+  CUTOUT_ALPHA_EMPTY: {
+    ko: "배경 제거 결과가 비어 있습니다. 다른 사진으로 다시 시도해 주세요.",
+    en: "Background removal produced an empty image. Please try another photo.",
+  },
+  CUTOUT_RECTANGLE_LIKE: {
+    ko: "반려동물의 윤곽을 제대로 따내지 못했습니다. 배경이 단순하고 반려동물이 잘 보이는 사진을 사용해 주세요.",
+    en: "We couldn't trace your pet's outline. Please use a photo with a simple background where your pet is clearly visible.",
+  },
+};
+
+/** 누끼 거절 코드 → 사용자 안내 문구. 알 수 없는 코드면 null. */
+export function cutoutRejectionMessage(
+  code: string,
+  language = "ko"
+): string | null {
+  const copy = CUTOUT_REJECTION_COPY[code];
+  if (!copy) return null;
+  return language === "ko" ? copy.ko : copy.en;
 }
 
 export function friendlyCutoutError(message: string, language = "ko"): string {

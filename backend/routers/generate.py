@@ -5,21 +5,37 @@ import uuid
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
 from ..services import supabase_assets
+from ..services.cutout_errors import CutoutError
 from ..services.dog_image_preprocessing import build_dog_only_nobg_png_bytes
 from ..services.idle_validation_service import validate_idle_video
 from ..services.luma_idle_pipeline import generate_idle_variant
 from ..services.luma_idle_templates import IDLE_TEMPLATE_ORDER, is_known_template
-from ..services.luma_keyframe import flatten_rgba_to_jpeg_bytes
+from ..services.luma_keyframe import flatten_rgba_to_jpeg_bytes, resolve_keyframe_bg_rgb
 from ..services.luma_service import (
     build_idle_action_prompts,
-    create_generation_and_get_video_url,
     download_video,
 )
+from ..services.video_generation import create_generation_and_get_video_url
 from ..services.seamless_loop_service import make_seamless_loop_mp4
+from ..services.vitmatte_service import DEBUG_ARTIFACTS_ENABLED, validate_cutout_alpha
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _cutout_error_response(cid: str, exc: CutoutError) -> HTTPException:
+    """누끼 실패 → 422. 유료 Luma 생성으로 넘어가기 전에 여기서 멈춘다."""
+    logger.warning(
+        "generate-pet-video rejected before generation (cid=%s, code=%s): %s | diagnostics=%s",
+        cid,
+        exc.code,
+        exc.message,
+        exc.diagnostics,
+    )
+    detail = exc.to_detail(include_diagnostics=DEBUG_ARTIFACTS_ENABLED)
+    detail["content_id"] = cid
+    return HTTPException(status_code=exc.http_status, detail=detail)
 
 
 async def _cutout_to_dog_bytes(raw: bytes, *, skip: bool) -> bytes:
@@ -67,9 +83,14 @@ async def post_generate_pet_video(
 
     try:
         if skip:
+            # 클라이언트가 이미 누끼를 떴다고 주장하는 경로 — 최소 검증만 한다.
+            # 완전 투명한 PNG 가 그대로 Luma(유료)로 넘어가는 걸 막기 위함.
+            validate_cutout_alpha(raw)
             dog_bytes = raw
         else:
             dog_bytes = build_dog_only_nobg_png_bytes(raw)
+    except CutoutError as e:
+        raise _cutout_error_response(cid, e) from e
     except Exception as e:
         logger.exception("generate-pet-video: cutout/preprocessing failed (cid=%s)", cid)
         raise HTTPException(status_code=500, detail=str(e)) from e
@@ -87,8 +108,14 @@ async def post_generate_pet_video(
             detail=f"Luma용 이미지 URL이 필요합니다. Supabase(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)와 Storage 버킷을 설정하세요: {e}",
         ) from e
 
+    # 프롬프트와 같은 판정(is_black_tan_dog)으로 keyframe 배경을 정해야 I2V가
+    # 프롬프트가 요구한 배경을 그대로 유지함.
+    lum_src = raw if not skip else dog_bytes
+
     try:
-        key_jpeg = flatten_rgba_to_jpeg_bytes(dog_bytes)
+        key_jpeg = flatten_rgba_to_jpeg_bytes(
+            dog_bytes, bg_rgb=resolve_keyframe_bg_rgb(lum_src)
+        )
         key_url = await supabase_assets.upload_asset_to_storage(
             f"{user_id}/{cid}/luma_keyframe.jpg", key_jpeg, "image/jpeg"
         )
@@ -98,7 +125,6 @@ async def post_generate_pet_video(
         )
         raise HTTPException(status_code=503, detail=str(e)) from e
 
-    lum_src = raw if not skip else dog_bytes
     idle_prompt, action_prompt = build_idle_action_prompts(lum_src)
     poll_max_wait = float(os.getenv("LUMA_POLL_MAX_SEC", "1200"))
 
@@ -235,7 +261,11 @@ async def post_generate_idle_variant(
     skip = str(skip_preprocessing).lower() in ("1", "true", "yes")
 
     try:
+        if skip:
+            validate_cutout_alpha(raw)
         dog_bytes = await _cutout_to_dog_bytes(raw, skip=skip)
+    except CutoutError as e:
+        raise _cutout_error_response(cid, e) from e
     except Exception as e:
         logger.exception(
             "generate-idle-variant(%s): cutout failed (cid=%s)", template_key, cid
@@ -246,7 +276,13 @@ async def post_generate_idle_variant(
         dog_url = await supabase_assets.upload_asset_to_storage(
             f"{user_id}/{cid}/dog_only_nobg.png", dog_bytes, "image/png"
         )
-        key_jpeg = flatten_rgba_to_jpeg_bytes(dog_bytes)
+        # 아이들 템플릿은 항상 "pure solid black void background"를 요구하므로
+        # keyframe도 검정/흰색 중 하나로 맞춘다.
+        # - 이 엔드포인트는 coat 기반 자동 판정을 쓰기 때문에 dog_bytes를 넣어 결정.
+        # - 프론트 IdleLoopVideo는 near-black OR near-white 배경을 제거하도록 업데이트함.
+        key_jpeg = flatten_rgba_to_jpeg_bytes(
+            dog_bytes, bg_rgb=resolve_keyframe_bg_rgb(dog_bytes)
+        )
         key_url = await supabase_assets.upload_asset_to_storage(
             f"{user_id}/{cid}/luma_keyframe.jpg", key_jpeg, "image/jpeg"
         )

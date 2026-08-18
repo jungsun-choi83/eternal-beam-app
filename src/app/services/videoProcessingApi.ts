@@ -6,6 +6,7 @@
  */
 
 import { ensureIdleMp4Url } from '@/lib/device-host-flags'
+import { traceImage } from '@/lib/image-trace' // [IMAGE-TRACE]
 
 /** 임시 Cloudflare 터널 URL은 만료되므로 프로덕션에서 무시 → same-origin /api (vercel.json rewrites) */
 function normalizeApiBase(raw: string | undefined): string {
@@ -133,13 +134,82 @@ function formatHttpErrorDetail(err: Record<string, unknown>, fallback: string): 
   return fallback
 }
 
-export interface CutoutQualityMeta {
+/**
+ * 누끼 실패 코드 — 백엔드 backend/services/cutout_errors.py 와 1:1 대응.
+ * "이 사진으로는 안 된다"는 뜻이라, 서버가 죽은 것과 달리 클라이언트 폴백으로
+ * 우회하면 안 되고 사용자에게 알려야 한다.
+ */
+export const CUTOUT_REJECTION_CODES = [
+  'SUBJECT_NOT_DETECTED',
+  'CUTOUT_MASK_TOO_SMALL',
+  'CUTOUT_MASK_TOO_LARGE',
+  'CUTOUT_ALPHA_EMPTY',
+  'CUTOUT_RECTANGLE_LIKE',
+] as const
+
+export type CutoutRejectionCode = (typeof CUTOUT_REJECTION_CODES)[number]
+
+/** 누끼 파이프라인이 사진 자체를 거절한 경우 (HTTP 422). */
+export class CutoutRejectedError extends Error {
+  readonly code: CutoutRejectionCode | string
+  readonly status: number
+  readonly diagnostics?: CutoutDiagnostics
+
+  constructor(
+    code: string,
+    message: string,
+    status: number,
+    diagnostics?: CutoutDiagnostics
+  ) {
+    super(message)
+    this.name = 'CutoutRejectedError'
+    this.code = code
+    this.status = status
+    this.diagnostics = diagnostics
+  }
+}
+
+export function isCutoutRejectedError(err: unknown): err is CutoutRejectedError {
+  return err instanceof CutoutRejectedError
+}
+
+/** 서버가 항상 채워 주는 진단 필드 (backend vitmatte_service.Diagnostics). */
+export interface CutoutDiagnostics {
+  detector?: string
+  detector_model?: string | null
+  subject_detected?: boolean
+  subject_class?: string | null
+  detection_confidence?: number | null
+  raw_bbox?: number[] | null
+  sam2_prompt_bbox?: number[] | null
+  crop_bbox?: number[] | null
+  segmenter_requested?: string | null
+  segmenter_used?: string | null
+  segmenter_fallback?: boolean
+  fallback_reason?: string | null
+  segmenter_error?: string | null
+  sam2_score?: number | null
+  mask_area_fraction?: number | null
+  mask_bbox_fill_ratio?: number | null
+  rectangle_like_mask?: boolean
+  alpha_area_fraction?: number | null
+  input_width?: number | null
+  input_height?: number | null
+  processing_width?: number | null
+  processing_height?: number | null
+}
+
+export interface CutoutQualityMeta extends CutoutDiagnostics {
   semi_transparent_ratio?: number
   boundary_pixel_count?: number
   needs_refinement?: boolean
   threshold?: number
   quality_score?: number
   refined?: boolean
+  /** 'vitmatte' | 'rembg_alpha_matting' | null — 실제로 돌아간 정제 종류 */
+  refinement_type?: string | null
+  /** rembg adaptive 경로에서 2차 매팅 패스가 실제로 돌았는지 */
+  second_pass?: boolean
   cutout_pass?: string
   refine_error?: string
 }
@@ -151,7 +221,47 @@ export interface CutoutResult {
   error?: string
   /** 0~1, 경계 반투명 비율이 낮을수록 높음 */
   quality_score?: number | null
+  /** 서버가 실제로 지원 동물을 검출했는지 (Luma 진행 전 게이트) */
+  subject_detected?: boolean
   cutout_quality?: CutoutQualityMeta | null
+}
+
+/** 서버 응답이 실제로 쓸 수 있는 누끼인지 — Luma로 넘기기 전 공통 게이트 */
+export function assertUsableCutout(result: CutoutResult): void {
+  if (result.error) {
+    throw new Error(result.error)
+  }
+  if (result.subject_detected === false) {
+    throw new CutoutRejectedError(
+      'SUBJECT_NOT_DETECTED',
+      '사진에서 반려동물을 찾지 못했습니다.',
+      422,
+      result.cutout_quality ?? undefined
+    )
+  }
+  if (!result.cutout_url && !result.cutout_png_base64) {
+    throw new Error('누끼 결과에 이미지가 없습니다.')
+  }
+}
+
+/** 422 구조화 detail을 CutoutRejectedError로 변환 (아니면 null) */
+function parseCutoutRejection(
+  status: number,
+  body: Record<string, unknown>
+): CutoutRejectedError | null {
+  if (status !== 422) return null
+  const d = body.detail
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return null
+  const detail = d as Record<string, unknown>
+  const code = typeof detail.code === 'string' ? detail.code : ''
+  if (!code) return null
+  const message =
+    typeof detail.message === 'string' ? detail.message : '이 사진으로는 처리할 수 없습니다.'
+  const diagnostics =
+    detail.diagnostics && typeof detail.diagnostics === 'object'
+      ? (detail.diagnostics as CutoutDiagnostics)
+      : undefined
+  return new CutoutRejectedError(code, message, status, diagnostics)
 }
 
 export interface ComposeVideoResult {
@@ -215,6 +325,9 @@ export async function cutoutImage(
   const timeoutMs =
     options.timeoutMs ??
     (options.fast ? 90_000 : autoRefine ? 240_000 : 180_000)
+  // [IMAGE-TRACE] fetch() 직전 — 이 크기가 백엔드 input_width/input_height 가 된다.
+  await traceImage('upload:POST ' + cutoutPath, file, 'unknown', `base=${getBaseUrl() || '(same-origin)'}`)
+
   const ctrl = new AbortController()
   const tid = setTimeout(() => ctrl.abort(), timeoutMs)
   let res: Response
@@ -237,9 +350,16 @@ export async function cutoutImage(
       throw new Error(cutoutFetchFailedMessage(res.status))
     }
     const err = await safeJson(res)
+    // 422 = 사진 자체가 거절됨 (피사체 미검출 등). 서버 장애와 구분해야 하므로
+    // 전용 오류 타입으로 던진다 — 호출부가 클라이언트 폴백으로 우회하면 안 됨.
+    const rejected = parseCutoutRejection(res.status, err)
+    if (rejected) throw rejected
     throw new Error(formatHttpErrorDetail(err, '배경 제거 요청 실패'))
   }
-  return res.json()
+  const result = (await res.json()) as CutoutResult
+  // 레거시 호환: 예전 백엔드는 실패해도 200 + {"error": ...} 를 돌려줬다.
+  assertUsableCutout(result)
+  return result
 }
 
 /**
@@ -378,6 +498,8 @@ export interface GeneratePetVideoResult {
   dog_only_nobg_url: string
   idle_video_url: string
   action_video_url: string | null
+  /** COME_CLOSER (웹 전용 프리미엄 액션). 아직 없으면 null. */
+  come_closer_video_url?: string | null
   idle_validation?: Record<string, unknown> | null
   idle_validation_history?: Record<string, unknown>[]
   prompts?: { idle: string; action?: string }
@@ -401,6 +523,9 @@ export async function generatePetVideo(
   if (options.contentId) form.append('content_id', options.contentId)
   form.append('skip_preprocessing', String(options.skipPreprocessing === true))
   form.append('idle_only', String(options.idleOnly !== false))
+
+  // [IMAGE-TRACE] Luma 생성으로 넘어가는 누끼 파일의 실제 해상도.
+  await traceImage('upload:POST /api/generate-pet-video', file, 'cutout-result')
 
   const ctrl = new AbortController()
   const PET_VIDEO_TIMEOUT_MS = 25 * 60 * 1000
@@ -432,6 +557,9 @@ export async function generatePetVideo(
       throw new Error(`Pet video server error (HTTP ${res.status})`)
     }
     const err = await safeJson(res)
+    // 서버가 생성 직전에 누끼를 거절한 경우 — 과금 전에 멈춘 것이므로 그대로 노출.
+    const rejected = parseCutoutRejection(res.status, err)
+    if (rejected) throw rejected
     throw new Error(formatHttpErrorDetail(err, 'generate-pet-video failed'))
   }
   return res.json()

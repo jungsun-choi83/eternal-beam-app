@@ -2,7 +2,8 @@
 /api/v1/pet — 40 시나리오 Luma 배치 파이프라인
 
 POST /generate-all   : 사진 1장 → 40개 Luma 작업 제출
-POST /luma-webhook    : Luma 콜백 → Supabase Storage 저장
+POST /generation-webhook : 생성 완료 콜백(luma/fal 공용) → Supabase Storage 저장
+POST /luma-webhook       : 위 엔드포인트의 하위호환 별칭
 GET  /batch/{batch_id}: 진행 상황 조회
 """
 
@@ -20,6 +21,8 @@ from ..services.credit_generation_service import (
   generate_with_credit,
   handle_luma_webhook_for_credit,
 )
+from ..services.credit_keyframe import KeyframePreparationError
+from ..services.video_generation import normalize_webhook
 from ..services.wallet_service import InsufficientCreditsError
 from ..services.luma_batch_service import submit_all_scenarios
 from ..services import pet_generation_store
@@ -50,7 +53,9 @@ async def generate_with_credit_endpoint(
   """
   try:
     api_base = _public_api_base(request)
-    webhook_url = f"{api_base}/api/v1/pet/luma-webhook"
+    # 신규 제출은 프로바이더 중립 엔드포인트를 쓴다. /luma-webhook 은 이미
+    # 등록된 예전 콜백을 위해 별칭으로만 남는다.
+    webhook_url = f"{api_base}/api/v1/pet/generation-webhook"
     return await generate_with_credit(
       user_id=body.user_id,
       pet_image_url=body.pet_image_url,
@@ -60,6 +65,19 @@ async def generate_with_credit_endpoint(
     )
   except InsufficientCreditsError as e:
     raise HTTPException(status_code=403, detail=e.message) from e
+  except KeyframePreparationError as e:
+    # 검정 플레이트를 못 만들면 Luma 를 한 건도 제출하지 않았고, 차감분은
+    # generate_with_credit 안에서 이미 환불됐다. 크레딧은 그대로 남아 있다.
+    raise HTTPException(
+      status_code=502,
+      detail={
+        "code": "KEYFRAME_PREPARATION_FAILED",
+        "message": "펫 이미지를 영상 생성용으로 준비하지 못했습니다. 크레딧은 차감되지 않았습니다.",
+        "stage": e.stage,
+        "submitted": 0,
+        "credits_charged": 0,
+      },
+    ) from e
   except ValueError as e:
     raise HTTPException(status_code=400, detail=str(e)) from e
 
@@ -109,7 +127,7 @@ async def generate_all(
   await pet_generation_store.create_batch(batch_id, uid, pid, public_url)
 
   api_base = _public_api_base(request)
-  webhook_url = f"{api_base}/api/v1/pet/luma-webhook"
+  webhook_url = f"{api_base}/api/v1/pet/generation-webhook"
 
   submitted, errors = await submit_all_scenarios(
     batch_id=batch_id,
@@ -129,31 +147,35 @@ async def generate_all(
     submitted=submitted,
     submit_errors=errors,
     status=status,
-    webhook_path="/api/v1/pet/luma-webhook",
+    webhook_path="/api/v1/pet/generation-webhook",
   )
 
 
-@router.post("/luma-webhook")
-async def luma_webhook(request: Request):
+@router.post("/generation-webhook")
+async def generation_webhook(request: Request):
   """
-  Luma Dream Machine 콜백.
+  프로바이더 중립 생성 완료 콜백.
 
-  - Body: Generation JSON (`id`, `state`, `assets.video`, …)
-  - `state == completed` 이고 video URL 있으면 Supabase Storage 업로드
+  두 가지 본문을 모두 받는다 (normalize_webhook 이 키 존재 여부로 구분):
+    luma : {"id", "state", "assets": {"video"}, "failure_reason"}
+    fal  : {"request_id", "status", "payload": {"video": {"url"}}, "error"}
+
+  /luma-webhook 은 이 함수를 그대로 호출하는 별칭으로 남는다 — 이미 Luma 에
+  등록된 콜백 URL 이 계속 동작해야 하기 때문이다.
   """
   try:
     body = await request.json()
   except Exception:
     raise HTTPException(400, detail="Invalid JSON body") from None
 
-  gen_id = body.get("id")
-  state = (body.get("state") or "").lower()
-  assets = body.get("assets") or {}
-  video_url = assets.get("video") if isinstance(assets, dict) else None
-  failure = body.get("failure_reason") or body.get("failureReason")
+  outcome = normalize_webhook(body)
+  if outcome is None or not outcome.external_id:
+    raise HTTPException(400, detail="Missing or unrecognised generation id")
 
-  if not gen_id:
-    raise HTTPException(400, detail="Missing generation id")
+  gen_id = outcome.external_id
+  state = outcome.state
+  video_url = outcome.video_url
+  failure = outcome.error
 
   # MOCK: 로컬 테스트 시 즉시 완료 처리 (실제 MP4 없으면 스킵)
   if str(gen_id).startswith("mock_"):
@@ -192,6 +214,12 @@ async def luma_webhook(request: Request):
   # dreaming / 기타 중간 상태
   summary = await pet_generation_store.update_scenario_from_luma(gen_id, state or "dreaming")
   return {"ok": True, "pipeline": "batch", "summary": summary}
+
+
+@router.post("/luma-webhook")
+async def luma_webhook(request: Request):
+  """하위호환 별칭 — 이미 Luma 에 등록된 콜백 URL 이 계속 동작해야 한다."""
+  return await generation_webhook(request)
 
 
 @router.get("/wallet/{user_id}")

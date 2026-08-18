@@ -69,6 +69,7 @@ from .routers import (
   preview,
   content,
   pet_v1,
+  premium_v1,
   device_v1,
   payment_v1,
   subscription_v1,
@@ -156,6 +157,9 @@ app.include_router(assets.router, prefix="/api", tags=["assets"])
 app.include_router(preview.router, prefix="/api", tags=["preview"])
 app.include_router(content.router, prefix="/api", tags=["content"])
 app.include_router(pet_v1.router, prefix="/api", tags=["pet-v1"])
+# 프로덕션 프리미엄 구매/생성. **항상 마운트된다** — dev_premium 과 달리 env 게이트가
+# 없고, 대신 모든 요청이 검증된 토큰과 소유권 검사를 통과해야 한다.
+app.include_router(premium_v1.router, prefix="/api", tags=["pet-premium"])
 app.include_router(device_v1.router, prefix="/api", tags=["device-v1"])
 app.include_router(payment_v1.router, prefix="/api", tags=["payment-v1"])
 app.include_router(subscription_v1.router, prefix="/api", tags=["subscription-v1"])
@@ -165,6 +169,12 @@ _enable_generate = os.getenv("ENABLE_GENERATE_API", "0").strip().lower() in ("1"
 if _enable_generate:
     from .routers import generate
     app.include_router(generate.router, prefix="/api", tags=["generate"])
+
+# 개발 전용 프리미엄 액션 트리거(COME_CLOSER). 기본 꺼짐 —
+# 켜지 않으면 라우트 자체가 앱에 존재하지 않는다.
+if os.getenv("ENABLE_DEV_PREMIUM_TRIGGER", "0").strip().lower() in ("1", "true", "yes"):
+    from .routers import dev_premium
+    app.include_router(dev_premium.router, prefix="/api", tags=["pet-dev"])
 
 # 프리뷰 출력 디렉토리 (main.py와 같은 위치 기준)
 _output_dir = os.path.join(os.path.dirname(__file__), "..", "outputs")

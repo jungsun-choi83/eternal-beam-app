@@ -13,6 +13,7 @@ import { MemorialIconButton, MemorialPrimaryButton } from "@/components/memorial
 import { inferMediaKind } from "@/lib/media-file-kind";
 import { CUTOUT_WARMUP_MAX_MS } from "@/lib/cutout-speed-mode";
 import { warmupVideoApi } from "@/lib/video-api-warmup";
+import { traceImage } from "@/lib/image-trace"; // [IMAGE-TRACE]
 
 interface PhotoUploadScreenProps {
   uploadedImage: string | null;
@@ -53,12 +54,22 @@ export function PhotoUploadScreen({
       const kind = inferMediaKind(file);
       if (!kind) return;
 
+      // [IMAGE-TRACE] OS/브라우저 파일 선택기가 넘겨준 그대로의 File.
+      // 여기 크기가 이미 작다면 축소는 앱이 아니라 사진 선택기에서 일어난 것이다
+      // (안드로이드 갤러리/구글포토가 원본 대신 저해상도 프록시를 주는 경우).
+      void traceImage("file-selected (picker)", file, "original-upload", `kind=${kind}`);
+
       if (kind === "image") {
         setMediaType("image");
         localStorage.setItem("eternal_beam_media_type", "image");
         void warmupVideoApi({ coldStart: true, maxWaitMs: CUTOUT_WARMUP_MAX_MS });
         const reader = new FileReader();
-        reader.onload = () => onImageUpload(reader.result as string);
+        reader.onload = () => {
+          const result = reader.result as string;
+          // [IMAGE-TRACE] FileReader 결과 = 앱 상태로 들어가는 값 (무손실이어야 함).
+          void traceImage("state:uploadedImage", result, "original-upload");
+          onImageUpload(result);
+        };
         reader.readAsDataURL(file);
         return;
       }
