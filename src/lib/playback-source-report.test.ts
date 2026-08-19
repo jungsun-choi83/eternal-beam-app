@@ -81,11 +81,10 @@ test('memorial 은 승격 전이면 폴링한다 — 한 번 묻고 포기하면
   // 비어 있어 decideTrigger 가 hasSource=false → "no-source" 로 거절한다.
   const code = strip(MEMORIAL)
   assert.match(code, /pollComeCloserUntilReady\(/, 'devicePlay 가 폴링하지 않는다')
-  assert.match(
-    code,
-    /r\.state !== "queued" && r\.state !== "generating"/,
-    'queued/generating 둘 다 폴링 대상이어야 한다',
-  )
+  // 유료 모델로 넘어오면서 대상이 좁아졌다: 이 화면은 **이미 진행 중인** 작업만
+  // 지켜본다. queued(=아직 제출 안 됨)를 폴링해도 만들어 줄 작업이 없고, 여기서
+  // 제출하면 그게 곧 동의 없는 결제다 — 제출은 purchasePremium() 만 한다.
+  assert.match(code, /r\.state !== "generating"/, 'generating 이 폴링 대상이 아니다')
   assert.match(code, /isCancelled: \(\) => cancelled/, '언마운트 후에도 폴링이 계속된다')
 })
 

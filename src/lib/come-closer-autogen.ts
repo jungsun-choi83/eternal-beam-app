@@ -107,7 +107,45 @@ async function lookup(
 }
 
 /**
+ * COME_CLOSER 자산 **조회 전용**. 절대 생성하지 않고 절대 과금하지 않는다.
+ *
+ * 화면 마운트/폴링 경로가 쓰는 함수다. 확정된 사업 모델에서 COME_CLOSER 는
+ * 1 크레딧짜리 액션 구매이므로, 화면을 열었다는 이유로 생성이 시작되면 안 된다.
+ * 새 생성은 lib/premium-assets.ts 의 purchasePremium(actionKind("COME_CLOSER")) 이
+ * 사용자 조작에서만 한다.
+ */
+export async function lookupComeCloserAsset(
+  params: EnsureParams
+): Promise<EnsureResult> {
+  const { userId, petId, onState } = params;
+  const emit = (s: ComeCloserState) => onState?.(s);
+
+  if (!userId?.trim()) {
+    emit("idle");
+    return { state: "idle", url: null };
+  }
+
+  emit("checking");
+  const found = await lookup(params);
+  if (found.url) {
+    emit("ready");
+    return { state: "ready", url: found.url };
+  }
+  if (found.disabled) {
+    emit("unavailable");
+    return { state: "unavailable", url: null };
+  }
+  const pending = attempted.has(comeCloserKey(userId, petId));
+  emit(pending ? "generating" : "idle");
+  return { state: pending ? "generating" : "idle", url: null };
+}
+
+/**
  * 정확히 1회 자동 생성.
+ *
+ * ⚠️ **무과금 개발 경로 전용이다** (/v1/pet/dev, ENABLE_DEV_PREMIUM_TRIGGER).
+ * 프로덕션 유료 생성은 purchasePremium() 을 쓴다 — 인증·소유권·1크레딧 과금·
+ * 구매 원장 멱등성을 거친다. 화면 effect 에서 이 함수를 부르면 안 된다.
  *
  * 생성한다:  canonical 없음 + 진행 중 없음 + 이번 세션에 시도한 적 없음
  * 아무것도 안 한다: canonical 있음 / 진행 중 / 이미 시도함 / 신원·누끼 없음 / 경로 꺼짐
