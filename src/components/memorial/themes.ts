@@ -58,6 +58,22 @@ export const memorialThemes: MemorialTheme[] = [
     floorY: 0.88,
   },
   {
+    id: 9, 
+    name: "Beach",
+    nameKo: "해변",
+    themeKey: "beach",
+    gradient: "from-sky-500 via-cyan-700 to-blue-950",
+    accent: "#67e8f9",
+    premium: false,
+    price: "",
+  
+    thumb: "/theme-thumbs/beach.jpg",
+    bgVideo: "/backgrounds/snow_forest/beach.mp4",
+  
+    // Adjust after checking where the visible sand/ground begins.
+    floorY: 0.88,
+  },
+  {
     id: 1,
     name: "Snow Forest",
     nameKo: "눈 숲",

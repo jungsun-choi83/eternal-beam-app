@@ -15,6 +15,7 @@ import { ThemeBackgroundVideo } from "@/components/memorial/theme-background-vid
 import { getMemorialTheme, DEFAULT_THEME_ID } from "@/components/memorial/themes";
 import { usePetGrounding } from "@/components/memorial/use-pet-grounding";
 import { useIdleEventAssets } from "@/components/memorial/use-idle-event-assets";
+import { UnlockFeaturesCard } from "@/components/memorial/unlock-features-card";
 import { useIdleEventScheduler } from "@/components/memorial/use-idle-event-scheduler";
 import { hasRealIdleVideo } from "@/lib/pending-generation";
 import { subjectTransform } from "@/lib/pet-grounding";
@@ -42,7 +43,7 @@ import {
   mergeComeCloserIntoPipeline,
 } from "@/lib/come-closer-asset";
 import {
-  ensureComeCloser,
+  lookupComeCloserAsset,
   pollComeCloserUntilReady,
   type ComeCloserState,
 } from "@/lib/come-closer-autogen";
@@ -57,6 +58,8 @@ interface MemorialDevicePlayScreenProps {
   language?: string;
   onBack: () => void;
   onComplete: () => void;
+  /** 크레딧 충전 화면(설정 > 크레딧)으로 이동. */
+  onGetCredits?: () => void;
 }
 
 export function MemorialDevicePlayScreen({
@@ -66,6 +69,7 @@ export function MemorialDevicePlayScreen({
   language = "ko",
   onBack,
   onComplete,
+  onGetCredits,
 }: MemorialDevicePlayScreenProps) {
   const d = memorialT(language).devicePlay;
   const themeId = resolveSelectedThemeId(selectedTheme);
@@ -112,7 +116,7 @@ export function MemorialDevicePlayScreen({
     };
 
     void (async () => {
-      const r = await ensureComeCloser({ ...params, onState });
+      const r = await lookupComeCloserAsset({ ...params, onState });
       if (cancelled) return;
 
       if (r.url) {
@@ -139,7 +143,7 @@ export function MemorialDevicePlayScreen({
       // queued 도 폴링으로 해결된다 — 서버가 종료 이벤트마다 큐를 전진시키고
       // (premium_generation.advance_generation_queue) COME_CLOSER 는 GENERATION_ORDER
       // 1순위라, 슬롯이 비면 제출된다. 그래서 이 화면은 재제출하지 않고 기다리기만 한다.
-      if (r.state !== "queued" && r.state !== "generating") return;
+      if (r.state !== "generating") return;
       const url = await pollComeCloserUntilReady({
         ...params,
         onState,
@@ -287,7 +291,11 @@ export function MemorialDevicePlayScreen({
         <motion.div
           initial={{ opacity: 0, scale: 0.96 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="theme-preview-frame relative w-full aspect-[3/4] max-h-[min(52vh,360px)]"
+          // shrink-0 이 **필수**다. 이 프레임의 내용물은 전부 absolute inset-0 이라
+          // 내재 높이가 0 이고, flex 자식은 기본이 flex-shrink:1 이다. 아래에 형제가
+          // 늘어나 컨테이너가 넘치는 순간 프레임이 0 까지 눌려, aspect-[3/4] 의 너비만
+          // 남은 납작한 가로 막대가 된다(잠금 카드를 추가하면서 실제로 그렇게 됐다).
+          className="theme-preview-frame relative w-full aspect-[3/4] max-h-[min(52vh,360px)] shrink-0"
           onPointerDown={handlePetPointerDown}
           onPointerUp={handlePetPointerUp}
           onPointerCancel={handlePetPointerUp}
@@ -339,10 +347,31 @@ export function MemorialDevicePlayScreen({
           ) : null}
         </motion.div>
 
+        {/* 프레임 **아래쪽만** 스크롤한다.
+            재생 영역은 위에서 shrink-0 으로 고정했으므로, 세로 공간이 모자랄 때
+            줄어드는 것은 이 영역이다. 예전에는 이 아래 형제들이 프레임을 눌러
+            납작하게 만들었다. */}
+        <div className="w-full flex-1 min-h-0 overflow-y-auto hide-scrollbar flex flex-col items-center">
+          {/* 잠금 해제 CTA — 재생 프레임 바로 아래, 상태 표시 위.
+              여기에 두는 이유: 잠금 해제가 바꾸는 것(자발적 움직임·더블탭)이 바로 위
+              프레임에서 일어나므로, 결과가 보이는 자리에서 사는 것이 가장 짧은 경로다.
+              새 화면을 만들지 않는다. */}
+          <div className="mt-4 flex justify-center w-full shrink-0">
+            <UnlockFeaturesCard
+              petId={pipeline ? getEternalBeamPetId(pipeline.content_id) : null}
+              petImageUrl={pipeline?.dog_only_nobg_url ?? null}
+              // BREATH 자산이 실제로 있을 때만 노출한다 — 그 전에는 재생기 자체가
+              // 없어 잠금 해제해도 보여 줄 곳이 없다.
+              enabled={hasIdle}
+              language={language}
+              onGetCredits={onGetCredits}
+            />
+          </div>
+
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="mt-5 flex flex-col items-center gap-2 text-center max-w-[280px]"
+          className="mt-5 shrink-0 flex flex-col items-center gap-2 text-center max-w-[280px]"
         >
           <button
             type="button"
@@ -371,6 +400,7 @@ export function MemorialDevicePlayScreen({
           <p className="text-sm memorial-body">{statusHint ?? d.startingHint}</p>
           </button>
         </motion.div>
+        </div>
       </div>
 
       <div className="px-8 pb-10 shrink-0 relative z-10">

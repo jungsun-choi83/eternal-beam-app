@@ -126,40 +126,53 @@ test('플레이어에는 스케줄링이 없다 — 결정은 전부 바깥에�
   assert.equal(selfCalls.length, 0, '플레이어가 스스로 trigger() 를 호출한다')
 })
 
-// ── 착수(kickoff): BREATH 성공 직후 두 슬롯을 모두 채운다 ────────────────────
+// ── 자동 유료 생성 금지 ──────────────────────────────────────────────────────
+//
+// 확정된 사업 모델: 아이들 번들 1크레딧 / 액션 1크레딧. 화면을 열거나 확인을
+// 누르는 것은 **결제가 아니다**. 예전에는 handleConfirm 이 COME_CLOSER + 첫 아이들
+// 이벤트를 자동 제출했고(무과금 dev 엔드포인트라 가능했다), 그 코드가 그대로 남으면
+// 유료 전환 즉시 사용자 동의 없는 결제가 된다.
 
-test('kickoff 은 확인 성공 직후 2건을 동시에 넣는다 (슬롯 낭비 금지)', () => {
-  // 한 건만 넣으면 그 작업이 끝날 때까지 슬롯 하나가 놀아 전체가 한 사이클 늦어진다.
+test('확인(confirm)이 프리미엄 생성을 자동 착수하지 않는다', () => {
   const code = strip(SCREEN)
-  const i = code.indexOf('void Promise.allSettled([')
-  assert.ok(i > 0, 'kickoff 이 두 건을 동시에 보내지 않는다')
-  const block = code.slice(i, i + 900)
-  assert.match(block, /ensureComeCloser\(/, 'COME_CLOSER 가 착수에 없다')
-  assert.match(block, /ensureIdleEventAsset\(/, '두 번째 슬롯을 채우지 않는다')
+  assert.doesNotMatch(code, /ensureComeCloser\(/, '확인 경로가 COME_CLOSER 를 자동 생성한다')
+  assert.doesNotMatch(
+    code,
+    /ensureIdleEventAsset\(/,
+    '확인 경로가 아이들 이벤트를 자동 생성한다',
+  )
 })
 
-test('kickoff 의 두 번째 액션은 하드코딩이 아니라 레지스트리에서 온다', () => {
-  const code = strip(SCREEN)
-  assert.match(
-    code,
-    /const firstIdleEvent = registeredIdleEvents\(\)\[0\]\?\.id/,
-    '아이들 이벤트 순서가 바뀌면 착수도 따라가야 한다',
-  )
-  // 착수 블록에 이벤트 id 문자열이 박혀 있으면 안 된다.
-  const i = code.indexOf('void Promise.allSettled([')
-  const block = code.slice(i, i + 900)
-  for (const id of ['BLINKING', 'EAR_TWITCHING', 'HEAD_TILTING', 'TAIL_WAGGING']) {
-    assert.doesNotMatch(block, new RegExp(`["']${id}["']`), `${id} 를 하드코딩했다`)
+test('어느 화면도 마운트만으로 유료 생성을 시작하지 않는다', () => {
+  for (const [name, code] of [['preview', SCREEN], ['memorial', MEMORIAL]] as const) {
+    const src = strip(code)
+    assert.doesNotMatch(src, /ensureComeCloser\(/, `${name} 이 COME_CLOSER 를 자동 생성한다`)
+    assert.doesNotMatch(src, /ensureIdleEventAsset\(/, `${name} 이 아이들 이벤트를 자동 생성한다`)
+    assert.doesNotMatch(src, /purchasePremium\(/, `${name} 이 effect 에서 결제한다`)
   }
 })
 
-test('kickoff 은 확인(BREATH 성공) 안에서만 일어난다 — 커밋 전 지출 금지', () => {
-  const code = strip(SCREEN)
-  const i = code.indexOf('void Promise.allSettled([')
-  const before = code.slice(0, i)
-  // 착수 직전에 BREATH URL 확인이 있어야 한다.
-  assert.match(before.slice(-700), /if \(next\.idle_video_url\)/, 'BREATH 성공 게이트가 없다')
-  assert.match(before, /const handleConfirm = useCallback/, 'handleConfirm 밖에서 착수하고 있다')
+test('발견 경로는 조회 전용 함수만 쓴다', () => {
+  assert.match(strip(ASSETS), /lookupIdleEventAsset\(/, '자산 훅이 조회 전용이 아니다')
+  assert.doesNotMatch(strip(ASSETS), /ensureIdleEventAsset\(/, '자산 훅이 생성을 제출한다')
+  for (const code of [SCREEN, MEMORIAL]) {
+    assert.match(strip(code), /lookupComeCloserAsset\(/)
+  }
+})
+
+test('구매 클라이언트는 발견과 분리돼 있고 결제 함수를 따로 노출한다', () => {
+  const purchase = strip(readFileSync('src/lib/premium-assets.ts', 'utf8'))
+  assert.match(purchase, /export async function discoverPremiumAssets/)
+  assert.match(purchase, /export async function purchasePremium/)
+  // 발견은 GET, 구매는 POST — 뒤바뀌면 조회가 결제가 된다.
+  const discover = purchase.slice(purchase.indexOf('discoverPremiumAssets'))
+  assert.match(discover.slice(0, 600), /method: "GET"/)
+})
+
+test('구매 요청은 인증 토큰을 보낸다 — 신원을 바디로 보내지 않는다', () => {
+  const purchase = strip(readFileSync('src/lib/premium-assets.ts', 'utf8'))
+  assert.match(purchase, /Authorization: `Bearer \$\{params\.accessToken\}`/)
+  assert.doesNotMatch(purchase, /user_id:/, '신원을 바디에 실으면 서버가 토큰을 무시할 여지가 생긴다')
 })
 
 test('확인 전 프리미엄 생성 금지 — COME_CLOSER effect 와 자산 훅 둘 다 게이트된다', () => {

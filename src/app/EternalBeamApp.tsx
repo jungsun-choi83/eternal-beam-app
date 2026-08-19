@@ -143,6 +143,49 @@ export function EternalBeamApp() {
     duration: pageTransitionSec.current,
   })
 
+  // Memorial 의 '크레딧 받기' → 설정으로 이동하면서 크레딧 섹션을 강조한다.
+  const [focusCredits, setFocusCredits] = useState(false)
+
+  // 설정에서 '뒤로' 를 눌렀을 때 돌아갈 화면.
+  //
+  // 예전에는 설정의 뒤로가 **항상 home 으로 하드코딩**돼 있었다. 그래서 Memorial 에서
+  // 설정에 들어갔다 나오면 흐름의 처음으로 튕겨 나갔고(펫·테마·위치 상태는 남아 있지만
+  // 그 화면으로 돌아갈 길이 없다), 크레딧을 충전하고 돌아와 잠금 해제하는 동선이
+  // 그대로 끊겼다.
+  //
+  // qrBackTarget 과 같은 패턴이다 — 들어온 화면을 기억했다가 그리로 돌려보낸다.
+  const [settingsBackTarget, setSettingsBackTarget] = useState<Screen | null>(null)
+
+  /** 설정 열기. 돌아갈 화면을 함께 기억한다. */
+  const openSettings = (from: Screen, options?: { focusCredits?: boolean }) => {
+    setSettingsBackTarget(from)
+    if (options?.focusCredits) setFocusCredits(true)
+    navigateTo('settings')
+  }
+
+  /** 설정에서 뒤로. 기억한 화면이 없으면 예전 동작(home)을 유지한다. */
+  const handleSettingsBack = () => {
+    const target = settingsBackTarget ?? 'home'
+    setSettingsBackTarget(null)
+    setFocusCredits(false)
+    navigateTo(target, 'back')
+  }
+
+  // 세션 복원 / 토큰 갱신 / 로그아웃 구독.
+  //
+  // 앱을 새로 열면 supabase-js 가 저장된 세션을 복원하고 INITIAL_SESSION 을 쏜다.
+  // 그때 서버가 확정한 Eternal Beam 신원을 다시 받아 로컬과 맞춘다 — 이게 없으면
+  // 새로고침 후 로컬 user_id 와 서버 신원이 갈라져 지갑·자산 조회가 어긋난다.
+  // 여기서는 아무것도 구매하지 않는다(조회 한 번뿐).
+  useEffect(() => {
+    let unsubscribe = () => {}
+    void import('@/lib/supabase-auth').then((m) => {
+      void m.syncEternalBeamIdentity()
+      unsubscribe = m.onAuthStateChange(() => {})
+    })
+    return () => unsubscribe()
+  }, [])
+
   useEffect(() => {
     if (!deviceDemo) return
     setCutoutImage(DEVICE_DEMO_GOYA_CUTOUT)
@@ -482,7 +525,7 @@ export function EternalBeamApp() {
                 language={language}
                 onMediaFile={handleMediaFile}
                 onGallery={() => navigateTo('gallery')}
-                onSettings={() => navigateTo('settings')}
+                onSettings={() => openSettings('home')}
                 onTryForest={
                   deviceDemo ? () => navigateTo('forestExperience') : undefined
                 }
@@ -722,6 +765,7 @@ export function EternalBeamApp() {
                 language={language}
                 onBack={() => navigateTo('preview', 'back')}
                 onComplete={handleReset}
+                onGetCredits={() => openSettings('devicePlay', { focusCredits: true })}
               />
             </motion.div>
           )}
@@ -789,8 +833,9 @@ export function EternalBeamApp() {
                   handleLanguageChange(language === 'ko' ? 'en' : 'ko')
                 }
                 onDeviceSettings={() => navigateTo('device')}
-                onBack={() => navigateTo('home', 'back')}
+                onBack={handleSettingsBack}
                 onLogout={handleLogout}
+                focusCredits={focusCredits}
               />
             </motion.div>
           )}

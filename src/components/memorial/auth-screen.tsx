@@ -7,6 +7,12 @@ import { HolographicBackground } from "./holographic-background";
 import { HologramEffects } from "./hologram-effects";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { setEternalBeamUserId } from "@/lib/eternal-beam-user";
+import {
+  isSupabaseAuthConfigured,
+  signInWithPassword,
+  signUpWithPassword,
+  syncEternalBeamIdentity,
+} from "@/lib/supabase-auth";
 import { getPetName, setPetName, syncPetProfileToDevice } from "@/lib/pet-profile";
 
 interface AuthScreenProps {
@@ -46,6 +52,7 @@ export function AuthScreen({
     typeof window !== "undefined" ? getPetName() : ""
   );
   const [petNameError, setPetNameError] = useState<string | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [focusedField, setFocusedField] = useState<string | null>(null);
 
@@ -58,19 +65,54 @@ export function AuthScreen({
       return;
     }
     setPetNameError(null);
+    setAuthError(null);
     setIsLoading(true);
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-    setIsLoading(false);
+
+    // ── 실제 인증 ────────────────────────────────────────────────────────────
+    // 예전에는 1.5초 대기 후 localStorage 에 이메일을 쓰는 것이 전부였고
+    // (비밀번호는 쓰이지도 않았다), 그래서 프리미엄 API 에 보낼 토큰이 없었다.
+    //
+    // Supabase 가 설정돼 있으면 진짜로 로그인한다. 설정돼 있지 않으면(로컬 개발
+    // 환경 등) 예전 동작을 그대로 유지한다 — 여기서 막으면 인증과 무관한 기존
+    // 플로우(무료 BREATHING 포함)가 전부 멈춘다.
+    let signedIn = false;
+    if (isSupabaseAuthConfigured() && email.trim() && password) {
+      const r =
+        mode === "signup"
+          ? await signUpWithPassword(email, password)
+          : await signInWithPassword(email, password);
+      if (!r.ok) {
+        setIsLoading(false);
+        setAuthError(r.message);
+        return;
+      }
+      signedIn = !r.needsEmailConfirmation;
+      if (r.needsEmailConfirmation) {
+        setIsLoading(false);
+        setAuthError(a.confirmEmailSent);
+        return;
+      }
+    }
+
     if (mode === "signup" && petName.trim()) {
       setPetName(petName.trim());
       void syncPetProfileToDevice();
     }
+
     const label = (name || email.split("@")[0] || "").trim();
+    // 로컬 신원은 잠정값이다. 로그인했다면 **서버가 확정한 신원**으로 덮어쓴다 —
+    // 검증된 이메일이면 소문자 이메일이 그대로 나오므로 기존 데이터가 유지되고,
+    // 아니면 새 신원이 온다. 어느 쪽이든 프리미엄과 지갑이 같은 값을 쓰게 된다.
     if (email.trim()) {
       setEternalBeamUserId(email.trim().toLowerCase());
     } else if (label) {
       setEternalBeamUserId(label);
     }
+    if (signedIn) {
+      await syncEternalBeamIdentity();
+    }
+
+    setIsLoading(false);
     onAuthComplete(label || undefined);
   };
 
@@ -164,6 +206,7 @@ export function AuthScreen({
                 </div>
                 <p className="auth-field-hint mt-1.5 px-1">{a.petNameHint}</p>
                 {petNameError ? <p className="auth-field-error mt-1 px-1">{petNameError}</p> : null}
+
               </div>
             ) : null}
 
@@ -223,6 +266,10 @@ export function AuthScreen({
           ) : null}
         </div>
       </div>
+          {authError ? (
+            <p className="auth-field-error mt-3 px-1 text-center">{authError}</p>
+          ) : null}
+
 
       <footer className="auth-screen-footer shrink-0 relative z-10 px-5 pb-[max(1rem,env(safe-area-inset-bottom,0px))] pt-2">
         <motion.button

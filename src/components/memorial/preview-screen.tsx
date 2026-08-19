@@ -23,12 +23,8 @@ import {
   type IdleEvent,
   type PetRuntimeTrigger,
 } from "@/lib/pet-runtime-events";
-import { ensureIdleEventAsset } from "@/lib/idle-event-dev-trigger";
 import { useIdleEventScheduler } from "@/components/memorial/use-idle-event-scheduler";
-import {
-  IDLE_ASSET_SWEEP_MS,
-  useIdleEventAssets,
-} from "@/components/memorial/use-idle-event-assets";
+import { useIdleEventAssets } from "@/components/memorial/use-idle-event-assets";
 import { getEternalBeamUserId } from "@/lib/eternal-beam-user";
 import { getEternalBeamPetId } from "@/lib/pet-identity";
 import {
@@ -36,7 +32,7 @@ import {
   mergeComeCloserIntoPipeline,
 } from "@/lib/come-closer-asset";
 import {
-  ensureComeCloser,
+  lookupComeCloserAsset,
   pollComeCloserUntilReady,
   type ComeCloserState,
 } from "@/lib/come-closer-autogen";
@@ -82,12 +78,6 @@ function assertPreviewTheme(selectedTheme: number | null, resolvedId: number) {
     );
   }
 }
-
-/**
- * COME_CLOSER 가 큐 대기(queued)일 때 재제출을 시도하는 횟수.
- * 20초 × 30 = 약 10분 — 앞선 생성 2건이 끝나기에 충분하다.
- */
-const COME_CLOSER_QUEUE_ATTEMPTS = 30;
 
 function pinchDistance(points: Map<number, { x: number; y: number }>) {
   const pts = [...points.values()];
@@ -227,45 +217,38 @@ export function PreviewScreen({
     };
 
     /**
-     * 확보 루프.
+     * 발견 루프 — **조회만 한다.**
      *
-     * "queued" 를 반드시 다시 시도해야 한다 — 그 상태는 **아직 제출되지 않았다**는
-     * 뜻이라, 폴링(GET)만 해서는 영원히 안 나온다. 만들어 줄 작업 자체가 없기
-     * 때문이다. 슬롯이 빌 때까지 기다렸다가 **다시 ensure(POST)** 해야 한다.
-     * 이 구분을 놓쳐서 COME_CLOSER 가 조용히 버려지고 있었다.
+     * 예전에는 여기서 ensureComeCloser() 로 생성을 제출하고, queued 면 재제출까지
+     * 했다. 무과금 개발 엔드포인트에서는 편의였지만, 확정된 사업 모델에서
+     * COME_CLOSER 는 1 크레딧짜리 구매다 — 화면을 열었다는 이유로 결제가 일어나면
+     * 안 된다.
+     *
+     * 이제 이미 승격됐거나 이미 진행 중인 것만 집어 온다. 없으면 없는 채로 둔다:
+     * 소스가 없으면 더블탭이 no-source 로 거절되고 BREATHING 이 유지된다.
+     * 새 생성은 purchasePremium(actionKind("COME_CLOSER")) 만 시작한다.
      */
     const acquire = async () => {
-      for (let attempt = 0; attempt < COME_CLOSER_QUEUE_ATTEMPTS; attempt += 1) {
-        if (cancelled) return;
-        const r = await ensureComeCloser({ ...params, onState });
-        if (cancelled) return;
+      const r = await lookupComeCloserAsset({ ...params, onState });
+      if (cancelled) return;
 
-        if (r.url) {
-          // 값이 실제로 달라질 때만 상태를 바꾼다 — deps=[pipeline] 이라
-          // 무조건 setPipeline 하면 렌더 루프가 된다.
-          if (r.url !== pipeline.come_closer_video_url || pipeline.come_closer_pet_id !== petId) {
-            setPipeline(mergeComeCloserIntoPipeline(pipeline, r.url, petId));
-          }
-          return;
+      if (r.url) {
+        if (r.url !== pipeline.come_closer_video_url || pipeline.come_closer_pet_id !== petId) {
+          setPipeline(mergeComeCloserIntoPipeline(pipeline, r.url, petId));
         }
-        // 이 펫의 자산이 없다 = 남아 있는 캐시는 다른 펫 것이다. 즉시 비운다.
-        if (pipeline.come_closer_video_url) {
-          setPipeline(mergeComeCloserIntoPipeline(pipeline, null, null));
-        }
-
-        if (r.state === "generating") {
-          // 제출됐다 — 완료되면 수동 새로고침 없이 플레이어에 반영한다.
-          const url = await pollComeCloserUntilReady({
-            ...params, onState, isCancelled: () => cancelled,
-          });
-          if (!cancelled && url) setPipeline(mergeComeCloserIntoPipeline(pipeline, url, petId));
-          return;
-        }
-        if (r.state !== "queued") return; // error / unavailable — 재시도 무의미
-
-        // 큐 대기 — 슬롯이 빌 때까지 기다렸다가 다시 제출을 시도한다.
-        await new Promise((res) => setTimeout(res, IDLE_ASSET_SWEEP_MS));
+        return;
       }
+      // 이 펫의 자산이 없다 = 남아 있는 캐시는 다른 펫 것이다. 즉시 비운다.
+      if (pipeline.come_closer_video_url) {
+        setPipeline(mergeComeCloserIntoPipeline(pipeline, null, null));
+        return;
+      }
+      // 이미 진행 중인 작업이 있으면 끝날 때까지 지켜본다(제출은 하지 않는다).
+      if (r.state !== "generating") return;
+      const url = await pollComeCloserUntilReady({
+        ...params, onState, isCancelled: () => cancelled,
+      });
+      if (!cancelled && url) setPipeline(mergeComeCloserIntoPipeline(pipeline, url, petId));
     };
     void acquire();
 
@@ -384,51 +367,16 @@ export function PreviewScreen({
           cutoutUrl: next.cutout_display_url,
         });
 
-        // ── 프리미엄 생성 착수 (여기서 **처음** 비용이 발생한다) ─────────────
+        // ── 프리미엄 착수 없음 — 확인은 결제가 아니다 ───────────────────────
         //
-        // effect 가 아니라 여기서 부르는 이유: setPipeline 과 onComplete 가 같은
-        // 배치에서 일어나 화면이 즉시 언마운트된다. 그래서 hasIdle=true 로 바뀐
-        // 렌더의 effect 는 **실행되지 않는다** — effect 에만 맡기면 프리미엄 생성이
-        // 영원히 시작되지 않는다.
+        // 예전에는 여기서 COME_CLOSER + 첫 아이들 이벤트를 자동 제출했다. 무과금
+        // 개발 엔드포인트에서는 "미리 만들어 두기" 였지만, 확정된 사업 모델에서는
+        // 그게 곧 **사용자 동의 없는 결제**다(아이들 번들 1크레딧, 액션 1크레딧).
         //
-        // 두 건을 동시에 넣어 서버 상한(펫당 2)을 처음부터 꽉 채운다. 한 건만 넣으면
-        // 그 작업이 끝날 때까지 슬롯 하나가 놀아서 전체가 한 사이클 늦어진다.
-        //
-        // 그 뒤는 서버가 이어받는다 — 작업이 종료될 때마다
-        // premium_generation.advance_generation_queue 가 다음 액션을 제출하므로
-        // 화면을 떠나도 EAR_TWITCHING → HEAD_TILTING → TAIL_WAGGING 이 완성된다.
-        //
-        // 상한·순서 판정은 **서버가** 한다. 여기서 두 건을 동시에 보내도 서버의
-        // 순서 규칙이 남은 슬롯 수만큼만 통과시키므로 초과 제출이 불가능하고,
-        // 거절된 요청은 status=queued 로 돌아온다(프로바이더 호출·세션 생성 없음).
-        const kickoffUserId = getEternalBeamUserId();
-        const kickoffPetId = getEternalBeamPetId(next.content_id);
-        // 두 번째 슬롯에 넣을 액션은 하드코딩하지 않고 레지스트리 순서에서 가져온다 —
-        // 아이들 이벤트가 재정렬되면 여기도 자동으로 따라간다.
-        const firstIdleEvent = registeredIdleEvents()[0]?.id as IdleEvent | undefined;
-        void Promise.allSettled([
-          ensureComeCloser({
-            userId: kickoffUserId,
-            petId: kickoffPetId,
-            pipeline: next,
-            onState: (st) => {
-              if (import.meta.env.DEV) console.info("[COME_CLOSER] 착수 —", st);
-            },
-          }),
-          ...(firstIdleEvent
-            ? [
-                ensureIdleEventAsset({
-                  userId: kickoffUserId,
-                  petId: kickoffPetId,
-                  eventId: firstIdleEvent,
-                  pipeline: next,
-                  onState: (st) => {
-                    if (import.meta.env.DEV) console.info(`[${firstIdleEvent}] 착수 —`, st);
-                  },
-                }),
-              ]
-            : []),
-        ]);
+        // 이제 생성은 명시적 구매에서만 일어난다:
+        //   lib/premium-assets.ts → purchasePremium(KIND_IDLE_BUNDLE | actionKind(...))
+        // 이 화면은 확인 후 발견(GET)만 하고, 없는 자산은 없는 채로 둔다 —
+        // 스케줄러는 READY 인 것만 고르므로 BREATHING 으로 조용히 남는다.
       }
 
       onComplete();
