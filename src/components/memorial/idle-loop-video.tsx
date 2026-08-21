@@ -56,6 +56,16 @@ interface IdleLoopVideoProps {
    * 부모가 이 값만큼 피사체를 내려 실제 발이 테마 접지선에 닿게 한다.
    */
   onFeetMarginChange?: (bottomMargin: number) => void;
+  /**
+   * BREATH 의 **첫 프레임이 사용 가능해진 순간** 1회 알린다 (readyState>=2).
+   *
+   * 포스터(로딩 스틸)를 언제 걷을지 정하기 위한 신호다. onFeetMarginChange 로는
+   * 대신할 수 없다 — 그쪽은 packed 소스나 측정 실패 시 아예 발화하지 않아서,
+   * 그것에 기대면 포스터가 영영 걷히지 않는 화면이 생긴다.
+   *
+   * 선택 prop 이며 넘기지 않으면 아무 동작도 하지 않는다.
+   */
+  onFirstFrame?: () => void;
 }
 
 type RenderMode = "packed" | "blackkey" | "raw";
@@ -564,6 +574,7 @@ export function IdleLoopVideo({
   preload = "metadata",
   transparentComposite = true,
   onFeetMarginChange,
+  onFirstFrame,
 }: IdleLoopVideoProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   // videoRef 는 **현재 활성 소스**를 가리킨다. 렌더 루프와 모드 판정 코드는
@@ -612,6 +623,10 @@ export function IdleLoopVideo({
   const feetMeasuredRef = useRef(false);
   const onFeetMarginChangeRef = useRef(onFeetMarginChange);
   onFeetMarginChangeRef.current = onFeetMarginChange;
+  const onFirstFrameRef = useRef(onFirstFrame);
+  onFirstFrameRef.current = onFirstFrame;
+  /** 첫 프레임 통지는 클립당 1회. src 가 바뀌면 아래 effect 가 되돌린다. */
+  const firstFrameNotifiedRef = useRef(false);
 
   const triggerRawFallback = useCallback(() => {
     if (packedSourceRef.current || isLikelyPackedAlphaSource(src)) {
@@ -1264,6 +1279,7 @@ export function IdleLoopVideo({
     packedSourceRef.current = isLikelyPackedAlphaSource(src);
     scratchRef.current = createPackedAlphaScratch();
     feetMeasuredRef.current = false;
+    firstFrameNotifiedRef.current = false;
     blackkeyScratchRef.current = null;
   }, [src, transparentComposite]);
 
@@ -1345,17 +1361,31 @@ export function IdleLoopVideo({
       onFeetMarginChangeRef.current?.(margin);
     };
 
+    // 첫 프레임 통지 — measureFeet 과 **별개**로 둔다. 측정은 packed 소스나
+    // cross-origin 제약에서 건너뛰지만, 첫 프레임은 그런 경우에도 도착한다.
+    const notifyFirstFrame = () => {
+      if (firstFrameNotifiedRef.current) return;
+      if (el.readyState < 2) return;
+      firstFrameNotifiedRef.current = true;
+      onFirstFrameRef.current?.();
+    };
+
     play();
     el.addEventListener("loadeddata", play);
     el.addEventListener("loadeddata", measureFeet);
+    el.addEventListener("loadeddata", notifyFirstFrame);
     el.addEventListener("loadedmetadata", detectMode);
     el.addEventListener("error", onVideoError);
     if (el.readyState >= 1) detectMode();
-    if (el.readyState >= 2) measureFeet();
+    if (el.readyState >= 2) {
+      measureFeet();
+      notifyFirstFrame();
+    }
 
     return () => {
       el.removeEventListener("loadeddata", play);
       el.removeEventListener("loadeddata", measureFeet);
+      el.removeEventListener("loadeddata", notifyFirstFrame);
       el.removeEventListener("loadedmetadata", detectMode);
       el.removeEventListener("error", onVideoError);
     };

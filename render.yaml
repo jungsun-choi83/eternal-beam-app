@@ -28,6 +28,27 @@ services:
         value: "1"
       - key: SUBSCRIPTION_MOCK
         value: "1"
+      # ── 웹 정기결제 (Toss) ───────────────────────────────────────────────
+      # 값은 대시보드에서 넣는다(sync:false) — 시크릿을 저장소에 커밋하지 않는다.
+      - key: TOSS_CLIENT_KEY      # 공개 키 (test_ck_ / live_ck_)
+        sync: false
+      - key: TOSS_SECRET_KEY      # ⚠️ 백엔드 전용 (test_sk_ / live_sk_)
+        sync: false
+      - key: BILLING_CRON_SECRET  # 갱신 배치 인증. 미설정이면 renew-due 는 503
+        sync: false
+
+      # ── Soul Trace 핸드오프 (Phase 10.5) ──────────────────────────────────
+      # Soul Trace 는 **다른 Supabase 프로젝트**다. 교차 DB 조회를 하지 않고,
+      # 서로의 service-role 키도 공유하지 않는다. 공유 비밀은 이 토큰 하나뿐이며,
+      # 편지 본문은 이 자격 증명으로 **서버 대 서버**로만 이동한다.
+      - key: SOUL_TRACE_API_BASE
+        value: https://soultrace.eternalbeam.com
+      # ⚠️ 백엔드 전용. 브라우저에 노출되면 Soul Trace 내부 API 가 열린다.
+      - key: SOUL_TRACE_SERVICE_TOKEN
+        sync: false
+      # 프로바이더 중립 생성 차단. 실 생성을 켜기 전까지 1 로 둔다.
+      - key: GENERATION_MOCK
+        value: "1"
       - key: LUMA_CREDIT_CONCURRENCY
         value: "3"
       - key: SUPABASE_STORAGE_BUCKET
@@ -49,3 +70,25 @@ services:
         sync: false
       - key: LUMA_API_KEY
         sync: false
+
+# ── 월 정기결제 갱신 배치 ─────────────────────────────────────────────────────
+# 지금은 .github/workflows/billing-renewal.yml (무료) 이 담당한다.
+# Render 유료 플랜으로 올리면 아래 cron 서비스로 옮길 수 있다 — 서버 코드는
+# 그대로이고, 부르는 주체만 바뀐다.
+#
+#  - type: cron
+#    name: eternal-beam-billing-renewal
+#    region: singapore
+#    plan: starter                # cron 은 free 플랜에서 지원되지 않는다
+#    runtime: docker
+#    dockerfilePath: ./Dockerfile
+#    schedule: "0 18 * * *"       # 매일 03:00 KST
+#    dockerCommand: >-
+#      curl -sS --fail-with-body -X POST
+#      "$PUBLIC_API_BASE_URL/api/v1/billing/renew-due?limit=200"
+#      -H "X-Billing-Cron-Secret: $BILLING_CRON_SECRET"
+#    envVars:
+#      - key: PUBLIC_API_BASE_URL
+#        value: https://eternal-beam-video-api.onrender.com
+#      - key: BILLING_CRON_SECRET
+#        sync: false

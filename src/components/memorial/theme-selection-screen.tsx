@@ -14,6 +14,8 @@ import {
   type MemorialTheme,
 } from "@/components/memorial/themes";
 import { resetThemeBackgroundSyncCache } from "@/lib/device-theme-sync";
+import { useThemeOwnership } from "@/components/memorial/use-theme-ownership";
+import { formatPriceKrw, themeRow, type ThemeOffer } from "@/lib/theme-ownership";
 import { CutoutStage } from "@/components/memorial/cutout-stage";
 import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
 
@@ -72,6 +74,41 @@ const ThemeThumb = memo(function ThemeThumb({
   );
 });
 
+/**
+ * 소유 상태 배지 — FREE / OWNED / 가격 / 준비 중.
+ *
+ * themes.ts 의 하드코딩된 `price`("$2.99")를 더 이상 쓰지 않는다. 그 값은 레거시
+ * PayPal 표시용이고, 실제 판매 여부·가격은 **서버 카탈로그**가 정한다.
+ * 두 곳이 다르면 눌러도 거절당하는 버튼이 생긴다.
+ */
+function ThemeOwnershipBadge({
+  theme,
+  offers,
+}: {
+  theme: MemorialTheme;
+  offers: Map<string, ThemeOffer>;
+}) {
+  const row = themeRow(theme, offers);
+  const price = formatPriceKrw(row.priceKrw);
+
+  const [label, color] =
+    row.state === "free"
+      ? ["FREE", "#a8e6a3"]
+      : row.state === "owned"
+        ? ["OWNED", "#a8e6a3"]
+        : row.state === "not-owned"
+          ? [price ?? "BUY", "#f5d77a"]
+          : ["준비 중", "#9a9a9a"];
+
+  return (
+    <div className="absolute top-2 right-2 rounded-full bg-black/50 px-1.5 py-0.5">
+      <span className="text-[8px] tracking-wide" style={{ color }}>
+        {label}
+      </span>
+    </div>
+  );
+}
+
 const ThemeCarousel = memo(function ThemeCarousel({
   themes,
   selectedTheme,
@@ -82,9 +119,12 @@ const ThemeCarousel = memo(function ThemeCarousel({
   onInteractionStart,
   onSelect,
   onSnapTheme,
+  offers,
 }: {
   themes: MemorialTheme[];
   selectedTheme: number | null;
+  /** 서버 카탈로그. 비어 있으면 폴백 표시(유료는 잠김). */
+  offers: Map<string, ThemeOffer>;
   themeLabel: (th: MemorialTheme) => string;
   carouselRef: React.RefObject<HTMLDivElement | null>;
   carouselId: "free" | "premium";
@@ -185,14 +225,8 @@ const ThemeCarousel = memo(function ThemeCarousel({
                 <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-[#c9a227] flex items-center justify-center">
                   <Check className="w-3 h-3 text-[#0a0a0a]" strokeWidth={3} />
                 </div>
-              ) : theme.premium ? (
-                <div className="absolute top-2 right-2 rounded-full bg-black/50 px-1.5 py-0.5">
-                  <span className="text-[8px] text-[#f5d77a] tracking-wide">{theme.price}</span>
-                </div>
               ) : (
-                <div className="absolute top-2 right-2 rounded-full bg-black/40 px-1.5 py-0.5">
-                  <span className="text-[8px] text-[#a8e6a3] tracking-wide">FREE</span>
-                </div>
+                <ThemeOwnershipBadge theme={theme} offers={offers} />
               )}
               <div className="absolute bottom-2 left-0 right-0 text-center px-1">
                 <span className="text-[10px] text-[#F1E5D1] tracking-wide">{themeLabel(theme)}</span>
@@ -220,6 +254,7 @@ export function ThemeSelectionScreen({
   const themeLabel = (th: MemorialTheme) =>
     themeDisplayName(language === "ko" ? "ko" : "en", th);
   const freeCarouselRef = useRef<HTMLDivElement | null>(null);
+  const ownership = useThemeOwnership();
   const premiumCarouselRef = useRef<HTMLDivElement | null>(null);
   const interactionCarouselRef = useRef<"free" | "premium" | null>(null);
   const [pipelineCutout, setPipelineCutout] = useState<string | null>(null);
@@ -273,6 +308,13 @@ export function ThemeSelectionScreen({
         onSelectCustomBackground?.(theme);
         return;
       }
+      // 미보유 유료 테마 → 선택 대신 구매. 무료·보유 테마의 선택 경로는
+      // 예전 그대로다(localStorage + onSelectTheme + 기기 동기화).
+      const row = themeRow(theme, ownership.offers);
+      if (!row.usable) {
+        if (row.action === "buy") void ownership.buy(theme.themeKey);
+        return;
+      }
       try {
         localStorage.setItem("eternal_beam_theme_key", theme.themeKey);
         localStorage.setItem("eternal_beam_theme_id", String(theme.id));
@@ -281,7 +323,7 @@ export function ThemeSelectionScreen({
       }
       onSelectTheme(theme.id);
     },
-    [onSelectCustomBackground, onSelectTheme]
+    [onSelectCustomBackground, onSelectTheme, ownership]
   );
 
   const snapSelectTheme = useCallback(
@@ -292,6 +334,9 @@ export function ThemeSelectionScreen({
         (t) => t.id === themeId
       );
       if (!theme || theme.requiresGeneration) return;
+      // 스냅(스크롤 정지)으로도 미보유 유료 테마가 선택되면 안 된다.
+      // 여기서는 결제를 열지 않는다 — 사용자가 누른 것이 아니기 때문이다.
+      if (!themeRow(theme, ownership.offers).usable) return;
       try {
         localStorage.setItem("eternal_beam_theme_key", theme.themeKey);
         localStorage.setItem("eternal_beam_theme_id", String(theme.id));
@@ -300,7 +345,7 @@ export function ThemeSelectionScreen({
       }
       onSelectTheme(themeId);
     },
-    [onSelectTheme]
+    [onSelectTheme, ownership.offers]
   );
 
   const activeTheme = highlightTheme ?? selectedTheme;
@@ -353,6 +398,7 @@ export function ThemeSelectionScreen({
             carouselId="free"
             isInteractionTarget={isInteractionTarget("free")}
             onInteractionStart={markInteraction}
+            offers={ownership.offers}
             onSelect={(theme) => selectTheme(theme, "free")}
             onSnapTheme={snapSelectTheme}
           />
@@ -369,6 +415,7 @@ export function ThemeSelectionScreen({
             carouselId="premium"
             isInteractionTarget={isInteractionTarget("premium")}
             onInteractionStart={markInteraction}
+            offers={ownership.offers}
             onSelect={(theme) => selectTheme(theme, "premium")}
             onSnapTheme={snapSelectTheme}
           />

@@ -25,8 +25,12 @@ import {
 } from "@/lib/pet-runtime-events";
 import { useIdleEventScheduler } from "@/components/memorial/use-idle-event-scheduler";
 import { useIdleEventAssets } from "@/components/memorial/use-idle-event-assets";
+import { PremiumAssetsProvider } from "@/components/memorial/premium-assets-context";
+import { useBehaviorEligibility } from "@/components/memorial/use-behavior-eligibility";
 import { getEternalBeamUserId } from "@/lib/eternal-beam-user";
+import { ensurePetRegistered } from "@/lib/pet-registry-api";
 import { getEternalBeamPetId } from "@/lib/pet-identity";
+import { onAuthStateChange } from "@/lib/supabase-auth";
 import {
   isComeCloserCacheValid,
   mergeComeCloserIntoPipeline,
@@ -87,7 +91,33 @@ function pinchDistance(points: Map<number, { x: number; y: number }>) {
 
 
 
-export function PreviewScreen({
+/** 저장된 파이프라인에서 pet_id 만 읽는다 (Provider 에 넘길 값). */
+function readPipelinePetId(): string | null {
+  try {
+    const raw = sessionStorage.getItem(ETERNAL_BEAM_PIPELINE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredPipeline;
+    return parsed.content_id ? getEternalBeamPetId(parsed.content_id) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 조정 화면도 **같은 런타임**을 돌린다(같은 훅·스케줄러·플레이어). 그래서 적격성
+ * 규칙도 같아야 한다 — 여기만 빠지면 만료된 사용자가 조정 화면에서는 프리미엄
+ * 행동을 계속 보게 된다.
+ */
+export function PreviewScreen(props: PreviewScreenProps) {
+  const [petId] = useState(() => readPipelinePetId());
+  return (
+    <PremiumAssetsProvider petId={petId} enabled={petId != null}>
+      <PreviewScreenInner {...props} />
+    </PremiumAssetsProvider>
+  );
+}
+
+function PreviewScreenInner({
   cutoutImage,
   selectedTheme,
   language = "ko",
@@ -175,6 +205,42 @@ export function PreviewScreen({
       setPipeline(null);
     }
   }, [cutoutImage]);
+
+  // BREATHING 생성과 레지스트리 등록은 별개다. READY 결과가 있으면 새 생성이든
+  // 복원된 파이프라인이든 등록을 보장한다. 인증이 아직 복원되지 않았으면 안전하게
+  // 대기하고, Supabase 세션이 돌아오는 즉시 같은 canonical petId 로 재시도한다.
+  useEffect(() => {
+    if (!hasIdle || !pipeline?.content_id || !pipeline.idle_video_url) return;
+
+    const registration = {
+      petId: getEternalBeamPetId(pipeline.content_id) ?? `pet_${pipeline.content_id}`,
+      contentId: pipeline.content_id,
+      breathingUrl: pipeline.idle_video_url,
+    };
+    let disposed = false;
+
+    const ensure = async () => {
+      const result = await ensurePetRegistered(registration);
+      if (disposed) return;
+      if (result.state === "FAILED") {
+        console.warn("[preview] READY pet registry ensure failed", {
+          petId: registration.petId,
+          code: result.code,
+          status: result.status,
+          message: result.message,
+        });
+      }
+    };
+
+    void ensure();
+    const unsubscribe = onAuthStateChange((signedIn) => {
+      if (signedIn) void ensure();
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+    };
+  }, [hasIdle, pipeline?.content_id, pipeline?.idle_video_url]);
 
   // 승격된 COME_CLOSER 자산을 확보한다. 없으면 **이 펫·이 테마로 1회만** 생성한다.
   //
@@ -269,6 +335,15 @@ export function PreviewScreen({
     pipeline,
     enabled: hasIdle,
   });
+
+  // ── 런타임 적격성 (재생 화면과 **같은 규칙**) ──────────────────────────────
+  // 구독 entitled ∩ 자산 READY ∩ 선호 ON. 스케줄러·플레이어·런타임은 그대로 두고
+  // 입력만 좁힌다. BREATHING 은 판정 밖이라 계속 돈다.
+  const eligibility = useBehaviorEligibility();
+  const eligibleIdleEventIds = eligibility.filterIds(availableIdleEventIds);
+  const eligibleIdleEventSources = eligibility.filterSources(idleEventUrls);
+  const comeCloserAllowedRef = useRef(eligibility.comeCloserAllowed);
+  comeCloserAllowedRef.current = eligibility.comeCloserAllowed;
 
   // 콘솔에서 부르는 수동 트리거. 프로덕션 빌드에는 존재하지 않는다.
   // 이벤트별 별칭 + 범용 훅을 함께 심는다.
@@ -468,8 +543,8 @@ export function PreviewScreen({
   // 후보 목록(availableIdleEventIds)은 useIdleEventAssets 가 READY URL 에서 만든다 —
   // 자산이 하나도 없으면 비어 있고, 그때는 아무 일도 일어나지 않는다(BREATHING 유지).
   const { onPlaybackStateChange } = useIdleEventScheduler({
-    enabled: availableIdleEventIds.length > 0,
-    availableIds: availableIdleEventIds,
+    enabled: eligibleIdleEventIds.length > 0,
+    availableIds: eligibleIdleEventIds,
     triggerRef: comeCloserTriggerRef,
   });
 
@@ -545,7 +620,8 @@ export function PreviewScreen({
                       : "BREATH 영상이 없거나(정적 누끼) 자산이 아직 없다."),
             );
           }
-          fire?.("COME_CLOSER");
+          // 더블탭 ∩ 구독 ∩ READY ∩ ON — 자발적 경로와 같은 규칙.
+          if (comeCloserAllowedRef.current) fire?.("COME_CLOSER");
         } else if (r.kind === "first") {
           lastTapRef.current = r.tap;
         }
@@ -721,9 +797,13 @@ export function PreviewScreen({
                 // 생성 전에는 데모 mp4 폴백을 끈다 — 미리보기는 진짜 정적이어야 한다.
                 allowDemoFallback={false}
                 onFeetMarginChange={setFeetMargin}
-                comeCloserVideoUrl={pipeline?.come_closer_video_url ?? null}
-                // 아이들 이벤트 — DEV 빌드에서만 채워진다(위 effect 가 DEV 게이트).
-                idleEventSources={idleEventUrls}
+                comeCloserVideoUrl={
+                  eligibility.comeCloserAllowed
+                    ? (pipeline?.come_closer_video_url ?? null)
+                    : null
+                }
+                // 적격한 것만 넘긴다 — 소스가 없으면 런타임이 no-source 로 거절한다.
+                idleEventSources={eligibleIdleEventSources}
                 actionTriggerRef={comeCloserTriggerRef}
                 // 스케줄러가 "지금 뭔가 재생 중인가"를 아는 유일한 신호다.
                 onActionStateChange={onPlaybackStateChange}

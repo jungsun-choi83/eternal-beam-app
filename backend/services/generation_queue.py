@@ -79,6 +79,7 @@ def decide(
     ready_actions: Iterable[str],
     active_actions: Iterable[str],
     max_concurrent: int = MAX_CONCURRENT_GENERATIONS_PER_PET,
+    respect_priority: bool = True,
 ) -> QueueDecision:
     """
     지금 이 액션을 프로바이더에 제출해도 되는가.
@@ -90,6 +91,16 @@ def decide(
     active=0 을 보고 통과한다. 그래서 **순서 규칙**을 함께 건다: 남은 슬롯이 N 개면
     대기 목록의 앞 N 개만 통과할 수 있다. 5개가 같은 순간에 들어와도 통과하는 것은
     COME_CLOSER 와 BLINKING 뿐 — 정확히 의도한 2건이다.
+
+    ── respect_priority=False (사용자가 직접 고른 한 건) ────────────────────
+    위 순서 규칙은 **서버가 다음에 무엇을 만들지 스스로 정할 때**의 규칙이다.
+    Behavior Library 에서는 사용자가 이미 골랐다. 그때도 순서를 강요하면
+    "HEAD_TILTING 생성"을 눌러도 BLINKING 이 먼저 준비되기 전까지 거절돼,
+    누른 것과 다른 일이 일어난다.
+
+    **동시 실행 상한(max_concurrent)은 그대로 적용된다** — 비용과 프로바이더
+    레이트 리밋을 지키는 것은 순서가 아니라 이 상한이다. 느슨해지는 것은 순서뿐이다.
+    기본값은 True 라 기존 호출자(자동 전진·dev·레거시)의 동작은 한 글자도 바뀌지 않는다.
     """
     a = (action_id or "").upper()
     if a not in GENERATION_ORDER:
@@ -109,7 +120,7 @@ def decide(
         return QueueDecision(allowed=False, reason="not-queueable")
 
     idx = pending.index(a)
-    if idx >= slots:
+    if respect_priority and idx >= slots:
         return QueueDecision(
             allowed=False, reason="waiting-for-higher-priority", position=idx
         )

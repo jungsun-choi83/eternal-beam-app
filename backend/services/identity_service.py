@@ -71,6 +71,25 @@ def normalize_email(email: str | None) -> Optional[str]:
     return e or None
 
 
+def canonical_user_id(raw: str | None) -> Optional[str]:
+    """
+    외부에서 들어온 user_id 문자열 → **require_user 가 만드는 것과 같은 모양**.
+
+    왜 필요한가: 구독 웹훅은 스토어(또는 앱)가 준 user_id 를 그대로 저장했는데,
+    프리미엄 인가는 resolve_identity 가 확정한 eb_user_id 로 조회한다. 두 값이
+    한 글자라도 다르면 — 대문자 이메일 하나면 충분하다 — **결제한 사용자가
+    "구독 없음"으로 읽힌다.** 조용히 틀리는 종류의 버그다.
+
+    resolve_identity 는 검증된 이메일을 소문자로 낮춰 eb_user_id 로 쓴다
+    (normalize_email). 그래서 여기서도 같은 규칙을 적용한다. 이메일이 아닌 값
+    (sub UUID·레거시 익명 id)은 그대로 둔다 — 그쪽은 대소문자가 의미를 갖는다.
+    """
+    v = (raw or "").strip()
+    if not v:
+        return None
+    return v.lower() if "@" in v else v
+
+
 def _find_by_subject(subject: str) -> Optional[dict[str, Any]]:
     if _use_db() and _supabase():
         r = (

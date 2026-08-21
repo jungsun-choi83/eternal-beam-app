@@ -18,6 +18,7 @@ import { CustomBackgroundScreen } from '@/components/memorial/custom-background-
 import { PaymentScreen } from '@/components/memorial/payment-screen'
 import { PreviewScreen } from '@/components/memorial/preview-screen'
 import { ShippingAddressScreen } from '@/components/memorial/shipping-address-screen'
+import { PhysicalOrderScreen } from '@/components/memorial/physical-order-screen'
 import { NFCPlaybackScreen } from '@/components/memorial/nfc-playback-screen'
 import { ForestExperienceScreen } from '@/components/memorial/forest-experience-screen'
 import { MemorialDevicePlayScreen } from '@/components/memorial/memorial-device-play-screen'
@@ -37,7 +38,14 @@ import { scheduleThemeBackgroundSync, shouldSyncThemeToDevice } from '@/lib/devi
 import { resolveSkipThemeId } from '@/lib/theme-skip'
 import { schedulePiDiscovery } from '@/lib/pi-sensor-bridge'
 import { isForestTheme } from '@/lib/forest-demo-config'
-import { isPublicForestEntry } from '@/lib/app-entry'
+import { billingReturnEntry, isPublicForestEntry } from '@/lib/app-entry'
+import {
+  clearBillingReturnState,
+  readBillingReturnState,
+  resolveBillingReturn,
+  saveBillingReturnState,
+} from '@/lib/billing-return-state'
+import { BillingResultScreen } from '@/components/memorial/billing-result-screen'
 import {
   DEVICE_DEMO_GOYA_CUTOUT,
   isDeviceKickstarterDemo,
@@ -45,6 +53,7 @@ import {
 import { FOREST_THEME_ID } from '@/lib/forest-demo-config'
 import { inferMediaKind } from '@/lib/media-file-kind'
 import { canEnterDevicePlay, readStoredPipeline } from '@/lib/pending-generation'
+import { getEternalBeamPetId } from '@/lib/pet-identity'
 import { traceImage } from '@/lib/image-trace' // [IMAGE-TRACE]
 import type { PickedMedia } from '@/lib/pick-media-file'
 
@@ -61,14 +70,19 @@ type Screen =
   | 'checkout'
   | 'preview'
   | 'shippingAddress'
+  | 'physicalOrder'
   | 'nfcPlayback'
   | 'forestExperience'
   | 'devicePlay'
   | 'device'
   | 'settings'
+  | 'billingResult'
 
 function resolveInitialScreen(): Screen {
   if (typeof window === 'undefined') return 'qrConnection'
+  // Toss 결제 복귀 — 전용 경로가 없으면 결제 후 첫 화면(QR)으로 떨어져
+  // 사용자가 방금 낸 돈의 결과를 볼 수 없다.
+  if (billingReturnEntry()) return 'billingResult'
   if (isPublicForestEntry()) return 'forestExperience'
   if (isDeviceKickstarterDemo()) return 'home'
   // 기계 QR 진입 — 1P 로고 → 2P 회원가입 → 3P 사진 업로드 (홈은 이후 단계)
@@ -144,7 +158,7 @@ export function EternalBeamApp() {
   })
 
   // Memorial 의 '크레딧 받기' → 설정으로 이동하면서 크레딧 섹션을 강조한다.
-  const [focusCredits, setFocusCredits] = useState(false)
+  const [focusMembership, setFocusMembership] = useState(false)
 
   // 설정에서 '뒤로' 를 눌렀을 때 돌아갈 화면.
   //
@@ -156,10 +170,27 @@ export function EternalBeamApp() {
   // qrBackTarget 과 같은 패턴이다 — 들어온 화면을 기억했다가 그리로 돌려보낸다.
   const [settingsBackTarget, setSettingsBackTarget] = useState<Screen | null>(null)
 
+  // ── 결제 왕복 스냅샷 ───────────────────────────────────────────────────────
+  // Toss 는 결제창을 마치면 페이지를 **이동**시킨다 → React state 가 사라진다.
+  // 복원 가능한 화면(펫이 이미 재생 중인 곳)에 있는 동안 계속 최신 스냅샷을
+  // 남겨 두면, 결제 후 돌아왔을 때 같은 펫으로 그대로 돌아갈 수 있다.
+  //
+  // 결제 버튼 직전이 아니라 **화면에 있는 동안** 저장하는 이유: 결제 진입은
+  // devicePlay → 설정 → 시작하기로 두 단계라, 버튼 시점에는 이미 원래 화면을
+  // 떠난 뒤다. 여기서 저장하면 그 경로와 무관하게 항상 정확하다.
+  useEffect(() => {
+    if (screen !== 'devicePlay' && screen !== 'preview') return
+    saveBillingReturnState({
+      screen,
+      settings: previewSettings,
+      contentId: readStoredPipeline()?.content_id ?? null,
+    })
+  }, [screen, previewSettings])
+
   /** 설정 열기. 돌아갈 화면을 함께 기억한다. */
-  const openSettings = (from: Screen, options?: { focusCredits?: boolean }) => {
+  const openSettings = (from: Screen, options?: { focusMembership?: boolean }) => {
     setSettingsBackTarget(from)
-    if (options?.focusCredits) setFocusCredits(true)
+    if (options?.focusMembership) setFocusMembership(true)
     navigateTo('settings')
   }
 
@@ -167,7 +198,7 @@ export function EternalBeamApp() {
   const handleSettingsBack = () => {
     const target = settingsBackTarget ?? 'home'
     setSettingsBackTarget(null)
-    setFocusCredits(false)
+    setFocusMembership(false)
     navigateTo(target, 'back')
   }
 
@@ -181,7 +212,12 @@ export function EternalBeamApp() {
     let unsubscribe = () => {}
     void import('@/lib/supabase-auth').then((m) => {
       void m.syncEternalBeamIdentity()
-      unsubscribe = m.onAuthStateChange(() => {})
+      unsubscribe = m.onAuthStateChange((signedIn) => {
+        if (!signedIn) return
+        void import('@/lib/pet-registry-api').then((registry) =>
+          registry.ensureStoredReadyPetRegistered()
+        )
+      })
     })
     return () => unsubscribe()
   }, [])
@@ -420,6 +456,46 @@ export function EternalBeamApp() {
     return theme
       ? { id: theme.id, themeKey: theme.themeKey, name: theme.name, price: theme.price, thumb: theme.thumb }
       : { id: 0, themeKey: '', name: 'Theme', price: '' }
+  }
+
+  /**
+   * 결제(성공·실패·취소) 후 복귀.
+   *
+   * 스냅샷이 유효하면 **같은 펫의 원래 화면**으로 돌려보낸다. 새 펫을 만들지
+   * 않고, 업로드·누끼·BREATHING 생성을 다시 시작하지도 않는다 — 파이프라인과
+   * 테마는 이미 저장소에 있고 화면들이 스스로 읽는다. 여기서 되살리는 것은
+   * React state 가 잃어버린 두 가지(화면·펫 위치)뿐이다.
+   *
+   * 스냅샷이 없거나 펫이 바뀌었으면 설정 화면으로 간다 — 틀린 펫을 복원하는
+   * 것보다 낫다.
+   */
+  const handleBillingReturn = () => {
+    window.history.replaceState({}, '', '/')
+    const restored = resolveBillingReturn(readBillingReturnState(), readStoredPipeline())
+    clearBillingReturnState()
+
+    if (restored) {
+      setPreviewSettings(restored.settings)
+      // 멤버십은 화면이 마운트되면서 PremiumAssetsProvider 가 다시 조회한다 —
+      // 여기서 따로 부르지 않는다(조회 경로를 두 개로 만들지 않기 위해).
+      navigateTo(restored.screen)
+      return
+    }
+    openSettings('home', { focusMembership: true })
+  }
+
+  // Toss 결제 복귀는 **앱 셸 밖에서** 처리한다. 결제 결과는 업로드·테마 등 어떤
+  // 진행 상태와도 무관하고, 여기서 애니메이션·파이프라인 복원을 태울 이유가 없다.
+  if (screen === 'billingResult') {
+    return (
+      <main className="min-h-[100dvh] bg-[#0a0a0a] flex items-stretch md:items-center justify-center p-0 md:p-4 overflow-hidden">
+        <BillingResultScreen
+          outcome={billingReturnEntry() === 'fail' ? 'fail' : 'success'}
+          language={language}
+          onContinue={handleBillingReturn}
+        />
+      </main>
+    )
   }
 
   return (
@@ -728,6 +804,26 @@ export function EternalBeamApp() {
             </motion.div>
           )}
 
+          {screen === 'physicalOrder' && (
+            <motion.div
+              key="physicalOrder"
+              custom={pageMotionCustom()}
+              variants={pageVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              className="h-full"
+            >
+              {/* 실물 구매. **펫도 편지도 여기서 만들지 않는다** — 이미 있는
+                  canonical petId 와 연결된 Soul Trace 편지를 가리킬 뿐이다.
+                  편지가 없으면 화면이 "먼저 연결하세요"로 막는다. */}
+              <PhysicalOrderScreen
+                petId={getEternalBeamPetId(readStoredPipeline()?.content_id ?? null)}
+                onBack={() => navigateTo('devicePlay', 'back')}
+              />
+            </motion.div>
+          )}
+
           {screen === 'nfcPlayback' && (
             <motion.div
               key="nfcPlayback"
@@ -765,7 +861,8 @@ export function EternalBeamApp() {
                 language={language}
                 onBack={() => navigateTo('preview', 'back')}
                 onComplete={handleReset}
-                onGetCredits={() => openSettings('devicePlay', { focusCredits: true })}
+                onOpenKeepsakes={() => navigateTo('physicalOrder')}
+                onOpenMembership={() => openSettings('devicePlay', { focusMembership: true })}
               />
             </motion.div>
           )}
@@ -835,7 +932,7 @@ export function EternalBeamApp() {
                 onDeviceSettings={() => navigateTo('device')}
                 onBack={handleSettingsBack}
                 onLogout={handleLogout}
-                focusCredits={focusCredits}
+                focusMembership={focusMembership}
               />
             </motion.div>
           )}

@@ -228,7 +228,8 @@ test('memorial 이 공유 자산 훅과 스케줄러를 쓴다', () => {
   const code = strip(MEMORIAL)
   assert.match(code, /useIdleEventAssets\(\{/, '자산 훅을 쓰지 않는다')
   assert.match(code, /useIdleEventScheduler\(\{/, '스케줄러를 붙이지 않았다')
-  assert.match(code, /idleEventSources=\{idleEventUrls\}/, '소스 표를 플레이어에 넘기지 않는다')
+  // Phase 6: 원본이 아니라 **적격한 것만** 넘긴다 (구독 ∩ READY ∩ ON).
+  assert.match(code, /idleEventSources=\{eligibleIdleEventSources\}/, '적격 소스 표를 넘기지 않는다')
 })
 
 test('memorial 의 스케줄러도 같은 트리거 핸들을 쓴다', () => {

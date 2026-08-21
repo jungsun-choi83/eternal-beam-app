@@ -77,6 +77,16 @@ from .routers import (
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 보안·비용 설정을 부팅 시 한 번 점검해 로그에 남긴다. **부팅을 막지는 않는다** —
+    # 프로세스를 죽이면 헬스체크 롤백 루프에 빠지고, 설정 하나 때문에 이미 동작하던
+    # 무료 기능까지 멈춘다. 실제 차단은 요청 시점의 fail-closed 가 이미 한다.
+    try:
+        from .services.production_readiness import log_audit
+
+        log_audit()
+    except Exception:  # noqa: BLE001 — 감사 실패가 부팅을 막아선 안 된다
+        logging.getLogger(__name__).exception("프로덕션 설정 감사 실패")
+
     if os.getenv("PET_HYBRID_SEED", "1").strip().lower() in ("1", "true", "yes"):
         from .services.wallet_service import seed_dummy_wallets
 
@@ -164,6 +174,48 @@ app.include_router(device_v1.router, prefix="/api", tags=["device-v1"])
 app.include_router(payment_v1.router, prefix="/api", tags=["payment-v1"])
 app.include_router(subscription_v1.router, prefix="/api", tags=["subscription-v1"])
 
+# 웹 정기결제 (Toss = 제공자 #1). 자격 코어는 건드리지 않고 정규화된 이벤트만 보낸다.
+from .routers import billing_v1  # noqa: E402
+
+app.include_router(billing_v1.router, prefix="/api", tags=["billing-v1"])
+
+# QR Shaker (Phase 10). 공개 재생 1개 + 소유자 관리 3개.
+# **항상 마운트된다** — 공개 경로는 인증 대신 공유 토큰으로 인가하고, 관리 경로는
+# 예전 프리미엄 라우터와 같은 검증된 토큰을 요구한다. 생성 경로는 import 조차 없다.
+from .routers import shaker_v1  # noqa: E402
+
+app.include_router(shaker_v1.router, prefix="/api", tags=["shaker-v1"])
+
+# 판매자/운영 Shaker 도구 (물리 제품용 QR 생성). 항상 마운트되지만 모든 경로가
+# SHAKER_OPS_USER_IDS allowlist 를 요구한다 — 미설정이면 전원 403 (fail closed).
+from .routers import shaker_ops_v1  # noqa: E402
+
+app.include_router(shaker_ops_v1.router, prefix="/api", tags=["shaker-ops"])
+
+# 유료 테마 스토어 (Phase 11). 테마 소유권은 구독 자격과 **완전히 별개**이며,
+# 이 라우터는 구독도 크레딧도 생성도 건드리지 않는다.
+from .routers import theme_store_v1  # noqa: E402
+
+app.include_router(theme_store_v1.router, prefix="/api", tags=["theme-store"])
+
+# 물리 제품 주문 (Phase 12). 구독·테마·크레딧과 별개인 네 번째 축이며,
+# 편지도 펫도 Shaker 공유도 **새로 만들지 않는다** — 기존 것을 가리킨다.
+from .routers import orders_v1  # noqa: E402
+
+app.include_router(orders_v1.router, prefix="/api", tags=["physical-orders"])
+
+# 인쇄 생산 파이프라인 (Phase 13). 판매자/운영 전용이며 Phase 10 과 같은
+# allowlist 를 쓴다. 편지·펫·Shaker 공유를 새로 만들지 않고, 결제된 주문만 받는다.
+from .routers import production_ops_v1  # noqa: E402
+
+app.include_router(production_ops_v1.router, prefix="/api", tags=["production-ops"])
+
+# canonical 펫 레지스트리 (Phase 13.2). 생성 로직을 건드리지 않고, 앱이 파이프라인
+# 완료 후 결과를 등록한다 — BREATHING 만 있는 무료 펫도 운영이 발견할 수 있다.
+from .routers import pet_registry_v1  # noqa: E402
+
+app.include_router(pet_registry_v1.router, prefix="/api", tags=["pet-registry"])
+
 # Optional heavy pipeline endpoints (Luma/generate). Disable by default on lightweight deployments.
 _enable_generate = os.getenv("ENABLE_GENERATE_API", "0").strip().lower() in ("1", "true", "yes")
 if _enable_generate:
@@ -199,6 +251,23 @@ def root():
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/readiness")
+@app.get("/api/readiness")
+def readiness():
+    """
+    배포 파이프라인·운영자용 설정 감사.
+
+    /health 와 분리한 이유: /health 는 "프로세스가 살아 있는가"이고 오케스트레이터가
+    재시작 판단에 쓴다. 설정이 빠졌다고 재시작해 봐야 같은 상태다. 이쪽은
+    "실 사용자를 받아도 되는가"를 답한다 — 사람이 배포 후 확인하는 용도다.
+
+    비밀값은 **절대 싣지 않는다**. 설정 여부와 사람이 읽을 진단만 돌려준다.
+    """
+    from .services.production_readiness import audit
+
+    return audit().as_dict()
 
 
 @app.get("/current_slot")

@@ -15,7 +15,11 @@ import { ThemeBackgroundVideo } from "@/components/memorial/theme-background-vid
 import { getMemorialTheme, DEFAULT_THEME_ID } from "@/components/memorial/themes";
 import { usePetGrounding } from "@/components/memorial/use-pet-grounding";
 import { useIdleEventAssets } from "@/components/memorial/use-idle-event-assets";
-import { UnlockFeaturesCard } from "@/components/memorial/unlock-features-card";
+import { MembershipCard } from "@/components/memorial/membership-card";
+import { BehaviorLibrary } from "@/components/memorial/behavior-library";
+import { ShakerShareCard } from "@/components/memorial/shaker-share-card";
+import { PremiumAssetsProvider } from "@/components/memorial/premium-assets-context";
+import { useBehaviorEligibility } from "@/components/memorial/use-behavior-eligibility";
 import { useIdleEventScheduler } from "@/components/memorial/use-idle-event-scheduler";
 import { hasRealIdleVideo } from "@/lib/pending-generation";
 import { subjectTransform } from "@/lib/pet-grounding";
@@ -59,17 +63,54 @@ interface MemorialDevicePlayScreenProps {
   onBack: () => void;
   onComplete: () => void;
   /** 크레딧 충전 화면(설정 > 크레딧)으로 이동. */
-  onGetCredits?: () => void;
+  onOpenMembership?: () => void;
+  /** 실물 기념품(편지·메모리 박스) 구매 화면으로 이동. */
+  onOpenKeepsakes?: () => void;
 }
 
-export function MemorialDevicePlayScreen({
+/**
+ * 저장된 파이프라인에서 pet_id 만 읽는다 (Provider 에 넘길 값).
+ *
+ * 본체가 들고 있는 pipeline state 를 쓸 수 없다 — Provider 는 본체보다 **바깥**에
+ * 있어야 컨텍스트가 본체까지 흐른다. content_id 는 세션 내내 바뀌지 않으므로
+ * 여기서 한 번 읽는 것으로 충분하다.
+ */
+function readPipelinePetId(): string | null {
+  try {
+    const raw = sessionStorage.getItem(ETERNAL_BEAM_PIPELINE_KEY);
+    if (!raw) return null;
+    const p = JSON.parse(raw) as StoredPipeline;
+    return p.content_id ? getEternalBeamPetId(p.content_id) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 런타임 적격성(구독 ∩ READY ∩ ON)과 멤버십 UI 가 **같은 자산 응답**을 쓰도록
+ * 화면 전체를 공유 Provider 로 감싼다.
+ *
+ * Provider 가 본체 바깥에 있어야 하는 이유: React 컨텍스트는 자식으로만 흐른다.
+ * 예전처럼 본체 안에서 카드만 감싸면 스케줄러 배선(본체 상단)이 적격성을 볼 수 없다.
+ */
+export function MemorialDevicePlayScreen(props: MemorialDevicePlayScreenProps) {
+  const [petId] = useState(() => readPipelinePetId());
+  return (
+    <PremiumAssetsProvider petId={petId} enabled={petId != null}>
+      <MemorialDevicePlayScreenInner {...props} />
+    </PremiumAssetsProvider>
+  );
+}
+
+function MemorialDevicePlayScreenInner({
   cutoutImage,
   selectedTheme,
   settings,
   language = "ko",
   onBack,
   onComplete,
-  onGetCredits,
+  onOpenMembership,
+  onOpenKeepsakes,
 }: MemorialDevicePlayScreenProps) {
   const d = memorialT(language).devicePlay;
   const themeId = resolveSelectedThemeId(selectedTheme);
@@ -174,12 +215,29 @@ export function MemorialDevicePlayScreen({
     enabled: hasIdle,
   });
 
+  // ── 런타임 적격성 ─────────────────────────────────────────────────────────
+  // 구독 entitled ∩ 자산 READY ∩ 선호 ON. 스케줄러·플레이어·런타임은 한 줄도
+  // 바뀌지 않는다 — **입력만 좁힌다**. 만료되면 후보와 소스가 함께 비고,
+  // 스케줄러는 자기 규칙대로 조용히 멈춘다. BREATHING 은 이 판정 밖이라 계속 돈다.
+  const eligibility = useBehaviorEligibility();
+  const eligibleIdleEventIds = eligibility.filterIds(availableIdleEventIds);
+  const eligibleIdleEventSources = eligibility.filterSources(idleEventUrls);
+  const comeCloserSource = eligibility.comeCloserAllowed
+    ? (pipeline?.come_closer_video_url ?? null)
+    : null;
+
+  // 탭 핸들러는 deps 가 빈 useCallback 이다(제스처 판정이 재생성되면 탭 상태가
+  // 끊긴다). 적격성은 렌더마다 바뀔 수 있으므로 ref 로 읽는다 — 핸들러의 배선을
+  // 건드리지 않으면서 최신 값을 본다.
+  const comeCloserAllowedRef = useRef(eligibility.comeCloserAllowed);
+  comeCloserAllowedRef.current = eligibility.comeCloserAllowed;
+
   // 자산이 하나도 없으면 후보가 비어 아무 일도 일어나지 않는다 — BREATHING 유지.
   // 더블탭 COME_CLOSER 와 진입점을 공유하므로 우선순위·선점 판정은 decideTrigger 가
   // 단독으로 쥔다(COME_CLOSER 100/non-interruptible vs 아이들 10/interruptible).
   const { onPlaybackStateChange } = useIdleEventScheduler({
-    enabled: availableIdleEventIds.length > 0,
-    availableIds: availableIdleEventIds,
+    enabled: eligibleIdleEventIds.length > 0,
+    availableIds: eligibleIdleEventIds,
     triggerRef: comeCloserTriggerRef,
   });
 
@@ -199,7 +257,9 @@ export function MemorialDevicePlayScreen({
     );
     if (r.kind === "double") {
       lastTapRef.current = null;
-      comeCloserTriggerRef.current?.("COME_CLOSER");
+      // 더블탭 ∩ 구독 ∩ READY ∩ ON. 자발적 경로와 **같은 규칙**을 쓴다 —
+      // 갈라지면 만료된 사용자가 더블탭으로만 프리미엄을 계속 쓸 수 있다.
+      if (comeCloserAllowedRef.current) comeCloserTriggerRef.current?.("COME_CLOSER");
     } else if (r.kind === "first") {
       lastTapRef.current = r.tap;
     }
@@ -329,9 +389,10 @@ export function MemorialDevicePlayScreen({
               <PetIdleDisplay
                 idleVideoUrl={petIdleSrc}
                 cutoutUrl={cutoutDisplay}
-                comeCloserVideoUrl={pipeline?.come_closer_video_url ?? null}
-                // 아이들 이벤트 — DEV 빌드에서만 채워진다(useIdleEventAssets 가 게이트).
-                idleEventSources={idleEventUrls}
+                comeCloserVideoUrl={comeCloserSource}
+                // 적격한 것만 넘긴다 — 소스가 없으면 런타임이 자기 규칙(no-source)으로
+                // 거절하므로, 수동 트리거가 남아 있어도 OFF 는 재생되지 않는다.
+                idleEventSources={eligibleIdleEventSources}
                 actionTriggerRef={comeCloserTriggerRef}
                 // 스케줄러가 "지금 뭔가 재생 중인가"를 아는 유일한 신호다.
                 // 이 prop 없이 스케줄러만 붙이면 COME_CLOSER 재생 중에도 발화해서
@@ -352,20 +413,65 @@ export function MemorialDevicePlayScreen({
             줄어드는 것은 이 영역이다. 예전에는 이 아래 형제들이 프레임을 눌러
             납작하게 만들었다. */}
         <div className="w-full flex-1 min-h-0 overflow-y-auto hide-scrollbar flex flex-col items-center">
-          {/* 잠금 해제 CTA — 재생 프레임 바로 아래, 상태 표시 위.
-              여기에 두는 이유: 잠금 해제가 바꾸는 것(자발적 움직임·더블탭)이 바로 위
+          {/* 멤버십 카드 — 재생 프레임 바로 아래, 상태 표시 위.
+              여기에 두는 이유: 멤버십이 바꾸는 것(자발적 움직임·더블탭)이 바로 위
               프레임에서 일어나므로, 결과가 보이는 자리에서 사는 것이 가장 짧은 경로다.
               새 화면을 만들지 않는다. */}
-          <div className="mt-4 flex justify-center w-full shrink-0">
-            <UnlockFeaturesCard
-              petId={pipeline ? getEternalBeamPetId(pipeline.content_id) : null}
-              petImageUrl={pipeline?.dog_only_nobg_url ?? null}
-              // BREATH 자산이 실제로 있을 때만 노출한다 — 그 전에는 재생기 자체가
-              // 없어 잠금 해제해도 보여 줄 곳이 없다.
-              enabled={hasIdle}
-              language={language}
-              onGetCredits={onGetCredits}
+          {/* 멤버십 카드·행동 라이브러리·런타임 적격성이 **같은 자산 응답**을
+              나눠 쓴다. Provider 는 화면 최상단에 한 번만 있다. */}
+          <div className="mt-4 flex flex-col items-center gap-3 w-full shrink-0">
+              <MembershipCard
+                enabled={hasIdle}
+                language={language}
+                onOpenMembership={onOpenMembership}
+              />
+              {/* 행동 라이브러리 — 활성 멤버에게만 그려진다(컴포넌트가 스스로 판단).
+                  멤버십 카드 바로 아래에 두는 이유: 가입 → 무엇을 만들지 고르기가
+                  한 화면에서 이어져야 한다. */}
+              <BehaviorLibrary
+                petId={pipeline ? getEternalBeamPetId(pipeline.content_id) : null}
+                petImageUrl={pipeline?.dog_only_nobg_url ?? null}
+                enabled={hasIdle}
+                language={language}
             />
+              {/* QR 공유 — 행동 라이브러리 아래. "이 아이를 만든다 → 남에게 보여 준다"가
+                  같은 화면에서 이어진다. 새 화면을 만들지 않는다.
+                  펫을 복제하지 않는다: 이미 있는 content_id 에서 파생된 pet_id 와
+                  이미 생성된 BREATHING URL 을 **가리키기만** 한다. */}
+              {/* 기념품(실물) 진입. 카드 스택의 마지막 — 멤버십/행동/QR 다음에
+                  "이 아이를 손에 남긴다"가 온다. 여기서 주문을 만들지 않는다:
+                  화면을 열 뿐이고, 펫도 편지도 새로 만들어지지 않는다. */}
+              {onOpenKeepsakes && hasIdle && (
+                <button
+                  type="button"
+                  onClick={onOpenKeepsakes}
+                  className="w-full max-w-[320px] rounded-2xl border px-4 py-3.5 text-left backdrop-blur-sm"
+                  style={{
+                    background: "rgba(255,255,255,0.04)",
+                    borderColor: "rgba(255,255,255,0.12)",
+                  }}
+                >
+                  <p className="text-sm font-medium" style={{ color: "#F2F2F2" }}>
+                    기념품 만들기
+                  </p>
+                  <p className="mt-1 text-[12px] leading-relaxed" style={{ color: "#B8B8B8" }}>
+                    편지 ₩14,900 · 메모리 박스 ₩49,000
+                  </p>
+                  <p className="mt-1 text-[11px]" style={{ color: "#8a8a8a" }}>
+                    Soul Trace 편지와 QR 을 실물로 보내 드립니다.
+                  </p>
+                </button>
+              )}
+              <ShakerShareCard
+                petId={pipeline ? getEternalBeamPetId(pipeline.content_id) : null}
+                breathingUrl={hasRealIdleVideo(pipeline) ? (pipeline?.idle_video_url ?? null) : null}
+                posterCandidates={[
+                  pipeline?.dog_only_nobg_url,
+                  pipeline?.cutout_display_url,
+                ]}
+                enabled={hasIdle}
+                language={language}
+              />
           </div>
 
         <motion.div

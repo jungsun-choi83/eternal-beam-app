@@ -691,13 +691,21 @@ export interface SubscriptionStatusResult {
   credits_per_month?: number | null
 }
 
+/**
+ * **본인** 구독 상태. 신원은 서버가 토큰에서 확정한다 — user_id 를 보내지 않는다.
+ *
+ * 예전에는 경로에 user_id 를 넣어 인증 없이 불렀다. 그 값은 localStorage 에서
+ * 온 문자열이라, 프리미엄 인가가 보는 신원과 어긋나면 결제한 사용자가 "구독 없음"
+ * 으로 읽혔다. 이제 두 경로가 같은 신원을 쓴다.
+ */
 export async function getSubscriptionStatus(
-  userId: string
+  accessToken: string
 ): Promise<SubscriptionStatusResult> {
   validateVideoApiBase()
-  const res = await fetch(
-    `${getBaseUrl()}/api/v1/subscription/status/${encodeURIComponent(userId)}`
-  )
+  const res = await fetch(`${getBaseUrl()}/api/v1/subscription/status`, {
+    cache: 'no-store',
+    headers: { Authorization: `Bearer ${accessToken}` },
+  })
   if (!res.ok) {
     const err = await safeJson(res)
     throw new Error(formatHttpErrorDetail(err, '구독 상태 조회 실패'))
@@ -720,20 +728,27 @@ export interface SubscriptionWebhookResult {
   message: string
 }
 
+/**
+ * 목업 구독 웹훅 — **인증 필수**.
+ *
+ * 서버가 바디의 user_id 를 무시하고 토큰에서 신원을 확정한다. 그래서 여기서
+ * user_id 를 보내지 않는다. 실제 스토어 웹훅(apple/google)은 프론트가 부르는
+ * 경로가 아니다 — 공유 시크릿으로 스토어만 호출한다.
+ */
 export async function postSubscriptionWebhook(body: {
-  store_type?: 'apple' | 'google' | 'mock'
   notification_type: string
-  user_id: string
   plan_id?: string
   transaction_id?: string
   product_id?: string
-  raw?: Record<string, unknown>
-}): Promise<SubscriptionWebhookResult> {
+}, accessToken: string): Promise<SubscriptionWebhookResult> {
   validateVideoApiBase()
   const res = await fetch(`${getBaseUrl()}/api/v1/subscription/webhook`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${accessToken}`,
+    },
+    body: JSON.stringify({ ...body, store_type: 'mock' }),
   })
   if (!res.ok) {
     const err = await safeJson(res)

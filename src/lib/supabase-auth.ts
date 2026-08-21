@@ -67,6 +67,14 @@ export async function getAccessToken(): Promise<string | null> {
   return data?.session?.access_token?.trim() || null;
 }
 
+/** 401 복구용 강제 갱신. 실패/세션 없음은 null 로 명확히 돌려준다. */
+export async function refreshAccessToken(): Promise<string | null> {
+  if (!supabase) return null;
+  const { data, error } = await supabase.auth.refreshSession();
+  if (error) return null;
+  return data.session?.access_token?.trim() || null;
+}
+
 export async function hasSession(): Promise<boolean> {
   return (await getAccessToken()) != null;
 }

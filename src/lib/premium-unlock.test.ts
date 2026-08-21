@@ -36,6 +36,11 @@ function assets(over: Partial<PremiumAssets> = {}): PremiumAssets {
     actionEvents: [COME_CLOSER_ACTION],
     idleBundleCredits: 1,
     actionEventCredits: 1,
+    // 이 파일은 크레딧 시대의 가격/상태 계산을 고정한다. 구독 필드는 그 계산에
+    // 관여하지 않으므로(deriveUnlockState 는 읽지 않는다) 기본값으로 채운다.
+    entitled: true,
+    subscriptionStatus: 'active',
+    subscriptionRequired: true,
     ...over,
   }
 }
@@ -183,7 +188,10 @@ test('잔액 0이어도 재생 후보 판정은 바뀌지 않는다', () => {
 
 const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
 const HOOK = readFileSync('src/components/memorial/use-premium-unlock.ts', 'utf8')
-const CARD = readFileSync('src/components/memorial/unlock-features-card.tsx', 'utf8')
+
+// unlock-features-card.tsx 는 Phase 3 에서 Monthly Membership 으로 교체돼 삭제됐다.
+// 이 훅은 행동별 선택 UI(Behavior Library)를 위해 남겨 둔 것이므로, 여기서는
+// **훅 자체의 안전 계약**만 계속 고정한다 — 카드가 없다고 규칙이 느슨해지지 않는다.
 
 test('화면을 여는 것만으로 결제되지 않는다 — effect 는 GET 만 한다', () => {
   const code = strip(HOOK)
@@ -195,8 +203,12 @@ test('화면을 여는 것만으로 결제되지 않는다 — effect 는 GET �
   }
 })
 
-test('구매는 사용자 조작에서만 — 카드의 onClick 이 유일한 진입점', () => {
-  assert.match(strip(CARD), /onClick=\{\(\) => void purchase\(\)\}/)
+test('훅은 구매를 스스로 실행하지 않는다 — 호출은 언제나 밖에서 온다', () => {
+  const code = strip(HOOK)
+  // purchase 는 반환되기만 한다. 훅 안에서 스스로 부르는 곳이 있으면 안 된다.
+  const body = code.slice(code.indexOf('const purchase = useCallback'))
+  const selfCalls = body.match(/^\s*(void )?purchase\(\);?$/gm) ?? []
+  assert.equal(selfCalls.length, 0, '훅이 스스로 구매를 실행한다')
 })
 
 test('한 번의 클릭이 두 번 제출되지 않는다 (ref 가드)', () => {
@@ -241,7 +253,7 @@ test('재생 계층에는 지갑 검사가 없다', () => {
 })
 
 test('레거시 4종은 잠금 해제 모델에 등장하지 않는다', () => {
-  const code = strip(HOOK) + strip(CARD) + strip(readFileSync('src/lib/premium-unlock.ts', 'utf8'))
+  const code = strip(HOOK) + strip(readFileSync('src/lib/premium-unlock.ts', 'utf8'))
   for (const legacy of ['TOUCH', 'VOICE', 'NFC']) {
     assert.doesNotMatch(
       code,

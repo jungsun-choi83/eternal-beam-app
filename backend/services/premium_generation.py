@@ -19,7 +19,7 @@ from __future__ import annotations
 import logging
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Iterable, Optional
 
 from ..scenarios.pet_scenarios import (
     PREMIUM_ACTIONS,
@@ -30,7 +30,11 @@ from . import generation_queue
 from .credit_keyframe import KeyframePreparationError, prepare_black_plate_keyframe
 from .generation_safety import log_submission_receipt
 from .prompt_factory import build_scenario_prompt
-from .video_generation import resolve_action_provider, submit_generation
+from .video_generation import (
+    generation_mock_enabled,
+    resolve_action_provider,
+    submit_generation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +55,50 @@ class SubmitResult:
     provider: str
     provider_model: Optional[str]
     keyframe_url: str
+
+
+def mock_completion_video_url() -> str:
+    """
+    GENERATION_MOCK 일 때 완료 처리에 쓸 대역 영상 URL.
+
+    왜 필요한가: 프로바이더 호출을 막으면 **완료 콜백도 오지 않는다.** 제출 경로는
+    push 방식(프로바이더가 /generation-webhook 을 POST)이라, 부를 프로바이더가
+    없으면 작업이 영원히 submitted 로 남고 asset_state 는 계속 GENERATING 이다.
+    목업이 파이프라인을 "막기만" 하고 "끝내지" 않으면 그 화면은 절대 READY 가
+    되지 않는다.
+
+    그래서 목업은 정상 완료 경로를 **그대로** 태운다. 그러려면 실제로 내려받을 수
+    있는 mp4 가 하나 필요하다 — 후보 저장(download_video) → 검증 → 승격이 전부
+    진짜 바이트 위에서 돌아야 하기 때문이다.
+
+    미설정이면 제출 **전에** 끊는다. 작업을 만들어 놓고 stuck 시키느니, 사용자에게
+    즉시 오류를 보여 주고 상태를 MISSING 으로 남기는 편이 낫다.
+    """
+    url = (os.getenv("MOCK_LUMA_VIDEO_URL") or "").strip()
+    if not url:
+        raise PremiumSubmitError(
+            "GENERATION_MOCK=1 인데 MOCK_LUMA_VIDEO_URL 이 없습니다. "
+            "목업 완료에 쓸 mp4 URL을 설정하거나 GENERATION_MOCK 을 끄십시오.",
+            stage="mock_config",
+        )
+    return url
+
+
+async def _complete_mocked_generation(external_id: str, video_url: str) -> None:
+    """
+    목업 작업을 **실제 웹훅과 같은 경로**로 완료시킨다.
+
+    별도 완료 로직을 쓰지 않는 이유: 후보 저장 → 검증 → 승격 → 세션 확정은 이미
+    검증된 코드이고, 목업만 다른 길로 가면 목업에서 통과한 것이 실제에서 통과한다는
+    보장이 사라진다. 여기서는 프로바이더가 보냈을 콜백을 대신 만들어 줄 뿐이다.
+
+    지연 import: credit_generation_service 가 이 모듈을 import 하므로 모듈 수준에서
+    맞물면 순환이 된다 (generation_reconciler 도 같은 이유로 함수 안에서 부른다).
+    """
+    from .credit_generation_service import handle_luma_webhook_for_credit
+
+    logger.info("GENERATION_MOCK — 완료 콜백을 대신 발행한다 (ext=%s)", external_id)
+    await handle_luma_webhook_for_credit(external_id, "completed", video_url=video_url)
 
 
 def webhook_base_url() -> str:
@@ -98,6 +146,11 @@ async def submit_premium_action(
     provider = resolve_action_provider(action)
     prompt = build_scenario_prompt(kf, place_key, action)
 
+    # 목업이면 완료를 우리가 만들어야 한다. 대역 영상이 없으면 여기서 끊는다 —
+    # 작업 행을 만든 뒤에 알아차리면 그 작업은 영원히 GENERATING 이 된다.
+    mocked = generation_mock_enabled()
+    mock_video = mock_completion_video_url() if mocked else ""
+
     try:
         job = await submit_generation(kf, prompt, provider=provider, callback_url=callback_url)
     except Exception as e:  # noqa: BLE001 — 프로바이더 예외는 종류가 다양하다
@@ -115,6 +168,11 @@ async def submit_premium_action(
         session_id, user_id, pet_id, place_key, action, job.external_id,
         provider=provider, provider_model=job.model, attempt=1,
     )
+
+    # 프로바이더가 없으므로 완료 콜백도 없다 → 정상 경로로 직접 끝낸다.
+    if mocked:
+        await _complete_mocked_generation(job.external_id, mock_video)
+
     return SubmitResult(
         action_id=action,
         session_id=session_id,
@@ -131,6 +189,7 @@ async def advance_generation_queue(
     pet_id: str,
     pet_image_url: str | None,
     api_base: str,
+    allowed_actions: Iterable[str] | None = None,
 ) -> list[str]:
     """
     이 펫의 큐를 가능한 만큼 전진시킨다. 제출한 action_id 목록을 돌려준다.
@@ -141,10 +200,16 @@ async def advance_generation_queue(
     한 번에 여러 건이 들어갈 수 있다 — 상한이 2 이고 두 건이 동시에 끝나면
     두 건을 제출해야 한다. 그래서 루프를 돈다.
 
+    allowed_actions 가 주어지면 **그 안의 액션만** 전진 대상이 된다. 호출부가
+    "무엇을 마저 채워야 하는가"를 알고 있을 때 쓴다(예: 아이들 번들 구매는
+    IDLE_EVENTS 만 채워야 하고, 사지 않은 COME_CLOSER 까지 만들면 안 된다).
+    None 이면 예전 그대로 GENERATION_ORDER 전체가 후보다.
+
     **절대 예외를 밖으로 내지 않는다.** 이 함수는 웹훅 처리의 부수 작업이다.
     여기서 터지면 이미 성공한 승격이 500 으로 뒤집히고, 프로바이더는 재전송하며,
     그 재전송은 duplicate 로 걸러져 결국 자산이 유실된다.
     """
+    allowed = {a.strip().upper() for a in allowed_actions} if allowed_actions is not None else None
     submitted: list[str] = []
     if not pet_image_url:
         logger.info("큐 전진 생략 — pet_image_url 없음 (user=%s pet=%s)", user_id, pet_id)
@@ -162,7 +227,8 @@ async def advance_generation_queue(
                 (
                     a
                     for a in generation_queue.GENERATION_ORDER
-                    if generation_queue.decide(
+                    if (allowed is None or a in allowed)
+                    and generation_queue.decide(
                         action_id=a, ready_actions=ready, active_actions=active
                     ).allowed
                 ),
