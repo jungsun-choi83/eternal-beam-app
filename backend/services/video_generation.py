@@ -14,9 +14,30 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import uuid
 from dataclasses import dataclass
 from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
+
+
+def generation_mock_enabled() -> bool:
+    """
+    **프로바이더 중립 생성 차단 스위치.**
+
+    GENERATION_MOCK=1 이면 어떤 프로바이더로도 실제 제출을 하지 않는다.
+
+    왜 필요한가: 기존 목업은 프로바이더마다 따로였다. LUMA_MOCK=1 은 Luma 만
+    막고, wan_service 에는 목업 자체가 없다. 그래서 VIDEO_PROVIDER 를 wan 으로
+    바꾸는 순간 — 오타 하나로도 — 실제 fal.ai 호출이 나간다. 프로바이더 선택과
+    과금 차단이 같은 축에 있으면 안 된다.
+
+    이 스위치는 **디스패처 한 곳**에 있으므로 프로바이더를 무엇으로 두든 유효하다.
+    통제된 실 생성 1건을 하려면 이 값을 끄는 것이 유일한 관문이다.
+    """
+    return os.getenv("GENERATION_MOCK", "0").strip().lower() in ("1", "true", "yes")
 
 PROVIDER_LUMA = "luma"
 PROVIDER_WAN = "wan"              # 하위호환 별칭 → wan_turbo
@@ -168,6 +189,18 @@ async def submit_generation(
     """
     provider = normalize_provider(provider)
     mdl = model or provider_model_name(provider)
+
+    # ── 프로바이더 중립 차단 ─────────────────────────────────────────────────
+    # 프로바이더 분기보다 **먼저** 본다. 여기서 막으면 luma 든 wan 이든, 키가
+    # 설정돼 있든 없든 유료 호출이 나갈 수 없다.
+    if generation_mock_enabled():
+        fake = f"mock_{uuid.uuid4().hex[:12]}"
+        logger.warning(
+            "GENERATION_MOCK=1 — 실제 제출을 건너뛴다 (provider=%s model=%s external_id=%s). "
+            "통제된 실 생성을 하려면 GENERATION_MOCK 을 끄십시오.",
+            provider, mdl, fake,
+        )
+        return SubmittedJob(provider=provider, external_id=fake, model=mdl)
 
     # 유료 호출 **직전** 스키마 확인. 제출은 성공했는데 뒤이은 DB 쓰기가 실패해
     # 돈만 나가고 복구 불가가 되는 사고를 원천 차단한다.

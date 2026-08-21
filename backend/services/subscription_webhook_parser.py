@@ -13,7 +13,7 @@ from typing import Any, Literal, Optional
 
 from ..data.subscription_plans import resolve_plan_id_from_product
 
-StoreType = Literal["apple", "google", "mock"]
+StoreType = Literal["apple", "google", "mock", "toss"]
 RenewalTypes = frozenset({"INITIAL_BUY", "RENEWAL", "SUBSCRIBED", "DID_RENEW"})
 ExpireTypes = frozenset(
   {"EXPIRATION", "EXPIRED", "REVOKE", "REFUND", "DID_FAIL_TO_RENEW", "GRACE_PERIOD_EXPIRED"}
@@ -136,10 +136,17 @@ def parse_subscription_webhook(body: dict[str, Any]) -> ParsedSubscriptionWebhoo
     else:
       raise ValueError("user_id is required in webhook body")
 
+  # 정규 Eternal Beam 신원으로 맞춘다. 스토어가 준 이메일의 대소문자 하나 때문에
+  # 저장(A)과 프리미엄 인가 조회(B)가 갈라지면 결제한 사용자가 "구독 없음"이 된다.
+  # resolve_identity 가 eb_user_id 를 소문자 이메일로 만드는 것과 같은 규칙이다.
+  from .identity_service import canonical_user_id
+
+  user_id = canonical_user_id(user_id) or user_id
+
   if not tx:
     tx = f"gen_{hashlib.sha256(f'{user_id}:{event_type}'.encode()).hexdigest()[:20]}"
 
-  st: StoreType = store if store in ("apple", "google", "mock") else "mock"  # type: ignore[assignment]
+  st: StoreType = store if store in ("apple", "google", "mock", "toss") else "mock"  # type: ignore[assignment]
   fp = _fingerprint(st, event_type, tx, user_id)
 
   return ParsedSubscriptionWebhook(

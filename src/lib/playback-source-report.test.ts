@@ -106,10 +106,14 @@ test('idleEventSources 가 COME_CLOSER 소스를 덮지 않는다 — 전개 순
   assert.ok(cc > spread, 'COME_CLOSER 가 전개보다 앞에 있어 덮어써질 수 있다')
 })
 
-test('memorial 이 COME_CLOSER 소스를 플레이어로 넘긴다', () => {
+test('memorial 이 COME_CLOSER 소스를 플레이어로 넘긴다 (적격성 게이트 경유)', () => {
+  // Phase 6: 소스는 그대로 연결되지만 **적격성을 거친다**. 만료/OFF 면 null 이
+  // 되어 런타임이 no-source 로 거절한다 — 런타임을 고치지 않고 막는 방식이다.
+  const code = strip(MEMORIAL)
+  assert.match(code, /comeCloserVideoUrl=\{comeCloserSource\}/, 'COME_CLOSER 소스가 연결되지 않았다')
   assert.match(
-    strip(MEMORIAL),
-    /comeCloserVideoUrl=\{pipeline\?\.come_closer_video_url \?\? null\}/,
-    'COME_CLOSER 소스가 PetIdleDisplay 에 연결되지 않았다',
+    code,
+    /const comeCloserSource = eligibility\.comeCloserAllowed[\s\S]{0,120}come_closer_video_url/,
+    '적격성을 거치지 않고 원본을 넘긴다',
   )
 })

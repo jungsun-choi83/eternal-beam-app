@@ -60,10 +60,10 @@ test('Home 에서 연 설정은 Home 으로 돌아간다', () => {
   assert.match(CODE, /onSettings=\{\(\) => openSettings\('home'\)\}/)
 })
 
-test('Memorial 의 크레딧 받기는 devicePlay 로 돌아간다', () => {
+test('Memorial 의 멤버십 진입은 devicePlay 로 돌아간다', () => {
   assert.match(
     CODE,
-    /onGetCredits=\{\(\) => openSettings\('devicePlay', \{ focusCredits: true \}\)\}/,
+    /onOpenMembership=\{\(\) => openSettings\('devicePlay', \{ focusMembership: true \}\)\}/,
   )
 })
 
@@ -76,9 +76,9 @@ test('설정 복귀가 세션·파이프라인을 지우지 않는다', () => {
     '뒤로가기가 펫·테마·위치 상태를 초기화한다')
 })
 
-test('크레딧 강조 플래그는 복귀 시 해제된다', () => {
+test('멤버십 강조 플래그는 복귀 시 해제된다', () => {
   const i = CODE.indexOf('const handleSettingsBack')
-  assert.match(CODE.slice(i, i + 400), /setFocusCredits\(false\)/)
+  assert.match(CODE.slice(i, i + 400), /setFocusMembership\(false\)/)
 })
 
 test('기기 설정 → 설정 복귀는 그대로 유지된다', () => {

@@ -29,10 +29,11 @@ export function SubscriptionTestPanel({
   const [busy, setBusy] = useState<string | null>(null);
   const [lastMsg, setLastMsg] = useState<string | null>(null);
 
+  // 신원은 토큰이 정한다 — userId prop 은 더 이상 서버로 가지 않는다.
   const refresh = useCallback(async () => {
     setBusy("refresh");
     try {
-      const s = await fetchSubscriptionStatus(userId);
+      const s = await fetchSubscriptionStatus();
       setStatus(s);
       if (s.credits_remaining != null) onCreditsChanged?.(s.credits_remaining);
     } catch (e) {
@@ -40,7 +41,7 @@ export function SubscriptionTestPanel({
     } finally {
       setBusy(null);
     }
-  }, [userId, onCreditsChanged]);
+  }, [onCreditsChanged]);
 
   useEffect(() => {
     void refresh();
@@ -50,7 +51,7 @@ export function SubscriptionTestPanel({
     setBusy(event);
     setLastMsg(null);
     try {
-      const r = await sendSubscriptionMockWebhook(userId, event);
+      const r = await sendSubscriptionMockWebhook(event);
       setLastMsg(r.message);
       if (r.credits_remaining != null) onCreditsChanged?.(r.credits_remaining);
       await refresh();

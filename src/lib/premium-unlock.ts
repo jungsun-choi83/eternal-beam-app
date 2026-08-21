@@ -61,12 +61,29 @@ export interface UnlockState {
   balance: number | null;
 }
 
+/**
+ * **행동 한 건**의 상태. 판정 규칙의 단일 출처다.
+ *
+ * Behavior Library(행동별 카드)와 아래 sideFrom(집합 판정)이 같은 함수를 쓴다 —
+ * 두 곳이 각자 판정하면 카드에는 READY 인데 집합은 missing 이라 재생성을 시도하는
+ * 식으로 어긋난다. 순서도 서버(premium_purchase.asset_state)와 같다:
+ * canonical 자산이 있으면 ready, 진행 중이면 generating, 그 외 missing.
+ */
+export function behaviorState(
+  actionId: string,
+  assets: PremiumAssets | null
+): SideState {
+  if (!assets) return "missing";
+  if (assets.ready[actionId]) return "ready";
+  if (assets.generating.includes(actionId)) return "generating";
+  return "missing";
+}
+
 function sideFrom(kind: string, targets: string[], assets: PremiumAssets): UnlockSide {
-  const ready = targets.filter((a) => Boolean(assets.ready[a]));
-  const generating = targets.filter((a) => assets.generating.includes(a));
-  const missing = targets.filter(
-    (a) => !assets.ready[a] && !assets.generating.includes(a)
-  );
+  const states = targets.map((a) => behaviorState(a, assets));
+  const ready = targets.filter((_, i) => states[i] === "ready");
+  const generating = targets.filter((_, i) => states[i] === "generating");
+  const missing = targets.filter((_, i) => states[i] === "missing");
 
   // 판정 순서가 백엔드(premium_purchase.purchase)의 가드와 **정확히 같아야** 한다:
   // 만들 것이 없으면(missing 이 비면) 서버는 과금하지 않는다. 그래서 "생성 중"은

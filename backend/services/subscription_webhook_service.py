@@ -216,7 +216,11 @@ async def get_subscription_status(user_id: str):
   uid = user_id.strip()
   sub = await sub_store.get_subscription(uid)
   w = await get_wallet(uid, create_if_missing=False)
-  plan = SUBSCRIPTION_PLANS.get("standard_subscription")
+  # 사용자의 **실제** 플랜을 보여 준다. 예전에는 standard_subscription 을
+  # 하드코딩해서, 웹 멤버십 가입자에게 레거시 플랜 이름·가격이 보였다.
+  from ..data.subscription_plans import DEFAULT_PLAN_ID
+
+  plan = SUBSCRIPTION_PLANS.get((sub.plan_id if sub else None) or DEFAULT_PLAN_ID)
 
   return SubscriptionStatusResponse(
     user_id=uid,

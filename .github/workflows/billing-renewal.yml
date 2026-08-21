@@ -1,0 +1,78 @@
+# 월 정기결제 갱신 배치.
+#
+# 왜 GitHub Actions 인가: Render 의 cron 서비스는 유료 플랜에서만 쓸 수 있고,
+# 지금 백엔드는 free 플랜이다. Actions 는 무료이고 시크릿 저장소도 있으므로
+# 지금 당장 동작한다. Render 유료로 올리면 render.yaml 의 주석대로 옮기면 된다.
+#
+# 하는 일은 **한 번의 인증된 POST** 뿐이다. 결제 로직은 전부 서버에 있다 —
+# 이 워크플로가 금액이나 주기를 알지 못한다.
+#
+# 필요한 GitHub Secrets (Settings → Secrets and variables → Actions):
+#   BILLING_API_BASE     예: https://eternal-beam-video-api.onrender.com
+#   BILLING_CRON_SECRET  서버의 BILLING_CRON_SECRET 과 **같은 값**
+
+name: billing-renewal
+
+on:
+  schedule:
+    # 매일 03:00 KST (18:00 UTC). 매일 도는 이유: 갱신 대상은
+    # "이용 기간이 끝난 구독" 이라 서버가 정하고, 배치는 그저 자주 물어보면 된다.
+    # 하루 한 번이면 갱신이 최대 24시간 늦어지지만, 자격은 결제 기간 기준이라
+    # 그 사이에도 사용자는 정상적으로 이용한다.
+    - cron: "0 18 * * *"
+  # 수동 실행 — 샌드박스 검증과 장애 복구에 쓴다.
+  workflow_dispatch:
+
+# 동시에 두 번 돌지 않게 한다. 서버가 order_id 로 멱등하지만,
+# 배치가 겹치면 로그가 읽기 어려워진다.
+concurrency:
+  group: billing-renewal
+  cancel-in-progress: false
+
+jobs:
+  renew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Trigger due renewals
+        env:
+          BASE: ${{ secrets.BILLING_API_BASE }}
+          SECRET: ${{ secrets.BILLING_CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BASE:-}" ] || [ -z "${SECRET:-}" ]; then
+            echo "::error::BILLING_API_BASE / BILLING_CRON_SECRET 시크릿이 없습니다."
+            exit 1
+          fi
+
+          # -sS: 조용하되 오류는 보여 준다. --fail-with-body: 4xx/5xx 를 실패로
+          # 처리하면서 본문도 남긴다(원인 없이 빨간 X만 남지 않게).
+          http_code=$(curl -sS -o /tmp/out.json -w '%{http_code}' \
+            --fail-with-body \
+            -X POST "${BASE%/}/api/v1/billing/renew-due?limit=200" \
+            -H "X-Billing-Cron-Secret: ${SECRET}" \
+            --max-time 120 || true)
+
+          echo "HTTP ${http_code}"
+          # 시크릿이 응답에 실릴 일은 없지만, 로그에 본문을 통째로 붓지 않는다.
+          python3 - <<'PY'
+          import json, sys
+          try:
+              d = json.load(open("/tmp/out.json"))
+          except Exception:
+              print("응답 본문을 파싱하지 못했습니다.")
+              sys.exit(0)
+          if "processed" in d:
+              print(f"processed={d['processed']}")
+              from collections import Counter
+              c = Counter(r.get("outcome", "?") for r in d.get("results", []))
+              for k, v in sorted(c.items()):
+                  print(f"  {k}: {v}")
+          else:
+              print("detail:", str(d.get("detail", d))[:300])
+          PY
+
+          if [ "$http_code" != "200" ]; then
+            echo "::error::갱신 배치가 실패했습니다 (HTTP ${http_code})."
+            exit 1
+          fi

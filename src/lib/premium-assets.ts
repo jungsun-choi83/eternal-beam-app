@@ -41,6 +41,25 @@ export interface PremiumAssets {
   actionEvents: string[];
   idleBundleCredits: number;
   actionEventCredits: number;
+  /**
+   * 프리미엄 **생성**이 허용되는가 (구독 active 또는 해지 유예 기간).
+   *
+   * ⚠️ **재생 권한이 아니다.** ready 에 있는 자산은 entitled=false 여도 계속
+   * 재생된다 — 구독이 만료돼도 이미 만든 모션과 설정은 남는다. BREATHING 은
+   * 애초에 프리미엄이 아니라 이 값과 무관하게 언제나 돈다.
+   */
+  entitled: boolean;
+  /**
+   * 행동 id → ON/OFF. **등록된 프리미엄 행동 전체**가 들어온다(기본 켬).
+   *
+   * ⚠️ READY 와 별개 상태다 — 아직 만들지 않은 행동에도 값이 있다.
+   * ⚠️ 아직 재생에 연결되지 않았다. 스케줄러는 이 값을 보지 않는다.
+   */
+  preferences: Record<string, boolean>;
+  /** "active" | "canceled" | "expired" | null(구독 이력 없음) */
+  subscriptionStatus: string | null;
+  /** 서버에서 구독 게이트가 켜져 있는가. false 면 레거시 크레딧 과금 경로다. */
+  subscriptionRequired: boolean;
 }
 
 export interface PurchaseOutcome {
@@ -58,6 +77,10 @@ export interface PurchaseOutcome {
 export type PremiumErrorCode =
   | "UNAUTHENTICATED"
   | "PET_NOT_OWNED"
+  /** 구독이 없거나 만료됨 — 프리미엄 **생성**만 막힌다(재생은 계속된다). */
+  | "SUBSCRIPTION_REQUIRED"
+  /** 구독 상태를 읽지 못했다. fail-closed 라 생성은 일어나지 않았다. */
+  | "SUBSCRIPTION_CHECK_UNAVAILABLE"
   | "INSUFFICIENT_CREDITS"
   | "WALLET_UNAVAILABLE"
   | "GENERATION_SUBMIT_FAILED"
@@ -120,6 +143,14 @@ export async function discoverPremiumAssets(params: {
     actionEvents: (b.action_events as string[]) ?? [],
     idleBundleCredits: Number(b.idle_bundle_credits ?? 1),
     actionEventCredits: Number(b.action_event_credits ?? 1),
+    entitled: Boolean(b.entitled),
+    preferences: (b.preferences as Record<string, boolean>) ?? {},
+    subscriptionStatus:
+      b.subscription_status == null ? null : String(b.subscription_status),
+    // 구버전 서버(필드 없음)와 붙었을 때 "구독 불필요"로 착각하지 않도록 기본 true.
+    subscriptionRequired: b.subscription_required == null
+      ? true
+      : Boolean(b.subscription_required),
   };
 }
 
@@ -165,4 +196,35 @@ export async function purchasePremium(params: {
     submitted: (b.submitted as string[]) ?? [],
     alreadyOwned: Boolean(b.already_owned),
   };
+}
+
+/**
+ * 행동 하나의 ON/OFF 저장. **생성을 일으키지 않는다.**
+ *
+ * 서버가 갱신된 **전체** 선호를 돌려주므로, 호출부는 응답 하나로 화면을 다시
+ * 그릴 수 있다(낙관적 업데이트가 어긋나도 서버 값으로 수렴한다).
+ */
+export async function setBehaviorPreference(params: {
+  petId: string;
+  actionId: string;
+  enabled: boolean;
+  accessToken: string;
+  signal?: AbortSignal;
+}): Promise<Record<string, boolean>> {
+  const res = await fetch(`${apiBase()}/api/v1/pet/premium/preference`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${params.accessToken}`,
+    },
+    body: JSON.stringify({
+      pet_id: params.petId,
+      action_id: params.actionId,
+      enabled: params.enabled,
+    }),
+    signal: params.signal,
+  });
+  if (!res.ok) throw await readError(res);
+  const b = (await res.json()) as Record<string, unknown>;
+  return (b.preferences as Record<string, boolean>) ?? {};
 }

@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { languageLabels, memorialLang, memorialT } from "@/components/memorial/memorial-i18n";
 import { SubscriptionTestPanel } from "@/components/memorial/subscription-test-panel";
-import { CreditsSection } from "@/components/memorial/credits-section";
+import { MembershipSection } from "@/components/memorial/membership-section";
 import { IdleGenerationTestPanel } from "@/components/memorial/idle-generation-test-panel";
 import { SUBSCRIPTION_MOCK_ENABLED, IDLE_TEST_PANEL_ENABLED } from "@/lib/test-app-flags";
 
@@ -31,7 +31,7 @@ interface SettingsScreenProps {
   onLogout: () => void;
   onCreditsChanged?: (remaining: number) => void;
   /** Memorial 의 "크레딧 받기" 로 들어왔는가 — 크레딧 섹션으로 스크롤·강조한다. */
-  focusCredits?: boolean;
+  focusMembership?: boolean;
 }
 
 export function SettingsScreen({
@@ -42,7 +42,7 @@ export function SettingsScreen({
   onBack,
   onLogout,
   onCreditsChanged,
-  focusCredits,
+  focusMembership,
 }: SettingsScreenProps) {
   const s = memorialT(currentLanguage).settings;
   const lang = memorialLang(currentLanguage);
@@ -128,7 +128,7 @@ export function SettingsScreen({
       <div className="flex-1 overflow-y-auto px-4 pb-8">
         {/* 상시 노출 — 숨은 테스트 패널 뒤에 두지 않는다. Memorial 이 "설정에서
             충전하세요" 라고 안내하는데 실제 충전 UI 가 없던 것이 원래 문제였다. */}
-        <CreditsSection language={currentLanguage} focusOnMount={focusCredits} />
+        <MembershipSection language={currentLanguage} focusOnMount={focusMembership} />
 
         {showSubscriptionTest && SUBSCRIPTION_MOCK_ENABLED ? (
           <SubscriptionTestPanel

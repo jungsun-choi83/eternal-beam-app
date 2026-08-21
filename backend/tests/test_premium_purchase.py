@@ -31,6 +31,11 @@ def _isolated(monkeypatch: pytest.MonkeyPatch):
     """DB 없이 인메모리 원장/지갑으로 돈다. 매 테스트마다 초기화."""
     monkeypatch.setenv("HYBRID_USE_SUPABASE", "0")
     monkeypatch.setenv("PET_HYBRID_SEED", "0")
+    # 이 파일은 **크레딧 과금 계약**을 고정한다. Phase 2 에서 프리미엄 생성의
+    # 기본 인가는 구독으로 넘어갔지만(PREMIUM_REQUIRES_SUBSCRIPTION 기본 1),
+    # 크레딧 경로는 레거시 롤백 스위치로 살아 있어야 하고 그 동작은 여기서
+    # 계속 검증된다. 구독 계약은 test_subscription_entitlement.py 가 맡는다.
+    monkeypatch.setenv("PREMIUM_REQUIRES_SUBSCRIPTION", "0")
     premium_purchase.__reset_for_tests()
     wallet_service._MOCK_WALLETS.clear()
     yield

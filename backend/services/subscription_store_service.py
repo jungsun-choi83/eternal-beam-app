@@ -198,7 +198,15 @@ async def process_renewal_mock(
     return 0, w.current_credits if w else 0
 
   plan = get_subscription_plan(plan_id)
-  w = await add_credits(user_id, credits)
+  # 크레딧 0 플랜(웹 멤버십)은 지갑을 아예 건드리지 않는다. add_credits 는 0을
+  # 거절하고, 무엇보다 쓸 곳 없는 잔액을 만들 이유가 없다 — 자격은 구독 상태가
+  # 정한다. 레거시 4코인 플랜(credits_per_month>0)의 동작은 그대로다.
+  if credits > 0:
+    w = await add_credits(user_id, credits)
+  else:
+    from .wallet_service import get_wallet as _get_wallet
+
+    w = await _get_wallet(user_id, create_if_missing=False)
   row = UserSubscriptionRow(
     user_id=user_id,
     plan_id=plan.plan_id,
@@ -218,7 +226,7 @@ async def process_renewal_mock(
     "amount_krw": amount_krw,
     "raw": raw_payload,
   }
-  return len(_MOCK_EVENTS), w.current_credits
+  return len(_MOCK_EVENTS), (w.current_credits if w else 0)
 
 
 async def process_status_change_mock(
