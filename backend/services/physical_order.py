@@ -375,16 +375,46 @@ SHIPPING_FLOW: dict[str, tuple[str, ...]] = {
 }
 
 
-def _patch(order_id: str, patch: dict[str, Any], *, where: dict[str, str]) -> None:
+def _patch(order_id: str, patch: dict[str, Any], *, where: dict[str, Any]) -> None:
     if _use_db() and _supabase():
         q = _supabase().table(_table()).update(patch).eq("order_id", order_id)
         for k, v in where.items():
-            q = q.eq(k, v)
+            # NULL 은 = 로 비교되지 않는다(SQL 3값 논리). PostgREST 에서도 eq(None)
+            # 은 매칭되지 않으므로 is.null 을 써야 한다 — 이걸 틀리면 "비어 있을
+            # 때만 쓴다"는 compare-and-set 이 **아무 행도 갱신하지 않고 조용히**
+            # 성공한 것처럼 보인다.
+            q = q.is_(k, "null") if v is None else q.eq(k, v)
         q.execute()
         return
     row = _MOCK_ORDERS.get(order_id)
     if row and all(row.get(k) == v for k, v in where.items()):
         row.update(patch)
+
+
+async def attach_share(*, order_id: str, shaker_share_id: str) -> PhysicalOrder:
+    """
+    주문에 Shaker 공유를 붙인다. **이미 붙어 있으면 바꾸지 않는다.**
+
+    바꾸지 않는 이유: 이 값이 인쇄되는 QR 을 정한다. 나중에 다른 공유로 갈아
+    끼우면 **이미 배송된 종이의 QR 이 가리키는 곳과 DB 가 어긋난다** — 고객이
+    스캔했을 때 무엇이 열릴지 우리도 알 수 없게 된다.
+
+    멱등: 같은 값을 두 번 붙여도 한 번 붙인 것과 같다. 중복 결제 콜백이
+    공유를 갈아 치우지 못하게 하는 잠금이기도 하다.
+    """
+    sid = (shaker_share_id or "").strip()
+    if not sid:
+        raise OrderError("SHARE_REQUIRED", "shaker_share_id 가 필요합니다.")
+
+    order = await get(order_id)
+    if not order:
+        raise OrderError("ORDER_NOT_FOUND", "주문을 찾을 수 없습니다.", status=404)
+    if order.shaker_share_id:
+        return order  # 이미 확정됐다 — 인쇄물과의 일관성이 우선이다
+
+    # 비어 있을 때만 쓴다(compare-and-set). 두 콜백이 동시에 와도 하나만 이긴다.
+    _patch(order_id, {"shaker_share_id": sid}, where={"shaker_share_id": None})
+    return await get(order_id) or order
 
 
 async def advance_production(*, order_id: str, to: str) -> PhysicalOrder:
