@@ -7,7 +7,7 @@ import { ShakerScreen } from '@/components/memorial/shaker-screen'
 import { isShakerEntry } from '@/lib/shaker-entry'
 import { isOpsProductionEntry, isOpsShakerEntry } from '@/lib/shaker-ops-entry'
 import { orderReturnEntry, themeReturnEntry } from '@/lib/app-entry'
-import { isSoulTraceImportEntry } from '@/lib/soul-trace-handoff'
+import { hasPendingSoulTraceHandoff, isSoulTraceImportEntry } from '@/lib/soul-trace-handoff'
 import { EternalBeamApp } from './EternalBeamApp'
 
 /**
@@ -41,5 +41,17 @@ export default function App() {
   if (isOpsProductionEntry()) return <OpsProductionScreen />
   if (isOpsShakerEntry()) return <ShakerOpsScreen />
   if (isShakerEntry()) return <ShakerScreen />
+
+  // ── 이메일 확인 탭에서 돌아온 경우 ────────────────────────────────────────
+  // 가입 확인 링크는 **새 탭**에서 열리고, 그 탭이 어디에 떨어질지는 Supabase 의
+  // 리다이렉트 설정이 정한다 — 대개 앱 루트다. 그러면 핸드오프는 저장돼 있는데
+  // 그것을 읽는 화면은 마운트되지 않아, 사용자는 로그인만 되고 편지는 사라진
+  // 것처럼 보인다.
+  //
+  // 그래서 **유효한(미만료) 핸드오프가 대기 중일 때만** import 화면으로 이어 붙인다.
+  // 대기 중인 것이 없으면 이 줄은 아무 일도 하지 않으므로,
+  // device.eternalbeam.com 으로 직접 들어오는 기존 흐름은 그대로다.
+  if (hasPendingSoulTraceHandoff()) return <SoulTraceImportScreen />
+
   return <EternalBeamApp />
 }

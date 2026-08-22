@@ -8,6 +8,7 @@ import { getPremiumAccessToken } from "@/lib/premium-auth-token";
 import {
   captureSoulTraceHandoff,
   clearSoulTraceHandoff,
+  markSoulTracePendingUpload,
   type SoulTraceHandoff,
 } from "@/lib/soul-trace-handoff";
 
@@ -17,8 +18,10 @@ import {
  *   URL: ?traceId=<uuid>&handoff=<불투명 토큰>     ← 편지 본문은 없다
  *
  * ── 이 화면이 하는 일의 순서 ────────────────────────────────────────────────
- *   1. URL 에서 핸드오프를 집어 sessionStorage 로 옮기고 **주소창을 지운다**
- *   2. 로그인돼 있지 않으면 로그인/가입 (핸드오프는 그 왕복을 넘어 살아남는다)
+ *   1. URL 에서 핸드오프를 집어 만료 있는 저장소로 옮기고 **주소창을 지운다**
+ *   2. 로그인돼 있지 않으면 로그인/가입 — 핸드오프는 그 왕복을 넘어 살아남는다.
+ *      **이메일 확인은 새 탭에서 열린다.** 그래서 탭을 건너뛸 수 있어야 하고,
+ *      그 탭에서 이 화면이 다시 열리면 저장된 핸드오프로 이어서 진행한다.
  *   3. 인증되면 POST /api/v1/orders/letter/claim { trace_id, handoff }
  *   4. 성공하면 브라우저에서 원문 토큰을 **즉시 지운다**
  *
@@ -99,9 +102,12 @@ export function SoulTraceImportScreen() {
         handoff: handoff.handoff,
         accessToken: auth.token,
       });
-      // 성공했다 — 원문 토큰을 더 들고 있을 이유가 없다.
+      // 성공했다 — 원문 토큰을 더 들고 있을 이유가 없다. 서버에서 이미 소비됐고,
+      // 브라우저에 남기면 쓸모없는 자격 증명이 기기에 계속 남는다.
       clearSoulTraceHandoff();
       handoffRef.current = null;
+      // 다음 단계는 **기존** Upload Pet 흐름이다. 여기서 새로 만들지 않는다.
+      markSoulTracePendingUpload();
       setPhase({ kind: "done", letterId: r.letterId });
     } catch (e) {
       const { message, recoverable } = messageFor(e);
@@ -128,7 +134,8 @@ export function SoulTraceImportScreen() {
   }, [claim]);
 
   if (phase.kind === "needsAuth") {
-    // 로그인 왕복 동안 핸드오프는 sessionStorage 에 남아 있다.
+    // 로그인·이메일 확인 왕복 동안 핸드오프는 만료 있는 저장소에 남아 있다
+    // (soul-trace-handoff.ts — 15분, 서버 토큰과 같은 수명).
     return <AuthScreen onAuthComplete={() => void claim()} />;
   }
 

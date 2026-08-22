@@ -16,7 +16,10 @@ ffmpeg-python==0.2.0
 supabase>=2.3.0
 # 프로덕션 프리미엄 라우터의 Supabase JWT 검증 (backend/auth.py).
 # 없으면 /api/v1/pet/premium/* 이 503 으로 닫힌다 — 인증 없이 열리지는 않는다.
-PyJWT>=2.8.0
+# ES256(비대칭) Supabase 액세스 토큰 검증에 cryptography 가 필요하다.
+# [crypto] 추가 없이는 PyJWT 가 ES256 을 해석하지 못한다 — 지금까지는
+# supabase 의 전이 의존으로 우연히 설치돼 있었을 뿐이라 명시한다.
+PyJWT[crypto]>=2.8.0
 python-dotenv==1.0.1
 requests>=2.31.0
 

@@ -39,6 +39,7 @@ import { resolveSkipThemeId } from '@/lib/theme-skip'
 import { schedulePiDiscovery } from '@/lib/pi-sensor-bridge'
 import { isForestTheme } from '@/lib/forest-demo-config'
 import { billingReturnEntry, isPublicForestEntry } from '@/lib/app-entry'
+import { consumeSoulTracePendingUpload } from '@/lib/soul-trace-handoff'
 import {
   clearBillingReturnState,
   readBillingReturnState,
@@ -83,6 +84,10 @@ function resolveInitialScreen(): Screen {
   // Toss 결제 복귀 — 전용 경로가 없으면 결제 후 첫 화면(QR)으로 떨어져
   // 사용자가 방금 낸 돈의 결과를 볼 수 없다.
   if (billingReturnEntry()) return 'billingResult'
+  // Soul Trace 편지를 막 가져왔다 — 다음은 아이를 만드는 단계다.
+  // **기존 Upload Pet 흐름을 그대로 쓴다**(새 화면을 만들지 않는다).
+  // 표식은 한 번만 소비되므로 다음 방문부터는 평소 진입 화면으로 돌아간다.
+  if (consumeSoulTracePendingUpload()) return 'photoUpload'
   if (isPublicForestEntry()) return 'forestExperience'
   if (isDeviceKickstarterDemo()) return 'home'
   // 기계 QR 진입 — 1P 로고 → 2P 회원가입 → 3P 사진 업로드 (홈은 이후 단계)

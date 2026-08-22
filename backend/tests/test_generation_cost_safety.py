@@ -255,15 +255,37 @@ def test_readiness_passes_when_fully_configured(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.parametrize(
-    "unset", ["SUPABASE_JWT_SECRET", "SUBSCRIPTION_WEBHOOK_SECRET", "SUPABASE_SERVICE_ROLE_KEY"]
+    "unset", ["SUPABASE_URL", "SUBSCRIPTION_WEBHOOK_SECRET", "SUPABASE_SERVICE_ROLE_KEY"]
 )
 def test_missing_security_config_is_a_blocker(unset, monkeypatch: pytest.MonkeyPatch):
     from backend.services import production_readiness
 
     _clean_env(monkeypatch)
     monkeypatch.delenv(unset, raising=False)
+    monkeypatch.delenv("VITE_SUPABASE_URL", raising=False)
     r = production_readiness.audit()
     assert r.production_ready is False, f"{unset} 가 빠졌는데 통과했다"
+
+
+def test_missing_jwt_secret_is_not_a_blocker_anymore(monkeypatch: pytest.MonkeyPatch):
+    """
+    **핵심 회귀**: SUPABASE_JWT_SECRET 은 더 이상 인증의 전제가 아니다.
+
+    현재 Supabase 액세스 토큰은 ES256 이라 JWKS 공개키로 검증한다. 시크릿을
+    필수로 보면 "설정은 완벽한데 준비 안 됨" 이라는 틀린 신호를 주고, 실제로
+    그 잘못된 전제가 ES256 토큰을 전부 막고 있었다.
+
+    다만 레거시 HS256 토큰은 거절되므로 경고로는 남는다.
+    """
+    from backend.services import production_readiness
+
+    _clean_env(monkeypatch)
+    monkeypatch.delenv("SUPABASE_JWT_SECRET", raising=False)
+    r = production_readiness.audit()
+
+    assert r.production_ready is True, r.blockers
+    assert not any("SUPABASE_JWT_SECRET" in b for b in r.blockers)
+    assert any("SUPABASE_JWT_SECRET" in w for w in r.warnings), r.warnings
 
 
 def test_insecure_auth_bypass_is_a_blocker(monkeypatch: pytest.MonkeyPatch):
