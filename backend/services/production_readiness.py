@@ -63,12 +63,27 @@ def audit() -> ReadinessReport:
     r = ReadinessReport(production_ready=True)
 
     # ── 인증 ────────────────────────────────────────────────────────────────
-    if not _set("SUPABASE_JWT_SECRET"):
+    # 현재 Supabase 액세스 토큰은 **ES256(비대칭)** 이라 JWKS 공개키로 검증한다.
+    # 그래서 필요한 것은 SUPABASE_JWT_SECRET 이 아니라 **프로젝트 URL** 이다 —
+    # 그것이 있어야 JWKS 주소와 기대 issuer 를 만들 수 있다.
+    #
+    # 예전에는 여기서 SUPABASE_JWT_SECRET 을 필수로 봤는데, 그 전제가 틀렸다:
+    # 시크릿이 있어도 ES256 토큰은 검증되지 않았고(알고리즘 불일치), 없어도
+    # ES256 경로는 정상 동작한다.
+    if not _set("SUPABASE_URL") and not _set("VITE_SUPABASE_URL"):
         r.blockers.append(
-            "SUPABASE_JWT_SECRET 미설정 — 프리미엄 API 전체가 503 이다 (인증 불가)."
+            "SUPABASE_URL 미설정 — JWKS 조회와 issuer 검증이 불가해 인증이 성립하지 않는다."
         )
     else:
-        r.ok.append("SUPABASE_JWT_SECRET 설정됨")
+        r.ok.append("SUPABASE_URL 설정됨 (ES256 토큰을 JWKS 로 검증)")
+
+    # 레거시 HS256 토큰이 아직 돌아다닌다면 필요하다. 없다고 해서 막지는 않는다 —
+    # 없으면 HS256 토큰만 503 이고, 현재 발급되는 ES256 토큰은 영향받지 않는다.
+    if not _set("SUPABASE_JWT_SECRET"):
+        r.warnings.append(
+            "SUPABASE_JWT_SECRET 미설정 — 레거시 HS256 토큰은 거절된다 "
+            "(현재 발급되는 ES256 토큰에는 영향 없음)."
+        )
 
     if _on("ALLOW_INSECURE_TEST_AUTH"):
         r.blockers.append(
