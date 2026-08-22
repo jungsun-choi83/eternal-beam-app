@@ -267,6 +267,18 @@ async def confirm(
         "물리 주문 결제 완료 — user=%s order=%s product=%s amount=%s",
         uid, oid, order.product_type, result.amount,
     )
+
+    # ── 결제 다음 칸 ──────────────────────────────────────────────────────────
+    # 여기까지가 예전의 끝이었다. PAID 로 바꾸고 끝났고, Shaker 공유·QR·생산
+    # 패키지는 **아무도 만들지 않았다** — 운영이 손으로 누르기 전까지.
+    #
+    # finalize_quietly 는 실패해도 예외를 올리지 않는다. 이미 돈을 받았으므로
+    # 여기서 실패를 던지면 고객이 결제 실패 화면을 보고 재결제를 시도한다.
+    # 실패하면 주문은 PAID·production_status=pending 으로 남아 재시도 가능하다.
+    from . import order_finalization
+
+    await order_finalization.finalize_quietly(order_id=oid)
+
     return ConfirmOutcome(
         order_id=order.order_id, product_type=order.product_type,
         payment_status=physical_order.PAYMENT_PAID,
@@ -323,6 +335,13 @@ async def _reconcile_one(order: physical_order.PhysicalOrder) -> Optional[str]:
         "재조정으로 주문 확정 — order=%s user=%s amount=%s (브라우저가 돌아오지 못한 결제)",
         order.order_id, order.user_id, found.amount,
     )
+
+    # 재조정으로 확정된 주문도 **같은 마무리**를 타야 한다. 여기서 빼먹으면
+    # "브라우저가 돌아오지 못한 결제"만 생산 준비가 안 된 채 남는다 —
+    # 정확히 가장 눈에 안 띄는 주문들이다.
+    from . import order_finalization
+
+    await order_finalization.finalize_quietly(order_id=order.order_id)
     return order.order_id
 
 
