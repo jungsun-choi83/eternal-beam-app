@@ -7,9 +7,15 @@
  */
 
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
-import { deriveOpsPhase, isOpsShakerPath, OPS_SHAKER_PATH } from "./shaker-ops-entry.ts";
+import {
+  deriveOpsPhase,
+  isOpsProductionPath,
+  isOpsShakerPath,
+  OPS_SHAKER_PATH,
+} from "./shaker-ops-entry.ts";
 import { isShakerPath } from "./shaker-entry.ts";
 
 describe("운영 경로 감지", () => {
@@ -54,5 +60,74 @@ describe("운영 화면 상태", () => {
 
   it("정상이면 ready", () => {
     assert.equal(deriveOpsPhase({ hasAuth: true, errorCode: null }), "ready");
+  });
+});
+
+/**
+ * 회귀 방지 — **스태프가 고객 온보딩으로 떨어지지 않는다.**
+ *
+ * 실제로 있었던 일: `/ops` 는 어떤 조건에도 걸리지 않아 EternalBeamApp 폴백으로
+ * 떨어졌고, 거기서 qrConnection → 로그인 → photoUpload 가 그려졌다.
+ * 스태프에게 고객용 사진 업로드 화면이 뜬 이유다.
+ */
+describe("운영 진입 경로 — 고객 앱으로 새지 않는다", () => {
+  it("/ops · /ops/search · /ops/production 은 모두 주문 콘솔이다", () => {
+    for (const p of ["/ops", "/ops/", "/ops/search", "/ops/search/", "/ops/production"]) {
+      assert.equal(isOpsProductionPath(p), true, `${p} 가 인식되지 않는다`);
+    }
+  });
+
+  it("/ops/shaker 는 Shaker 콘솔이고 주문 콘솔이 아니다", () => {
+    assert.equal(isOpsShakerPath("/ops/shaker"), true);
+    assert.equal(isOpsProductionPath("/ops/shaker"), false);
+  });
+
+  it("고객 경로는 운영으로 인식되지 않는다 — 직접 진입은 그대로다", () => {
+    for (const p of ["/", "/shaker", "/forest", "/orders/success", "/soul-trace/import"]) {
+      assert.equal(isOpsProductionPath(p), false, `${p} 가 운영으로 잘못 인식된다`);
+      assert.equal(isOpsShakerPath(p), false, `${p} 가 운영으로 잘못 인식된다`);
+    }
+  });
+
+  it("비슷하지만 다른 경로를 삼키지 않는다", () => {
+    for (const p of ["/opsx", "/ops/production/extra", "/ops/searching"]) {
+      assert.equal(isOpsProductionPath(p), false, `${p} 를 잘못 삼킨다`);
+    }
+  });
+});
+
+describe("구조 고정 — 운영 화면은 스스로 로그인시킨다", () => {
+  const prod = readFileSync("src/components/memorial/ops-production-screen.tsx", "utf8");
+  const shaker = readFileSync("src/components/memorial/shaker-ops-screen.tsx", "utf8");
+
+  for (const [name, src] of [["생산 콘솔", prod], ["Shaker 운영", shaker]] as const) {
+    it(`${name}: signed-out 이면 로그인 화면을 그린다 (막다른 안내가 아니다)`, () => {
+      assert.ok(
+        /if \(phase === "signed-out"\)[\s\S]{0,400}<AuthScreen/.test(src),
+        `${name}: 로그인 수단 없이 안내만 띄우면 스태프가 앱 루트로 나가고, 루트는 고객 온보딩이다`,
+      );
+    });
+
+    it(`${name}: forbidden 은 로그인 화면을 그리지 않는다`, () => {
+      const i = src.indexOf('phase === "forbidden"');
+      assert.ok(i > 0, `${name}: forbidden 분기가 없다`);
+      assert.ok(
+        !src.slice(i, i + 400).includes("<AuthScreen"),
+        `${name}: 권한 없는 계정에 로그인 화면을 반복해 띄운다`,
+      );
+    });
+  }
+});
+
+describe("구조 고정 — App.tsx 분기 순서", () => {
+  const app = readFileSync("src/app/App.tsx", "utf8");
+
+  it("운영 분기가 EternalBeamApp 폴백보다 **먼저** 온다", () => {
+    const fallback = app.indexOf("return <EternalBeamApp />");
+    for (const guard of ["isOpsProductionEntry()", "isOpsShakerEntry()"]) {
+      const at = app.indexOf(guard);
+      assert.ok(at > 0, `${guard} 분기가 없다`);
+      assert.ok(at < fallback, `${guard} 가 폴백 뒤에 있어 실행되지 않는다`);
+    }
   });
 });
