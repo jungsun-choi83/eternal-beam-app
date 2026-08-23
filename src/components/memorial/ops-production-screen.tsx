@@ -17,6 +17,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { getPremiumAccessToken } from "@/lib/premium-auth-token";
+import { AuthScreen } from "./auth-screen";
 import { deriveOpsPhase } from "@/lib/shaker-ops-entry";
 import {
   FILE_LABEL,
@@ -215,14 +216,39 @@ export function OpsProductionScreen() {
     return <div className={shell}><p className="text-sm text-white/40">불러오는 중…</p></div>;
   }
 
-  if (phase === "signed-out" || phase === "forbidden") {
+  // ── 로그인은 **이 경로 안에서** 끝난다 ───────────────────────────────────
+  // 예전에는 "운영자 계정으로 로그인해야 합니다" 라는 안내만 띄우고 로그인
+  // 수단을 주지 않았다. 그래서 스태프는 앱 루트로 나가야 했고, 루트는 고객
+  // 온보딩(qrConnection → photoUpload)이다 — 스태프가 사진 업로드로 떨어진
+  // 두 번째 이유가 이것이다.
+  //
+  // 여기서 로그인하면 **페이지를 떠나지 않으므로** 원래 가려던 Ops 경로가
+  // 그대로 유지된다. 목적지를 따로 저장할 필요가 없다.
+  if (phase === "signed-out") {
+    return (
+      <div className="memorial-ui h-[100dvh] w-full overflow-hidden bg-[#0a0a0a]">
+        <AuthScreen
+          initialMode="login"
+          onAuthComplete={() => {
+            // 같은 화면에 머문 채 토큰만 다시 읽는다.
+            void getPremiumAccessToken().then((r) => {
+              setToken(r.token);
+              setTokenLoaded(true);
+            });
+          }}
+        />
+      </div>
+    );
+  }
+
+  // 인가는 서버가 한다(SHAKER_OPS_USER_IDS). 로그인했는데 권한이 없으면
+  // **여기서 멈춘다** — 고객 화면으로 흘려보내지 않는다.
+  if (phase === "forbidden") {
     return (
       <div className={shell}>
         <h1 className="text-lg font-medium">Eternal Beam · 생산 콘솔</h1>
         <p className="mt-3 text-sm text-white/60">
-          {phase === "signed-out"
-            ? "운영자 계정으로 로그인해야 합니다."
-            : "이 계정에는 운영 권한이 없습니다 (SHAKER_OPS_USER_IDS)."}
+          이 계정에는 운영 권한이 없습니다 (SHAKER_OPS_USER_IDS).
         </p>
       </div>
     );

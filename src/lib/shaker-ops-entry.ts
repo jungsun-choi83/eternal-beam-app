@@ -49,9 +49,22 @@ export function deriveOpsPhase(input: {
 /** 생산 콘솔 경로 (Phase 13.1). Shaker QR 콘솔과 형제다. */
 export const OPS_PRODUCTION_PATH = "/ops/production";
 
+/**
+ * 운영 주문 콘솔로 들어오는 경로들. **셋 다 같은 화면**이다.
+ *
+ * 왜 여러 개인가: 예전에는 `/ops/production` **정확히 하나**만 인식했다. 그래서
+ * 스태프가 `/ops` 나 `/ops/search` 로 들어오면 어떤 조건에도 걸리지 않고
+ * EternalBeamApp 폴백으로 떨어졌고 — 고객 온보딩(qrConnection → 로그인 →
+ * photoUpload)이 그려졌다. 스태프에게 사진 업로드 화면이 뜬 이유가 이것이다.
+ *
+ * `/ops/search` 는 백엔드 검색 API 경로(`/api/v1/orders/ops/search`)와 이름이
+ * 같지만 다른 것이다 — 여기서는 **화면 경로**다.
+ */
+const OPS_ORDERS_PATHS = ["/ops", "/ops/search", OPS_PRODUCTION_PATH] as const;
+
 export function isOpsProductionPath(pathname: string): boolean {
   const path = (pathname || "").replace(/\/+$/, "") || "/";
-  return path === OPS_PRODUCTION_PATH;
+  return (OPS_ORDERS_PATHS as readonly string[]).includes(path);
 }
 
 export function isOpsProductionEntry(): boolean {

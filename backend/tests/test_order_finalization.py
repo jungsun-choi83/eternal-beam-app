@@ -316,3 +316,55 @@ def test_memory_box_includes_the_extra_assets(client: ASGITestClient):
     files = set(production_package.manifest(pkg).get("files") or [])
     assert "letter_pdf" in files
     assert len(files) > 1, f"메모리 박스인데 편지만 있다: {files}"
+
+
+def test_config_error_never_burns_a_share(
+    client: ASGITestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """
+    **핵심 회귀**: 인쇄 base 설정이 없으면 공유를 **발급하기 전에** 멈춘다.
+
+    실제로 있었던 일(주문 eb_order_d78a1b1e...): create_share 다음에 base 를
+    확인해서, 설정 누락으로 실패했을 때 이미 발급된 공유의 토큰이 사라졌다.
+    shaker_shares 는 token_hash 만 저장하므로 URL 을 복원할 수 없고, 그 공유로는
+    이후 어떤 방법으로도 QR 을 만들 수 없다 — 되돌릴 수 없는 고아가 된다.
+    """
+    monkeypatch.delenv("PUBLIC_WEB_BASE_URL", raising=False)
+
+    order = _paid_order(client)
+    oid = order["order_id"]
+
+    assert _sync(physical_order.get, oid).payment_status == physical_order.PAYMENT_PAID
+    # 공유가 하나도 만들어지지 않았어야 한다 — 설정 문제로 자원을 태우지 않는다.
+    assert _sync(shaker_share.list_shares, user_id=USER, pet_id=PET) == []
+    assert _sync(physical_order.get, oid).shaker_share_id is None
+    assert _sync(production_package.get_package, oid) is None
+
+
+def test_artifact_store_failure_is_fatal_not_swallowed(
+    client: ASGITestClient, monkeypatch: pytest.MonkeyPatch
+):
+    """
+    산출물 보관에 실패한 공유로는 **영영** QR 을 만들 수 없다(토큰이 사라진다).
+    조용히 넘어가면 고아 공유가 생기고 주문이 PAID 로 멈춘다.
+    """
+    async def _boom(**_k):
+        raise RuntimeError("artifacts table missing")
+
+    monkeypatch.setattr(shaker_qr_artifact, "store", _boom)
+
+    order = _paid_order(client)
+    oid = order["order_id"]
+    assert _sync(physical_order.get, oid).payment_status == physical_order.PAYMENT_PAID
+    assert _sync(production_package.get_package, oid) is None
+
+    # 그리고 이것이 고아의 정체다: 공유는 주문에 붙어 있지만 산출물이 없고,
+    # 원문 토큰은 사라졌다. 그래서 **재시도해도** 복구되지 않는다 —
+    # QR 을 만들 근거가 아무 데도 없기 때문이다.
+    stored = _sync(physical_order.get, oid)
+    assert stored.shaker_share_id, "공유는 붙어 있다"
+    out = _sync(order_finalization.finalize_quietly, order_id=oid)
+    assert out.package_ready is False
+    assert out.error_code == "QR_URL_REQUIRED", (
+        "고아 공유는 재시도로 복구되지 않는다 — 이 사실이 드러나야 한다"
+    )

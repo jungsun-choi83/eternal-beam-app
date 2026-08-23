@@ -126,6 +126,16 @@ async def _ensure_share(
         )
     loc, breathing_url = located
 
+    # ⚠️ **발급 전에** 인쇄용 base 를 확인한다.
+    #
+    # 예전에는 create_share 다음에 확인했다. 그래서 PUBLIC_WEB_BASE_URL 이 없으면
+    # 공유는 이미 발급된 뒤에 실패했고, 그 토큰은 **영원히 사라졌다** —
+    # shaker_shares 는 token_hash 만 저장하므로 URL 을 복원할 수 없다.
+    # 결과는 QR 을 만들 수 없는 고아 공유였다(주문 eb_order_d78a1b1e... 가 그것이다).
+    #
+    # 설정 문제로 되돌릴 수 없는 자원을 태우지 않는다.
+    base = qr_service.assert_printable_base()
+
     # 인쇄물의 QR 은 **오래 살아야 하므로** 만료를 두지 않는다(ttl_days=None).
     # 짧은 수명 토큰을 종이에 찍으면 며칠 뒤 죽은 QR 이 된다.
     share_id, token = await shaker_share.create_share(
@@ -149,16 +159,16 @@ async def _ensure_share(
         # 우리가 만든 공유는 졌다. 그 URL 을 쓰면 인쇄물이 주문과 어긋난다.
         return winning, None
 
-    # 인쇄용 base(웹앱 도메인, https, localhost 금지)는 qr_service 가 판정한다.
     # 경로 모양은 운영 콘솔이 발급하는 것과 **같아야** 한다 — 두 경로가 다른
     # 모양의 링크를 찍으면 같은 제품에 서로 다른 QR 이 인쇄된다.
-    base = qr_service.assert_printable_base()
     share_url = f"{base}{qr_service.SHAKER_PATH}?petId={order.pet_id}&share={token}"
 
-    # 산출물을 보관한다 — 원문 토큰은 여기서 사라지므로, 이후의 재인쇄·재준비는
-    # 이 보관본으로만 **같은 QR** 을 다시 만들 수 있다.
-    # 보관 실패가 공유를 무효로 만들지는 않는다(재다운로드만 불가) — 발급을
-    # 되돌리면 이미 주문에 붙은 공유와 어긋난다.
+    # 산출물을 **반드시** 보관한다. 원문 토큰은 이 함수를 벗어나는 순간 사라지므로,
+    # 보관에 실패한 공유로는 이후 어떤 방법으로도 QR 을 만들 수 없다 — 재시도해도,
+    # 운영이 손으로 URL 을 넣으려 해도 토큰을 아는 사람이 없다.
+    #
+    # 그래서 여기서는 **삼키지 않는다.** 조용히 넘어가면 고아 공유가 생기고,
+    # 주문은 영영 생산으로 넘어가지 못한 채 PAID 로 남는다.
     try:
         await shaker_qr_artifact.store(
             share_id=share_id,
@@ -167,11 +177,13 @@ async def _ensure_share(
             share_url=share_url,
             purpose=PRINT_PURPOSE,
         )
-    except shaker_qr_artifact.QrArtifactError:
-        logger.error(
-            "QR 산출물 보관 실패 — share=%s. 이번 준비는 진행되지만 재인쇄가 불가하다.",
-            share_id,
-        )
+    except Exception as e:  # noqa: BLE001
+        logger.error("QR 산출물 보관 실패 — share=%s. 이 공유로는 QR 을 만들 수 없다.", share_id)
+        raise FinalizationError(
+            "QR_ARTIFACT_STORE_FAILED",
+            "QR 산출물을 보관하지 못했습니다. 이 공유로는 인쇄용 QR 을 만들 수 없습니다.",
+            status=503,
+        ) from e
     return winning, share_url
 
 
