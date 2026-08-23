@@ -43,6 +43,18 @@ services:
       # 편지 본문은 이 자격 증명으로 **서버 대 서버**로만 이동한다.
       - key: SOUL_TRACE_API_BASE
         value: https://soultrace.eternalbeam.com
+      # ── 인쇄 생산 (Phase 13/14) ───────────────────────────────────────────
+      # 인쇄되는 QR 이 가리킬 **웹앱** 도메인. 미설정이면 인쇄용 QR 생성이
+      # 거절된다(fail closed) — API 도메인이나 localhost 를 찍은 카드가
+      # 인쇄되는 것보다 만들지 않는 편이 낫다.
+      - key: PUBLIC_WEB_BASE_URL
+        value: https://device.eternalbeam.com
+      # 한글 A5 편지 PDF에 **임베드**할 라이선스 TTF 경로.
+      # ⚠️ 폰트 파일은 저장소에 넣지 않는다(라이선스). 이미지에 함께 넣거나
+      #    디스크에 두고 경로만 지정한다. 미설정이면 내장 CID 폰트로 렌더되는데
+      #    그것은 **임베드되지 않아** 인쇄소에서 글자가 깨질 수 있다.
+      - key: PRINT_LETTER_FONT_PATH
+        sync: false
       # ⚠️ 백엔드 전용. 브라우저에 노출되면 Soul Trace 내부 API 가 열린다.
       - key: SOUL_TRACE_SERVICE_TOKEN
         sync: false

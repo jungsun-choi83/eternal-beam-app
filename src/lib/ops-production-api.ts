@@ -48,6 +48,14 @@ export interface OpsProductionState {
   files: string[];
   recipientName: string | null;
   addressLine1: string | null;
+  /** 편지 미리보기 — 본문은 오지 않는다(인쇄용이다). */
+  letterChildName: string | null;
+  letterExcerpt: string | null;
+  /** BREATHING 이 실제로 있는가. 없으면 QR 을 찍어도 열리지 않는다. */
+  breathingReady: boolean;
+  /** 인쇄될 QR 주소. 산출물로 준비된 경우 null 이고 qrArtifactStored 가 true 다. */
+  qrShareUrl: string | null;
+  qrArtifactStored: boolean;
 }
 
 export class OpsError extends Error {
@@ -100,6 +108,12 @@ export function parseState(row: Record<string, unknown>): OpsProductionState {
     files: Array.isArray(row.files) ? row.files.map(String) : [],
     recipientName: row.recipient_name == null ? null : String(row.recipient_name),
     addressLine1: row.address_line1 == null ? null : String(row.address_line1),
+    letterChildName:
+      row.letter_child_name == null ? null : String(row.letter_child_name),
+    letterExcerpt: row.letter_excerpt == null ? null : String(row.letter_excerpt),
+    breathingReady: Boolean(row.breathing_ready),
+    qrShareUrl: row.qr_share_url == null ? null : String(row.qr_share_url),
+    qrArtifactStored: Boolean(row.qr_artifact_stored),
   };
 }
 
