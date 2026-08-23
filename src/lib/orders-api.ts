@@ -328,6 +328,8 @@ export async function openOrderPaymentWindow(checkout: OrderCheckout): Promise<v
     orderName: checkout.orderName,
     successUrl,
     failUrl,
+
+    windowTarget: "self",
   });
 }
 
