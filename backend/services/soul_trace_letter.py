@@ -78,11 +78,14 @@ class SoulTraceLetter:
     letter_kicker: Optional[str]
     letter_body: Optional[str]
     letter_excerpt: Optional[str]
+    partner_id: Optional[str] = None
+    partner_type: Optional[str] = None
+    partner_name: Optional[str] = None
 
 
 _SELECT = (
     "letter_id, user_id, pet_id, source_letter_id, source, child_name, "
-    "letter_kicker, letter_body, letter_excerpt"
+    "letter_kicker, letter_body, letter_excerpt, partner_id, partner_type, partner_name"
 )
 
 
@@ -97,6 +100,9 @@ def _to_letter(row: dict[str, Any]) -> SoulTraceLetter:
         letter_kicker=(row.get("letter_kicker") or None),
         letter_body=(row.get("letter_body") or None),
         letter_excerpt=(row.get("letter_excerpt") or None),
+        partner_id=(row.get("partner_id") or None),
+        partner_type=(row.get("partner_type") or None),
+        partner_name=(row.get("partner_name") or None),
     )
 
 
@@ -121,6 +127,9 @@ async def link_letter(
     letter_kicker: str | None = None,
     letter_body: str | None = None,
     letter_excerpt: str | None = None,
+    partner_id: str | None = None,
+    partner_type: str | None = None,
+    partner_name: str | None = None,
 ) -> SoulTraceLetter:
     """
     Soul Trace 편지를 등록/갱신한다. **만들지 않는다 — 받는다.**
@@ -154,6 +163,10 @@ async def link_letter(
         "letter_kicker": (letter_kicker or "").strip() or None,
         "letter_body": body,
         "letter_excerpt": (letter_excerpt or "").strip() or None,
+        # 귀속은 Soul Trace 가 확정한 값이다. 여기서 만들어 내지 않는다.
+        "partner_id": (partner_id or "").strip() or None,
+        "partner_type": (partner_type or "").strip() or None,
+        "partner_name": (partner_name or "").strip() or None,
         "imported_at": _now().isoformat(),
     }
 

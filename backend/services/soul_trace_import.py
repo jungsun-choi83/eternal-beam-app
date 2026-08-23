@@ -56,6 +56,12 @@ class SourceLetter:
     letter_id: str
     letter_body: str
     pet_name: str
+    #: 파트너 귀속. Soul Trace 가 코드로 확정한 값이며, 브라우저는 관여하지 않는다.
+    #: 직접 유입이면 None. 유형·이름까지 받는 이유는 두 프로젝트가 DB 를 공유하지
+    #: 않아 Eternal Beam 이 partners 를 조회할 방법이 없기 때문이다.
+    partner_id: Optional[str] = None
+    partner_type: Optional[str] = None
+    partner_name: Optional[str] = None
 
 
 def api_base() -> str:
@@ -170,10 +176,20 @@ async def fetch_source_letter(
             "SOURCE_MISMATCH", "Soul Trace 응답이 요청과 일치하지 않습니다.", status=502
         )
 
+    # 유형은 우리가 아는 값만 받는다. 모르는 문자열을 그대로 저장하면 운영
+    # 필터가 조용히 어긋난다.
+    ptype = str(data.get("partnerType") or "").strip().upper() or None
+    if ptype not in (None, "HOSPITAL", "FUNERAL"):
+        logger.warning("알 수 없는 partner_type=%r — 유형 없이 진행", ptype)
+        ptype = None
+
     return SourceLetter(
         letter_id=letter_id or tid,
         letter_body=body,
         pet_name=str(data.get("petName") or "").strip(),
+        partner_id=str(data.get("partnerId") or "").strip() or None,
+        partner_type=ptype,
+        partner_name=str(data.get("partnerName") or "").strip() or None,
     )
 
 

@@ -134,6 +134,12 @@ async def start_checkout(
 
     # 편지 연결. 두 제품 모두 Soul Trace 편지를 인쇄하므로 필수다.
     letter_id: Optional[str] = (soul_trace_letter_id or "").strip() or None
+    #: 주문 시점 귀속 스냅샷. 편지에서 **서버가** 읽는다 — 요청 바디에 partner
+    #: 필드는 없고, 브라우저가 귀속을 정할 방법도 없다.
+    partner_id: Optional[str] = None
+    partner_type: Optional[str] = None
+    partner_name: Optional[str] = None
+
     if product.includes_letter:
         if not letter_id:
             raise CheckoutError(
@@ -143,9 +149,14 @@ async def start_checkout(
             )
         try:
             # 남의 편지를 자기 주문에 붙일 수 없다 — 실물이라 되돌릴 수 없다.
-            await soul_trace_letter.assert_owned(uid, letter_id)
+            letter = await soul_trace_letter.assert_owned(uid, letter_id)
         except soul_trace_letter.LetterError as e:
             raise _as_checkout_error(e) from e
+        # 귀속을 편지에서 복사한다. 주문이 정산 단위이므로 **이 시점의 사실**을
+        # 남긴다 — 나중에 편지 쪽이 바뀌어도 결제된 주문은 흔들리지 않는다.
+        partner_id = letter.partner_id
+        partner_type = letter.partner_type
+        partner_name = letter.partner_name
 
     share_id = await _reusable_share_id(uid, pid)
 
@@ -164,6 +175,9 @@ async def start_checkout(
             address_line2=(address_line2 or "").strip() or None,
             shaker_share_id=share_id,
             currency=physical_product.CURRENCY,
+            partner_id=partner_id,
+            partner_type=partner_type,
+            partner_name=partner_name,
         )
     except physical_order.OrderError as e:
         raise _as_checkout_error(e) from e
