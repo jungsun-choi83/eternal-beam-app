@@ -164,6 +164,11 @@ async def claim_letter(
             child_name=source.pet_name or None,
             letter_body=source.letter_body,
             letter_excerpt=soul_trace_import.excerpt_of(source.letter_body),
+            # 귀속은 Soul Trace 가 서버에서 확정한 값이다 — 요청 바디에는
+            # partner 필드가 없고, 있어도 쓰지 않는다.
+            partner_id=source.partner_id,
+            partner_type=source.partner_type,
+            partner_name=source.partner_name,
         )
     except soul_trace_letter.LetterError as e:
         raise _http(e) from e
@@ -403,6 +408,10 @@ class OpsOrderOut(OrderOut):
     postal_code: str | None = None
     address_line1: str | None = None
     address_line2: str | None = None
+    #: 주문 시점 파트너 귀속. 전부 None 이면 직접 유입이다.
+    partner_id: str | None = None
+    partner_type: str | None = None
+    partner_name: str | None = None
 
 
 class OpsOrdersResponse(BaseModel):
@@ -413,6 +422,10 @@ class OpsOrdersResponse(BaseModel):
 async def ops_search_orders(
     query: str | None = None,
     paid_only: bool = True,
+    #: 정확 일치. 'all' 은 필터 없음과 같다(값을 비우면 된다).
+    partner_id: str | None = None,
+    #: HOSPITAL | FUNERAL. 그 외 값은 아무것도 매칭하지 않는다.
+    partner_type: str | None = None,
     _ops: AuthedUser = Depends(shaker_ops.require_ops),
 ):
     """
@@ -422,7 +435,7 @@ async def ops_search_orders(
     만들지 않는다 — 하나가 갱신되고 다른 하나가 잊히는 것이 가장 흔한 사고다.
     """
     try:
-        rows = await physical_order.search(query=query, paid_only=paid_only)
+        rows = await physical_order.search(query=query, paid_only=paid_only, partner_id=partner_id, partner_type=partner_type)
     except physical_order.OrderError as e:
         raise _http(e) from e
 
@@ -436,6 +449,9 @@ async def ops_search_orders(
                 postal_code=o.postal_code,
                 address_line1=o.address_line1,
                 address_line2=o.address_line2,
+                partner_id=o.partner_id,
+                partner_type=o.partner_type,
+                partner_name=o.partner_name,
             )
             for o in rows
         ]

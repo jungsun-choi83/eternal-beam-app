@@ -44,6 +44,11 @@ import {
   type OpsProductionState,
 } from "@/lib/ops-production-api";
 
+const PARTNER_TYPE_LABEL: Record<string, string> = {
+  HOSPITAL: "동물병원",
+  FUNERAL: "장례식장",
+};
+
 const PRODUCT_LABEL: Record<string, string> = {
   LETTER: "편지",
   MEMORY_BOX: "메모리 박스",
@@ -325,6 +330,20 @@ export function OpsProductionScreen() {
             </h2>
             <dl className="grid grid-cols-2 gap-x-4 gap-y-1.5 rounded-xl bg-white/[0.04] px-4 py-3 text-[12px]">
               <Row label="Customer" value={state.userId} mono />
+              {/* 파트너 귀속 — 주문 시점 스냅샷. 없으면 직접 유입이며 정상이다.
+                  이메일·주소·이름으로 추정하지 않는다: 서버가 코드로 확정한 값만 쓴다. */}
+              <Row
+                label="유입"
+                value={
+                  state.partnerName
+                    ? `${PARTNER_TYPE_LABEL[state.partnerType ?? ""] ?? state.partnerType ?? "파트너"} · ${state.partnerName}`
+                    : "직접 유입"
+                }
+                accent={Boolean(state.partnerId)}
+              />
+              {state.partnerId ? (
+                <Row label="파트너 ID" value={state.partnerId} mono />
+              ) : null}
               <Row label="Pet" value={state.petId} mono />
               <Row label="Product" value={PRODUCT_LABEL[state.productType] ?? state.productType} />
               <Row label="Payment" value={state.paymentStatus} accent={state.paymentStatus === "paid"} />

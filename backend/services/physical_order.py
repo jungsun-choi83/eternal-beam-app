@@ -83,6 +83,9 @@ class PhysicalOrder:
     address_line2: Optional[str] = None
     tracking_number: Optional[str] = None
     shaker_share_id: Optional[str] = None
+    partner_id: Optional[str] = None
+    partner_type: Optional[str] = None
+    partner_name: Optional[str] = None
     payment_key: Optional[str] = None
     failure_code: Optional[str] = None
     created_at: Optional[str] = None
@@ -101,6 +104,7 @@ _SELECT = (
     "order_id, user_id, pet_id, soul_trace_letter_id, product_type, amount, currency, "
     "payment_status, production_status, shipping_status, recipient_name, recipient_phone, "
     "postal_code, address_line1, address_line2, tracking_number, shaker_share_id, "
+    "partner_id, partner_type, partner_name, "
     "payment_key, failure_code, created_at, paid_at"
 )
 
@@ -124,6 +128,9 @@ def _to_order(row: dict[str, Any]) -> PhysicalOrder:
         address_line2=(row.get("address_line2") or None),
         tracking_number=(row.get("tracking_number") or None),
         shaker_share_id=(row.get("shaker_share_id") or None),
+        partner_id=(row.get("partner_id") or None),
+        partner_type=(row.get("partner_type") or None),
+        partner_name=(row.get("partner_name") or None),
         payment_key=(row.get("payment_key") or None),
         failure_code=(row.get("failure_code") or None),
         created_at=(str(row["created_at"]) if row.get("created_at") else None),
@@ -145,6 +152,9 @@ async def create(
     address_line1: str,
     address_line2: str | None = None,
     shaker_share_id: str | None = None,
+    partner_id: str | None = None,
+    partner_type: str | None = None,
+    partner_name: str | None = None,
     currency: str = "KRW",
 ) -> PhysicalOrder:
     """주문 생성. **아직 결제되지 않았다** — payment_status=pending."""
@@ -166,6 +176,10 @@ async def create(
         "address_line1": address_line1,
         "address_line2": address_line2,
         "shaker_share_id": shaker_share_id,
+        # 주문 시점 귀속 스냅샷 — 이후 편지 쪽이 바뀌어도 흔들리지 않는다.
+        "partner_id": partner_id,
+        "partner_type": partner_type,
+        "partner_name": partner_name,
         "created_at": _now().isoformat(),
     }
 
@@ -272,13 +286,21 @@ async def list_for_user(user_id: str) -> list[PhysicalOrder]:
 
 
 async def search(
-    *, query: str | None = None, paid_only: bool = True, limit: int = 50
+    *,
+    query: str | None = None,
+    paid_only: bool = True,
+    limit: int = 50,
+    partner_id: str | None = None,
+    partner_type: str | None = None,
 ) -> list[PhysicalOrder]:
     """
-    운영 검색 — 고객 / 펫 / 주문번호 부분 일치.
+    운영 검색 — 고객 / 펫 / 주문번호 부분 일치 + 파트너 필터.
 
     기본이 paid_only 인 이유: 운영이 처리해야 하는 것은 **결제된** 주문이다.
     미결제 주문까지 섞이면 목록이 결제창을 열었다 닫은 흔적으로 가득 찬다.
+
+    파트너 필터는 **정확 일치**다. 부분 일치로 두면 'seoul' 이 여러 병원을
+    긁어 와 정산 숫자가 조용히 부풀어 오른다.
     """
     q = (query or "").strip().lower()
 
@@ -300,14 +322,22 @@ async def search(
             if (not paid_only) or r.get("payment_status") == PAYMENT_PAID
         ]
 
+    want_pid = (partner_id or "").strip() or None
+    want_ptype = (partner_type or "").strip().upper() or None
+
     out: list[PhysicalOrder] = []
     for row in rows:
         o = _to_order(row)
+        if want_pid and o.partner_id != want_pid:
+            continue
+        if want_ptype and (o.partner_type or "").upper() != want_ptype:
+            continue
         if q and not (
             q in o.order_id.lower()
             or q in o.user_id.lower()
             or q in o.pet_id.lower()
             or q in (o.recipient_name or "").lower()
+            or q in (o.partner_name or "").lower()
         ):
             continue
         out.append(o)

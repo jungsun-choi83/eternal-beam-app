@@ -56,6 +56,10 @@ export interface OpsProductionState {
   /** 인쇄될 QR 주소. 산출물로 준비된 경우 null 이고 qrArtifactStored 가 true 다. */
   qrShareUrl: string | null;
   qrArtifactStored: boolean;
+  /** 주문 시점 파트너 귀속. 전부 null 이면 직접 유입이다. */
+  partnerId: string | null;
+  partnerType: string | null;
+  partnerName: string | null;
 }
 
 export class OpsError extends Error {
@@ -114,6 +118,9 @@ export function parseState(row: Record<string, unknown>): OpsProductionState {
     breathingReady: Boolean(row.breathing_ready),
     qrShareUrl: row.qr_share_url == null ? null : String(row.qr_share_url),
     qrArtifactStored: Boolean(row.qr_artifact_stored),
+    partnerId: row.partner_id == null ? null : String(row.partner_id),
+    partnerType: row.partner_type == null ? null : String(row.partner_type),
+    partnerName: row.partner_name == null ? null : String(row.partner_name),
   };
 }
 

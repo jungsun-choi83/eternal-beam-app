@@ -77,6 +77,12 @@ class OrderStateOut(BaseModel):
     #: 재인쇄 가능 여부 — 보관된 QR 산출물이 있으면 같은 바이트로 다시 뽑는다.
     qr_artifact_stored: bool = False
 
+    # ── 파트너 귀속 (Phase 15) ────────────────────────────────────────────────
+    # 주문 시점 스냅샷이다. 전부 None 이면 **직접 유입**이며 그것도 정상이다.
+    partner_id: str | None = None
+    partner_type: str | None = None
+    partner_name: str | None = None
+
 
 async def _breathing_ready(pet_id: str) -> bool:
     """
@@ -140,6 +146,9 @@ async def _state(order: physical_order.PhysicalOrder) -> OrderStateOut:
         breathing_ready=await _breathing_ready(order.pet_id),
         qr_share_url=(pkg.qr_share_url if pkg else None),
         qr_artifact_stored=await _qr_artifact_stored(share_id),
+        partner_id=order.partner_id,
+        partner_type=order.partner_type,
+        partner_name=order.partner_name,
     )
 
 
