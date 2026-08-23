@@ -63,10 +63,68 @@ class OrderStateOut(BaseModel):
     recipient_name: str | None = None
     address_line1: str | None = None
 
+    # ── 운영이 "이 주문을 만들어도 되는가"를 한 장에서 판단하기 위한 값들 ──────
+    # 예전에는 letter_id / pet_id 같은 **식별자만** 보였다. 식별자로는 편지가
+    # 맞는지, BREATHING 이 실제로 있는지, QR 이 인쇄 가능한지 알 수 없어서
+    # 운영이 매번 다른 화면을 열어 확인해야 했다.
+    #: 편지 미리보기 — 아이 이름과 발췌. **본문은 싣지 않는다**(인쇄용이다).
+    letter_child_name: str | None = None
+    letter_excerpt: str | None = None
+    #: BREATHING 이 실제로 존재하는가. 없으면 QR 을 찍어도 열리지 않는다.
+    breathing_ready: bool = False
+    #: 인쇄될 QR 주소. 산출물로 준비된 경우 None 이고 qr_artifact_stored 가 True 다.
+    qr_share_url: str | None = None
+    #: 재인쇄 가능 여부 — 보관된 QR 산출물이 있으면 같은 바이트로 다시 뽑는다.
+    qr_artifact_stored: bool = False
+
+
+async def _breathing_ready(pet_id: str) -> bool:
+    """
+    BREATHING 이 등록돼 있는가. **조회 실패를 '있음'으로 읽지 않는다.**
+
+    여기서 낙관적으로 True 를 주면 운영이 "준비됨"을 보고 인쇄를 넘기고,
+    고객은 열리지 않는 QR 이 찍힌 종이를 받는다.
+    """
+    try:
+        from ..services import pet_registry
+
+        pet = await pet_registry.get(pet_id)
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(pet and pet.breathing_object_path)
+
+
+async def _qr_artifact_stored(share_id: str | None) -> bool:
+    if not share_id:
+        return False
+    try:
+        from ..services import shaker_qr_artifact
+
+        return bool(await shaker_qr_artifact.get(share_id))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def _letter_preview(letter_id: str | None) -> tuple[str | None, str | None]:
+    """(아이 이름, 발췌). 본문은 돌려주지 않는다 — 화면용이 아니라 인쇄용이다."""
+    if not letter_id:
+        return None, None
+    try:
+        from ..services import soul_trace_letter
+
+        letter = await soul_trace_letter.get_letter(letter_id)
+    except Exception:  # noqa: BLE001
+        return None, None
+    if not letter:
+        return None, None
+    return letter.child_name, letter.letter_excerpt
+
 
 async def _state(order: physical_order.PhysicalOrder) -> OrderStateOut:
     pkg = await production_package.get_package(order.order_id)
     files = production_package.manifest(pkg)["files"] if pkg else []
+    share_id = order.shaker_share_id or (pkg.shaker_share_id if pkg else None)
+    child_name, excerpt = await _letter_preview(order.soul_trace_letter_id)
     return OrderStateOut(
         order_id=order.order_id, user_id=order.user_id, pet_id=order.pet_id,
         soul_trace_letter_id=order.soul_trace_letter_id,
@@ -75,9 +133,13 @@ async def _state(order: physical_order.PhysicalOrder) -> OrderStateOut:
         production_status=order.production_status,
         shipping_status=order.shipping_status,
         tracking_number=order.tracking_number,
-        shaker_share_id=order.shaker_share_id or (pkg.shaker_share_id if pkg else None),
+        shaker_share_id=share_id,
         package_ready=bool(pkg), files=files,
         recipient_name=order.recipient_name, address_line1=order.address_line1,
+        letter_child_name=child_name, letter_excerpt=excerpt,
+        breathing_ready=await _breathing_ready(order.pet_id),
+        qr_share_url=(pkg.qr_share_url if pkg else None),
+        qr_artifact_stored=await _qr_artifact_stored(share_id),
     )
 
 

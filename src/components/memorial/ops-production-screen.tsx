@@ -303,7 +303,25 @@ export function OpsProductionScreen() {
               <Row label="Product" value={PRODUCT_LABEL[state.productType] ?? state.productType} />
               <Row label="Payment" value={state.paymentStatus} accent={state.paymentStatus === "paid"} />
               <Row label="Soul Trace Letter" value={state.soulTraceLetterId ?? "—"} mono />
+              {/* 식별자만으로는 "맞는 편지인가"를 알 수 없다 — 아이 이름과 발췌를
+                  함께 보여 인쇄 전에 사람이 확인할 수 있게 한다. 본문은 오지 않는다. */}
+              <Row label="아이 이름" value={state.letterChildName ?? "—"} />
+              <Row label="편지 발췌" value={state.letterExcerpt ?? "—"} />
+              {/* BREATHING 이 없으면 QR 을 찍어도 열리지 않는다. 인쇄 전에 막아야 한다. */}
+              <Row
+                label="BREATHING"
+                value={state.breathingReady ? "READY" : "MISSING"}
+                accent={state.breathingReady}
+              />
               <Row label="Shaker QR" value={state.shakerShareId ?? "미연결"} mono />
+              <Row
+                label="QR 주소"
+                value={
+                  state.qrShareUrl ??
+                  (state.qrArtifactStored ? "보관된 산출물 사용" : "—")
+                }
+                mono
+              />
               <Row label="Production" value={state.productionStatus} />
               <Row label="Shipping" value={state.shippingStatus} />
               <Row label="Tracking" value={state.trackingNumber ?? "—"} />
