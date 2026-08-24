@@ -134,6 +134,61 @@ export function buildReview(
   };
 }
 
+// ── 어느 편지를 이 펫의 주문에 실을 것인가 ──────────────────────────────────
+
+/** 선택에 필요한 최소한. orders-api 의 LinkedLetter 가 그대로 들어맞는다. */
+export interface SelectableLetter {
+  letterId: string;
+  petId: string | null;
+}
+
+/**
+ * **이 펫의 편지**를 고른다. 없으면 null — 아무 편지나 집지 않는다.
+ *
+ * ── 예전 동작과 무엇이 다른가 ──────────────────────────────────────────────
+ * 예전 코드는 `rows.find((l) => l.petId === petId) ?? rows[0]` 이었다. 그런데
+ * /letter/link-pet 을 아무도 부르지 않아 **모든 편지의 pet_id 가 NULL** 이었고,
+ * find 는 언제나 실패해 `rows[0]` 으로 떨어졌다. 목록에는 정렬도 없었으므로
+ * `rows[0]` 은 힙 순서상 가장 오래된 편지였다 — 새 편지를 몇 번을 가져오든
+ * 결제에는 늘 같은 옛날 편지가 실렸고, 그 편지에는 파트너 귀속이 없어
+ * physical_orders.partner_id 까지 NULL 로 굳었다.
+ *
+ * ── 우선순위 ────────────────────────────────────────────────────────────────
+ *   1. 이 펫에 **연결된** 편지          ← 정답. 편지↔펫은 1:1 이다
+ *   2. 아직 어느 펫에도 안 붙은 **활성 편지** (방금 클레임했고 링크가 아직 안 붙음)
+ *   3. 아직 어느 펫에도 안 붙은 편지 중 **가장 최근 것** (서버가 최신순으로 준다)
+ *
+ * ── 절대 하지 않는 것 ──────────────────────────────────────────────────────
+ * **다른 펫에 연결된 편지는 어떤 경우에도 고르지 않는다.** 이것이 교차 재사용을
+ * 막는 유일한 규칙이다 — 이게 없으면 A 의 편지가 B 의 상자에 인쇄되어 나간다.
+ * 종이라 되돌릴 수 없다.
+ */
+export function selectLetterForPet(input: {
+  letters: SelectableLetter[];
+  petId: string | null;
+  /** 클레임 직후 저장해 둔 letter_id (soul-trace-handoff). 없으면 null. */
+  activeLetterId?: string | null;
+}): string | null {
+  const pet = (input.petId || "").trim();
+  const rows = input.letters.filter((l) => (l.letterId || "").trim());
+  if (!pet) return null;
+
+  const linkedToThisPet = rows.find((l) => (l.petId || "").trim() === pet);
+  if (linkedToThisPet) return linkedToThisPet.letterId;
+
+  // 여기부터는 **미연결 편지만** 후보다. 남의 펫 편지는 후보에서 빠진다.
+  const unlinked = rows.filter((l) => !(l.petId || "").trim());
+
+  const active = (input.activeLetterId || "").trim();
+  if (active) {
+    const stillUnlinked = unlinked.find((l) => l.letterId === active);
+    if (stillUnlinked) return stillUnlinked.letterId;
+  }
+
+  // 방어선일 뿐이다 — 서버가 imported_at 내림차순으로 준다는 계약에 기댄다.
+  return unlinked[0]?.letterId ?? null;
+}
+
 /** 원화 표시. Phase 11 과 같은 형식을 쓴다. */
 export function formatKrw(v: number | null | undefined): string {
   if (v == null || !Number.isFinite(v) || v <= 0) return "";

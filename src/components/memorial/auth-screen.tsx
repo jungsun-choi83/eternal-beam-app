@@ -21,6 +21,12 @@ interface AuthScreenProps {
   lockMode?: "login" | "signup";
   language?: string;
   onLanguageChange?: (lang: "ko" | "en") => void;
+  /**
+   * 확인 메일이 돌아올 절대 URL. 넘기지 않으면 현재 origin 을 쓴다
+   * (supabase-auth.defaultEmailRedirectTo). Soul Trace 가져오기처럼 "돌아와서
+   * 이어서 할 일이 있는" 진입은 자기 경로를 명시한다.
+   */
+  emailRedirectTo?: string;
   onAuthComplete: (userName?: string) => void;
 }
 
@@ -40,6 +46,7 @@ export function AuthScreen({
   initialMode = "login",
   lockMode,
   language = "ko",
+  emailRedirectTo,
   onAuthComplete,
 }: AuthScreenProps) {
   const a = memorialT(language).auth;
@@ -79,7 +86,7 @@ export function AuthScreen({
     if (isSupabaseAuthConfigured() && email.trim() && password) {
       const r =
         mode === "signup"
-          ? await signUpWithPassword(email, password)
+          ? await signUpWithPassword(email, password, { emailRedirectTo })
           : await signInWithPassword(email, password);
       if (!r.ok) {
         setIsLoading(false);

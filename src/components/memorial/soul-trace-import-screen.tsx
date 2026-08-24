@@ -5,10 +5,13 @@ import { AuthScreen } from "./auth-screen";
 import { HolographicBackground } from "./holographic-background";
 import { claimSoulTraceLetter, OrderApiError } from "@/lib/orders-api";
 import { getPremiumAccessToken } from "@/lib/premium-auth-token";
+import { onAuthStateChange } from "@/lib/supabase-auth";
 import {
   captureSoulTraceHandoff,
   clearSoulTraceHandoff,
   markSoulTracePendingUpload,
+  peekSoulTraceHandoffState,
+  saveActiveSoulTraceLetter,
   type SoulTraceHandoff,
 } from "@/lib/soul-trace-handoff";
 
@@ -41,6 +44,8 @@ type Phase =
   | { kind: "claiming" }
   | { kind: "done"; letterId: string }
   | { kind: "error"; message: string; recoverable: boolean }
+  /** 핸드오프가 15분을 넘겼다 — Soul Trace 에서 다시 시작해야 한다. */
+  | { kind: "expired" }
   | { kind: "noHandoff" };
 
 const SOUL_TRACE_URL = "https://soultrace.eternalbeam.com";
@@ -77,14 +82,34 @@ function messageFor(e: unknown): { message: string; recoverable: boolean } {
   };
 }
 
+/** 지금 열려 있는 펫의 content_id. pet-identity 와 **같은 키**를 본다. */
+function currentContentId(): string {
+  try {
+    return (localStorage.getItem("eternal_beam_content_id") || "").trim();
+  } catch {
+    return "";
+  }
+}
+
 export function SoulTraceImportScreen() {
   const [phase, setPhase] = useState<Phase>({ kind: "loading" });
   const handoffRef = useRef<SoulTraceHandoff | null>(null);
   // 토큰은 1회용이다. StrictMode 의 이중 마운트나 리렌더로 claim 이 두 번 나가면
   // 두 번째는 반드시 실패한다 — 정당한 사용자에게 "이미 사용됨"을 보여 주게 된다.
   const claimedRef = useRef(false);
+  /**
+   * 진행 중인 시도. **claimedRef 만으로는 부족하다.**
+   *
+   * claimedRef 는 첫 await(토큰 조회) **뒤에** 세워진다. 재개 경로가 둘이 된
+   * 지금(onAuthComplete 콜백 + SIGNED_IN 구독) 두 호출이 거의 동시에 들어오면
+   * 둘 다 그 await 앞을 통과해 교환을 두 번 보낸다 — 토큰은 1회용이라 두 번째는
+   * 반드시 실패하고, 첫 번째가 성공했는데도 화면에는 "이미 사용됨"이 뜬다.
+   *
+   * 그래서 동시 호출은 **같은 시도에 합류**시킨다.
+   */
+  const inFlightRef = useRef<Promise<void> | null>(null);
 
-  const claim = useCallback(async () => {
+  const claimOnce = useCallback(async () => {
     const handoff = handoffRef.current;
     if (!handoff || claimedRef.current) return;
 
@@ -106,6 +131,14 @@ export function SoulTraceImportScreen() {
       // 브라우저에 남기면 쓸모없는 자격 증명이 기기에 계속 남는다.
       clearSoulTraceHandoff();
       handoffRef.current = null;
+      // **어느 편지를 가져왔는지 적어 둔다.** 지금까지 이 값은 화면 state 에만
+      // 들어갔다가 location.assign("/") 과 함께 사라졌고, 그래서 펫이 만들어진
+      // 뒤 아무도 "이 펫에 붙일 편지"를 알지 못했다 — 결제 화면이 목록에서
+      // 아무 편지나 집게 된 근본 원인이다.
+      //
+      // 지금의 content_id 를 함께 남긴다: 이 편지는 **그 다음에** 만들어지는
+      // 펫의 것이지, 지금 열려 있는 예전 펫의 것이 아니다.
+      saveActiveSoulTraceLetter(r.letterId, currentContentId());
       // 다음 단계는 **기존** Upload Pet 흐름이다. 여기서 새로 만들지 않는다.
       markSoulTracePendingUpload();
       setPhase({ kind: "done", letterId: r.letterId });
@@ -123,20 +156,71 @@ export function SoulTraceImportScreen() {
     }
   }, []);
 
+  /**
+   * 교환은 **정확히 한 번만** 나간다.
+   *
+   * claimOnce 의 첫 await 앞까지는 동기로 실행되므로, 여기서 promise 를 붙잡아
+   * 두면 뒤이어 들어오는 호출은 새 교환을 시작하지 못하고 같은 시도를 기다린다.
+   */
+  const claim = useCallback(async () => {
+    if (inFlightRef.current) return inFlightRef.current;
+    const attempt = claimOnce();
+    inFlightRef.current = attempt;
+    try {
+      await attempt;
+    } finally {
+      inFlightRef.current = null;
+    }
+  }, [claimOnce]);
+
   useEffect(() => {
+    // **capture 보다 먼저** 본다. capture 는 만료된 값을 읽으면서 지우므로,
+    // 뒤에 물으면 "만료"와 "처음부터 없음"을 구별할 수 없다.
+    const before = peekSoulTraceHandoffState();
     const captured = captureSoulTraceHandoff(window.location.search);
     if (!captured) {
-      setPhase({ kind: "noHandoff" });
+      // 만료를 noHandoff 로 뭉뚱그리지 않는다 — 편지를 기다리던 사람에게
+      // "가져올 편지가 없습니다"는 거짓말이고, 무엇을 해야 하는지도 알려 주지 못한다.
+      setPhase({ kind: before === "expired" ? "expired" : "noHandoff" });
       return;
     }
     handoffRef.current = captured;
     void claim();
   }, [claim]);
 
+  /**
+   * 로그인·가입이 끝나는 **그 순간** 이어서 진행한다.
+   *
+   * 예전에는 AuthScreen 의 onAuthComplete 콜백 하나에만 기댔다. 그런데 그 콜백은
+   * 이메일 확인이 필요한 가입에서는 **아예 호출되지 않고**(auth-screen 이 안내
+   * 문구를 띄우고 return 한다), 확인 링크가 새 탭에서 열리면 원래 탭은 영영
+   * needsAuth 에 멈춘 채로 남는다.
+   *
+   * 세션 자체를 구독하면 그 두 경우가 모두 덮인다 — 같은 탭에서 가입이 즉시
+   * 끝나든(현재 설정), 다른 탭에서 확인을 마치고 세션이 이 탭으로 복원되든.
+   *
+   * claim 은 claimedRef 가 지키므로 **정확히 한 번만** 나간다(토큰은 1회용이라
+   * 두 번째 교환은 반드시 실패한다).
+   */
+  useEffect(() => {
+    if (phase.kind !== "needsAuth") return;
+    return onAuthStateChange((signedIn) => {
+      if (signedIn) void claim();
+    });
+  }, [phase.kind, claim]);
+
   if (phase.kind === "needsAuth") {
     // 로그인·이메일 확인 왕복 동안 핸드오프는 만료 있는 저장소에 남아 있다
     // (soul-trace-handoff.ts — 15분, 서버 토큰과 같은 수명).
-    return <AuthScreen onAuthComplete={() => void claim()} />;
+    //
+    // emailRedirectTo 를 명시한다: 확인 메일이 프로젝트 Site URL(다른 origin 일
+    // 수 있다)이 아니라 **이 화면으로** 돌아와야 저장된 핸드오프가 보인다.
+    return (
+      <AuthScreen
+        emailRedirectTo={`${window.location.origin}/soul-trace/import`}
+        onAuthComplete={() => void claim()}
+      />
+    );
   }
 
   const shell =
@@ -195,6 +279,23 @@ export function SoulTraceImportScreen() {
                 Soul Trace 로 이동
               </a>
             )}
+          </>
+        ) : null}
+
+        {phase.kind === "expired" ? (
+          <>
+            <p className="text-xs uppercase tracking-[0.32em] text-[#C9A227]">SOUL TRACE</p>
+            <h1 className="text-lg font-light">편지 링크가 만료되었습니다</h1>
+            <p className="text-sm font-light text-white/60">
+              보안을 위해 편지 링크는 15분만 유효합니다. 편지는 Soul Trace 에 그대로
+              있으니, 다시 열어 &ldquo;이터널빔으로 계속하기&rdquo;를 눌러 주세요.
+            </p>
+            <a
+              href={SOUL_TRACE_URL}
+              className="mt-2 block w-full rounded-2xl bg-[#b89a2e] px-5 py-3.5 text-base font-light text-black transition hover:bg-[#a88928]"
+            >
+              Soul Trace 에서 다시 시작
+            </a>
           </>
         ) : null}
 

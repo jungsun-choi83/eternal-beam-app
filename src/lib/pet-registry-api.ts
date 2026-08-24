@@ -34,6 +34,23 @@ function apiBase(): string {
   }
 }
 
+/**
+ * 대기 중인 Soul Trace 편지를 이 펫에 붙인다. **실패는 삼킨다.**
+ *
+ * 동적 import 인 이유: 편지 연결은 Soul Trace 를 거쳐 온 사용자에게만 일어나는
+ * 곁가지다. 정적으로 묶으면 편지와 무관한 모든 펫 등록이 orders-api 까지 끌고
+ * 들어간다.
+ */
+async function linkClaimedLetter(petId: string, contentId?: string | null): Promise<void> {
+  try {
+    const m = await import("./soul-trace-letter-link.ts");
+    await m.linkPendingSoulTraceLetter({ petId, contentId });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn("[pet-registry] soul trace letter link skipped", { petId, message });
+  }
+}
+
 /** 등록할 수 있는 상태인가 — 순수 판정이라 테스트가 그대로 부른다. */
 export function canRegisterPet(input: {
   petId: string | null | undefined;
@@ -91,7 +108,15 @@ export async function ensurePetRegistered(params: {
         breathing_url: params.breathingUrl,
       }),
     });
-    if (res.ok) return { state: "REGISTERED" };
+    if (res.ok) {
+      // 펫이 canonical 로 확정된 **바로 이 지점**이 편지를 붙일 자리다. 서버의
+      // link-pet 은 펫 소유권을 확인하므로 등록보다 먼저 부를 수 없고, 사용자가
+      // 결제 화면에 들어올 때까지 미루면 그때는 어느 편지였는지 아무도 모른다.
+      //
+      // 등록 결과를 바꾸지 않는다 — 링크 실패가 펫 등록을 실패로 만들면 안 된다.
+      await linkClaimedLetter(params.petId, params.contentId);
+      return { state: "REGISTERED" };
+    }
 
     let code: string | undefined;
     let message = `HTTP ${res.status}`;

@@ -7,7 +7,7 @@ import { ShakerScreen } from '@/components/memorial/shaker-screen'
 import { isShakerEntry } from '@/lib/shaker-entry'
 import { isOpsProductionEntry, isOpsShakerEntry } from '@/lib/shaker-ops-entry'
 import { orderReturnEntry, themeReturnEntry } from '@/lib/app-entry'
-import { hasPendingSoulTraceHandoff, isSoulTraceImportEntry } from '@/lib/soul-trace-handoff'
+import { isSoulTraceImportEntry, peekSoulTraceHandoffState } from '@/lib/soul-trace-handoff'
 import { EternalBeamApp } from './EternalBeamApp'
 
 /**
@@ -48,10 +48,17 @@ export default function App() {
   // 그것을 읽는 화면은 마운트되지 않아, 사용자는 로그인만 되고 편지는 사라진
   // 것처럼 보인다.
   //
-  // 그래서 **유효한(미만료) 핸드오프가 대기 중일 때만** import 화면으로 이어 붙인다.
-  // 대기 중인 것이 없으면 이 줄은 아무 일도 하지 않으므로,
+  // 그래서 **핸드오프의 흔적이 있으면** import 화면으로 이어 붙인다.
+  //
+  // ⚠️ 만료도 포함한다. 예전에는 유효한 것만 봤고(hasPendingSoulTraceHandoff),
+  // 만료된 사용자는 아무 설명 없이 평소 온보딩(qrConnection)으로 떨어졌다 —
+  // 편지를 기다리던 사람에게 "기기를 QR 로 연결하세요"가 나오고, 편지가 어디로
+  // 갔는지는 어디에도 적혀 있지 않았다. import 화면이 만료를 알아보고 Soul Trace
+  // 로 다시 보내 준다.
+  //
+  // 흔적이 아예 없으면 이 줄은 아무 일도 하지 않으므로,
   // device.eternalbeam.com 으로 직접 들어오는 기존 흐름은 그대로다.
-  if (hasPendingSoulTraceHandoff()) return <SoulTraceImportScreen />
+  if (peekSoulTraceHandoffState() !== 'none') return <SoulTraceImportScreen />
 
   return <EternalBeamApp />
 }

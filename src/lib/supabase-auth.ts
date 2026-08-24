@@ -40,18 +40,51 @@ export async function signInWithPassword(
   return { ok: true, needsEmailConfirmation: false };
 }
 
+/**
+ * 확인 메일이 **어디로 돌아올 것인가.**
+ *
+ * 넘기지 않으면 Supabase 프로젝트의 Site URL 이 쓰인다 — 앱이 통제하지 못하는
+ * 값이다. 이 서비스는 origin 이 여럿이고(eternalbeam.com / soultrace… /
+ * device…), Site URL 이 그중 다른 곳을 가리키면 확인 링크가 **엉뚱한 origin**
+ * 에 떨어진다. 그러면 두 가지가 동시에 깨진다:
+ *
+ *   * 세션이 그쪽 origin 의 localStorage 에 저장된다 → 앱은 여전히 로그아웃
+ *   * Soul Trace 핸드오프도 origin 단위라 그쪽에서는 보이지 않는다 → 편지 증발
+ *
+ * 그래서 **지금 서 있는 origin 의 경로**를 명시한다. Soul Trace 에서 들어온
+ * 가입이면 /soul-trace/import 로 정확히 돌아오고, 그 화면이 저장된 핸드오프로
+ * 이어서 진행한다.
+ */
+function defaultEmailRedirectTo(): string | undefined {
+  try {
+    const origin = window.location.origin;
+    if (!origin) return undefined;
+    const path = window.location.pathname.replace(/\/+$/, "") || "/";
+    return path === "/soul-trace/import" ? `${origin}/soul-trace/import` : `${origin}/`;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function signUpWithPassword(
   email: string,
-  password: string
+  password: string,
+  options: { emailRedirectTo?: string } = {}
 ): Promise<AuthResult> {
   if (!supabase) return { ok: false, message: NOT_CONFIGURED };
+  const emailRedirectTo = options.emailRedirectTo?.trim() || defaultEmailRedirectTo();
   const { data, error } = await supabase.auth.signUp({
     email: email.trim(),
     password,
+    ...(emailRedirectTo ? { options: { emailRedirectTo } } : {}),
   });
   if (error) return { ok: false, message: error.message };
   // 이메일 확인이 켜진 프로젝트에서는 session 이 null 로 온다 — 확인 전까지
   // 토큰이 없으므로 구매도 불가능하다. 호출부가 안내할 수 있게 알려 준다.
+  //
+  // ⚠️ 현재 이 프로젝트는 mailer_autoconfirm = true (확인 메일 꺼짐)라 가입 즉시
+  //    세션이 온다. 그래도 이 분기를 지우지 않는다 — 설정은 대시보드에서 언제든
+  //    켜지고, 켜지는 순간 이 값이 유일한 안내 근거가 된다.
   return { ok: true, needsEmailConfirmation: !data.session };
 }
 
