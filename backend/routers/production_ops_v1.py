@@ -82,6 +82,10 @@ class OrderStateOut(BaseModel):
     partner_id: str | None = None
     partner_type: str | None = None
     partner_name: str | None = None
+    #: 정산 근거 스냅샷 — 주문 시점 값이며 파트너의 현재 값과 다를 수 있다.
+    partner_code: str | None = None
+    partner_track: str | None = None
+    partner_share_rate: float | None = None
 
 
 async def _breathing_ready(pet_id: str) -> bool:
@@ -149,6 +153,9 @@ async def _state(order: physical_order.PhysicalOrder) -> OrderStateOut:
         partner_id=order.partner_id,
         partner_type=order.partner_type,
         partner_name=order.partner_name,
+        partner_code=order.partner_code,
+        partner_track=order.partner_track,
+        partner_share_rate=order.partner_share_rate,
     )
 
 

@@ -62,6 +62,12 @@ class SourceLetter:
     partner_id: Optional[str] = None
     partner_type: Optional[str] = None
     partner_name: Optional[str] = None
+    #: 어느 QR 코드로 들어왔는가. 한 파트너가 지점·캠페인별로 여러 코드를 갖는다.
+    partner_code: Optional[str] = None
+    #: QR 이 고정한 갈래('living'|'memorial'). Soul Trace LetterMode 와 같은 값.
+    partner_track: Optional[str] = None
+    #: 정산 비율 0..1. 주문 생성 시점에 **얼려서** physical_orders 에 남는다.
+    partner_share_rate: Optional[float] = None
 
 
 def api_base() -> str:
@@ -183,6 +189,27 @@ async def fetch_source_letter(
         logger.warning("알 수 없는 partner_type=%r — 유형 없이 진행", ptype)
         ptype = None
 
+    # 갈래도 아는 값만 받는다. 모르는 값이면 **귀속은 살리고 갈래만 버린다** —
+    # 갈래는 정산의 부가 정보이고, 그것 때문에 귀속을 잃을 이유가 없다.
+    track = str(data.get("partnerTrack") or "").strip().lower() or None
+    if track not in (None, "living", "memorial"):
+        logger.warning("알 수 없는 partner_track=%r — 갈래 없이 진행", track)
+        track = None
+
+    # 비율은 0..1 밖이면 버린다. 틀린 비율로 정산하느니 비어 있는 편이 낫다 —
+    # 빈 값은 눈에 띄지만, 15.0 은 그럴듯해 보이는 채로 매출의 1500% 가 된다.
+    rate: Optional[float] = None
+    raw_rate = data.get("partnerShareRate")
+    if raw_rate is not None:
+        try:
+            parsed = float(raw_rate)
+            if 0.0 <= parsed <= 1.0:
+                rate = parsed
+            else:
+                logger.warning("범위 밖 partner_share_rate=%r — 비율 없이 진행", raw_rate)
+        except (TypeError, ValueError):
+            logger.warning("숫자가 아닌 partner_share_rate=%r — 비율 없이 진행", raw_rate)
+
     return SourceLetter(
         letter_id=letter_id or tid,
         letter_body=body,
@@ -190,6 +217,9 @@ async def fetch_source_letter(
         partner_id=str(data.get("partnerId") or "").strip() or None,
         partner_type=ptype,
         partner_name=str(data.get("partnerName") or "").strip() or None,
+        partner_code=str(data.get("partnerCode") or "").strip() or None,
+        partner_track=track,
+        partner_share_rate=rate,
     )
 
 

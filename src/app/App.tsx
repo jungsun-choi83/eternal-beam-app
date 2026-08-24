@@ -5,7 +5,8 @@ import { OrderConfirmationScreen } from '@/components/memorial/order-confirmatio
 import { SoulTraceImportScreen } from '@/components/memorial/soul-trace-import-screen'
 import { ShakerScreen } from '@/components/memorial/shaker-screen'
 import { isShakerEntry } from '@/lib/shaker-entry'
-import { isOpsProductionEntry, isOpsShakerEntry } from '@/lib/shaker-ops-entry'
+import { OpsPartnersScreen } from '@/components/memorial/ops-partners-screen'
+import { isOpsPartnersEntry, isOpsProductionEntry, isOpsShakerEntry } from '@/lib/shaker-ops-entry'
 import { orderReturnEntry, themeReturnEntry } from '@/lib/app-entry'
 import { isSoulTraceImportEntry, peekSoulTraceHandoffState } from '@/lib/soul-trace-handoff'
 import { EternalBeamApp } from './EternalBeamApp'
@@ -38,6 +39,7 @@ export default function App() {
   if (isSoulTraceImportEntry(window.location.pathname)) return <SoulTraceImportScreen />
   if (orderReturnEntry()) return <OrderConfirmationScreen />
   if (themeReturnEntry()) return <ThemePurchaseReturnScreen />
+  if (isOpsPartnersEntry()) return <OpsPartnersScreen />
   if (isOpsProductionEntry()) return <OpsProductionScreen />
   if (isOpsShakerEntry()) return <ShakerOpsScreen />
   if (isShakerEntry()) return <ShakerScreen />
