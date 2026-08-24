@@ -86,6 +86,9 @@ class PhysicalOrder:
     partner_id: Optional[str] = None
     partner_type: Optional[str] = None
     partner_name: Optional[str] = None
+    partner_code: Optional[str] = None
+    partner_track: Optional[str] = None
+    partner_share_rate: Optional[float] = None
     payment_key: Optional[str] = None
     failure_code: Optional[str] = None
     created_at: Optional[str] = None
@@ -105,8 +108,25 @@ _SELECT = (
     "payment_status, production_status, shipping_status, recipient_name, recipient_phone, "
     "postal_code, address_line1, address_line2, tracking_number, shaker_share_id, "
     "partner_id, partner_type, partner_name, "
+    "partner_code, partner_track, partner_share_rate, "
     "payment_key, failure_code, created_at, paid_at"
 )
+
+
+def _as_rate(value: Any) -> Optional[float]:
+    """
+    정산 비율을 숫자로 고정한다. numeric 은 드라이버가 문자열로 줄 수 있다.
+
+    범위(0..1) 밖이면 **없는 것으로 본다.** 틀린 비율로 정산하느니 비어 있는 편이
+    낫다 — 빈 값은 눈에 띄지만 15.0 은 그럴듯해 보이는 채로 매출의 1500% 가 된다.
+    """
+    if value is None:
+        return None
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        return None
+    return rate if 0.0 <= rate <= 1.0 else None
 
 
 def _to_order(row: dict[str, Any]) -> PhysicalOrder:
@@ -131,6 +151,9 @@ def _to_order(row: dict[str, Any]) -> PhysicalOrder:
         partner_id=(row.get("partner_id") or None),
         partner_type=(row.get("partner_type") or None),
         partner_name=(row.get("partner_name") or None),
+        partner_code=(row.get("partner_code") or None),
+        partner_track=(row.get("partner_track") or None),
+        partner_share_rate=_as_rate(row.get("partner_share_rate")),
         payment_key=(row.get("payment_key") or None),
         failure_code=(row.get("failure_code") or None),
         created_at=(str(row["created_at"]) if row.get("created_at") else None),
@@ -155,6 +178,9 @@ async def create(
     partner_id: str | None = None,
     partner_type: str | None = None,
     partner_name: str | None = None,
+    partner_code: str | None = None,
+    partner_track: str | None = None,
+    partner_share_rate: float | None = None,
     currency: str = "KRW",
 ) -> PhysicalOrder:
     """주문 생성. **아직 결제되지 않았다** — payment_status=pending."""
@@ -180,6 +206,11 @@ async def create(
         "partner_id": partner_id,
         "partner_type": partner_type,
         "partner_name": partner_name,
+        "partner_code": partner_code,
+        "partner_track": partner_track,
+        # 비율은 계약이고 계약은 바뀐다. 여기서 얼려 두지 않으면 파트너의 현재
+        # 비율로 과거 주문이 재계산되고, 이미 끝난 달의 정산액이 조용히 움직인다.
+        "partner_share_rate": _as_rate(partner_share_rate),
         "created_at": _now().isoformat(),
     }
 

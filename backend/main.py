@@ -210,6 +210,12 @@ from .routers import production_ops_v1  # noqa: E402
 
 app.include_router(production_ops_v1.router, prefix="/api", tags=["production-ops"])
 
+# 제휴처 등록·QR 발급 (Phase 16). 같은 운영 allowlist 를 쓴다. 실제 쓰기는
+# Soul Trace 쪽 내부 API 로 넘어간다 — partners/partner_codes 는 그쪽 소유다.
+from .routers import partner_ops_v1  # noqa: E402
+
+app.include_router(partner_ops_v1.router, prefix="/api", tags=["partner-ops"])
+
 # canonical 펫 레지스트리 (Phase 13.2). 생성 로직을 건드리지 않고, 앱이 파이프라인
 # 완료 후 결과를 등록한다 — BREATHING 만 있는 무료 펫도 운영이 발견할 수 있다.
 from .routers import pet_registry_v1  # noqa: E402

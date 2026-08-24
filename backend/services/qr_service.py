@@ -125,6 +125,90 @@ def _safe_slug(value: str) -> str:
     return s[:48] or "share"
 
 
+# ── 파트너 QR (Phase 16) ──────────────────────────────────────────────────────
+#
+# 제휴 병원·장례식장 벽에 붙는 QR 이다. Shaker QR 과 **다른 화이트리스트**를 쓴다:
+# 가리키는 곳이 Shaker 가 아니라 Soul Trace 랜딩이고, 들고 있는 것이 공유 토큰이
+# 아니라 불투명 파트너 코드다.
+#
+# 규칙 자체는 같다 — **아는 모양이 아니면 인코딩하지 않는다.** 인쇄된 QR 은
+# 회수할 수 없고, 엉뚱한 주소가 찍힌 인쇄물은 재고 전량이 손실이다.
+
+#: URL 쿼리 파라미터. Soul Trace lib/partner.ts 의 PARTNER_CODE_PARAM 과 같아야 한다.
+PARTNER_CODE_PARAM = "p"
+
+_PARTNER_CODE_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+
+
+def soul_trace_base() -> str:
+    """
+    파트너 QR 이 가리킬 공개 주소. 편지 가져오기와 **같은 설정**을 쓴다
+    (SOUL_TRACE_API_BASE) — 두 벌로 두면 한쪽만 바뀌는 날이 온다.
+    """
+    raw = (os.getenv("SOUL_TRACE_API_BASE") or "https://soultrace.eternalbeam.com").strip()
+    return raw.rstrip("/")
+
+
+def partner_share_url(code: str) -> str:
+    """코드 → 인쇄될 공개 URL. 이 함수가 그 주소의 유일한 출처다."""
+    c = (code or "").strip()
+    if not _PARTNER_CODE_RE.match(c):
+        raise QrError("QR_PARTNER_CODE_INVALID", "파트너 코드 모양이 올바르지 않습니다.")
+    return f"{soul_trace_base()}/?{PARTNER_CODE_PARAM}={c}"
+
+
+def assert_partner_url(url: str | None) -> str:
+    """
+    이 URL 을 파트너 QR 로 만들어도 되는가.
+
+    인쇄용이므로 Shaker QR 과 같은 인쇄 안전 규칙을 적용한다 — localhost 나 API
+    도메인을 가리킨 QR 이 벽에 붙는 일이 없어야 한다.
+    """
+    raw = (url or "").strip()
+    if not raw:
+        raise QrError("QR_URL_REQUIRED", "QR 로 만들 URL 이 필요합니다.")
+
+    try:
+        parts = urlsplit(raw)
+    except Exception as e:
+        raise QrError("QR_URL_INVALID", "URL 을 해석할 수 없습니다.") from e
+
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise QrError("QR_URL_INVALID", "http(s) 절대 URL 이어야 합니다.")
+
+    host = parts.netloc.lower()
+    for bad in _UNSAFE_HOSTS:
+        if bad in host:
+            raise QrError(
+                "QR_BASE_UNSAFE",
+                "인쇄용 QR 은 공개 도메인만 가리킬 수 있습니다.",
+            )
+
+    # 랜딩(`/`)이어야 한다. 갈래는 코드가 들고 있고, 서버가 정한다 —
+    # `/living` 을 직접 찍으면 갈래가 종이에 박혀 코드 쪽 track 과 어긋날 수 있다.
+    path = (parts.path or "").rstrip("/") or "/"
+    if path != "/":
+        raise QrError("QR_URL_NOT_PARTNER", "파트너 QR 은 Soul Trace 랜딩만 가리킵니다.")
+
+    code = (parse_qs(parts.query).get(PARTNER_CODE_PARAM) or [""])[0].strip()
+    if not _PARTNER_CODE_RE.match(code):
+        raise QrError("QR_PARTNER_CODE_INVALID", "파트너 코드가 없거나 모양이 다릅니다.")
+
+    return raw
+
+
+def render_partner_qr(
+    code: str,
+    *,
+    kind: str = "svg",
+    scale: int = DEFAULT_SCALE,
+    filename_hint: str = "partner",
+) -> QrImage:
+    """파트너 코드 → QR. URL 은 서버가 만든다 — 요청이 주소를 고르지 않는다."""
+    url = assert_partner_url(partner_share_url(code))
+    return _render(url, kind=kind, scale=scale, filename_hint=filename_hint)
+
+
 def render_qr(
     url: str,
     *,
@@ -141,7 +225,24 @@ def render_qr(
     간단한 붙여넣기용이다.
     """
     safe = assert_shaker_url(url)
+    return _render(safe, kind=kind, scale=scale, border=border, filename_hint=filename_hint)
 
+
+def _render(
+    safe: str,
+    *,
+    kind: str = "svg",
+    scale: int = DEFAULT_SCALE,
+    border: int = DEFAULT_BORDER,
+    filename_hint: str = "shaker",
+) -> QrImage:
+    """
+    이미지 생성만 한다. **검증은 부르는 쪽이 이미 끝냈다.**
+
+    Shaker QR 과 파트너 QR 은 허용 주소가 다르지만(화이트리스트가 다르다) 인코딩
+    규칙은 같다. 여기를 나눠 두면 오류정정 레벨·크기 상한 같은 인쇄 품질 결정이
+    한 곳에만 있다 — 두 벌이면 한쪽만 고쳐지는 날이 온다.
+    """
     k = (kind or "svg").strip().lower()
     if k not in ("svg", "png"):
         raise QrError("QR_KIND_UNSUPPORTED", "svg 또는 png 만 지원합니다.")

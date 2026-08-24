@@ -169,6 +169,9 @@ async def claim_letter(
             partner_id=source.partner_id,
             partner_type=source.partner_type,
             partner_name=source.partner_name,
+            partner_code=source.partner_code,
+            partner_track=source.partner_track,
+            partner_share_rate=source.partner_share_rate,
         )
     except soul_trace_letter.LetterError as e:
         raise _http(e) from e
@@ -412,6 +415,9 @@ class OpsOrderOut(OrderOut):
     partner_id: str | None = None
     partner_type: str | None = None
     partner_name: str | None = None
+    partner_code: str | None = None
+    partner_track: str | None = None
+    partner_share_rate: float | None = None
 
 
 class OpsOrdersResponse(BaseModel):
@@ -452,6 +458,9 @@ async def ops_search_orders(
                 partner_id=o.partner_id,
                 partner_type=o.partner_type,
                 partner_name=o.partner_name,
+                partner_code=o.partner_code,
+                partner_track=o.partner_track,
+                partner_share_rate=o.partner_share_rate,
             )
             for o in rows
         ]

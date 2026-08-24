@@ -62,6 +62,19 @@ export const OPS_PRODUCTION_PATH = "/ops/production";
  */
 const OPS_ORDERS_PATHS = ["/ops", "/ops/search", OPS_PRODUCTION_PATH] as const;
 
+/** 제휴처 콘솔 경로 (Phase 16). 생산 콘솔·Shaker 콘솔과 형제다. */
+export const OPS_PARTNERS_PATH = "/ops/partners";
+
+export function isOpsPartnersPath(pathname: string): boolean {
+  const path = (pathname || "").replace(/\/+$/, "") || "/";
+  return path === OPS_PARTNERS_PATH;
+}
+
+export function isOpsPartnersEntry(): boolean {
+  if (typeof window === "undefined") return false;
+  return isOpsPartnersPath(window.location.pathname);
+}
+
 export function isOpsProductionPath(pathname: string): boolean {
   const path = (pathname || "").replace(/\/+$/, "") || "/";
   return (OPS_ORDERS_PATHS as readonly string[]).includes(path);

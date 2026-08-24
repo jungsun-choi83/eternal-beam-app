@@ -139,6 +139,9 @@ async def start_checkout(
     partner_id: Optional[str] = None
     partner_type: Optional[str] = None
     partner_name: Optional[str] = None
+    partner_code: Optional[str] = None
+    partner_track: Optional[str] = None
+    partner_share_rate: Optional[float] = None
 
     if product.includes_letter:
         if not letter_id:
@@ -157,6 +160,11 @@ async def start_checkout(
         partner_id = letter.partner_id
         partner_type = letter.partner_type
         partner_name = letter.partner_name
+        # 비율까지 함께 얼린다. 계약은 바뀌고, 파트너의 **현재** 비율로 과거 주문을
+        # 계산하면 이미 정산이 끝난 달의 숫자가 조용히 움직인다.
+        partner_code = letter.partner_code
+        partner_track = letter.partner_track
+        partner_share_rate = letter.partner_share_rate
 
     share_id = await _reusable_share_id(uid, pid)
 
@@ -178,6 +186,9 @@ async def start_checkout(
             partner_id=partner_id,
             partner_type=partner_type,
             partner_name=partner_name,
+            partner_code=partner_code,
+            partner_track=partner_track,
+            partner_share_rate=partner_share_rate,
         )
     except physical_order.OrderError as e:
         raise _as_checkout_error(e) from e

@@ -81,6 +81,9 @@ class SoulTraceLetter:
     partner_id: Optional[str] = None
     partner_type: Optional[str] = None
     partner_name: Optional[str] = None
+    partner_code: Optional[str] = None
+    partner_track: Optional[str] = None
+    partner_share_rate: Optional[float] = None
     #: 가져온 시각. 목록 정렬(최신 우선)의 근거이므로 select 에 반드시 포함한다.
     imported_at: Optional[str] = None
 
@@ -88,8 +91,20 @@ class SoulTraceLetter:
 _SELECT = (
     "letter_id, user_id, pet_id, source_letter_id, source, child_name, "
     "letter_kicker, letter_body, letter_excerpt, partner_id, partner_type, partner_name, "
+    "partner_code, partner_track, partner_share_rate, "
     "imported_at"
 )
+
+
+def _as_rate(value: Any) -> Optional[float]:
+    """numeric 은 드라이버가 문자열로 줄 수 있다. 범위 밖이면 없는 것으로 본다."""
+    if value is None:
+        return None
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        return None
+    return rate if 0.0 <= rate <= 1.0 else None
 
 
 def _to_letter(row: dict[str, Any]) -> SoulTraceLetter:
@@ -106,6 +121,9 @@ def _to_letter(row: dict[str, Any]) -> SoulTraceLetter:
         partner_id=(row.get("partner_id") or None),
         partner_type=(row.get("partner_type") or None),
         partner_name=(row.get("partner_name") or None),
+        partner_code=(row.get("partner_code") or None),
+        partner_track=(row.get("partner_track") or None),
+        partner_share_rate=_as_rate(row.get("partner_share_rate")),
         imported_at=(row.get("imported_at") or None),
     )
 
@@ -134,6 +152,9 @@ async def link_letter(
     partner_id: str | None = None,
     partner_type: str | None = None,
     partner_name: str | None = None,
+    partner_code: str | None = None,
+    partner_track: str | None = None,
+    partner_share_rate: float | None = None,
 ) -> SoulTraceLetter:
     """
     Soul Trace 편지를 등록/갱신한다. **만들지 않는다 — 받는다.**
@@ -171,6 +192,9 @@ async def link_letter(
         "partner_id": (partner_id or "").strip() or None,
         "partner_type": (partner_type or "").strip() or None,
         "partner_name": (partner_name or "").strip() or None,
+        "partner_code": (partner_code or "").strip() or None,
+        "partner_track": (partner_track or "").strip().lower() or None,
+        "partner_share_rate": _as_rate(partner_share_rate),
         "imported_at": _now().isoformat(),
     }
 
