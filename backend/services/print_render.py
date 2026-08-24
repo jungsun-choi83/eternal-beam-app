@@ -329,6 +329,127 @@ def render_photo_card_png(image_bytes: bytes, *, pet_name: Optional[str] = None)
     return out.getvalue()
 
 
+# ── 메시지 카드 (Phase 17) ────────────────────────────────────────────────────
+#
+# MEMORY BOX 구성품에 message_card 가 **선언만** 돼 있고 렌더러가 없었다.
+#
+# ⚠️ **문구는 아직 승인되지 않았다.** 여기서 지어내지 않는다 — 메시지 카드는
+#    상자를 연 사람이 가장 먼저 읽는 문장이고, 그 톤은 제품 결정이지 구현
+#    세부가 아니다. 엉뚱한 위로의 말이 인쇄되어 배송되면 회수할 수 없다.
+#
+# 그래서 지금 만드는 것은 **구조뿐**이다:
+#   * 승인된 문구가 설정되면(PRINT_MESSAGE_CARD_TEXT) 그것을 조판해 인쇄한다
+#   * 설정되지 않았으면 눈에 띄게 "TBD" 라고 적힌 교정지를 낸다
+#
+# 교정지는 패키지 ZIP 에 **들어가지 않는다**(production_package.manifest 참고).
+# 인쇄소로 넘어가는 한 덩어리에 자리표시자가 섞이면, 언젠가 그대로 찍힌다.
+
+#: 승인된 문구를 넣는 자리. 줄바꿈은 `\n`.
+MESSAGE_CARD_ENV = "PRINT_MESSAGE_CARD_TEXT"
+
+
+def message_card_text() -> Optional[str]:
+    """승인된 메시지 카드 문구. 없으면 None — 그러면 카드는 아직 TBD 다."""
+    return (os.getenv(MESSAGE_CARD_ENV) or "").strip() or None
+
+
+def message_card_approved() -> bool:
+    return message_card_text() is not None
+
+
+def _wrap_pil(text: str, font, max_width: float) -> list[str]:
+    """
+    PIL 폰트 기준 글자 단위 줄바꿈.
+
+    wrap_korean 과 규칙은 같지만 폭을 **실제로 그릴 폰트**로 잰다. 한글은 어절이
+    길어 공백 단위로만 자르면 재단선 밖으로 넘친다.
+    """
+    lines: list[str] = []
+    for para in (text or "").split("\n"):
+        if not para.strip():
+            lines.append("")
+            continue
+        cur = ""
+        for ch in para:
+            trial = cur + ch
+            if font.getlength(trial) <= max_width or not cur:
+                cur = trial
+            else:
+                lines.append(cur)
+                cur = ch
+        if cur:
+            lines.append(cur)
+    return lines
+
+
+def render_message_card_png(*, pet_name: Optional[str] = None) -> bytes:
+    """
+    85×55mm 메시지 카드 (300dpi PNG).
+
+    승인 문구가 있으면 그것을, 없으면 **자리표시자 교정지**를 낸다. 교정지는
+    한눈에 교정지로 보여야 한다 — 예쁘게 만들면 승인된 art 로 오인된다.
+    """
+    from PIL import ImageDraw, ImageFont
+
+    approved = message_card_text()
+    card = _card_canvas()
+    d = ImageDraw.Draw(card)
+
+    path = (os.getenv("PRINT_CARD_FONT_PATH") or os.getenv("PRINT_LETTER_FONT_PATH") or "").strip()
+    font_ok = bool(path) and os.path.isfile(path)
+
+    if approved is None:
+        # 교정지: 테두리 + 대문자 라틴 문자(폰트 없이도 읽힌다) + 규격 표기.
+        d.rectangle(
+            [(8, 8), (CARD_W_PX - 9, CARD_H_PX - 9)], outline=(200, 200, 200), width=4
+        )
+        try:
+            big = ImageFont.truetype(path, 54) if font_ok else ImageFont.load_default()
+            small = ImageFont.truetype(path, 28) if font_ok else ImageFont.load_default()
+        except Exception:
+            big = small = ImageFont.load_default()
+        # ASCII 만 쓴다 — PIL 기본 폰트는 한글을 네모로 그린다.
+        d.text((60, 190), "MESSAGE CARD", font=big, fill=(120, 120, 120))
+        d.text((60, 270), "COPY / DESIGN: TBD", font=big, fill=(190, 90, 90))
+        d.text(
+            (60, 360),
+            f"85 x 55 mm @ {CARD_DPI}dpi - not for print",
+            font=small,
+            fill=(150, 150, 150),
+        )
+        out = io.BytesIO()
+        card.save(out, format="PNG", dpi=(CARD_DPI, CARD_DPI))
+        return out.getvalue()
+
+    if not font_ok:
+        # 승인 문구는 대개 한글이다. 폰트가 없으면 네모가 인쇄되므로 만들지 않는다.
+        raise PrintRenderError(
+            "CARD_FONT_MISSING",
+            "메시지 카드 문구를 조판할 폰트가 없습니다 (PRINT_CARD_FONT_PATH).",
+            status=503,
+        )
+
+    body = ImageFont.truetype(path, 40)
+    name_font = ImageFont.truetype(path, 34)
+
+    text = approved.replace("{pet_name}", (pet_name or "").strip())
+    # wrap_korean 은 reportlab 의 **등록된 폰트 이름**으로 폭을 재므로 PIL 카드에는
+    # 쓸 수 없다. 여기서는 실제로 그릴 폰트 객체로 재야 줄이 정확히 맞는다.
+    lines = _wrap_pil(text, body, CARD_W_PX - 160)
+
+    y = max(70, (CARD_H_PX - len(lines) * 58) // 2)
+    for line in lines:
+        d.text((80, y), line, font=body, fill=(40, 40, 40))
+        y += 58
+
+    if pet_name:
+        d.text((80, CARD_H_PX - 96), pet_name, font=name_font, fill=(130, 130, 130))
+
+    out = io.BytesIO()
+    card.save(out, format="PNG", dpi=(CARD_DPI, CARD_DPI))
+    return out.getvalue()
+
+
 @dataclass(frozen=True)
 class RenderedFile:
     kind: str

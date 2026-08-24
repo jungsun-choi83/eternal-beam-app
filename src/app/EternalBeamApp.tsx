@@ -38,7 +38,7 @@ import { scheduleThemeBackgroundSync, shouldSyncThemeToDevice } from '@/lib/devi
 import { resolveSkipThemeId } from '@/lib/theme-skip'
 import { schedulePiDiscovery } from '@/lib/pi-sensor-bridge'
 import { isForestTheme } from '@/lib/forest-demo-config'
-import { billingReturnEntry, isPublicForestEntry } from '@/lib/app-entry'
+import { billingReturnEntry, isPublicForestEntry, orderReturnEntry } from '@/lib/app-entry'
 import { consumeSoulTracePendingUpload } from '@/lib/soul-trace-handoff'
 import {
   clearBillingReturnState,
@@ -54,6 +54,7 @@ import {
 import { FOREST_THEME_ID } from '@/lib/forest-demo-config'
 import { inferMediaKind } from '@/lib/media-file-kind'
 import { canEnterDevicePlay, readStoredPipeline } from '@/lib/pending-generation'
+import { OrderConfirmationScreen } from '@/components/memorial/order-confirmation-screen'
 import { getEternalBeamPetId } from '@/lib/pet-identity'
 import { traceImage } from '@/lib/image-trace' // [IMAGE-TRACE]
 import type { PickedMedia } from '@/lib/pick-media-file'
@@ -78,12 +79,17 @@ type Screen =
   | 'device'
   | 'settings'
   | 'billingResult'
+  | 'orderResult'
 
 function resolveInitialScreen(): Screen {
   if (typeof window === 'undefined') return 'qrConnection'
   // Toss 결제 복귀 — 전용 경로가 없으면 결제 후 첫 화면(QR)으로 떨어져
   // 사용자가 방금 낸 돈의 결과를 볼 수 없다.
   if (billingReturnEntry()) return 'billingResult'
+  // 실물 주문 결제 복귀도 **앱 안에서** 받는다. 예전에는 App.tsx 가 앱 셸 밖에서
+  // 가로챘고, 그 화면을 나가는 유일한 길이 루트 새로고침이었다 — 루트는 아래
+  // 폴백(qrConnection)으로 떨어지므로 결제를 마친 고객이 온보딩을 다시 봤다.
+  if (orderReturnEntry()) return 'orderResult'
   // Soul Trace 편지를 막 가져왔다 — 다음은 아이를 만드는 단계다.
   // **기존 Upload Pet 흐름을 그대로 쓴다**(새 화면을 만들지 않는다).
   // 표식은 한 번만 소비되므로 다음 방문부터는 평소 진입 화면으로 돌아간다.
@@ -489,8 +495,56 @@ export function EternalBeamApp() {
     openSettings('home', { focusMembership: true })
   }
 
+  /**
+   * 실물 주문 결제 후 — **방금 산 그 아이에게 돌아간다.**
+   *
+   * 고객은 이미 로그인돼 있고 canonical 펫도 이미 있다. 그런데 예전에는 확인
+   * 화면을 나가는 길이 `window.location.replace('/')` 하나뿐이었고, 루트는
+   * resolveInitialScreen 의 폴백인 'qrConnection'(기기 연결 → 회원가입 →
+   * 사진 업로드)으로 떨어졌다. 돈을 낸 직후에 온보딩을 다시 보게 되는 것이다.
+   *
+   * 복원은 구독 복귀와 **같은 스냅샷**을 쓴다(billing-return-state). 결제 왕복
+   * 중에 화면 상태를 붙잡아 두는 문제는 이미 그쪽에서 풀렸고, 두 벌로 만들면
+   * 하나가 갱신되고 다른 하나가 잊힌다. 스냅샷은 devicePlay/preview 에 머무는
+   * 동안 계속 저장되므로(위 effect), 결제 진입 경로와 무관하게 항상 최신이다.
+   *
+   * ── 펫을 새로 만들지 않는다 ─────────────────────────────────────────────
+   * 되살리는 것은 React state 가 잃어버린 두 가지(화면·펫 위치)뿐이다.
+   * 누끼·테마·파이프라인은 이미 저장소에 있고 화면들이 스스로 읽는다.
+   *
+   * 스냅샷이 없거나 펫이 바뀌었으면 **기념품 화면**으로 간다 — 주문을 확인할 수
+   * 있는 곳이고, 고객 상태를 초기화하지 않는다. 온보딩으로는 절대 보내지 않는다.
+   */
+  const handleOrderReturn = () => {
+    window.history.replaceState({}, '', '/')
+    const restored = resolveBillingReturn(readBillingReturnState(), readStoredPipeline())
+    clearBillingReturnState()
+
+    if (restored) {
+      setPreviewSettings(restored.settings)
+      navigateTo(restored.screen)
+      return
+    }
+    navigateTo('physicalOrder')
+  }
+
   // Toss 결제 복귀는 **앱 셸 밖에서** 처리한다. 결제 결과는 업로드·테마 등 어떤
   // 진행 상태와도 무관하고, 여기서 애니메이션·파이프라인 복원을 태울 이유가 없다.
+  if (screen === 'orderResult') {
+    return (
+      <main className="min-h-[100dvh] bg-[#0a0a0a] flex items-stretch md:items-center justify-center p-0 md:p-4 overflow-hidden">
+        <OrderConfirmationScreen
+          onContinue={handleOrderReturn}
+          onViewOrders={() => {
+            window.history.replaceState({}, '', '/')
+            clearBillingReturnState()
+            navigateTo('physicalOrder')
+          }}
+        />
+      </main>
+    )
+  }
+
   if (screen === 'billingResult') {
     return (
       <main className="min-h-[100dvh] bg-[#0a0a0a] flex items-stretch md:items-center justify-center p-0 md:p-4 overflow-hidden">

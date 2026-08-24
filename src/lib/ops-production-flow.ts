@@ -89,6 +89,7 @@ export const FILE_LABEL: Record<string, string> = {
   letter_pdf: "Letter PDF",
   photo_card: "Photo Card",
   qr_card: "QR Memory Card",
+  message_card: "Message Card",
 };
 
 /** 구성 파일의 저장 파일명 — 서버 Content-Disposition 과 같은 규칙. */
@@ -96,5 +97,8 @@ export function fileName(orderId: string, kind: string): string {
   if (kind === "letter_pdf") return `${orderId}-letter-a5.pdf`;
   if (kind === "photo_card") return `${orderId}-photo-card-85x55.png`;
   if (kind === "qr_card") return `${orderId}-qr-card-85x55.png`;
+  // 문구 미승인 상태에서는 서버가 교정지를 주고 파일명도 다르다 — 인쇄용
+  // 파일과 섞이지 않도록 이름 자체가 다르게 남아야 한다.
+  if (kind === "message_card") return `${orderId}-message-card-85x55.png`;
   return `${orderId}-${kind}`;
 }

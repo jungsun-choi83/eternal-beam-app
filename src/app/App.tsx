@@ -1,7 +1,6 @@
 import { ShakerOpsScreen } from '@/components/memorial/shaker-ops-screen'
 import { OpsProductionScreen } from '@/components/memorial/ops-production-screen'
 import { ThemePurchaseReturnScreen } from '@/components/memorial/theme-purchase-return-screen'
-import { OrderConfirmationScreen } from '@/components/memorial/order-confirmation-screen'
 import { SoulTraceImportScreen } from '@/components/memorial/soul-trace-import-screen'
 import { ShakerScreen } from '@/components/memorial/shaker-screen'
 import { isShakerEntry } from '@/lib/shaker-entry'
@@ -37,7 +36,6 @@ export default function App() {
   // 아직 로그인도 하지 않은 방문자에게 파이프라인 복원·프리미엄 폴링·기기 동기화
   // effect 가 전부 붙고, 그 사이에 1회용 토큰이 든 URL 이 살아 있게 된다.
   if (isSoulTraceImportEntry(window.location.pathname)) return <SoulTraceImportScreen />
-  if (orderReturnEntry()) return <OrderConfirmationScreen />
   if (themeReturnEntry()) return <ThemePurchaseReturnScreen />
   if (isOpsPartnersEntry()) return <OpsPartnersScreen />
   if (isOpsProductionEntry()) return <OpsProductionScreen />
@@ -60,7 +58,13 @@ export default function App() {
   //
   // 흔적이 아예 없으면 이 줄은 아무 일도 하지 않으므로,
   // device.eternalbeam.com 으로 직접 들어오는 기존 흐름은 그대로다.
-  if (peekSoulTraceHandoffState() !== 'none') return <SoulTraceImportScreen />
+  //
+  // ⚠️ 결제 복귀(/orders/*)는 **여기서 가로채지 않는다.** 그 경로는 EternalBeamApp
+  //    안에서 처리해야 결제 후 원래 아이의 BREATHING 화면으로 되돌아갈 수 있다
+  //    (구독 복귀 /billing/* 와 같은 방식). 여기서 잡으면 앱 셸 밖의 화면이 되고,
+  //    나가는 길이 루트 새로고침뿐이라 온보딩으로 떨어진다.
+  if (!orderReturnEntry() && peekSoulTraceHandoffState() !== 'none')
+    return <SoulTraceImportScreen />
 
   return <EternalBeamApp />
 }

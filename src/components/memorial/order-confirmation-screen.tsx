@@ -28,7 +28,11 @@ import {
   reconcileMyOrders,
   type PhysicalOrder,
 } from "@/lib/orders-api";
-import { describeOrderStatus, formatKrw } from "@/lib/order-checkout-flow";
+import {
+  formatKrw,
+  fulfillmentLabel,
+  fulfillmentStage,
+} from "@/lib/order-checkout-flow";
 
 const PRODUCT_LABEL: Record<string, string> = {
   LETTER: "편지",
@@ -48,7 +52,17 @@ type Phase =
   | { kind: "done"; order: PhysicalOrder | null; alreadyPaid: boolean }
   | { kind: "failed"; message: string; reconciling: boolean };
 
-export function OrderConfirmationScreen() {
+export interface OrderConfirmationScreenProps {
+  /** 방금 산 그 아이의 BREATHING/Idle 화면으로 돌아간다. */
+  onContinue: () => void;
+  /** 기념품(주문) 화면 — 주문 내역과 다른 제품을 계속 볼 수 있다. */
+  onViewOrders: () => void;
+}
+
+export function OrderConfirmationScreen({
+  onContinue,
+  onViewOrders,
+}: OrderConfirmationScreenProps) {
   const outcome = orderReturnEntry();
   const [phase, setPhase] = useState<Phase>({ kind: "working" });
   const startedRef = useRef(false);
@@ -116,7 +130,15 @@ export function OrderConfirmationScreen() {
     })();
   }, [outcome]);
 
-  const goBack = useCallback(() => window.location.replace("/"), []);
+  // 예전에는 이 버튼이 **루트로 전체 페이지 이동**을 했다. 그 한 줄이 이 화면의
+  // 버그였다: 문서가 새로 뜨면서 React state 가 통째로 사라지고, 루트는
+  // resolveInitialScreen 의 폴백인 qrConnection(기기 연결 → 회원가입 → 사진
+  // 업로드)으로 떨어진다. 결제를 마친 고객이 온보딩을 다시 보게 된 이유다.
+  //
+  // 이제는 **앱 안에 머문 채** 부모가 원래 화면으로 되돌린다 — 세션도 펫도
+  // 그대로다. 이 파일에는 전체 페이지 이동이 남아 있으면 안 되고,
+  // order-return-routing.test.ts 가 그것을 지킨다.
+  const goBack = useCallback(() => onContinue(), [onContinue]);
 
   return (
     <div className="fixed inset-0 flex flex-col items-center justify-center gap-4 bg-[#0a0a0a] px-8">
@@ -142,12 +164,19 @@ export function OrderConfirmationScreen() {
               {phase.order.soulTraceLetterId && (
                 <Row label="편지" value={phase.order.soulTraceLetterId} mono />
               )}
-              <Row label="상태" value={describeOrderStatus(phase.order)} />
+              <Row label="상태" value={fulfillmentLabel(fulfillmentStage(phase.order))} />
             </dl>
           )}
 
+          {/*
+            생산 완결은 결제 확인 뒤에 **비동기로** 돈다. 아직 pending 이어도
+            결제는 끝났으므로 "준비 중"이라고 말한다 — 여기서 실패처럼 보이면
+            고객이 다시 결제하고, 그것이 이중 청구가 된다.
+          */}
           <p className="max-w-xs text-[11px] leading-relaxed text-white/40">
-            제작·배송은 결제 확인 후 시작됩니다. 진행 상황은 기념품 화면에서 볼 수 있습니다.
+            {phase.order && fulfillmentStage(phase.order) === "preparing"
+              ? "결제가 완료되었습니다. 제작 준비가 곧 시작되며, 진행 상황은 기념품 화면에서 볼 수 있습니다."
+              : "제작·배송 진행 상황은 기념품 화면에서 볼 수 있습니다."}
           </p>
         </>
       )}
@@ -166,14 +195,28 @@ export function OrderConfirmationScreen() {
         </>
       )}
 
+      {/*
+        나가는 길이 **두 개**다. 예전에는 "돌아가기" 하나뿐이었고 그마저 루트
+        새로고침이었다. 결제를 마친 고객이 하고 싶은 일은 둘 중 하나다 —
+        아이에게 돌아가거나, 방금 산 것을 확인하거나.
+      */}
       {phase.kind !== "working" && (
-        <button
-          type="button"
-          onClick={goBack}
-          className="mt-2 rounded-full border border-white/20 px-5 py-2 text-sm text-white/80 active:bg-white/10"
-        >
-          돌아가기
-        </button>
+        <div className="mt-2 flex flex-col items-center gap-2">
+          <button
+            type="button"
+            onClick={goBack}
+            className="rounded-full bg-[#c9a227] px-6 py-2.5 text-sm font-semibold text-[#0a0a0a] active:opacity-90"
+          >
+            아이에게 돌아가기
+          </button>
+          <button
+            type="button"
+            onClick={onViewOrders}
+            className="rounded-full border border-white/20 px-5 py-2 text-sm text-white/80 active:bg-white/10"
+          >
+            주문 보기 · 다른 상품
+          </button>
+        </div>
       )}
     </div>
   );

@@ -74,6 +74,21 @@ class PhysicalProduct:
         """Soul Trace 편지가 필요한가 — 둘 다 필요하다(둘 다 편지를 인쇄한다)."""
         return "printed_letter" in self.contents
 
+    @property
+    def needs_photo_card(self) -> bool:
+        """
+        85×55mm 사진 카드가 들어가는가 (지금은 MEMORY BOX 만).
+
+        구성 목록에서 파생한다 — 제품 이름으로 분기하면 제품이 늘 때마다
+        생산 경로 곳곳에 새 if 가 생기고, 그중 하나는 반드시 빠진다.
+        """
+        return "photo_card" in self.contents
+
+    @property
+    def needs_message_card(self) -> bool:
+        """메시지 카드가 들어가는가 (지금은 MEMORY BOX 만)."""
+        return "message_card" in self.contents
+
 
 def price_krw(product_type: str) -> int:
     raw = (os.getenv(f"PRODUCT_PRICE_{product_type}_KRW") or "").strip()

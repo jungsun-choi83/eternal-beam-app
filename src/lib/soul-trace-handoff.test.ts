@@ -215,9 +215,19 @@ describe("구조 고정 — 기존 진입 흐름 보존", () => {
   const eb = readFileSync("src/app/EternalBeamApp.tsx", "utf8");
 
   it("재개 분기는 핸드오프의 흔적이 있을 때만 걸린다", () => {
+    // 조건이 **더 늘어나는 것**은 허용한다 — 결제 복귀(/orders/*)처럼 이 분기가
+    // 가로채면 안 되는 경로가 생겼다(order-return-routing.test.ts). 금지하는 것은
+    // 조건이 **사라지는 것**이다: peek 결과로 걸러지지 않으면 그냥 들어온
+    // 사용자까지 import 화면으로 끌려간다.
     assert.ok(
-      /if \(peekSoulTraceHandoffState\(\) !== 'none'\) return <SoulTraceImportScreen \/>/.test(app),
+      /peekSoulTraceHandoffState\(\) !== 'none'\)?\s*\n?\s*return <SoulTraceImportScreen \/>/.test(
+        app,
+      ),
       "무조건 import 화면으로 보내고 있다",
+    );
+    assert.ok(
+      !/^\s*return <SoulTraceImportScreen \/>/m.test(app.replace(/if \(.*\n?.*\)\s*/g, "if ")),
+      "조건 없는 import 분기가 있다",
     );
   });
 
