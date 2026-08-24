@@ -56,6 +56,11 @@ export interface OpsProductionState {
   /** 인쇄될 QR 주소. 산출물로 준비된 경우 null 이고 qrArtifactStored 가 true 다. */
   qrShareUrl: string | null;
   qrArtifactStored: boolean;
+  /** 사진 카드 원본이 확정됐는가. false 면 사진 카드도 패키지 ZIP 도 못 만든다. */
+  photoReady: boolean;
+  photoImageUrl: string | null;
+  /** 구성품이지만 아직 패키지에 못 넣는 것 (예: 문구 미승인 메시지 카드). */
+  pendingFiles: { kind: string; status: string; reason: string }[];
   /** 주문 시점 파트너 귀속. 전부 null 이면 직접 유입이다. */
   partnerId: string | null;
   partnerType: string | null;
@@ -118,6 +123,15 @@ export function parseState(row: Record<string, unknown>): OpsProductionState {
     breathingReady: Boolean(row.breathing_ready),
     qrShareUrl: row.qr_share_url == null ? null : String(row.qr_share_url),
     qrArtifactStored: Boolean(row.qr_artifact_stored),
+    photoReady: Boolean(row.photo_ready),
+    photoImageUrl: row.photo_image_url == null ? null : String(row.photo_image_url),
+    pendingFiles: Array.isArray(row.pending_files)
+      ? (row.pending_files as Record<string, unknown>[]).map((f) => ({
+          kind: String(f.kind ?? ""),
+          status: String(f.status ?? ""),
+          reason: String(f.reason ?? ""),
+        }))
+      : [],
     partnerId: row.partner_id == null ? null : String(row.partner_id),
     partnerType: row.partner_type == null ? null : String(row.partner_type),
     partnerName: row.partner_name == null ? null : String(row.partner_name),
@@ -178,6 +192,20 @@ export const prepareProduction = (
       qr_share_url: body.qrShareUrl ?? undefined,
       photo_image_url: body.photoImageUrl ?? undefined,
     }),
+  });
+
+/**
+ * 사진 카드 원본을 지정/교체한다 (메모리 박스).
+ *
+ * prepare 가 아니라 전용 경로인 이유: prepare 는 멱등이라 이미 준비된 패키지에는
+ * 아무 것도 반영하지 않는다. 자동 완결이 사진을 못 찾은 주문은 그 길로는 영영
+ * 고칠 수 없었다.
+ */
+export const attachPhoto = (orderId: string, token: string, photoImageUrl: string) =>
+  opsJson(`/api/v1/ops/production/${encodeURIComponent(orderId)}/photo`, token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ photo_image_url: photoImageUrl }),
   });
 
 export const startProduction = (orderId: string, token: string) =>

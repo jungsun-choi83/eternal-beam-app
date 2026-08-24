@@ -268,6 +268,76 @@ async def prepare(
     return _to_pkg(row)
 
 
+async def attach_photo(*, order_id: str, photo_image_url: str) -> ProductionPackage:
+    """
+    이미 준비된 패키지에 **사진만** 붙인다.
+
+    ── 왜 prepare 로는 안 되는가 ────────────────────────────────────────────
+    prepare 는 "이미 있으면 그대로 돌려준다"가 계약이다. 인쇄가 시작된 뒤 입력이
+    조용히 바뀌면 안 되기 때문이고, 그 계약은 옳다. 그런데 자동 완결이 사진을
+    찾지 못한 채 패키지를 만들면, 운영이 뒤늦게 prepare 에 photo_image_url 을
+    넘겨도 **아무 일도 일어나지 않는다** — 기존 패키지가 그대로 돌아온다.
+    사진을 붙일 방법이 세상에 없는 상태였다.
+    그래서 좁은 문을 따로 낸다: 바꾸는 것은 사진 한 칸뿐이다.
+
+    편지·QR·공유·수령인은 건드리지 않는다. 그것들은 인쇄물의 정체성이고, 여기서
+    바뀌면 이미 나간 인쇄물과 어긋난다.
+
+    ── 언제까지 붙일 수 있는가 ─────────────────────────────────────────────
+    **생산이 시작되기 전까지만.** IN_PRODUCTION 이후에 사진이 바뀌면 인쇄소가
+    받은 파일과 서버가 말하는 파일이 달라진다.
+    """
+    oid = (order_id or "").strip()
+    url = (photo_image_url or "").strip()
+    if not oid:
+        raise ProductionError("ORDER_REQUIRED", "order_id 가 필요합니다.")
+    if not url:
+        raise ProductionError("PHOTO_REQUIRED", "photo_image_url 이 필요합니다.")
+
+    pkg = await get_package(oid)
+    if not pkg:
+        raise ProductionError(
+            "PACKAGE_NOT_READY", "생산 준비가 필요합니다.", status=409
+        )
+
+    product = physical_product.get_product(pkg.product_type)
+    if not product.needs_photo_card:
+        raise ProductionError(
+            "FILE_NOT_IN_PRODUCT", "이 제품에는 사진 카드가 없습니다.", status=404
+        )
+
+    order = await physical_order.get(oid)
+    if order and order.production_status not in (
+        physical_order.PRODUCTION_PENDING,
+        physical_order.PRODUCTION_READY,
+    ):
+        raise ProductionError(
+            "PRODUCTION_ALREADY_STARTED",
+            "이미 생산에 들어간 주문의 사진은 바꿀 수 없습니다.",
+            status=409,
+        )
+
+    if _use_db() and _supabase():
+        try:
+            _supabase().table(_table()).update({"photo_image_url": url}).eq(
+                "order_id", oid
+            ).execute()
+        except Exception as e:
+            logger.exception("사진 첨부 실패 (order=%s)", oid)
+            raise ProductionError(
+                "PACKAGE_STORE_UNAVAILABLE", "사진을 저장하지 못했습니다.", status=503
+            ) from e
+    else:
+        row = _MOCK_PACKAGES.get(oid)
+        if row is not None:
+            row["photo_image_url"] = url
+
+    logger.warning("생산 패키지 사진 첨부 — order=%s", oid)
+    from dataclasses import replace as _replace
+
+    return _replace(pkg, photo_image_url=url)
+
+
 # ── 렌더링 ────────────────────────────────────────────────────────────────────
 
 
@@ -293,10 +363,30 @@ def manifest(pkg: ProductionPackage) -> dict[str, Any]:
     """
     product = physical_product.get_product(pkg.product_type)
     files = ["letter_pdf"]
-    if "photo_card" in product.contents:
+    if product.needs_photo_card:
         files.append("photo_card")
     if "qr_memory_card" in product.contents:
         files.append("qr_card")
+
+    # ── 메시지 카드는 문구가 승인돼야 패키지에 들어간다 ──────────────────────
+    # 승인 전에는 렌더러가 "TBD" 교정지를 낸다. 그것을 files 에 넣으면 ZIP 에
+    # 실려 인쇄소로 가고, 언젠가 그대로 찍힌다. 그래서 목록에는 넣지 않고
+    # **왜 빠졌는지**를 pending 으로 남긴다 — 조용히 사라지면 아무도 모른다.
+    pending: list[dict[str, str]] = []
+    if product.needs_message_card:
+        if print_render.message_card_approved():
+            files.append("message_card")
+        else:
+            pending.append(
+                {
+                    "kind": "message_card",
+                    "status": "TBD",
+                    "reason": (
+                        "문구·디자인이 승인되지 않았습니다. "
+                        f"승인되면 {print_render.MESSAGE_CARD_ENV} 를 설정하세요."
+                    ),
+                }
+            )
 
     return {
         "order_id": pkg.order_id,
@@ -307,6 +397,8 @@ def manifest(pkg: ProductionPackage) -> dict[str, Any]:
         "qr_source": pkg.qr_source,
         "shaker_share_id": pkg.shaker_share_id,
         "files": files,
+        #: 구성품이지만 아직 패키지에 넣을 수 없는 것들. 비어 있으면 완전한 패키지다.
+        "pending_files": pending,
         "packaging": list(product.contents),
         "card_size_mm": [print_render.CARD_W_MM, print_render.CARD_H_MM],
         "card_dpi": print_render.CARD_DPI,
@@ -414,6 +506,33 @@ async def render_file(pkg: ProductionPackage, kind: str) -> print_render.Rendere
         return print_render.RenderedFile(
             kind=k, filename=f"{pkg.order_id}-photo-card-85x55.png",
             content_type="image/png", data=data,
+        )
+
+    if k == "message_card":
+        if not product.needs_message_card:
+            raise ProductionError(
+                "FILE_NOT_IN_PRODUCT", "이 제품에는 메시지 카드가 없습니다.", status=404
+            )
+        # 승인 전에도 **개별 조회는 허용한다** — 운영이 규격과 자리를 확인할 수
+        # 있어야 한다. 다만 manifest 가 이것을 files 에 넣지 않으므로 ZIP 에는
+        # 실리지 않는다. 보는 것과 인쇄소로 넘기는 것은 다른 일이다.
+        letter = await soul_trace_letter.get_letter(pkg.soul_trace_letter_id)
+        try:
+            data = print_render.render_message_card_png(
+                pet_name=(letter.child_name if letter else None)
+            )
+        except print_render.PrintRenderError as e:
+            raise ProductionError(e.code, e.message, status=e.status) from e
+        approved = print_render.message_card_approved()
+        return print_render.RenderedFile(
+            kind=k,
+            filename=(
+                f"{pkg.order_id}-message-card-85x55.png"
+                if approved
+                else f"{pkg.order_id}-message-card-TBD-proof.png"
+            ),
+            content_type="image/png",
+            data=data,
         )
 
     raise ProductionError("FILE_UNKNOWN", f"{kind} 는 알 수 없는 구성 파일입니다.", status=404)

@@ -3,6 +3,7 @@
 
     GET  /{order_id}                 주문 + 패키지 상태 (Ops 화면 한 장)
     POST /{order_id}/prepare         생산 준비 (입력 스냅샷) → production READY
+    POST /{order_id}/photo           사진 카드 원본 지정/교체 (메모리 박스)
     GET  /{order_id}/package         구성표(manifest)
     GET  /{order_id}/file/{kind}     구성 파일 미리보기/내려받기
     GET  /{order_id}/download        전체 패키지 ZIP
@@ -77,6 +78,15 @@ class OrderStateOut(BaseModel):
     #: 재인쇄 가능 여부 — 보관된 QR 산출물이 있으면 같은 바이트로 다시 뽑는다.
     qr_artifact_stored: bool = False
 
+    # ── MEMORY BOX 구성품 (Phase 17) ──────────────────────────────────────────
+    #: 사진 카드 원본이 확정됐는가. False 면 사진 카드도 패키지 ZIP 도 만들 수 없다.
+    photo_ready: bool = False
+    #: 확정된 원본 주소(운영이 눈으로 확인하고 필요하면 교체한다).
+    photo_image_url: str | None = None
+    #: 구성품이지만 아직 패키지에 넣을 수 없는 것 — 예: 문구 미승인 메시지 카드.
+    #: 비어 있으면 완전한 패키지다.
+    pending_files: list[dict[str, str]] = []
+
     # ── 파트너 귀속 (Phase 15) ────────────────────────────────────────────────
     # 주문 시점 스냅샷이다. 전부 None 이면 **직접 유입**이며 그것도 정상이다.
     partner_id: str | None = None
@@ -132,7 +142,9 @@ async def _letter_preview(letter_id: str | None) -> tuple[str | None, str | None
 
 async def _state(order: physical_order.PhysicalOrder) -> OrderStateOut:
     pkg = await production_package.get_package(order.order_id)
-    files = production_package.manifest(pkg)["files"] if pkg else []
+    m = production_package.manifest(pkg) if pkg else {}
+    files = m.get("files") or []
+    pending = m.get("pending_files") or []
     share_id = order.shaker_share_id or (pkg.shaker_share_id if pkg else None)
     child_name, excerpt = await _letter_preview(order.soul_trace_letter_id)
     return OrderStateOut(
@@ -150,6 +162,9 @@ async def _state(order: physical_order.PhysicalOrder) -> OrderStateOut:
         breathing_ready=await _breathing_ready(order.pet_id),
         qr_share_url=(pkg.qr_share_url if pkg else None),
         qr_artifact_stored=await _qr_artifact_stored(share_id),
+        photo_ready=bool(pkg and pkg.photo_image_url),
+        photo_image_url=(pkg.photo_image_url if pkg else None),
+        pending_files=pending,
         partner_id=order.partner_id,
         partner_type=order.partner_type,
         partner_name=order.partner_name,
@@ -186,6 +201,41 @@ class PrepareRequest(BaseModel):
     qr_share_url: str | None = None
     #: 사진 카드 원본(메모리 박스). 보통 Shaker 공유의 포스터를 쓴다.
     photo_image_url: str | None = None
+
+
+class AttachPhotoRequest(BaseModel):
+    """사진 카드에 쓸 원본 이미지 주소."""
+
+    photo_image_url: str
+
+
+@router.post("/{order_id}/photo", response_model=OrderStateOut)
+async def attach_photo(
+    order_id: str,
+    body: AttachPhotoRequest,
+    ops: AuthedUser = Depends(shaker_ops.require_ops),
+):
+    """
+    사진 카드 원본을 지정하거나 교체한다 (메모리 박스 전용).
+
+    ── 왜 prepare 로는 안 되는가 ────────────────────────────────────────────
+    prepare 는 "이미 있으면 그대로 돌려준다"가 계약이다(인쇄가 시작된 뒤 입력이
+    조용히 바뀌면 안 된다). 그래서 자동 완결이 사진을 찾지 못한 채 패키지를
+    만들면, 운영이 나중에 prepare 로 사진을 넘겨도 **아무 일도 일어나지 않았다.**
+    사진을 붙일 방법이 없어 메모리 박스 패키지 ZIP 이 영영 만들어지지 않는다.
+
+    여기서 바꾸는 것은 **사진 한 칸뿐**이다. 편지·QR·공유·수령인은 인쇄물의
+    정체성이므로 건드리지 않는다. 생산이 시작된 뒤에는 거절한다.
+    """
+    try:
+        await production_package.attach_photo(
+            order_id=order_id, photo_image_url=body.photo_image_url
+        )
+    except production_package.ProductionError as e:
+        raise _http(e) from e
+
+    logger.warning("[ops] 사진 카드 원본 지정 — order=%s by=%s", order_id, ops.user_id)
+    return await _state(await _load(order_id))
 
 
 @router.post("/{order_id}/prepare", response_model=OrderStateOut)

@@ -29,6 +29,7 @@ import {
 import {
   OpsError,
   addTracking,
+  attachPhoto,
   fetchProductionFile,
   fetchProductionState,
   fetchProductionZip,
@@ -214,6 +215,14 @@ export function OpsProductionScreen() {
     : { canPrepare: false, canPreview: false, canDownload: false, canStart: false,
         canMarkProduced: false, canAddTracking: false, canShip: false,
         canMarkDelivered: false, blockedReason: null };
+
+  // 사진 카드가 들어가는 제품인가. 제품 이름으로 분기하지 않는 이유는 서버와
+  // 같다 — 구성이 늘 때마다 화면 곳곳에 새 if 가 생기면 그중 하나는 반드시 빠진다.
+  // 서버가 보낸 구성 목록(files + pendingFiles)이 정본이다.
+  const needsPhoto =
+    state != null &&
+    (state.files.includes("photo_card") ||
+      state.pendingFiles.some((f) => f.kind === "photo_card"));
 
   const shell = "min-h-screen bg-[#0b0b0d] px-5 py-8 text-[#E6E6E6]";
 
@@ -430,6 +439,50 @@ export function OpsProductionScreen() {
             <p className="mt-1.5 text-[11px] text-white/35">
               멱등입니다 — 다시 눌러도 같은 패키지가 나오고 QR·편지는 다시 만들어지지 않습니다.
             </p>
+
+            {/*
+              사진 카드는 **준비된 뒤에도** 고쳐야 할 때가 있다. 자동 완결이 규약
+              경로에서 원본을 찾지 못하면 photoReady=false 로 준비가 끝나고, 그
+              상태에서는 사진 카드도 패키지 ZIP 도 만들어지지 않는다.
+              Prepare 는 멱등이라 여기서는 쓸 수 없다 — 전용 경로를 쓴다.
+            */}
+            {state.packageReady && needsPhoto && (
+              <div className="mt-3 rounded-lg border border-white/10 bg-black/30 p-3">
+                <p className="text-[11px] text-white/60">
+                  사진 카드 원본{" "}
+                  {state.photoReady ? (
+                    <span className="text-emerald-300/80">확정됨</span>
+                  ) : (
+                    <span className="text-[#e0b060]">없음 — 사진 카드와 ZIP 을 만들 수 없습니다</span>
+                  )}
+                </p>
+                {state.photoImageUrl && (
+                  <p className="mt-1 break-all font-mono text-[10px] text-white/30">
+                    {state.photoImageUrl}
+                  </p>
+                )}
+                <div className="mt-2 flex gap-2">
+                  <input
+                    value={photoInput}
+                    onChange={(e) => setPhotoInput(e.target.value)}
+                    placeholder="사진 카드 이미지 URL"
+                    className="flex-1 rounded-lg bg-white/5 px-3 py-2 text-xs outline-none placeholder:text-white/25"
+                  />
+                  <button
+                    type="button"
+                    disabled={!photoInput.trim() || busy !== null}
+                    onClick={() =>
+                      void run("photo", () =>
+                        attachPhoto(state.orderId, token as string, photoInput.trim())
+                      )
+                    }
+                    className="rounded-full border border-white/20 px-3 py-1.5 text-[11px] disabled:opacity-40"
+                  >
+                    {busy === "photo" ? "저장 중…" : state.photoReady ? "교체" : "지정"}
+                  </button>
+                </div>
+              </div>
+            )}
           </section>
 
           {/* 4. 파일 */}
@@ -460,6 +513,35 @@ export function OpsProductionScreen() {
                   </li>
                 ))}
               </ul>
+
+              {/*
+                패키지에 **들어가지 못한** 구성품. 조용히 빠지면 아무도 모른 채
+                반쪽 상자가 배송된다 — 왜 빠졌는지까지 적어 둔다.
+              */}
+              {state.pendingFiles.length > 0 && (
+                <ul className="mt-2 space-y-1.5">
+                  {state.pendingFiles.map((f) => (
+                    <li
+                      key={f.kind}
+                      className="rounded-lg border border-[#e0b060]/25 bg-[#e0b060]/5 px-3 py-2 text-xs"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-white/70">{FILE_LABEL[f.kind] ?? f.kind}</span>
+                        <span className="text-[#e0b060]">{f.status}</span>
+                        <button
+                          type="button"
+                          onClick={() => void doPreview(f.kind)}
+                          disabled={busy !== null}
+                          className="ml-auto rounded-full border border-white/20 px-2.5 py-1 text-[11px] disabled:opacity-40"
+                        >
+                          교정지 보기
+                        </button>
+                      </div>
+                      <p className="mt-1 text-[11px] text-white/40">{f.reason}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
 
               <div className="mt-2 flex flex-wrap gap-2">
                 <button

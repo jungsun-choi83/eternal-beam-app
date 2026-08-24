@@ -36,6 +36,7 @@ from typing import Optional
 
 from . import (
     physical_order,
+    physical_product,
     production_package,
     qr_service,
     shaker_qr_artifact,
@@ -211,11 +212,28 @@ async def finalize(*, order_id: str) -> FinalizationOutcome:
     except qr_service.QrError as e:
         raise FinalizationError(e.code, e.message, status=e.status) from e
 
+    # ── 사진 카드 원본 (Phase 17) ────────────────────────────────────────────
+    # MEMORY BOX 는 85×55mm 사진 카드를 포함한다. 예전에는 여기서 사진을 전혀
+    # 찾지 않아 photo_image_url 이 None 으로 굳었고, 그러면 사진 카드도 패키지
+    # ZIP 도 만들어지지 않았다 — 결제는 끝났는데 인쇄소에 넘길 것이 없는 상태였다.
+    #
+    # 찾지 못해도 **완결을 막지 않는다.** 편지와 QR 은 이미 준비돼 있고, 사진은
+    # 운영이 나중에 붙일 수 있다(attach_photo). 사진 하나 때문에 결제된 주문을
+    # pending 에 묶어 두면 그 주문은 아무도 손대지 않는 한 영영 멈춘다.
+    photo_url: Optional[str] = None
+    if physical_product.get_product(order.product_type).needs_photo_card:
+        from . import shaker_ops
+
+        try:
+            photo_url = await shaker_ops.locate_pet_photo(order.user_id, order.pet_id)
+        except Exception:  # noqa: BLE001 — 조회 실패가 완결을 막지 않는다
+            logger.warning("사진 카드 원본 조회 실패 — pet=%s (운영이 나중에 붙인다)", order.pet_id)
+
     # 패키지 준비. prepare 는 order_id 기본키로 upsert 하므로 재실행이 안전하고,
     # QR 은 이미 보관된 산출물이 있으면 **같은 바이트**를 다시 쓴다.
     try:
         pkg = await production_package.prepare(
-            order_id=order_id, qr_share_url=minted_url
+            order_id=order_id, qr_share_url=minted_url, photo_image_url=photo_url
         )
     except production_package.ProductionError as e:
         raise FinalizationError(e.code, e.message, status=e.status) from e

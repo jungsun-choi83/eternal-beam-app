@@ -211,3 +211,49 @@ export function describeOrderStatus(o: {
   if (o.productionStatus !== "pending") return "제작 중";
   return "결제 완료 · 제작 대기";
 }
+
+/**
+ * 결제 직후 화면이 보여 줄 이행 단계 — **Paid / Preparing / Ready.**
+ *
+ * describeOrderStatus 와 나눈 이유: 저쪽은 목록에서 쓰는 **한 줄 요약**이고,
+ * 여기는 결제 직후에 보여 주는 **단계 배지**다. 한 함수가 두 자리를 겸하면
+ * 한쪽 문구를 고칠 때 다른 쪽이 조용히 바뀐다.
+ *
+ * ── 왜 결제 성공에서 절대 실패로 내려가지 않는가 ─────────────────────────
+ * 생산 완결(order_finalization)은 결제 확인 뒤에 **비동기로** 돈다. 그것이 아직
+ * 안 끝났거나 실패했어도 **돈은 이미 받았다.** 그때 "결제 실패"를 보여 주면
+ * 고객은 다시 결제하려 하고, 우리는 이중 청구를 만든다.
+ *
+ * 그래서 paymentStatus 가 paid 이면 이 함수는 **어떤 경우에도** paid 계열
+ * 단계만 돌려준다. 생산이 늦는 것은 "준비 중"이지 실패가 아니다.
+ */
+export type FulfillmentStage = "paid" | "preparing" | "ready" | "shipped" | "pending";
+
+export function fulfillmentStage(o: {
+  paymentStatus: string;
+  productionStatus: string;
+  shippingStatus: string;
+}): FulfillmentStage {
+  if (o.paymentStatus !== "paid") return "pending";
+  if (o.shippingStatus === "shipped" || o.shippingStatus === "delivered") return "shipped";
+  // production 이 pending = 완결이 아직 돌고 있다(또는 재시도를 기다린다).
+  // 결제는 끝났으므로 고객에게는 "준비 중"이다.
+  if (o.productionStatus === "pending") return "preparing";
+  return "ready";
+}
+
+/** 단계 → 화면 문구. paid 계열은 언제나 "결제 완료"를 함께 말한다. */
+export function fulfillmentLabel(stage: FulfillmentStage): string {
+  switch (stage) {
+    case "shipped":
+      return "결제 완료 · 배송 중";
+    case "ready":
+      return "결제 완료 · 제작 준비됨";
+    case "preparing":
+      return "결제 완료 · 제작 준비 중";
+    case "paid":
+      return "결제 완료";
+    default:
+      return "결제 대기";
+  }
+}

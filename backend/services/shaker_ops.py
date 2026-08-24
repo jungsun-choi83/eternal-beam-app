@@ -372,3 +372,67 @@ async def locate_breathing(user_id: str, pet_id: str) -> Optional[tuple[Breathin
         if signed:
             return (loc, signed)
     return None
+
+
+# ── 사진 카드용 원본 (Phase 17) ───────────────────────────────────────────────
+#
+# MEMORY BOX 의 사진 카드(85×55mm)가 쓸 **정본 펫 이미지**를 찾는다.
+#
+# 왜 필요한가: 자동 완결(order_finalization)은 사람의 개입 없이 생산 준비까지
+# 간다. 그런데 사진만은 어디서 오는지 아무도 정하지 않아 photo_image_url 이
+# None 으로 남았고, MEMORY BOX 는 **패키지 ZIP 자체가 만들어지지 않았다**
+# (구성 파일 하나가 실패하면 ZIP 을 만들지 않는 것이 의도된 규칙이다).
+#
+# BREATHING 과 **같은 방식**으로 찾는다 — 규약 경로에 서명을 시도하고, 성공하면
+# 그것이 존재 증명이다. 새 목록 API 를 두지 않는 이유도 같다.
+
+#: 우선순위. 앞의 것이 먼저 시도된다.
+#:
+#: 원본 사진을 먼저 보는 이유: 고객이 **실제로 찍은 그 사진**이고, 카드는
+#: 액자가 아니라 사진 그 자체여야 한다. 누끼(cutout)는 배경이 없어 흰 카드 위에서
+#: 떠 보이므로 차선이다 — 다만 원본이 없는 예전 펫도 있으므로 폴백으로 남긴다.
+#:
+#: ⚠️ 순서를 바꾸면 **인쇄되어 배송되는 그림이 바뀐다.** 제품 결정이지 구현
+#:    세부가 아니다. 운영이 개별 주문을 덮어쓸 수 있는 경로는 따로 있다
+#:    (production_package.attach_photo).
+PHOTO_CANDIDATE_PATHS = (
+    "{uid}/{cid}/background_source/original.jpg",
+    "{uid}/{cid}/cutout.png",
+    "{uid}/{cid}/cutout_vitmatte.png",
+    "{uid}/{cid}/dog_only_nobg.png",
+    "{uid}/{cid}/luma_keyframe.jpg",
+)
+
+
+async def locate_pet_photo(user_id: str, pet_id: str) -> Optional[str]:
+    """
+    사진 카드에 쓸 정본 이미지의 **지금 유효한 URL** — 찾지 못하면 None.
+
+    **조회만 한다.** 이미지를 만들지 않고, 생성 파이프라인을 부르지 않으며,
+    없는 자산을 만들어 내지 않는다.
+
+    None 을 돌려주는 것은 실패가 아니라 사실이다. 규약 밖에 저장된 펫이면
+    운영자가 URL 을 직접 넣는다(attach_photo). 여기서 예외를 던지면 사진 하나
+    때문에 결제된 주문의 생산 준비 전체가 멈춘다.
+    """
+    from .asset_url_refresh import StorageObject, default_bucket, sign_object
+
+    uid = (user_id or "").strip()
+    cid = content_id_from_pet_id(pet_id)
+    if not uid or not cid:
+        return None
+
+    bucket = default_bucket()
+    for template in PHOTO_CANDIDATE_PATHS:
+        path = template.format(uid=uid, cid=cid)
+        signed = sign_object(StorageObject(bucket=bucket, path=path))
+        if signed:
+            logger.info("사진 카드 원본 확정 — pet=%s path=%s", pet_id, path)
+            return signed
+
+    logger.warning(
+        "사진 카드 원본을 규약 경로에서 찾지 못했다 — pet=%s. "
+        "운영 콘솔에서 이미지를 직접 지정해야 한다.",
+        pet_id,
+    )
+    return None
