@@ -25,7 +25,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -81,11 +81,14 @@ class SoulTraceLetter:
     partner_id: Optional[str] = None
     partner_type: Optional[str] = None
     partner_name: Optional[str] = None
+    #: 가져온 시각. 목록 정렬(최신 우선)의 근거이므로 select 에 반드시 포함한다.
+    imported_at: Optional[str] = None
 
 
 _SELECT = (
     "letter_id, user_id, pet_id, source_letter_id, source, child_name, "
-    "letter_kicker, letter_body, letter_excerpt, partner_id, partner_type, partner_name"
+    "letter_kicker, letter_body, letter_excerpt, partner_id, partner_type, partner_name, "
+    "imported_at"
 )
 
 
@@ -103,6 +106,7 @@ def _to_letter(row: dict[str, Any]) -> SoulTraceLetter:
         partner_id=(row.get("partner_id") or None),
         partner_type=(row.get("partner_type") or None),
         partner_name=(row.get("partner_name") or None),
+        imported_at=(row.get("imported_at") or None),
     )
 
 
@@ -236,17 +240,11 @@ async def link_pet(
         if row is not None:
             row["pet_id"] = pid
 
-    return SoulTraceLetter(
-        letter_id=letter.letter_id,
-        user_id=letter.user_id,
-        pet_id=pid,
-        source_letter_id=letter.source_letter_id,
-        source=letter.source,
-        child_name=letter.child_name,
-        letter_kicker=letter.letter_kicker,
-        letter_body=letter.letter_body,
-        letter_excerpt=letter.letter_excerpt,
-    )
+    # ⚠️ 필드를 하나씩 옮겨 적으면 **새로 생긴 컬럼이 조용히 사라진다.** 실제로
+    # partner_id/type/name 이 여기서 빠져 있었고, 그래서 /letter/link-pet 응답만
+    # 귀속이 없는 편지를 돌려주고 있었다(DB 행은 멀쩡했다). replace 로 바꾼 값만
+    # 갈아 끼운다 — 앞으로 컬럼이 늘어도 여기서 다시 빠지지 않는다.
+    return replace(letter, pet_id=pid)
 
 
 async def get_letter(letter_id: str) -> Optional[SoulTraceLetter]:
@@ -270,13 +268,32 @@ async def get_letter(letter_id: str) -> Optional[SoulTraceLetter]:
 
 
 async def list_letters(user_id: str) -> list[SoulTraceLetter]:
+    """
+    내 편지들 — **최신 가져오기 순.**
+
+    ⚠️ 정렬은 방어선이지 선택 근거가 아니다. 올바른 선택 근거는 pet_id 다
+    (편지 ↔ 펫이 1:1 로 묶여 있어야 한다). 예전에는 여기에 order 절이 아예 없었고,
+    호출부가 그 순서 없는 목록의 `rows[0]` 을 집었다. Postgres 는 ORDER BY 가
+    없으면 힙 순서를 돌려주므로 실제로는 **가장 오래된 편지**가 먼저 나왔고,
+    새 편지를 몇 번을 가져오든 결제에는 늘 옛날 편지가 실렸다.
+
+    이제 최신이 먼저 온다. 그래도 호출부는 pet_id 로 고른다 — 정렬에만 기대면
+    "펫 A 를 주문하는데 방금 가져온 편지 B 가 붙는" 반대 방향 사고가 난다.
+    """
     uid = (user_id or "").strip()
     if not uid:
         return []
 
     if _use_db() and _supabase():
         try:
-            r = _supabase().table(_table()).select(_SELECT).eq("user_id", uid).execute()
+            r = (
+                _supabase()
+                .table(_table())
+                .select(_SELECT)
+                .eq("user_id", uid)
+                .order("imported_at", desc=True)
+                .execute()
+            )
             return [_to_letter(row) for row in (getattr(r, "data", None) or [])]
         except Exception as e:
             logger.exception("Soul Trace 편지 목록 조회 실패 (user=%s)", uid)
@@ -284,7 +301,9 @@ async def list_letters(user_id: str) -> list[SoulTraceLetter]:
                 "LETTER_STORE_UNAVAILABLE", "편지 목록을 불러오지 못했습니다.", status=503
             ) from e
 
-    return [_to_letter(r) for r in _MOCK_LETTERS.values() if r.get("user_id") == uid]
+    rows = [r for r in _MOCK_LETTERS.values() if r.get("user_id") == uid]
+    rows.sort(key=lambda r: str(r.get("imported_at") or ""), reverse=True)
+    return [_to_letter(r) for r in rows]
 
 
 async def assert_owned(user_id: str, letter_id: str) -> SoulTraceLetter:

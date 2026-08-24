@@ -14,6 +14,10 @@ import {
   readSoulTraceHandoff,
   readSoulTraceHandoffParams,
   saveSoulTraceHandoff,
+  clearActiveSoulTraceLetter,
+  peekSoulTraceHandoffState,
+  readActiveSoulTraceLetter,
+  saveActiveSoulTraceLetter,
 } from "./soul-trace-handoff.ts";
 
 const TRACE = "3f2504e0-4f89-41d3-9a0c-0305e82c3301";
@@ -210,15 +214,24 @@ describe("구조 고정 — 기존 진입 흐름 보존", () => {
   const app = readFileSync("src/app/App.tsx", "utf8");
   const eb = readFileSync("src/app/EternalBeamApp.tsx", "utf8");
 
-  it("재개 분기는 대기 중인 핸드오프가 있을 때만 걸린다", () => {
+  it("재개 분기는 핸드오프의 흔적이 있을 때만 걸린다", () => {
     assert.ok(
-      /if \(hasPendingSoulTraceHandoff\(\)\) return <SoulTraceImportScreen \/>/.test(app),
+      /if \(peekSoulTraceHandoffState\(\) !== 'none'\) return <SoulTraceImportScreen \/>/.test(app),
       "무조건 import 화면으로 보내고 있다",
     );
   });
 
+  it("재개 분기가 만료를 삼키지 않는다 — 조용한 qrConnection 낙하 금지", () => {
+    // hasPendingSoulTraceHandoff() 는 만료를 false 로 뭉갠다. 그것으로 분기하면
+    // 편지를 기다리던 사용자가 설명 없이 평소 온보딩으로 떨어진다.
+    assert.ok(
+      !app.includes("hasPendingSoulTraceHandoff()"),
+      "만료를 '없음'으로 뭉개는 판정으로 되돌아갔다",
+    );
+  });
+
   it("재개 분기는 Shaker·운영·결제 복귀 **뒤**에 온다", () => {
-    const resume = app.indexOf("hasPendingSoulTraceHandoff()");
+    const resume = app.indexOf("peekSoulTraceHandoffState()");
     for (const earlier of [
       "orderReturnEntry()",
       "themeReturnEntry()",
@@ -235,7 +248,7 @@ describe("구조 고정 — 기존 진입 흐름 보존", () => {
 
   it("재개 분기는 EternalBeamApp 폴백 **앞**에 온다", () => {
     assert.ok(
-      app.indexOf("hasPendingSoulTraceHandoff()") < app.indexOf("return <EternalBeamApp />"),
+      app.indexOf("peekSoulTraceHandoffState()") < app.indexOf("return <EternalBeamApp />"),
       "폴백 뒤에 있어 절대 실행되지 않는다",
     );
   });
@@ -254,5 +267,149 @@ describe("구조 고정 — 기존 진입 흐름 보존", () => {
 
   it("Upload Pet 흐름을 새로 만들지 않는다 — 기존 화면 이름을 그대로 쓴다", () => {
     assert.ok(eb.includes("screen === 'photoUpload'"), "기존 photoUpload 화면이 없다");
+  });
+});
+
+// ── 만료를 "없음"과 구별한다 ────────────────────────────────────────────────
+//
+// 회귀 배경: 진입 분기는 hasPendingSoulTraceHandoff() 만 봤다. 그 함수는 만료된
+// 값을 읽으면서 지우고 false 를 돌려주므로, 만료와 "처음부터 없음"이 같은 답이
+// 됐다. 그래서 편지를 기다리던 신규 사용자가 아무 설명 없이 평소 온보딩
+// (qrConnection)으로 떨어졌고, 편지가 어디로 갔는지 화면 어디에도 없었다.
+describe("핸드오프 상태 peek — 만료를 삼키지 않는다", () => {
+  beforeEach(() => installDom());
+
+  it("없으면 none", () => {
+    assert.equal(peekSoulTraceHandoffState(T0), "none");
+  });
+
+  it("유효하면 valid", () => {
+    saveSoulTraceHandoff({ traceId: TRACE, handoff: TOKEN }, T0);
+    assert.equal(peekSoulTraceHandoffState(T0 + 1000), "valid");
+  });
+
+  it("만료되면 expired — none 이 아니다", () => {
+    saveSoulTraceHandoff({ traceId: TRACE, handoff: TOKEN }, T0);
+    assert.equal(peekSoulTraceHandoffState(T0 + HANDOFF_MAX_AGE_MS), "expired");
+  });
+
+  it("peek 은 **지우지 않는다** — 복구 화면이 이유를 말할 수 있어야 한다", () => {
+    const { local } = installDom();
+    saveSoulTraceHandoff({ traceId: TRACE, handoff: TOKEN }, T0);
+    peekSoulTraceHandoffState(T0 + HANDOFF_MAX_AGE_MS);
+    assert.ok(local.has(SOUL_TRACE_HANDOFF_KEY), "peek 이 값을 지웠다");
+    // 청소는 import 화면이 capture 로 진입하면서 한다.
+    assert.equal(captureSoulTraceHandoff("", T0 + HANDOFF_MAX_AGE_MS), null);
+    assert.ok(!local.has(SOUL_TRACE_HANDOFF_KEY), "capture 가 만료값을 남겼다");
+  });
+
+  it("쓰레기 값은 none — 복구 화면을 띄울 근거가 못 된다", () => {
+    const { local } = installDom();
+    local.set(SOUL_TRACE_HANDOFF_KEY, "{ not json");
+    assert.equal(peekSoulTraceHandoffState(T0), "none");
+    local.set(SOUL_TRACE_HANDOFF_KEY, JSON.stringify({ traceId: "nope", handoff: TOKEN }));
+    assert.equal(peekSoulTraceHandoffState(T0), "none");
+  });
+});
+
+// ── 클레임 → 펫 생성을 잇는 실 ──────────────────────────────────────────────
+//
+// 회귀 배경: 클레임이 돌려준 letter_id 는 화면 state 에만 들어갔다가
+// location.assign("/") 과 함께 사라졌다. 그래서 펫이 만들어진 뒤 "이 펫에 붙일
+// 편지"를 아무도 알지 못했다.
+describe("활성 편지 — 클레임과 펫 생성 사이", () => {
+  beforeEach(() => installDom());
+
+  it("없으면 null", () => {
+    assert.equal(readActiveSoulTraceLetter(), null);
+  });
+
+  it("letter_id 와 클레임 시점 content_id 를 함께 남긴다", () => {
+    saveActiveSoulTraceLetter("stl_4784", "content_old");
+    assert.deepEqual(readActiveSoulTraceLetter(), {
+      letterId: "stl_4784",
+      contentIdAtClaim: "content_old",
+    });
+  });
+
+  it("**localStorage** 에 남는다 — 사진 업로드는 다음 날일 수도 있다", () => {
+    const { local, session } = installDom();
+    saveActiveSoulTraceLetter("stl_4784", "");
+    assert.equal(session.size, 0, "탭 수명 저장소로는 부족하다");
+    assert.ok([...local.keys()].some((k) => k.includes("active_letter")));
+  });
+
+  it("자격 증명을 담지 않는다 — 식별자뿐이다", () => {
+    const { local } = installDom();
+    saveSoulTraceHandoff({ traceId: TRACE, handoff: TOKEN }, T0);
+    saveActiveSoulTraceLetter("stl_4784", "content_old");
+    const activeKey = [...local.keys()].find((k) => k.includes("active_letter"))!;
+    const dumped = local.get(activeKey)!;
+    assert.ok(!dumped.includes(TOKEN), "활성 편지 표식에 토큰이 들어 있다");
+    assert.ok(!dumped.includes(TRACE), "활성 편지 표식에 traceId 가 들어 있다");
+  });
+
+  it("링크 성공 후 지워진다 — 1회용이다", () => {
+    saveActiveSoulTraceLetter("stl_4784", "");
+    clearActiveSoulTraceLetter();
+    assert.equal(readActiveSoulTraceLetter(), null);
+  });
+
+  it("빈 letter_id 는 저장하지 않는다", () => {
+    saveActiveSoulTraceLetter("   ", "content_old");
+    assert.equal(readActiveSoulTraceLetter(), null);
+  });
+});
+
+/**
+ * 구조 고정 — **로그인/가입 후 이어가기가 다시 끊기지 않게 한다.**
+ *
+ * 회귀 배경: 재개는 AuthScreen 의 onAuthComplete 콜백 **하나에만** 기대고 있었다.
+ * 그 콜백은 이메일 확인이 필요한 가입에서는 아예 호출되지 않고(auth-screen 이
+ * 안내 문구를 띄우고 return 한다), 확인이 새 탭에서 끝나면 원래 탭은 영영
+ * needsAuth 에 멈춘다.
+ */
+describe("구조 고정 — 인증 후 재개", () => {
+  const screen = readFileSync("src/components/memorial/soul-trace-import-screen.tsx", "utf8");
+  const auth = readFileSync("src/lib/supabase-auth.ts", "utf8");
+
+  it("세션 변화를 구독해 재개한다 — 콜백 하나에만 기대지 않는다", () => {
+    assert.ok(screen.includes("onAuthStateChange"), "재개 경로가 콜백 하나로 되돌아갔다");
+  });
+
+  it("교환은 정확히 한 번만 나간다 — 토큰은 1회용이다", () => {
+    // 재개 경로가 둘이므로 동시 호출 가드가 없으면 두 번째 교환이 반드시 실패하고
+    // 성공한 사용자에게 "이미 사용됨"을 보여 준다.
+    assert.ok(screen.includes("inFlightRef"), "동시 호출 가드가 없다");
+    assert.ok(screen.includes("claimedRef"), "1회용 가드가 없다");
+  });
+
+  it("확인 메일이 **이 origin 의 import 경로**로 돌아온다", () => {
+    // 프로젝트 Site URL 로 떨어지면 세션과 핸드오프가 다른 origin 에 갇힌다.
+    assert.ok(
+      screen.includes("emailRedirectTo"),
+      "확인 메일 착지점을 앱이 정하지 않는다",
+    );
+    assert.ok(
+      /emailRedirectTo=\{`\$\{window\.location\.origin\}\/soul-trace\/import`\}/.test(screen),
+      "import 화면이 자기 경로를 착지점으로 지정하지 않는다",
+    );
+    assert.ok(auth.includes("emailRedirectTo"), "signUp 이 착지점을 넘기지 않는다");
+  });
+
+  it("이미 로그인한 사용자는 AuthScreen 을 보지 않는다", () => {
+    // needsAuth 는 토큰이 **없을 때만** 세워진다.
+    assert.ok(
+      /if \(!auth\.token\) \{\s*setPhase\(\{ kind: "needsAuth" \}\);/.test(screen),
+      "세션이 있어도 로그인 화면을 띄울 수 있는 모양이다",
+    );
+  });
+
+  it("만료된 핸드오프는 전용 복구 상태를 갖는다", () => {
+    assert.ok(screen.includes('kind: "expired"'), "만료 복구 상태가 없다");
+    assert.ok(
+      screen.includes("peekSoulTraceHandoffState"),
+      "만료와 '없음'을 구별하지 않는다",
+    );
   });
 });

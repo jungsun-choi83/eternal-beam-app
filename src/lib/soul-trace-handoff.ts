@@ -45,6 +45,20 @@ const LEGACY_KEY = "eternal_beam_soul_trace_handoff_v1";
  */
 const PENDING_UPLOAD_KEY = "eternal_beam_soul_trace_pending_upload";
 
+/**
+ * **방금 가져온 편지의 letter_id.** 클레임과 펫 생성 사이를 잇는 유일한 실.
+ *
+ * 왜 필요한가: 클레임이 돌려준 letter_id 는 지금까지 화면 state 에만 들어갔다가
+ * `location.assign("/")` 과 함께 통째로 사라졌다. 그래서 펫이 만들어진 뒤
+ * "어느 편지를 이 펫에 붙여야 하는가"를 아무도 몰랐고, 결제 화면은 목록의
+ * 아무 편지나(실제로는 가장 오래된 것) 집었다.
+ *
+ * 자격 증명이 아니라 **식별자**다(그 자체로는 아무 권한도 없다). 그래서 핸드오프
+ * 토큰과 달리 만료를 박지 않는다 — 대신 링크에 성공하면 즉시 지우는 1회용이다.
+ * 사진 업로드는 다음 날 할 수도 있으므로 탭 수명(sessionStorage)으로는 부족하다.
+ */
+const ACTIVE_LETTER_KEY = "eternal_beam_soul_trace_active_letter_v1";
+
 /** 서버 토큰과 같은 15분. 이보다 길게 잡지 않는다. */
 export const HANDOFF_MAX_AGE_MS = 15 * 60 * 1000;
 
@@ -128,6 +142,38 @@ export function hasPendingSoulTraceHandoff(now: number = Date.now()): boolean {
   return readSoulTraceHandoff(now) !== null;
 }
 
+/** 없음 / 아직 유효 / 만료됨. */
+export type SoulTraceHandoffState = "none" | "valid" | "expired";
+
+/**
+ * 핸드오프의 상태를 **지우지 않고** 본다.
+ *
+ * readSoulTraceHandoff 는 만료된 값을 읽는 순간 지운다(그게 맞다 — 죽은 자격
+ * 증명을 남길 이유가 없다). 그런데 진입 분기가 그것만 쓰면 만료를 "없음"과
+ * 구별하지 못하고, 편지를 기다리던 사용자가 **말없이 평소 온보딩(qrConnection)
+ * 으로 떨어진다.** 편지가 사라진 이유를 화면 어디에서도 알 수 없게 되는 것이다.
+ *
+ * 그래서 판정과 청소를 나눈다: 여기서는 보기만 하고, 청소는 import 화면이
+ * captureSoulTraceHandoff 로 진입하면서 한다.
+ */
+export function peekSoulTraceHandoffState(now: number = Date.now()): SoulTraceHandoffState {
+  try {
+    const raw = localStorage.getItem(SOUL_TRACE_HANDOFF_KEY);
+    if (!raw) return "none";
+    const parsed = JSON.parse(raw) as Partial<StoredHandoff>;
+    const traceId = (parsed.traceId ?? "").trim();
+    const handoff = (parsed.handoff ?? "").trim();
+    const expiresAt = Number(parsed.expiresAt ?? 0);
+    if (!UUID_RE.test(traceId) || !TOKEN_RE.test(handoff) || !Number.isFinite(expiresAt)) {
+      // 쓰레기 값은 "없음"이다 — 복구 화면을 띄울 근거가 못 된다.
+      return "none";
+    }
+    return now >= expiresAt ? "expired" : "valid";
+  } catch {
+    return "none";
+  }
+}
+
 export function clearSoulTraceHandoff(): void {
   try {
     localStorage.removeItem(SOUL_TRACE_HANDOFF_KEY);
@@ -143,6 +189,56 @@ export function markSoulTracePendingUpload(): void {
     sessionStorage.setItem(PENDING_UPLOAD_KEY, "1");
   } catch {
     /* 표식이 없으면 평소 진입 화면으로 갈 뿐, 편지는 이미 안전하다 */
+  }
+}
+
+/** 방금 가져온 편지 + 그 시점의 content_id. */
+export interface ActiveSoulTraceLetter {
+  letterId: string;
+  /**
+   * 클레임 당시의 content_id (없으면 ""). **"이 편지는 아직 어느 펫에도 속하지
+   * 않는다"의 기준선**이다.
+   *
+   * 이것이 없으면: 편지 B 를 가져온 뒤 예전 펫 A 의 미리보기를 다시 열기만 해도
+   * B 가 A 에 붙는다. 편지는 새 업로드에 붙어야 하므로, content_id 가 이 값과
+   * **달라졌을 때만** 링크한다(= 클레임 이후에 만들어진 펫이다).
+   */
+  contentIdAtClaim: string;
+}
+
+/** 클레임이 성공했다 — 다음에 만들어지는 펫에 붙일 편지를 적어 둔다. */
+export function saveActiveSoulTraceLetter(letterId: string, contentIdAtClaim: string): void {
+  const id = (letterId || "").trim();
+  if (!id) return;
+  try {
+    localStorage.setItem(
+      ACTIVE_LETTER_KEY,
+      JSON.stringify({ letterId: id, contentIdAtClaim: (contentIdAtClaim || "").trim() })
+    );
+  } catch {
+    /* 저장 실패 — 결제 화면이 pet_id 로 고르는 경로는 그대로 살아 있다 */
+  }
+}
+
+export function readActiveSoulTraceLetter(): ActiveSoulTraceLetter | null {
+  try {
+    const raw = localStorage.getItem(ACTIVE_LETTER_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<ActiveSoulTraceLetter>;
+    const letterId = (parsed.letterId ?? "").trim();
+    if (!letterId) return null;
+    return { letterId, contentIdAtClaim: (parsed.contentIdAtClaim ?? "").trim() };
+  } catch {
+    return null;
+  }
+}
+
+/** 링크에 성공했다(또는 편지가 죽었다) — 1회용이므로 즉시 버린다. */
+export function clearActiveSoulTraceLetter(): void {
+  try {
+    localStorage.removeItem(ACTIVE_LETTER_KEY);
+  } catch {
+    /* ignore */
   }
 }
 

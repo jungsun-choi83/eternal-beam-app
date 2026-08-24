@@ -18,6 +18,7 @@ import {
   describeOrderStatus,
   formatKrw,
   nextStep,
+  selectLetterForPet,
   orderBlockers,
   previousStep,
   shippingComplete,
@@ -194,5 +195,87 @@ describe("주문 상태 문구", () => {
       }),
       "결제 대기"
     );
+  });
+});
+
+// ── 어느 편지가 결제에 실리는가 ─────────────────────────────────────────────
+//
+// 회귀 배경: /letter/link-pet 을 아무도 부르지 않아 모든 편지의 pet_id 가 NULL
+// 이었고, 예전 선택 코드는 `rows.find(...) ?? rows[0]` 이었다. find 가 100%
+// 실패해 늘 rows[0] 으로 떨어졌고, 목록에 정렬도 없었으므로 그것은 **가장 오래된
+// 편지**였다. 그래서 새 편지를 몇 번 가져와도 결제에는 옛날 편지가 실렸고,
+// 그 편지에 파트너 귀속이 없어 physical_orders.partner_id 까지 NULL 로 굳었다.
+//
+// 아래 픽스처는 **의도적으로 오래된 편지를 rows[0]** 에 둔다. rows[0] 폴백이
+// 되살아나면 이 테스트가 먼저 깨진다.
+
+const LETTER_OLD = { letterId: "stl_4c8b_old", petId: null as string | null };
+
+describe("편지 선택 — 이 펫의 편지만", () => {
+  it("1) 새 편지 → 새 펫 → 결제에 그 편지가 실린다", () => {
+    // link-pet 이 실제로 붙은 뒤의 상태.
+    const letters = [
+      LETTER_OLD,
+      { letterId: "stl_4784_hospital", petId: "pet_new" },
+    ];
+    assert.equal(
+      selectLetterForPet({ letters, petId: "pet_new" }),
+      "stl_4784_hospital"
+    );
+  });
+
+  it("1b) 링크가 아직 안 붙었어도 방금 클레임한 편지를 쓴다", () => {
+    const letters = [LETTER_OLD, { letterId: "stl_4784_hospital", petId: null }];
+    assert.equal(
+      selectLetterForPet({
+        letters,
+        petId: "pet_new",
+        activeLetterId: "stl_4784_hospital",
+      }),
+      "stl_4784_hospital"
+    );
+  });
+
+  it("2) 한 계정에 여러 편지 — 펫마다 자기 편지를 받는다", () => {
+    const letters = [
+      { letterId: "stl_A", petId: "pet_A" },
+      { letterId: "stl_B", petId: "pet_B" },
+      { letterId: "stl_C_partner", petId: "pet_C" },
+    ];
+    assert.equal(selectLetterForPet({ letters, petId: "pet_A" }), "stl_A");
+    assert.equal(selectLetterForPet({ letters, petId: "pet_B" }), "stl_B");
+    assert.equal(selectLetterForPet({ letters, petId: "pet_C" }), "stl_C_partner");
+  });
+
+  it("2b) 다른 펫에 연결된 편지는 절대 고르지 않는다", () => {
+    // 이 펫에는 편지가 없다. 예전 코드는 rows[0](= 남의 펫 편지)을 집었다 —
+    // 그러면 A 의 편지가 D 의 상자에 인쇄되어 나간다.
+    const letters = [
+      { letterId: "stl_A", petId: "pet_A" },
+      { letterId: "stl_B", petId: "pet_B" },
+    ];
+    assert.equal(selectLetterForPet({ letters, petId: "pet_D" }), null);
+  });
+
+  it("2c) 활성 편지가 이미 다른 펫에 붙어 있으면 무시한다", () => {
+    const letters = [{ letterId: "stl_A", petId: "pet_A" }];
+    assert.equal(
+      selectLetterForPet({ letters, petId: "pet_D", activeLetterId: "stl_A" }),
+      null
+    );
+  });
+
+  it("미연결 편지만 폴백 후보다 — 서버가 최신순으로 준다는 계약", () => {
+    // 서버 계약: imported_at DESC. 최신 미연결 편지가 앞에 온다.
+    const letters = [
+      { letterId: "stl_newest", petId: null },
+      { letterId: "stl_older", petId: null },
+    ];
+    assert.equal(selectLetterForPet({ letters, petId: "pet_x" }), "stl_newest");
+  });
+
+  it("펫이 없으면 아무 편지도 고르지 않는다", () => {
+    assert.equal(selectLetterForPet({ letters: [LETTER_OLD], petId: null }), null);
+    assert.equal(selectLetterForPet({ letters: [], petId: "pet_x" }), null);
   });
 });

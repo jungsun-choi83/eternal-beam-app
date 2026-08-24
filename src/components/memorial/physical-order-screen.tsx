@@ -45,9 +45,11 @@ import {
   nextStep,
   orderBlockers,
   previousStep,
+  selectLetterForPet,
   type OrderDraft,
   type OrderStep,
 } from "@/lib/order-checkout-flow";
+import { readActiveSoulTraceLetter } from "@/lib/soul-trace-handoff";
 
 const PRODUCT_LABEL: Record<string, string> = {
   LETTER: "편지",
@@ -112,14 +114,21 @@ export function PhysicalOrderScreen({ petId, onBack }: PhysicalOrderScreenProps)
     void fetchProducts().then(setProducts).catch(() => setProducts([]));
   }, []);
 
-  // 이 펫에 연결된 편지를 고른다. 펫에 묶이지 않은 편지는 마지막 폴백이다
-  // (Soul Trace 만 하고 펫을 나중에 만든 경우).
+  // 이 펫의 편지를 고른다. 판정은 selectLetterForPet 이 한다(순수 함수라
+  // node --test 가 그대로 덮는다). **다른 펫에 연결된 편지는 절대 고르지 않는다** —
+  // 예전의 `?? rows[0]` 폴백이 바로 그것을 했고, 그래서 어떤 주문이든 늘 같은
+  // 옛날 편지가 실렸다.
   useEffect(() => {
     if (!token) return;
     void fetchMyLetters({ accessToken: token })
       .then((rows) => {
-        const forPet = rows.find((l) => l.petId && l.petId === petId);
-        setSoulTraceLetterId((forPet ?? rows[0])?.letterId ?? null);
+        setSoulTraceLetterId(
+          selectLetterForPet({
+            letters: rows,
+            petId,
+            activeLetterId: readActiveSoulTraceLetter()?.letterId ?? null,
+          })
+        );
       })
       .catch(() => setSoulTraceLetterId(null));
   }, [token, petId]);
