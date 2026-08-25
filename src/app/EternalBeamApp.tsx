@@ -53,6 +53,11 @@ import {
 } from '@/lib/device-demo-config'
 import { FOREST_THEME_ID } from '@/lib/forest-demo-config'
 import { inferMediaKind } from '@/lib/media-file-kind'
+import {
+  commitMainMedia,
+  resolveOriginalPhoto,
+  type MediaKind,
+} from '@/lib/main-media-store'
 import { canEnterDevicePlay, readStoredPipeline } from '@/lib/pending-generation'
 import { OrderConfirmationScreen } from '@/components/memorial/order-confirmation-screen'
 import { getEternalBeamPetId } from '@/lib/pet-identity'
@@ -266,8 +271,30 @@ export function EternalBeamApp() {
     setScreen(nextScreen)
   }
 
-  const handleImageUpload = (imageUrl: string) => {
-    setUploadedImage(imageUrl)
+  /**
+   * 업로드 확정 — **두 경로가 공유하는 단 하나의 지점.**
+   *
+   * 예전에는 홈 화면 선택기만 저장했고 업로드 화면은 React 상태만 갱신했다.
+   * 그래서 업로드 화면으로 고른 사진은 eternal_beam_main_photo 에 들어가지
+   * 않았고, 원본 배경을 읽는 화면들(테마 카드·미리보기 배경·장면 합성)은
+   * 지난번 사진을 보거나 아무것도 보지 못했다.
+   */
+  const commitUpload = (url: string, kind: MediaKind) => {
+    setUploadedImage(url)
+    commitMainMedia(kind, url)
+  }
+
+  /**
+   * "원본 사진 그대로" 배경에 쓰이는 **단 한 장.**
+   *
+   * 여기서 한 번 정하고 화면들에 내려 준다. 예전에는 화면마다 각자
+   * localStorage 를 읽어서, 저장이 늦거나 실패하면 카드·미리보기·생성이 서로
+   * 다른 그림을 봤다.
+   */
+  const originalPhoto = resolveOriginalPhoto(uploadedImage)
+
+  const handleImageUpload = (imageUrl: string, kind: MediaKind = 'image') => {
+    commitUpload(imageUrl, kind)
   }
 
   const applyPickedMedia = (picked: PickedMedia) => {
@@ -278,20 +305,19 @@ export function EternalBeamApp() {
       return
     }
 
-    localStorage.setItem('eternal_beam_media_type', kind)
-
     // [IMAGE-TRACE] 홈 화면 경로의 파일 선택 지점.
     void traceImage('file-selected (home picker)', file, 'original-upload', `kind=${kind}`)
 
+    // 저장 로직을 여기 다시 적지 않는다 — 업로드 화면과 **같은 함수**를 쓴다.
+    // 두 곳에 적혀 있었을 때 한쪽이 main_photo 를 빠뜨렸고, 그 차이가 곧
+    // "원본 사진이 검게 비는" 결함이었다.
     if (kind === 'image') {
       const reader = new FileReader()
       reader.onload = (ev) => {
         const result = String(ev.target?.result || '')
         if (!result) return
         void traceImage('state:uploadedImage', result, 'original-upload') // [IMAGE-TRACE]
-        setUploadedImage(result)
-        localStorage.setItem('eternal_beam_main_photo', result)
-        localStorage.removeItem('eternal_beam_main_video_url')
+        commitUpload(result, 'image')
         navigateTo('photoUpload')
       }
       reader.onerror = () => alert(alerts.fileType)
@@ -299,10 +325,7 @@ export function EternalBeamApp() {
       return
     }
 
-    const url = URL.createObjectURL(file)
-    setUploadedImage(url)
-    localStorage.setItem('eternal_beam_main_video_url', url)
-    localStorage.removeItem('eternal_beam_main_photo')
+    commitUpload(URL.createObjectURL(file), 'video')
     navigateTo('themeSelection')
   }
 
@@ -745,6 +768,8 @@ export function EternalBeamApp() {
             >
               <ThemeSelectionScreen
                 cutoutImage={cutoutImage}
+                // 카드·큰 미리보기·생성이 **같은 한 장**을 쓰게 한다.
+                originalPhoto={originalPhoto}
                 selectedTheme={selectedTheme}
                 language={language}
                 deviceLinked={shouldSyncThemeToDevice()}
@@ -808,6 +833,7 @@ export function EternalBeamApp() {
             >
               <PreviewScreen
                 cutoutImage={cutoutImage}
+                originalPhoto={originalPhoto}
                 selectedTheme={selectedTheme}
                 language={language}
                 settings={previewSettings}

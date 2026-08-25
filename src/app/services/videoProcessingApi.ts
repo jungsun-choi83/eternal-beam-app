@@ -7,6 +7,7 @@
 
 import { ensureIdleMp4Url } from '@/lib/device-host-flags'
 import { traceImage } from '@/lib/image-trace' // [IMAGE-TRACE]
+import { PRE_SUBMISSION_SERVER_CODES } from '@/lib/scene-errors'
 
 /** 임시 Cloudflare 터널 URL은 만료되므로 프로덕션에서 무시 → same-origin /api (vercel.json rewrites) */
 function normalizeApiBase(raw: string | undefined): string {
@@ -576,7 +577,10 @@ export async function generatePetVideo(
     // **알려진 제출 전 코드만** 가로챈다. 넓게 잡으면 422 누끼 거절
     // (CutoutRejectedError — 진단 정보와 전용 UI 가 있다)까지 삼켜 평범한
     // Error 로 바꿔 버린다.
-    const PRE_SUBMISSION = ['GENERATION_IDEMPOTENCY_UNAVAILABLE', 'GENERATION_IN_PROGRESS']
+    // 목록을 여기 다시 적지 않는다 — 두 곳에 적으면 한쪽만 늘어나는 날이 오고,
+    // 그때 새 코드는 "서버 오류"로 삼켜져 고객이 재시도(=유료 제출)를 반복한다.
+    // 실제로 SCENE_UNAVAILABLE 을 추가하면서 그럴 뻔했다.
+    const PRE_SUBMISSION: readonly string[] = PRE_SUBMISSION_SERVER_CODES
     const code = String(
       (err as { detail?: { code?: string } })?.detail?.code ?? ''
     ).trim()

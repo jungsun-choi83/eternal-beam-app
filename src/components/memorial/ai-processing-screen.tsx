@@ -591,6 +591,11 @@ export function AIProcessingScreen({
               cutoutUrl={cutoutPreview}
               // 생성 전 화면 — 데모 mp4 로 채우지 않는다(정적 누끼만).
               allowDemoFallback={false}
+              // **명시적으로** false 다 (Phase 25). 이 화면은 생성 이전 단계라
+              // idlePreviewUrl 이 채워지는 경로가 없고, 나가는 것은 언제나 정적
+              // 누끼다 — 구운 장면이 여기로 올 수 없다. 기본값에 기대지 않고
+              // 적어 두는 이유는, 빠뜨린 것과 그렇게 정한 것을 구분하기 위해서다.
+              backgroundBaked={false}
               className="ai-processing-screen__idle-pet w-full h-full object-contain"
             />
           </div>

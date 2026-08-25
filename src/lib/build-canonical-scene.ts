@@ -25,17 +25,20 @@ import {
 import type { MemorialTheme } from "@/components/memorial/themes";  // 타입 전용 — 런타임에 지워진다
 // 값 import 라 상대 경로 — `@/` 별칭은 Vite 만 푼다(node --test 는 못 푼다).
 import { ORIGINAL_PHOTO_THEME_KEY } from "../components/memorial/themes.ts";
+import { readMainPhoto } from "./main-media-store.ts";
 
-/** 원본 사진(업로드 원본)의 저장 키 — UploadScreen/EternalBeamApp 이 쓴다. */
-const MAIN_PHOTO_KEY = "eternal_beam_main_photo";
-
-export function readOriginalPhoto(): string | null {
-  try {
-    return localStorage.getItem(MAIN_PHOTO_KEY)?.trim() || null;
-  } catch {
-    return null;
-  }
-}
+/**
+ * 저장된 원본 사진. **키 정의는 main-media-store.ts 한 곳에만 있다.**
+ *
+ * 예전에는 이 파일이 키 문자열을 따로 들고 있었다. 쓰는 쪽(업로드 경로)과
+ * 읽는 쪽(여기)이 각자 문자열을 적어 두면, 한쪽만 바뀌는 날 원본 배경이
+ * 조용히 빈다.
+ *
+ * ⚠️ 화면이 **지금 들고 있는** 업로드 이미지가 있으면 그쪽이 우선이다. 그
+ * 우선순위는 resolveOriginalPhoto 가 쥐고 있고, 화면은 그 결과를 장면에
+ * 직접 넘긴다(SceneBackgroundChoice.originalUrl).
+ */
+export const readOriginalPhoto = readMainPhoto;
 
 function apiBase(): string {
   try {
@@ -90,6 +93,14 @@ export interface SceneBackgroundChoice {
   theme?: MemorialTheme | null;
   /** CUSTOM 이면 배경 자산 주소. */
   customUrl?: string | null;
+  /**
+   * ORIGINAL 이면 **화면이 실제로 보여 준 그 사진.**
+   *
+   * 없으면 저장된 값으로 떨어진다. 주입을 받는 이유는 하나다 — 화면이 보여 준
+   * 그림과 생성에 들어가는 그림이 같아야 하는데, 저장이 늦거나 실패하면 둘이
+   * 갈라지기 때문이다. 실제로 그 갈라짐이 이번에 고친 결함이다.
+   */
+  originalUrl?: string | null;
 }
 
 /**
@@ -103,7 +114,10 @@ export function resolveBackgroundSource(choice: SceneBackgroundChoice): {
   backgroundId: string;
 } {
   if (choice.type === "original") {
-    return { url: readOriginalPhoto(), backgroundId: "original" };
+    // 주입된 값이 정본이다. 화면이 그린 그림과 같아야 하므로 여기서 다시
+    // localStorage 를 읽지 않는다 — 읽으면 두 그림이 갈라질 수 있다.
+    const injected = (choice.originalUrl || "").trim();
+    return { url: injected || readOriginalPhoto(), backgroundId: "original" };
   }
   if (choice.type === "custom") {
     const u = (choice.customUrl || "").trim();
@@ -111,7 +125,23 @@ export function resolveBackgroundSource(choice: SceneBackgroundChoice): {
   }
   const theme = choice.theme || null;
   return {
-    url: getEffectiveBgVideo(theme) || null,
+    // 영상이 있으면 영상, 없으면 **썸네일**이다 (Phase 28).
+    //
+    // ── 왜 폴백이 필요한가 ────────────────────────────────────────────────
+    // 12개 테마 중 배경 영상을 가진 것은 셋뿐이다(fresh_forest·beach·
+    // snow_forest). 나머지 여섯(celestial·golden_meadow·starlight·aurora·
+    // sunset·ocean_deep)은 bgVideo 가 없어서 여기서 null 이 나왔고, 그러면
+    // composeSceneImage 가 BACKGROUND_LOAD_FAILED 로 던져 **생성 자체가
+    // 거절**됐다.
+    //
+    // 그런데 미리보기는 그 여섯 테마에도 배경을 보여 준다 — 정확히 이
+    // thumb 을 bg-cover 로 깐다(preview-screen.tsx, memorial-device-play-
+    // screen.tsx). 즉 고객은 배경이 있는 그림을 보고 승인한 뒤 "배경을
+    // 불러오지 못했습니다"를 받았다.
+    //
+    // 그래서 같은 이미지로 합성한다. 승인한 그림과 만들어지는 그림이 같아야
+    // 한다는 규칙이 이 폴백의 근거이고, 화질은 그 thumb 해상도가 상한이다.
+    url: getEffectiveBgVideo(theme) || theme?.thumb?.trim() || null,
     backgroundId: theme?.themeKey || "",
   };
 }
@@ -131,11 +161,13 @@ export const ORIGINAL_BG_THEME_KEY = ORIGINAL_PHOTO_THEME_KEY;
  * 여기가 유일한 분기점이라 생성·재생·저장 어디에도 배경 종류별 코드가 없다.
  */
 export function resolveSceneBackground(
-  theme: MemorialTheme | null | undefined
+  theme: MemorialTheme | null | undefined,
+  /** 화면이 실제로 보여 준 원본 사진. 원본 갈래에서만 쓰인다. */
+  originalUrl?: string | null
 ): SceneBackgroundChoice {
   const key = theme?.themeKey || "";
   if (key === ORIGINAL_BG_THEME_KEY) {
-    return { type: "original" };
+    return { type: "original", originalUrl: (originalUrl || "").trim() || null };
   }
   if (isCustomPhotoBgTheme(theme)) {
     return { type: "custom", customUrl: getStoredCustomBgVideoUrl() };

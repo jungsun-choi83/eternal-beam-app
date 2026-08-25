@@ -94,6 +94,15 @@ export function sceneErrorMessage(code: SceneErrorCode, lang = "ko"): string {
 export const PRE_SUBMISSION_SERVER_CODES = [
   "GENERATION_IDEMPOTENCY_UNAVAILABLE",
   "GENERATION_IN_PROGRESS",
+  /**
+   * 서버가 장면을 준비하지 못했다 (Phase 26).
+   *
+   * 예전에는 이 상황에서 서버가 조용히 레거시 단색 판으로 떨어져 **생성에
+   * 성공**했다. 응답은 200 이고 background_baked 만 false 였다 — 화면은 그
+   * false 를 기록만 하고 아무 말도 하지 않았으므로, 고객은 자기가 고른 적 없는
+   * 배경의 영상을 받고서야 무언가 잘못됐음을 알았다.
+   */
+  "SCENE_UNAVAILABLE",
 ] as const;
 
 export function isPreSubmissionServerCode(code: string): boolean {
@@ -111,6 +120,13 @@ export function serverGenerationMessage(code: string, lang = "ko"): string | nul
     return lang === "en"
       ? "We couldn't start generation safely. Nothing was charged — please try again shortly."
       : "안전하게 생성을 시작하지 못했습니다. 과금되지 않았으니 잠시 후 다시 시도해 주세요.";
+  }
+  if (code === "SCENE_UNAVAILABLE") {
+    // "생성 실패"라고 하지 않는다 — 제출 전이라 돈이 나가지 않았고, 다시
+    // 시도하면 그대로 복구된다.
+    return lang === "en"
+      ? "We couldn't prepare the background you chose. Nothing was charged — please try again shortly."
+      : "선택한 배경으로 장면을 준비하지 못했습니다. 과금되지 않았으니 잠시 후 다시 시도해 주세요.";
   }
   if (code === "GENERATION_IN_PROGRESS") {
     return lang === "en"

@@ -1315,23 +1315,33 @@ export function IdleLoopVideo({
       });
     };
 
+    // 실제 클립 비율을 래퍼에 알린다. **모드 판정과 분리해 둔다** —
+    // 예전에는 이 코드가 detectMode 안, `if (!transparentComposite) return;`
+    // **뒤에** 있었다. 그래서 배경이 구워진 자산(키잉하지 않는 자산)은 비율이
+    // 영영 설정되지 않았고, .theme-preview-frame__pet 의 4/5 폴백에 걸려
+    // 16:9 장면이 세로 상자 안에서 레터박스로 찌그러졌다.
+    const applyAspect = () => {
+      const vw = el.videoWidth;
+      const vh = el.videoHeight;
+      const wrap = wrapRef.current;
+      if (!vw || !vh || !wrap) return;
+      // packed(vstack) 소스만 위아래 절반이 알파다. 그 외에는 프레임 전체가 그림이고,
+      // 키잉하지 않는 분기는 packed 일 수 없다.
+      const frameH = modeRef.current === "packed" ? Math.floor(vh / 2) : vh;
+      wrap.style.setProperty("--idle-aspect", `${vw} / ${frameH}`);
+    };
+
     const detectMode = () => {
       if (!transparentComposite) {
         modeRef.current = "raw";
+        applyAspect();
         return;
       }
       const packed = isPackedAlphaVideo(el, src);
       modeRef.current = packed ? "packed" : "blackkey";
       modeDetectedRef.current = true;
       packedSourceRef.current = packed || isLikelyPackedAlphaSource(src);
-
-      const vw = el.videoWidth;
-      const vh = el.videoHeight;
-      const wrap = wrapRef.current;
-      if (vw && vh && wrap) {
-        const frameH = modeRef.current === "packed" ? Math.floor(vh / 2) : vh;
-        wrap.style.setProperty("--idle-aspect", `${vw} / ${frameH}`);
-      }
+      applyAspect();
     };
 
     const onVideoError = () => {
@@ -1414,19 +1424,24 @@ export function IdleLoopVideo({
   const useCanvasComposite = transparentComposite && (!useRawFallback || isPackedSrc);
 
   if (!useCanvasComposite) {
+    // 래퍼가 **필요하다.** --idle-aspect 는 CSS 변수라 걸 요소가 있어야 하고,
+    // 예전에는 이 분기가 <video> 를 맨몸으로 돌려줘 wrapRef 가 null 이었다.
+    // 그 결과 이 경로(구운 자산 · raw 폴백)만 비율 폴백에 걸렸다.
+    // className 은 래퍼로 옮긴다 — 크기를 정하는 것은 상자이지 영상이 아니다.
     return (
-      <video
-        ref={idleVideoRef}
-        src={src}
-        className={className}
-        style={style}
-        autoPlay
-        loop
-        muted
-        playsInline
-        preload={preload}
-        {...(crossOrigin ? { crossOrigin } : {})}
-      />
+      <div ref={wrapRef} className={`idle-loop-video ${className}`} style={style}>
+        <video
+          ref={idleVideoRef}
+          src={src}
+          className="idle-loop-video__raw"
+          autoPlay
+          loop
+          muted
+          playsInline
+          preload={preload}
+          {...(crossOrigin ? { crossOrigin } : {})}
+        />
+      </div>
     );
   }
 

@@ -116,9 +116,40 @@ test("미리보기가 장면 실패 시 생성을 호출하지 않는다", async
 test("API 클라이언트가 제출 전 코드를 보존한다", async () => {
   const { readFileSync } = await import("node:fs");
   const src = readFileSync("src/app/services/videoProcessingApi.ts", "utf8");
-  assert.match(src, /GENERATION_IDEMPOTENCY_UNAVAILABLE/);
+  // 목록을 **다시 적지 않고** 정본을 가져온다 (Phase 26). 두 곳에 적으면
+  // 한쪽만 늘어나는 날이 오고, 그때 새 코드는 "서버 오류"로 삼켜져 고객이
+  // 재시도(=유료 제출)를 반복한다.
+  assert.match(src, /import \{ PRE_SUBMISSION_SERVER_CODES \} from '@\/lib\/scene-errors'/);
+  assert.match(src, /const PRE_SUBMISSION[^=]*= PRE_SUBMISSION_SERVER_CODES/);
   // 422 누끼 거절(CutoutRejectedError)을 삼키면 안 된다 — 좁게 잡았는지 확인.
   assert.match(src, /PRE_SUBMISSION\.includes\(code\)/);
+});
+
+test("장면 준비 실패도 제출 전 코드다 — 과금되지 않았다고 말한다", async () => {
+  const { PRE_SUBMISSION_SERVER_CODES, serverGenerationMessage } = await import(
+    "./scene-errors.ts"
+  );
+  assert.ok(
+    (PRE_SUBMISSION_SERVER_CODES as readonly string[]).includes("SCENE_UNAVAILABLE"),
+    "SCENE_UNAVAILABLE 이 제출 전 목록에 없다 — 화면이 '생성 실패'로 뭉뚱그린다"
+  );
+  for (const lang of ["ko", "en"]) {
+    const msg = serverGenerationMessage("SCENE_UNAVAILABLE", lang);
+    assert.ok(msg, lang);
+    assert.match(msg!, lang === "ko" ? /과금되지/ : /Nothing was charged/);
+  }
+});
+
+test("미리보기가 보낸 장면이 안 쓰였으면 조용히 기록하지 않는다", async () => {
+  // 구버전 서버는 200 + background_baked=false 를 돌려준다. 그 false 를 그냥
+  // 저장하면, 고객은 고른 적 없는 배경의 영상을 받고 화면은 아무 말도 안 한다.
+  const { readFileSync } = await import("node:fs");
+  const src = readFileSync("src/components/memorial/preview-screen.tsx", "utf8");
+  const guard = src.indexOf("if (scene && pet.background_baked !== true)");
+  const store = src.indexOf("background_baked: pet.background_baked === true");
+  assert.ok(guard > 0, "가드가 없다");
+  assert.ok(guard < store, "가드가 저장보다 뒤에 있다");
+  assert.match(src, /serverGenerationMessage\("SCENE_UNAVAILABLE"/);
 });
 
 // ── 원본 사진 옵션 ───────────────────────────────────────────────────────────

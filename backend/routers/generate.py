@@ -95,6 +95,38 @@ def _idempotency_unavailable(scene_id: str) -> HTTPException:
     )
 
 
+def _scene_unavailable(scene_id: str | None) -> HTTPException:
+    """
+    고객이 배경을 골랐는데 **그 장면을 우리가 가져오지 못했다** → 멈춘다.
+
+    예전에는 여기서 조용히 레거시 키프레임(단색 판)으로 떨어져 그대로 제출했다.
+    결과는 두 가지였고 둘 다 나빴다:
+
+      * 고객은 자기가 고르지도 승인하지도 않은 그림의 영상을 받았다
+      * 그 경로는 `if baked:` 블록 **밖**이라 멱등성 예약이 없었다 —
+        클라이언트 타임아웃 한 번이 두 번째 유료 작업이 됐다
+
+    이제 프로바이더 제출 **전**에 거절하므로 둘 다 사라진다. 아무것도 제출하지
+    않았으니 과금도 없다.
+
+    503 인 이유는 _idempotency_unavailable 과 같다: 대개 일시적(스토리지·서명
+    만료·네트워크)이고, 그대로 다시 시도하면 되는 상태다. 필드가 어긋난 경우도
+    같은 코드로 낸다 — 재시도해도 같은 오류가 결정적으로 나올 뿐 해롭지 않고,
+    화면이 코드 하나만 알면 되게 하는 편이 낫다.
+    """
+    return HTTPException(
+        status_code=503,
+        detail={
+            "code": "SCENE_UNAVAILABLE",
+            "message": (
+                "선택한 배경으로 장면을 준비하지 못했습니다. "
+                "과금되지 않았으니 잠시 후 다시 시도해 주세요."
+            ),
+            "scene_id": scene_id,
+        },
+    )
+
+
 async def _recover_provider_job(job) -> str | None:
     """
     이미 제출된 프로바이더 작업을 **폴링해서** 결과를 되찾는다.
@@ -201,13 +233,27 @@ async def post_generate_pet_video(
 
     # ── 정본 장면 ────────────────────────────────────────────────────────────
     # 있으면 **승인된 그림 자체**가 키프레임이다. 없으면 예전 단색 판(레거시).
-    scene = await scene_input.resolve(
+    requested_scene, scene = await scene_input.resolve(
         scene_id=scene_id,
         background_type=background_type,
         background_id=background_id,
         scene_keyframe_url=scene_keyframe_url,
         background_baked=background_baked,
     )
+
+    # ── 요구했는데 못 얻었으면 **여기서 멈춘다** ─────────────────────────────
+    # 프로바이더 제출 전이다. 아래 어느 줄도 실행되지 않으므로 돈이 나가지 않고,
+    # 멱등성 예약 없이 지나가던 경로도 함께 닫힌다.
+    #
+    # 레거시 요청(background_baked 없음/false)은 이 검사에 걸리지 않는다 —
+    # requested_scene 이 False 라 지금까지와 **완전히 같은 길**을 간다.
+    if requested_scene and scene is None:
+        logger.warning(
+            "generate-pet-video: 장면을 요구했으나 준비하지 못했다 — 제출하지 않는다 "
+            "(cid=%s scene=%s)", cid, scene_id,
+        )
+        raise _scene_unavailable(scene_id)
+
     baked = scene is not None
 
     # ── 이미 만든 것이 있으면 다시 만들지 않는다 ─────────────────────────────

@@ -82,6 +82,9 @@ class ShareRecord:
     #: 스토리지 객체 경로 — **만료되지 않는 정본.** 없으면 URL 로 폴백한다.
     breathing_bucket: Optional[str] = None
     breathing_object_path: Optional[str] = None
+    #: BREATHING 영상이 배경을 이미 담고 있는가 (Phase 27). 발급 시점 사본.
+    #: 없으면 false — 기존 QR 은 전부 레거시로 재생돼야 한다.
+    background_baked: bool = False
     poster_bucket: Optional[str] = None
     poster_object_path: Optional[str] = None
     #: 이 링크를 만든 주체 (운영자 또는 고객 본인). 감사 추적용.
@@ -234,6 +237,22 @@ async def create_share(
     b_bucket = (breathing_bucket or "").strip() or (b_obj.bucket if b_obj else None)
     b_path = (breathing_object_path or "").strip() or (b_obj.path if b_obj else None)
 
+    # ── 구움 여부 사본 (Phase 27) ────────────────────────────────────────────
+    # 이 표는 이미 breathing_url·bucket·object_path 를 복제한다. 이유는 하나다:
+    # 공유는 **종이에 인쇄되어** 다른 어떤 행보다 오래 살 수 있고, 해석 시점에
+    # 자기 힘으로 완결돼야 한다. 같은 이유로 이 값도 발급 시점에 복제한다.
+    #
+    # 호출부에서 받지 않는다 — 펫 행이 정본이고, 그 행은 서버가 자기 생성
+    # 기록으로 적은 것이다. 읽지 못하면 false(레거시)다.
+    baked = False
+    try:
+        from . import pet_registry
+
+        pet = await pet_registry.get(pid)
+        baked = bool(pet and pet.background_baked)
+    except Exception:  # noqa: BLE001 — 배경 표시가 공유 발급을 막지 않는다
+        logger.warning("구움 여부 조회 실패 — 레거시로 발급한다 (pet=%s)", pid, exc_info=True)
+
     row: dict[str, Any] = {
         "token_hash": th,
         "share_id": share_id,
@@ -244,6 +263,7 @@ async def create_share(
         "poster_url": poster,
         "breathing_bucket": b_bucket,
         "breathing_object_path": b_path,
+        "background_baked": baked,
         "poster_bucket": p_obj.bucket if p_obj else None,
         "poster_object_path": p_obj.path if p_obj else None,
         "created_by": (created_by or "").strip() or uid,
@@ -301,6 +321,8 @@ def _to_record(row: dict[str, Any]) -> ShareRecord:
         expires_at=(str(row["expires_at"]) if row.get("expires_at") else None),
         breathing_bucket=(row.get("breathing_bucket") or None),
         breathing_object_path=(row.get("breathing_object_path") or None),
+        # 컬럼이 없는(마이그레이션 전) 행은 None — 레거시다.
+        background_baked=row.get("background_baked") is True,
         poster_bucket=(row.get("poster_bucket") or None),
         poster_object_path=(row.get("poster_object_path") or None),
         created_by=(row.get("created_by") or None),
@@ -333,7 +355,7 @@ async def resolve_share(token: str, *, expected_pet_id: str | None = None) -> Sh
                 .select(
                     "share_id, user_id, pet_id, pet_name, breathing_url, "
                     "poster_url, created_at, revoked_at, expires_at, "
-                    "breathing_bucket, breathing_object_path, "
+                    "breathing_bucket, breathing_object_path, background_baked, "
                     "poster_bucket, poster_object_path, "
                     "created_by, purpose, order_ref"
                 )
@@ -450,7 +472,7 @@ async def list_shares(*, user_id: str, pet_id: str | None = None) -> list[ShareR
                 .select(
                     "share_id, user_id, pet_id, pet_name, breathing_url, "
                     "poster_url, created_at, revoked_at, expires_at, "
-                    "breathing_bucket, breathing_object_path, "
+                    "breathing_bucket, breathing_object_path, background_baked, "
                     "poster_bucket, poster_object_path, "
                     "created_by, purpose, order_ref"
                 )
