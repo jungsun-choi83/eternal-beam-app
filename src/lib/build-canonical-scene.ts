@@ -23,7 +23,8 @@ import {
   isCustomPhotoBgTheme,
 } from "./custom-background-store.ts";
 import type { MemorialTheme } from "@/components/memorial/themes";  // 타입 전용 — 런타임에 지워진다
-import { ORIGINAL_PHOTO_THEME_KEY } from "@/components/memorial/themes";
+// 값 import 라 상대 경로 — `@/` 별칭은 Vite 만 푼다(node --test 는 못 푼다).
+import { ORIGINAL_PHOTO_THEME_KEY } from "../components/memorial/themes.ts";
 
 /** 원본 사진(업로드 원본)의 저장 키 — UploadScreen/EternalBeamApp 이 쓴다. */
 const MAIN_PHOTO_KEY = "eternal_beam_main_photo";
