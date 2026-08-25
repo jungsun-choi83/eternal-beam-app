@@ -81,11 +81,15 @@ class RegisteredPet:
     breathing_object_path: Optional[str] = None
     source: str = SOURCE_APP
     created_at: Optional[str] = None
+    #: BREATHING 영상이 배경을 이미 담고 있는가 (Phase 27).
+    #: **없으면 false** 다 — 마이그레이션 이전 행에는 이 컬럼이 아예 없고,
+    #: 그 행들은 전부 레거시(지금까지처럼 재생)여야 한다.
+    background_baked: bool = False
 
 
 _SELECT = (
     "pet_id, user_id, content_id, breathing_bucket, breathing_object_path, "
-    "source, created_at"
+    "source, created_at, background_baked"
 )
 
 
@@ -98,6 +102,8 @@ def _to_pet(row: dict[str, Any]) -> RegisteredPet:
         breathing_object_path=(row.get("breathing_object_path") or None),
         source=str(row.get("source") or SOURCE_APP),
         created_at=(str(row["created_at"]) if row.get("created_at") else None),
+        # 컬럼이 없는(마이그레이션 전) 행은 None 이고, None 은 레거시다.
+        background_baked=row.get("background_baked") is True,
     )
 
 
@@ -218,13 +224,32 @@ async def register(
             status=409,
         )
 
+    cid = (content_id or "").strip() or content_id_of(pid)
+
+    # ── 배경이 구워졌는가 — **서버가 자기 기록으로 판정한다** (Phase 27) ─────
+    # 요청 바디에서 받지 않는다. 브라우저가 자산에 대한 사실을 주장하게 두면,
+    # 값이 틀렸을 때 재생이 조용히 깨지고 원인을 어디서도 찾을 수 없다.
+    # 우리는 이미 근거를 갖고 있다: 구운 생성은 전부 scene_generation_jobs 를
+    # 거치고(유료 제출의 유일한 통로다) 완료 시점에 video_url 이 남는다.
+    baked = False
+    if cid:
+        try:
+            from . import scene_generation_jobs
+
+            baked = await scene_generation_jobs.produced_baked_object(
+                user_id=uid, content_id=cid, bucket=bucket, object_path=path
+            )
+        except Exception:  # noqa: BLE001 — 배경 표시가 등록을 막지 않는다
+            logger.warning("구움 여부 판정 실패 — 레거시로 등록한다 (pet=%s)", pid, exc_info=True)
+
     row: dict[str, Any] = {
         "pet_id": pid,
         "user_id": uid,
-        "content_id": (content_id or "").strip() or content_id_of(pid),
+        "content_id": cid,
         "breathing_bucket": bucket,
         "breathing_object_path": path,
         "source": source,
+        "background_baked": baked,
         "created_at": _now().isoformat(),
         "updated_at": _now().isoformat(),
     }

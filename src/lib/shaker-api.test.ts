@@ -173,3 +173,68 @@ describe("재생 URL 해석", () => {
     assert.equal(p.actions[0].url, "/api/v1/shaker/asset?share=t&k=COME_CLOSER");
   });
 });
+
+describe("구운 자산이 QR 재생까지 도달한다 (Phase 27)", () => {
+
+it("서버가 background_baked=true 를 주면 키잉하지 않는다", async () => {
+  // 이 배선은 원래부터 맞았다 — 서버가 필드를 보낸 적이 없었을 뿐이다.
+  // 이제 shaker_v1.ShakerPetOut 이 실어 보내므로 끝까지 이어진다.
+  const { buildShakerViewModel } = await import("./shaker-playback.ts");
+  const { shouldTransparentComposite } = await import("./baked-playback.ts");
+
+  const pet = parseShakerPet({
+    pet_id: "pet_c1",
+    breathing_url: "https://cdn.test/idle.mp4",
+    background_baked: true,
+  });
+  assert.equal(pet.backgroundBaked, true);
+
+  const vm = buildShakerViewModel(pet);
+  assert.equal(vm.backgroundBaked, true);
+  assert.equal(
+    shouldTransparentComposite({ backgroundBaked: vm.backgroundBaked }),
+    false,
+    "구운 영상에 블랙키 제거가 걸린다 — 그림자가 뚫린다"
+  );
+});
+
+it("필드가 없는 응답(마이그레이션 전 인쇄물)은 레거시로 재생된다", async () => {
+  // 기존 QR 이 전부 여기 해당한다. false 로 읽히지 않으면 한꺼번에 깨진다.
+  const { buildShakerViewModel } = await import("./shaker-playback.ts");
+  const { shouldTransparentComposite } = await import("./baked-playback.ts");
+
+  const pet = parseShakerPet({
+    pet_id: "pet_c1",
+    breathing_url: "https://cdn.test/idle.mp4",
+  });
+  assert.equal(pet.backgroundBaked, false);
+  const vm = buildShakerViewModel(pet);
+  assert.equal(shouldTransparentComposite({ backgroundBaked: vm.backgroundBaked }), true);
+});
+
+it("true 가 아닌 값은 전부 레거시다 — 문자열도 참으로 치지 않는다", () => {
+  for (const v of ["true", 1, "1", {}, null, undefined]) {
+    const pet = parseShakerPet({
+      pet_id: "p",
+      breathing_url: "https://cdn.test/i.mp4",
+      background_baked: v,
+    });
+    assert.equal(pet.backgroundBaked, false, String(v));
+  }
+});
+
+it("서버 응답 모델과 프론트 파서가 같은 이름을 쓴다", async () => {
+  // 이름이 어긋나면 조용히 false 가 된다 — 정확히 그 결함을 고치는 중이다.
+  const { readFileSync } = await import("node:fs");
+  const router = readFileSync("backend/routers/shaker_v1.py", "utf8");
+  // 응답 모델의 실제 이름은 ShakerPetResponse 다.
+  const i = router.indexOf("class ShakerPetResponse");
+  assert.ok(i > 0, "응답 모델을 찾지 못했다");
+  assert.match(
+    router.slice(i, router.indexOf("\n\ndef ", i)),
+    /background_baked: bool = False/,
+    "응답 모델에 background_baked 필드가 없다"
+  );
+  assert.match(router, /background_baked=resolved\.rec\.background_baked/);
+});
+});

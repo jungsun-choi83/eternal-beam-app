@@ -113,6 +113,14 @@ class ShakerPetResponse(BaseModel):
     #: 무료 BREATHING 루프. 정책과 무관하게 언제나 실린다.
     breathing_url: str
     poster_url: str | None = None
+    #: 이 펫의 BREATHING 영상이 배경을 이미 담고 있는가 (Phase 27).
+    #:
+    #: 프론트(shaker-api.ts)는 **이미 이 필드를 읽고 있었다.** 서버가 보낸 적이
+    #: 없어서 언제나 false 로 떨어졌고, 그래서 구운 영상을 QR 로 열면 블랙키
+    #: 제거가 걸려 장면의 어두운 픽셀이 뚫린 채 재생됐다.
+    #:
+    #: 기본 false = 레거시. 기존 인쇄물이 가리키는 자산은 전부 지금까지처럼 나간다.
+    background_baked: bool = False
     #: 정책이 허용한 READY 액션만. 기본 정책(disabled)에서는 빈 목록이다.
     actions: list[ShakerAction] = []
     #: 더블탭이 재생할 액션 id. 없으면 null — 프론트는 더블탭을 무시한다.
@@ -285,6 +293,7 @@ async def get_shaker_pet(
         pet_name=resolved.rec.pet_name,
         breathing_url=breathing,
         poster_url=poster,
+        background_baked=resolved.rec.background_baked,
         actions=actions,
         double_tap_action_id=resolved.double_tap,
     )

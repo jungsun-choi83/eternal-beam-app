@@ -172,39 +172,63 @@ def test_idle_variant_templates_have_both_modes(template):
 # ── 장면 입력 파싱 ───────────────────────────────────────────────────────────
 
 
-def test_incomplete_scene_falls_back_to_legacy_silently():
+def test_absent_flag_is_legacy_and_stays_silent():
     """
-    불완전하면 None — 400 을 던지지 않는다. 구버전 클라이언트가 생성 자체를
-    못 하게 되면 안 된다.
+    background_baked 가 없거나 false 면 **레거시**다 — 장면을 요구한 적 없는
+    요청이고, 지금까지처럼 조용히 진행한다. 여기서 400 을 던지면 구버전
+    클라이언트가 생성 자체를 못 하게 된다.
     """
-    assert scene_input.parse(
-        scene_id="", background_type="theme", background_id="x",
-        scene_keyframe_url="https://x/s.png", background_baked="true",
-    ) is None
-    assert scene_input.parse(
-        scene_id="s1", background_type="theme", background_id="x",
-        scene_keyframe_url="", background_baked="true",
-    ) is None
-    # baked 가 아니면 장면으로 취급하지 않는다.
-    assert scene_input.parse(
-        scene_id="s1", background_type="theme", background_id="x",
-        scene_keyframe_url="https://x/s.png", background_baked="false",
-    ) is None
-    # 모르는 배경 종류도 레거시로.
-    assert scene_input.parse(
-        scene_id="s1", background_type="hologram", background_id="x",
-        scene_keyframe_url="https://x/s.png", background_baked="true",
-    ) is None
+    for flag in (None, "", "false", "0", "no"):
+        req = scene_input.parse(
+            scene_id="s1", background_type="theme", background_id="x",
+            scene_keyframe_url="https://x/s.png", background_baked=flag,
+        )
+        assert req.requested is False, flag
+        assert req.scene is None, flag
+
+
+def test_requested_but_malformed_is_not_silently_downgraded():
+    """
+    **여기가 바뀐 계약이다 (Phase 26).**
+
+    예전에는 이 경우도 None 이라 레거시와 구분되지 않았고, 그대로 단색 판으로
+    생성이 돌았다. 고객은 자기가 고른 적 없는 배경의 영상을 받았다.
+
+    이제 requested=True 로 남아 호출부가 멈출 수 있다.
+    """
+    cases = [
+        dict(scene_id="", background_type="theme",
+             scene_keyframe_url="https://x/s.png"),           # 장면 id 없음
+        dict(scene_id="s1", background_type="theme",
+             scene_keyframe_url=""),                          # 키프레임 없음
+        dict(scene_id="s1", background_type="hologram",
+             scene_keyframe_url="https://x/s.png"),           # 모르는 배경 종류
+    ]
+    for c in cases:
+        req = scene_input.parse(background_id="x", background_baked="true", **c)
+        assert req.requested is True, c
+        assert req.scene is None, c
 
 
 @pytest.mark.parametrize("btype", ["original", "theme", "custom"])
 def test_three_background_types_all_parse(btype):
     """세 갈래가 **같은 경로**로 들어온다 — 배경별 아키텍처가 없다는 증거."""
-    s = scene_input.parse(
+    req = scene_input.parse(
         scene_id="s1", background_type=btype, background_id="bg",
         scene_keyframe_url="https://x/s.png", background_baked="true",
     )
-    assert s is not None and s.background_type == btype
+    assert req.requested is True
+    assert req.scene is not None and req.scene.background_type == btype
+
+
+def test_scene_request_unpacks_as_a_pair():
+    """호출부가 `requested, scene = ...` 로 받는다 — 그 모양을 고정한다."""
+    requested, scene = scene_input.parse(
+        scene_id="s1", background_type="theme", background_id="bg",
+        scene_keyframe_url="https://x/s.png", background_baked="true",
+    )
+    assert requested is True
+    assert scene is not None and scene.scene_id == "s1"
 
 
 # ── 과금 보호 ────────────────────────────────────────────────────────────────

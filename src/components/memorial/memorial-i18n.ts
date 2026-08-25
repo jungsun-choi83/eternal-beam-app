@@ -117,6 +117,10 @@ const STRINGS = {
       premiumSection: "프리미엄",
       premiumSectionHint: "시즌 테마 · 나만의 추억 장소 배경",
       previewNeutralHint: "배경은 다음 단계(미리보기)에서 합성됩니다",
+      previewOriginalHint: "올린 사진 그대로 사용합니다",
+      originalMissing:
+        "원본 사진을 찾을 수 없습니다. 사진을 다시 올리거나 다른 배경을 선택해 주세요.",
+      originalMissingCta: "원본 사진을 다시 올려 주세요",
       cutoutMissing:
         "누끼가 적용되지 않았습니다. 사진 업로드 → AI 처리를 다시 시도해 주세요.",
       swipeHint: "좌우로 스와이프해서 테마를 확인하세요",
@@ -585,6 +589,10 @@ const STRINGS = {
       premiumSection: "Premium",
       premiumSectionHint: "Seasonal themes · custom memory-place background",
       previewNeutralHint: "Background compositing appears in the preview step",
+      previewOriginalHint: "Uses your uploaded photo as-is",
+      originalMissing:
+        "We couldn't find your original photo. Upload it again or choose another background.",
+      originalMissingCta: "Upload the original photo again",
       cutoutMissing: "Cutout is missing. Please upload again and run processing.",
       swipeHint: "Swipe left or right to preview themes",
       subject: "Subject",

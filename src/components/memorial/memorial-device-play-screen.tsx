@@ -23,6 +23,11 @@ import { useBehaviorEligibility } from "@/components/memorial/use-behavior-eligi
 import { useIdleEventScheduler } from "@/components/memorial/use-idle-event-scheduler";
 import { hasRealIdleVideo } from "@/lib/pending-generation";
 import { subjectTransform } from "@/lib/pet-grounding";
+import {
+  playbackFrameClass,
+  shouldApplySubjectTransform,
+  shouldRenderThemeBackdrop,
+} from "@/lib/baked-playback";
 import { resolveIdleDisplaySource } from "@/lib/device-host-flags";
 import {
   formatPlaybackSourceReport,
@@ -210,6 +215,16 @@ function MemorialDevicePlayScreenInner({
   // 되지 못한다. 데모를 근거로 켜면 (1) BREATH 가 없는 펫에 유료 생성 4건이 나가고
   // (2) 이벤트의 seam-aligned 복귀가 다른 개의 휴지 자세에 맞춰져 이음매가 보인다.
   const hasIdle = hasRealIdleVideo(pipeline);
+  /**
+   * 이 자산이 배경을 이미 담고 있는가 (Phase 25).
+   *
+   * 게이트가 hasIdle 인 이유는 바로 위 주석과 같다 — petIdleSrc 는 데모 폴백
+   * mp4 일 수 있고, 데모에는 승인된 배경이 들어 있지 않다. 저장된 플래그만 보고
+   * 판단하면 데모를 틀면서 테마 배경을 지우게 된다.
+   */
+  const bakedAsset = {
+    backgroundBaked: hasIdle && pipeline?.background_baked === true,
+  };
   const { urls: idleEventUrls, availableIds: availableIdleEventIds } = useIdleEventAssets({
     pipeline,
     enabled: hasIdle,
@@ -360,21 +375,44 @@ function MemorialDevicePlayScreenInner({
           onPointerUp={handlePetPointerUp}
           onPointerCancel={handlePetPointerUp}
         >
-          {bgVideo ? (
-            <ThemeBackgroundVideo
-              key={`live-bg-${theme.id}-${bgVideo}`}
-              src={bgVideo}
-              poster={theme.thumb}
-            />
-          ) : (
-            <div
-              className="absolute inset-0 bg-center bg-cover"
-              style={{ backgroundImage: `url(${theme.thumb})` }}
-            />
+          {/* 배경 레이어 — 구운 자산에는 깔지 않는다 (Phase 25). 판정은
+              baked-playback.ts 한 곳에서만 한다. */}
+          {shouldRenderThemeBackdrop(bakedAsset) && (
+            <>
+              {bgVideo ? (
+                <ThemeBackgroundVideo
+                  key={`live-bg-${theme.id}-${bgVideo}`}
+                  src={bgVideo}
+                  poster={theme.thumb}
+                />
+              ) : (
+                <div
+                  className="absolute inset-0 bg-center bg-cover"
+                  style={{ backgroundImage: `url(${theme.thumb})` }}
+                />
+              )}
+              <div className={`absolute inset-0 bg-gradient-to-b ${theme.gradient} opacity-25`} />
+            </>
           )}
-          <div className={`absolute inset-0 bg-gradient-to-b ${theme.gradient} opacity-25`} />
 
-          {cutoutDisplay ? (
+          {/* ── 구운 장면 — **프레임 전체** ────────────────────────────────
+              생성된 MP4 가 곧 완성된 그림이다. 누끼용 상자(62% 세로 슬롯)도
+              접지 변환도 드롭섀도도 걸지 않는다. cutoutDisplay 를 조건으로
+              걸지 않는 이유: 구운 자산은 누끼 없이도 그 자체로 완결이다. */}
+          {!shouldApplySubjectTransform(bakedAsset) ? (
+            <div className="absolute inset-0">
+              <PetIdleDisplay
+                idleVideoUrl={petIdleSrc}
+                cutoutUrl={cutoutDisplay}
+                comeCloserVideoUrl={comeCloserSource}
+                idleEventSources={eligibleIdleEventSources}
+                actionTriggerRef={comeCloserTriggerRef}
+                onActionStateChange={onPlaybackStateChange}
+                backgroundBaked
+                className={playbackFrameClass(bakedAsset)}
+              />
+            </div>
+          ) : cutoutDisplay ? (
             <div
               className="absolute inset-0 flex items-end justify-center preview-subject-layer"
               style={{
@@ -399,7 +437,9 @@ function MemorialDevicePlayScreenInner({
                 // 거절 → 재예약 루프를 돈다(busyRef 가 영영 true 가 되지 않는다).
                 onActionStateChange={onPlaybackStateChange}
                 onFeetMarginChange={setFeetMargin}
-                className="theme-preview-frame__pet max-h-[62%] max-w-[92%]"
+                // 이 분기는 정의상 레거시다 — 기본값에 기대지 않고 적는다.
+                backgroundBaked={false}
+                className={playbackFrameClass(bakedAsset)}
                 style={{
                   filter: `drop-shadow(0 16px 32px ${theme.accent}66)`,
                 }}

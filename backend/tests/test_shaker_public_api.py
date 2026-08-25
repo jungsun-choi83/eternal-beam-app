@@ -96,8 +96,14 @@ def _get(client: ASGITestClient, token: str | None = None, **params):
 
 
 #: 응답에 나와도 되는 최상위 키 — 이 목록 밖의 키가 생기면 테스트가 깨진다.
+#:
+#: background_baked 는 **의도적으로** 추가됐다 (Phase 27). 재생 방식에 대한
+#: 불리언 하나이고, 소유자·구독·주문·프로바이더에 대해서는 아무것도 말하지
+#: 않는다 — 이 응답이 지키려는 경계와 무관하다. 이것 없이는 구운 영상이
+#: 블랙키 제거를 거쳐 그림자가 뚫린 채 재생된다.
 ALLOWED_KEYS = {
     "pet_id", "pet_name", "breathing_url", "poster_url", "actions", "double_tap_action_id",
+    "background_baked",
 }
 
 #: 절대 나타나면 안 되는 문자열. 값과 키 양쪽을 본다.

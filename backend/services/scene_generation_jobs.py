@@ -187,6 +187,75 @@ async def get(user_id: str, scene_id: str, behavior: str) -> Optional[SceneJob]:
     return _from_row(row) if row else None
 
 
+async def produced_baked_object(
+    *, user_id: str, content_id: str, bucket: str, object_path: str
+) -> bool:
+    """
+    **우리가** 이 객체를 구운 영상으로 만든 적이 있는가. (Phase 27)
+
+    ── 왜 이 질문을 서버가 하는가 ──────────────────────────────────────────
+    `background_baked` 는 지금까지 브라우저 sessionStorage 에만 살았다. 펫을
+    등록하는 것은 브라우저이므로, 가장 쉬운 길은 그 값을 요청에 실어 받는
+    것이었다. 그러면 **브라우저가 자산에 대한 사실을 주장**하게 된다.
+
+    그럴 필요가 없다. 우리는 이미 자기 기록을 갖고 있다 — 구운 생성은 전부
+    scene_generation_jobs 를 거치고(그것이 유료 제출의 유일한 통로다) 완료
+    시점에 video_url 이 적힌다. 그러니 등록하려는 객체가 그 기록 중 하나와
+    **정확히 같은 객체**인지 보면 된다.
+
+    URL 문자열이 아니라 (bucket, object_path) 로 비교하는 이유: 저장된 값도
+    지금 받은 값도 서명 URL 이고, 서명은 매번 다르다. 경로는 다르지 않다.
+
+    확신이 없으면 **False**. 추측으로 True 를 적으면 멀쩡한 레거시 영상이
+    검은 사각형인 채로 재생된다 — 모르는 쪽의 대가가 훨씬 싸다.
+    """
+    from .asset_url_refresh import parse_storage_object
+
+    uid = (user_id or "").strip()
+    cid = (content_id or "").strip()
+    b = (bucket or "").strip()
+    path = (object_path or "").strip()
+    if not uid or not cid or not path:
+        return False
+
+    rows: list[dict[str, Any]]
+    if _use_db() and _supabase():
+        try:
+            r = (
+                _supabase()
+                .table(_table())
+                .select("video_url")
+                .eq("user_id", uid)
+                .eq("content_id", cid)
+                .eq("status", "completed")
+                .execute()
+            )
+            rows = list(getattr(r, "data", None) or [])
+        except Exception:
+            # 조회 실패는 "구워지지 않았다"로 답한다. 여기서 예외를 올리면
+            # 배경 표시 하나 때문에 펫 등록 자체가 실패한다 — 등록되지 않은
+            # 펫은 운영에서 보이지 않고 QR 도 붙지 않는다.
+            logger.warning(
+                "구움 여부 조회 실패 — 레거시로 간주한다 (user=%s content=%s)",
+                uid, cid, exc_info=True,
+            )
+            return False
+    else:
+        rows = [
+            row
+            for row in _MOCK.values()
+            if row.get("user_id") == uid
+            and row.get("content_id") == cid
+            and row.get("status") == "completed"
+        ]
+
+    for row in rows:
+        obj = parse_storage_object(row.get("video_url"))
+        if obj and obj.path == path and (not b or obj.bucket == b):
+            return True
+    return False
+
+
 async def reserve(
     *, user_id: str, scene_id: str, behavior: str, content_id: str | None = None
 ) -> tuple[SceneJob, bool]:

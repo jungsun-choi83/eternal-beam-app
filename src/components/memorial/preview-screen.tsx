@@ -19,6 +19,11 @@ import { IdleLoopVideo } from "@/components/memorial/idle-loop-video";
 import { usePetGrounding } from "@/components/memorial/use-pet-grounding";
 import { subjectTransform } from "@/lib/pet-grounding";
 import {
+  playbackFrameClass,
+  shouldApplySubjectTransform,
+  shouldRenderThemeBackdrop,
+} from "@/lib/baked-playback";
+import {
   buildCanonicalScene,
   readOriginalPhoto,
   resolveSceneBackground,
@@ -69,6 +74,11 @@ import { schedulePetReadyToDevice } from "@/lib/device-pet-sync";
 
 interface PreviewScreenProps {
   cutoutImage: string | null;
+  /**
+   * 원본 갈래에 쓸 **해결된 한 장.** 테마 선택 화면과 같은 값을 부모가 내려 준다.
+   * 없으면 저장된 값으로 떨어진다(구버전 호출부 호환).
+   */
+  originalPhoto?: string | null;
   selectedTheme: number | null;
   language?: string;
   settings: { scale: number; posX: number; posY: number };
@@ -131,6 +141,7 @@ export function PreviewScreen(props: PreviewScreenProps) {
 
 function PreviewScreenInner({
   cutoutImage,
+  originalPhoto: originalPhotoProp = null,
   selectedTheme,
   language = "ko",
   settings,
@@ -161,7 +172,18 @@ function PreviewScreenInner({
    * 배치 조절도 의미가 없다 — 원래 구도가 곧 승인된 구도다.
    */
   const isOriginalPhotoTheme = currentTheme.themeKey === ORIGINAL_PHOTO_THEME_KEY;
-  const originalPhoto = isOriginalPhotoTheme ? readOriginalPhoto() : null;
+  /**
+   * 원본 갈래의 배경 = **부모가 내려 준 한 장.**
+   *
+   * 예전에는 여기서 직접 localStorage 를 읽었다. 업로드 화면 경로가 그 값을
+   * 저장하지 않았기 때문에, 화면에는 방금 올린 사진이 보이는데 배경은 지난번
+   * 사진이거나 비어 있었다. 저장 값은 이제 **폴백**일 뿐이다.
+   */
+  const originalPhoto = isOriginalPhotoTheme
+    ? originalPhotoProp || readOriginalPhoto()
+    : null;
+  /** 원본을 골랐는데 보여 줄 사진이 없다 — 검은 판 대신 오류를 보여 준다. */
+  const originalMissing = isOriginalPhotoTheme && !originalPhoto;
   const settingsRef = useRef(settings);
   const displaySettingsRef = useRef(settings);
   const subjectLayerRef = useRef<HTMLDivElement>(null);
@@ -214,6 +236,16 @@ function PreviewScreenInner({
 
   // 확인 전에는 실제 생성 결과가 없다 — 데모 mp4 로 채우지 않고 정적 누끼만 보여준다.
   const hasIdle = hasRealIdleVideo(pipeline);
+  /**
+   * 지금 화면에 나가는 자산이 **배경을 이미 담고 있는가** (Phase 25).
+   *
+   * `hasIdle` 을 함께 보는 이유: 영상이 없으면 나가는 것은 정적 누끼이고,
+   * 누끼는 언제나 레거시 배치(테마 배경 + 접지 변환)가 맞다. 저장된 플래그만
+   * 보고 판단하면 영상이 아직 없는 동안 배경이 사라진다.
+   */
+  const bakedAsset = {
+    backgroundBaked: hasIdle && pipeline?.background_baked === true,
+  };
   const idleVideoUrl = hasIdle
     ? resolveIdleVideoUrl(pipeline?.idle_video_url, cutoutDisplay)
     : "";
@@ -416,6 +448,14 @@ function PreviewScreenInner({
       onComplete();
       return;
     }
+    // 원본을 골랐는데 그 사진이 없다. **제출하지 않는다** — 배경 없는(검은)
+    // 그림으로 유료 생성이 돌면 고객은 결제 뒤에야 알게 된다.
+    if (originalMissing) {
+      setGenError(
+        sceneErrorMessage("ORIGINAL_PHOTO_MISSING", language === "en" ? "en" : "ko")
+      );
+      return;
+    }
     if (generatingRef.current) return; // 더블탭으로 두 번 생성되는 것 방지
     generatingRef.current = true;
     setGenError(null);
@@ -454,7 +494,9 @@ function PreviewScreenInner({
             shiftPct: subjectShiftPct,
           },
           floorY,
-          background: resolveSceneBackground(currentTheme),
+          // 화면이 그린 그림과 **같은 값**을 넘긴다. 여기서 다시 저장소를 읽으면
+          // 미리보기와 생성이 갈라질 수 있다 — 그것이 이번에 고친 결함이다.
+          background: resolveSceneBackground(currentTheme, originalPhoto),
           // 피사체 레이어는 inset-0 이라 그 높이가 곧 프레임 높이다
           // (pet-grounding.ts 의 % 기준과 같다).
           previewFrameHeight: subjectLayerRef.current?.clientHeight,
@@ -480,6 +522,23 @@ function PreviewScreenInner({
         scene,
       });
 
+      // ── 보낸 장면이 쓰였는가 (Phase 26) ──────────────────────────────────
+      // 서버는 이제 장면을 준비하지 못하면 SCENE_UNAVAILABLE 로 **제출 전에**
+      // 거절한다(위 catch 에서 잡힌다). 그래도 여기서 한 번 더 확인하는 이유는,
+      // 이 화면이 구버전 서버를 상대할 수 있기 때문이다 — 그쪽은 200 과 함께
+      // background_baked=false 를 돌려준다.
+      //
+      // 그 false 를 조용히 기록하면 예전 결함이 그대로 살아난다: 고객은 고른 적
+      // 없는 배경의 영상을 받고, 화면은 아무 말도 하지 않는다.
+      if (scene && pet.background_baked !== true) {
+        console.warn(
+          "[preview] 장면을 보냈는데 서버가 쓰지 않았다 — 저장하지 않는다",
+          scene.sceneId
+        );
+        setGenError(serverGenerationMessage("SCENE_UNAVAILABLE", language === "en" ? "en" : "ko") ?? "");
+        return;
+      }
+
       const next: StoredPipeline = {
         content_id: pet.content_id || meta.contentId,
         cutout_display_url: pipeline?.cutout_display_url || meta.displayUrl,
@@ -487,7 +546,7 @@ function PreviewScreenInner({
         idle_video_url: pet.idle_video_url || "",
         action_video_url: pet.action_video_url || "",
         // 재생 쪽이 배경을 다시 합성하지 않도록 하는 신호. 서버 응답을 정본으로
-        // 삼는다 — 장면을 보냈어도 서버가 쓰지 못했으면 false 로 온다.
+        // 삼는다 — 위 검사를 통과했으므로 장면을 보냈다면 반드시 true 다.
         background_baked: pet.background_baked === true,
         scene_id: (pet.scene_id as string | null) ?? scene?.sceneId ?? null,
       };
@@ -545,7 +604,18 @@ function PreviewScreenInner({
       generatingRef.current = false;
       setGenerating(false);
     }
-  }, [hasIdle, onComplete, p.generateMissingCutout, pipeline?.cutout_display_url]);
+    // originalMissing/originalPhoto/language 는 **반드시** 여기 있어야 한다.
+    // 빠지면 콜백이 예전 값을 붙잡고 있다가, 사진을 다시 올린 뒤에도 "원본
+    // 없음"으로 막거나 지난번 사진으로 생성한다.
+  }, [
+    hasIdle,
+    onComplete,
+    p.generateMissingCutout,
+    pipeline?.cutout_display_url,
+    originalMissing,
+    originalPhoto,
+    language,
+  ]);
 
   const handleReset = useCallback(() => {
     const reset = { scale: 1, posX: 0, posY: 0 };
@@ -831,78 +901,130 @@ function PreviewScreenInner({
           onPointerCancel={handlePreviewPointerEnd}
         >
           <div className="memory-cta-card__shine" />
-          {previewBgVideo ? (
-            <ThemeBackgroundVideo
-              key={`theme-bg-${previewThemeId}-${previewBgVideo}`}
-              src={previewBgVideo}
-              poster={currentTheme.thumb}
-            />
-          ) : (
-            <div
-              className="absolute inset-0 bg-center bg-cover"
-              // 원본 갈래의 배경은 **올린 사진 그 자체**다. 미리보기가 이것을
-              // 보여 줘야 "승인한 그림 = 생성될 그림"이 눈으로 확인된다.
-              style={{ backgroundImage: `url(${originalPhoto || currentTheme.thumb})` }}
-            />
-          )}
-          {/* 원본 갈래에는 테마 색조를 얹지 않는다 — 사진 색이 그대로여야 한다. */}
-          {!isOriginalPhotoTheme && (
-            <div className={`absolute inset-0 bg-gradient-to-b ${currentTheme.gradient} opacity-25`} />
+          {/* 배경 레이어 — 구운 자산에는 **깔지 않는다** (Phase 25).
+              영상이 이미 승인된 배경을 담고 있어서, 여기에 한 장 더 깔면 두
+              배경이 겹친다. 판정은 baked-playback.ts 한 곳에서만 한다. */}
+          {shouldRenderThemeBackdrop(bakedAsset) && (
+            <>
+              {originalMissing ? (
+                // 검은 판을 보여 주지 않는다. 예전에는 원본 테마의 thumb 이
+                // 빈 문자열이라 url() 이 아무것도 그리지 않았고, 고객은 검은
+                // 사각형을 승인한 뒤 ORIGINAL_PHOTO_MISSING 을 받았다.
+                <div
+                  role="alert"
+                  className="absolute inset-0 flex items-center justify-center px-6 text-center text-[13px] bg-amber-900/30 text-[#e8c97a]"
+                >
+                  {sceneErrorMessage("ORIGINAL_PHOTO_MISSING", language === "en" ? "en" : "ko")}
+                </div>
+              ) : previewBgVideo ? (
+                <ThemeBackgroundVideo
+                  key={`theme-bg-${previewThemeId}-${previewBgVideo}`}
+                  src={previewBgVideo}
+                  poster={currentTheme.thumb}
+                />
+              ) : (
+                <div
+                  className="absolute inset-0 bg-center bg-cover"
+                  // 원본 갈래의 배경은 **올린 사진 그 자체**다. 미리보기가 이것을
+                  // 보여 줘야 "승인한 그림 = 생성될 그림"이 눈으로 확인된다.
+                  style={{ backgroundImage: `url(${originalPhoto || currentTheme.thumb})` }}
+                />
+              )}
+              {/* 원본 갈래에는 테마 색조를 얹지 않는다 — 사진 색이 그대로여야 한다. */}
+              {!isOriginalPhotoTheme && (
+                <div className={`absolute inset-0 bg-gradient-to-b ${currentTheme.gradient} opacity-25`} />
+              )}
+            </>
           )}
 
-          {/* 접지 그림자 — 피사체 레이어의 형제(자식이 아님)라서 호흡 애니메이션을
-              따라 흔들리지 않는다. 항상 테마 접지선(floorY) 위에 머무른다.
-              가로 이동·크기 조절만 따라간다(세로 드래그는 따라가지 않음 — 땅은 고정). */}
-          {cutoutDisplay && !isOriginalPhotoTheme && (
-            <div
-              className="preview-contact-shadow"
-              aria-hidden
-              style={{
-                top: `${floorY * 100}%`,
-                transform: `translate(calc(-50% + ${displaySettings.posX}px), -50%) scaleX(${displaySettings.scale})`,
-                opacity: contactShadowOpacity,
-              }}
-            />
-          )}
+          {/* ── 구운 장면 — **프레임 전체** ────────────────────────────────
+              생성된 MP4 가 곧 완성된 그림이다. 누끼용 상자에 넣지 않는다:
+              62% 세로 슬롯도, 접지 변환도, 접지 그림자도, 드롭섀도도 없다.
 
-          {/* Subject with transformations — first composite with selected theme bg.
-              원본 갈래에서는 그리지 않는다(사진에 아이가 이미 있다). */}
-          {cutoutDisplay && !isOriginalPhotoTheme && (
-            <div
-              ref={subjectLayerRef}
-              className="absolute inset-0 flex items-end justify-center preview-subject-layer"
-              style={{
-                paddingLeft: "1rem",
-                paddingRight: "1rem",
-                paddingTop: "1rem",
-                // 세로 배치는 transform 으로 한다. padding-bottom 의 % 는 CSS 규격상
-                // 컨테이너 '너비' 기준이라 접지선 계산에 쓸 수 없다. translateY 의 % 는
-                // 요소 자신의 높이 기준이고, 이 레이어는 inset-0(=프레임 높이)이다.
-                transform: subjectTransform({ ...displaySettings, shiftPct: subjectShiftPct }),
-              }}
-            >
+              `!isOriginalPhotoTheme` 게이트를 **타지 않는다.** 그 게이트는
+              "사진에 아이가 이미 있으니 누끼를 덧그리지 않는다"는 뜻인데,
+              구운 자산은 덧그리는 것이 아니라 그 자체가 장면이다. 예전에는
+              원본 갈래로 구운 영상이 아예 렌더되지 않았다. */}
+          {!shouldApplySubjectTransform(bakedAsset) ? (
+            <div className="absolute inset-0">
               <PetIdleDisplay
-                idleVideoUrl={hasIdle ? pipeline?.idle_video_url : null}
+                idleVideoUrl={pipeline?.idle_video_url ?? null}
                 cutoutUrl={cutoutDisplay}
-                // 생성 전에는 데모 mp4 폴백을 끈다 — 미리보기는 진짜 정적이어야 한다.
                 allowDemoFallback={false}
-                onFeetMarginChange={setFeetMargin}
                 comeCloserVideoUrl={
                   eligibility.comeCloserAllowed
                     ? (pipeline?.come_closer_video_url ?? null)
                     : null
                 }
-                // 적격한 것만 넘긴다 — 소스가 없으면 런타임이 no-source 로 거절한다.
                 idleEventSources={eligibleIdleEventSources}
                 actionTriggerRef={comeCloserTriggerRef}
-                // 스케줄러가 "지금 뭔가 재생 중인가"를 아는 유일한 신호다.
                 onActionStateChange={onPlaybackStateChange}
-                className="theme-preview-frame__pet max-h-[62%] max-w-[92%]"
-                style={{
-                  filter: `drop-shadow(0 16px 32px ${currentTheme.accent}66)`,
-                }}
+                backgroundBaked
+                className={playbackFrameClass(bakedAsset)}
               />
             </div>
+          ) : (
+            <>
+              {/* 접지 그림자 — 피사체 레이어의 형제(자식이 아님)라서 호흡 애니메이션을
+                  따라 흔들리지 않는다. 항상 테마 접지선(floorY) 위에 머무른다.
+                  가로 이동·크기 조절만 따라간다(세로 드래그는 따라가지 않음 — 땅은 고정). */}
+              {cutoutDisplay && !isOriginalPhotoTheme && (
+                <div
+                  className="preview-contact-shadow"
+                  aria-hidden
+                  style={{
+                    top: `${floorY * 100}%`,
+                    transform: `translate(calc(-50% + ${displaySettings.posX}px), -50%) scaleX(${displaySettings.scale})`,
+                    opacity: contactShadowOpacity,
+                  }}
+                />
+              )}
+
+              {/* Subject with transformations — first composite with selected theme bg.
+                  원본 갈래에서는 그리지 않는다(사진에 아이가 이미 있다). */}
+              {cutoutDisplay && !isOriginalPhotoTheme && (
+                <div
+                  ref={subjectLayerRef}
+                  className="absolute inset-0 flex items-end justify-center preview-subject-layer"
+                  style={{
+                    paddingLeft: "1rem",
+                    paddingRight: "1rem",
+                    paddingTop: "1rem",
+                    // 세로 배치는 transform 으로 한다. padding-bottom 의 % 는 CSS 규격상
+                    // 컨테이너 '너비' 기준이라 접지선 계산에 쓸 수 없다. translateY 의 % 는
+                    // 요소 자신의 높이 기준이고, 이 레이어는 inset-0(=프레임 높이)이다.
+                    transform: subjectTransform({
+                      ...displaySettings,
+                      shiftPct: subjectShiftPct,
+                    }),
+                  }}
+                >
+                  <PetIdleDisplay
+                    idleVideoUrl={hasIdle ? pipeline?.idle_video_url : null}
+                    cutoutUrl={cutoutDisplay}
+                    // 생성 전에는 데모 mp4 폴백을 끈다 — 미리보기는 진짜 정적이어야 한다.
+                    allowDemoFallback={false}
+                    onFeetMarginChange={setFeetMargin}
+                    comeCloserVideoUrl={
+                      eligibility.comeCloserAllowed
+                        ? (pipeline?.come_closer_video_url ?? null)
+                        : null
+                    }
+                    // 적격한 것만 넘긴다 — 소스가 없으면 런타임이 no-source 로 거절한다.
+                    idleEventSources={eligibleIdleEventSources}
+                    actionTriggerRef={comeCloserTriggerRef}
+                    // 스케줄러가 "지금 뭔가 재생 중인가"를 아는 유일한 신호다.
+                    onActionStateChange={onPlaybackStateChange}
+                    // 이 분기는 정의상 레거시다 — 기본값에 기대지 않고 적는다.
+                    backgroundBaked={false}
+                    className={playbackFrameClass(bakedAsset)}
+                    style={{
+                      filter: `drop-shadow(0 16px 32px ${currentTheme.accent}66)`,
+                    }}
+                  />
+                </div>
+              )}
+            </>
           )}
 
           {/* Corner Guides */}
@@ -1052,7 +1174,7 @@ function PreviewScreenInner({
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.2 }}
           onClick={handleConfirm}
-          disabled={generating}
+          disabled={generating || originalMissing}
           className="w-full py-4 rounded-2xl font-normal text-[15px] tracking-wider disabled:opacity-70"
           style={{
             background: "linear-gradient(135deg, #b8860b 0%, #c9a227 30%, #d4af37 50%, #f5d77a 70%, #d4af37 100%)",

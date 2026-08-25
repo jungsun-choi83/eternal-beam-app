@@ -68,3 +68,49 @@ export function shouldRunComposeVideo(
 ): boolean {
   return !isBackgroundBaked(asset);
 }
+
+/**
+ * 재생 레이아웃 — **구운 자산과 레거시 자산은 담기는 상자가 다르다.**
+ *
+ *   subject  누끼(또는 보이드 배경 영상)를 담는 상자. 프레임 높이의 62% 짜리
+ *            세로 슬롯이고, 바깥에서 접지 변환(subjectTransform)이 걸린다.
+ *   scene    이미 완성된 그림. 프레임을 16:9 그대로 채우고 변환을 걸지 않는다.
+ *
+ * 구운 자산을 subject 상자에 넣으면 1280×720 장면이 세로 62% 슬롯 안으로
+ * 밀려 들어가고(그리고 aspect-ratio 4/5 폴백에 걸려 레터박스가 된다), 그 위에
+ * 고객이 이미 승인한 배치가 **한 번 더** 적용된다.
+ */
+export type PlaybackLayout = "scene" | "subject";
+
+export function playbackLayout(
+  asset: BakedAssetLike | null | undefined
+): PlaybackLayout {
+  return isBackgroundBaked(asset) ? "scene" : "subject";
+}
+
+/**
+ * 재생 상자에 붙일 클래스.
+ *
+ * 화면마다 클래스 문자열을 따로 적으면 언젠가 한 화면만 어긋난다 — 그때
+ * 어긋나는 방식이 "배경이 두 번 보인다"라서 눈으로는 원인을 짚기 어렵다.
+ * 레거시 문자열은 **지금 화면들이 쓰던 것 그대로**다(62%·92% 는 CSS 에도
+ * 있지만, 마크업을 바꾸지 않기 위해 함께 남긴다).
+ */
+export function playbackFrameClass(
+  asset: BakedAssetLike | null | undefined
+): string {
+  return playbackLayout(asset) === "scene"
+    ? "theme-preview-frame__scene"
+    : "theme-preview-frame__pet max-h-[62%] max-w-[92%]";
+}
+
+/**
+ * 피사체 배치 변환(subjectTransform)을 걸어야 하는가.
+ *
+ * 구운 자산은 **걸면 안 된다.** 그 배치는 장면을 구울 때 이미 픽셀에 들어갔다.
+ */
+export function shouldApplySubjectTransform(
+  asset: BakedAssetLike | null | undefined
+): boolean {
+  return !isBackgroundBaked(asset);
+}

@@ -470,6 +470,16 @@
   height: 100%;
 }
 
+/* 캔버스 합성을 하지 않는 분기(구운 자산 · raw 폴백)의 실제 <video>.
+   예전에는 이 분기에 래퍼가 없어 --idle-aspect 를 걸 곳 자체가 없었다. */
+.idle-loop-video__raw {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center bottom;
+}
+
 .cutout-stage--fill .cutout-stage__subject {
   object-fit: cover;
   object-position: center;
@@ -535,6 +545,39 @@
   max-width: 92%;
   max-height: 62%;
   aspect-ratio: var(--idle-aspect, 4 / 5);
+}
+
+/* 배경이 구워진 장면 — 프레임을 그대로 채운다 (Phase 25).
+   위 __pet 규칙은 **레거시 전용**이라 한 글자도 건드리지 않는다. 누끼를 담는
+   62% 세로 슬롯은 완성된 1280×720 장면에는 맞지 않는 상자다.
+
+   aspect-ratio 를 16/9 로 못 박지 않고 --idle-aspect 를 먼저 쓰는 이유:
+   실제 클립이 정확히 16:9 가 아닐 때(프로바이더가 미세하게 다른 크기를 돌려줄
+   때) 측정값이 이기는 편이 맞다. 16/9 는 아직 metadata 가 오기 전의 값이다. */
+/* ⚠️ 상한을 풀고 비율을 **끄는** 것이 핵심이다.
+   예전 값(width:100% + aspect-ratio 고정)은 3:4 프레임 안에서 세로
+   (9/16)/(4/3) ≈ 0.42 짜리 가로 띠가 됐다 — 화면에서 본 "작게 박힌 영상"이
+   그것이다. 누끼용 세로 슬롯을 걷어내고 더 작은 띠로 바꾼 셈이었다.
+   프레임이 비율을 정하고, 영상은 그 프레임을 채운다. */
+.theme-preview-frame__scene {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  max-width: none;
+  max-height: none;
+  aspect-ratio: auto;
+}
+
+/* 구운 장면은 **잘라서 채운다**(cover). contain 은 위아래에 검은 띠를 만들고,
+   그 띠가 곧 "영상이 작게 박혀 있다"로 보인다. 잘리는 쪽은 좌우다 —
+   16:9 장면을 3:4 프레임에 넣기 때문이고, 그 비율 차이 자체는 별개 과제다. */
+.theme-preview-frame__scene .idle-loop-video__raw,
+.theme-preview-frame__scene > video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
 }
 
 .preview-adjust-track {
