@@ -135,6 +135,38 @@ async def get_package(order_id: str) -> Optional[ProductionPackage]:
     return _to_pkg(row) if row else None
 
 
+async def get_packages(order_ids: list[str]) -> dict[str, ProductionPackage]:
+    """
+    여러 주문의 패키지를 **한 번에** 읽는다.
+
+    운영 목록이 주문마다 상세를 부르면 화면 한 번에 N 개의 요청이 나간다. 목록에
+    필요한 것은 "손댈 일이 있는가"뿐이고, 그 판정에 필요한 값(사진 원본 유무)은
+    이 표에 있다 — 한 번의 질의로 충분하다.
+    """
+    ids = [i for i in {(o or "").strip() for o in order_ids} if i]
+    if not ids:
+        return {}
+
+    if _use_db() and _supabase():
+        try:
+            r = (
+                _supabase()
+                .table(_table())
+                .select(_SELECT)
+                .in_("order_id", ids)
+                .execute()
+            )
+            rows = getattr(r, "data", None) or []
+        except Exception:
+            # 목록 보조 정보다. 실패해도 목록 자체를 막지 않는다 —
+            # 그때는 "패키지 없음"으로 보이고, 상세를 열면 정확한 상태가 나온다.
+            logger.warning("생산 패키지 일괄 조회 실패 — 보조 정보 없이 진행", exc_info=True)
+            return {}
+        return {str(row.get("order_id")): _to_pkg(row) for row in rows}
+
+    return {oid: _to_pkg(_MOCK_PACKAGES[oid]) for oid in ids if oid in _MOCK_PACKAGES}
+
+
 async def _resolve_qr(
     order: physical_order.PhysicalOrder, supplied: str | None
 ) -> tuple[Optional[str], Optional[str], str]:
@@ -404,6 +436,9 @@ def manifest(pkg: ProductionPackage) -> dict[str, Any]:
         "card_dpi": print_render.CARD_DPI,
         "letter_page_size": "A5",
         "font_embedded": print_render.font_is_embedded(),
+        # 언어별 준비 상태. 한쪽만 설정된 배포에서 반대 언어 편지가 임베드 없이
+        # 인쇄소로 나가는 것을 운영이 눈으로 잡을 수 있어야 한다.
+        "letter_fonts": print_render.font_report(),
         "recipient": {
             "name": pkg.recipient_name,
             "phone": pkg.recipient_phone,
@@ -443,6 +478,16 @@ async def render_file(pkg: ProductionPackage, kind: str) -> print_render.Rendere
         letter = await soul_trace_letter.get_letter(pkg.soul_trace_letter_id)
         if not letter:
             raise ProductionError("LETTER_MISSING", "편지를 찾을 수 없습니다.", status=409)
+        # 배경은 **우리 스토리지의 사본**에서 가져온다. 저장된 것은 경로이므로
+        # 만료되지 않고, 서명은 여기서 그때그때 만든다. 없으면 스크림 폴백.
+        background = None
+        try:
+            from . import letter_background
+
+            background = await letter_background.load_bytes(letter.letter_background_ref)
+        except Exception:  # noqa: BLE001 — 배경이 인쇄를 막지 않는다
+            logger.warning("편지 배경을 불러오지 못했다 — 스크림으로 인쇄", exc_info=True)
+
         try:
             data = print_render.render_letter_pdf(
                 print_render.LetterContent(
@@ -453,6 +498,7 @@ async def render_file(pkg: ProductionPackage, kind: str) -> print_render.Rendere
                 order_id=pkg.order_id,
                 qr_url=pkg.qr_share_url,
                 qr_png=await _qr_png_for(pkg),
+                background=background,
             )
         except print_render.PrintRenderError as e:
             raise ProductionError(e.code, e.message, status=e.status) from e

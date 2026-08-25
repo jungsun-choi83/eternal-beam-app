@@ -68,6 +68,9 @@ class SourceLetter:
     partner_track: Optional[str] = None
     #: 정산 비율 0..1. 주문 생성 시점에 **얼려서** physical_orders 에 남는다.
     partner_share_rate: Optional[float] = None
+    #: 배경(히어로) **원본** 주소. ⚠️ 임시 URL 이다 — 받는 즉시 복사해야 한다.
+    #: 저장하지 않는다: 저장하는 것은 복사본의 경로(letter_background_ref)다.
+    hero_image_url: Optional[str] = None
 
 
 def api_base() -> str:
@@ -220,6 +223,7 @@ async def fetch_source_letter(
         partner_code=str(data.get("partnerCode") or "").strip() or None,
         partner_track=track,
         partner_share_rate=rate,
+        hero_image_url=str(data.get("heroImageUrl") or "").strip() or None,
     )
 
 

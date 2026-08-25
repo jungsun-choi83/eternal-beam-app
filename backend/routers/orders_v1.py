@@ -28,9 +28,12 @@ from pydantic import BaseModel
 
 from ..auth import AuthedUser, require_user
 from ..services import (
+    letter_background,
+    order_attention,
     physical_checkout,
     physical_order,
     physical_product,
+    production_package,
     shaker_ops,
     soul_trace_import,
     soul_trace_letter,
@@ -154,6 +157,24 @@ async def claim_letter(
     except soul_trace_import.ImportError_ as e:
         raise _http(e) from e
 
+    # ── 배경(히어로) 사본 (Phase 22 → 24) ───────────────────────────────────
+    # **지금** 복사한다. Soul Trace 가 준 주소는 수명이 짧다 — 자기 버킷에서 방금
+    # 발급한 서명(약 10분)이거나, 레거시 편지라면 DALL·E 임시 URL 이다. 인쇄는
+    # 결제·생산 이후 며칠 뒤일 수 있으므로 그때 다시 받는 설계는 성립하지 않는다.
+    # 저장하는 것은 서명 URL 이 아니라 우리 스토리지의 **경로**다.
+    #
+    # 실패해도 편지 가져오기를 막지 않는다: 배경이 없으면 인쇄가 기존 스크림으로
+    # 떨어질 뿐이고(레거시와 같은 경로), 배경 한 장 때문에 편지를 잃는 것이 훨씬 나쁘다.
+    background_ref = None
+    try:
+        background_ref = await letter_background.import_from_source(
+            source_url=source.hero_image_url,
+            user_id=user.user_id,
+            letter_id=soul_trace_letter.derive_letter_id(user.user_id, source.letter_id),
+        )
+    except Exception:  # noqa: BLE001 — 배경은 편지를 막지 않는다
+        logger.warning("편지 배경 복사 실패 — 배경 없이 진행", exc_info=True)
+
     try:
         letter = await soul_trace_letter.link_letter(
             user_id=user.user_id,
@@ -172,6 +193,7 @@ async def claim_letter(
             partner_code=source.partner_code,
             partner_track=source.partner_track,
             partner_share_rate=source.partner_share_rate,
+            letter_background_ref=background_ref,
         )
     except soul_trace_letter.LetterError as e:
         raise _http(e) from e
@@ -417,7 +439,16 @@ class OpsOrderOut(OrderOut):
     partner_name: str | None = None
     partner_code: str | None = None
     partner_track: str | None = None
+    #: ⚠️ **주문 시점 스냅샷**이다. 파트너의 현재 비율이 아니다 — 계약이 바뀌어도
+    #: 이미 결제된 주문의 정산 근거는 움직이지 않는다.
     partner_share_rate: float | None = None
+
+    # ── 목록에서 바로 보이는 처리 필요 여부 ──────────────────────────────
+    # 목록이 주문마다 상세를 부르지 않도록 서버가 판정해 준다. pendingFiles
+    # 전체를 복제하지 않는다 — 목록에 필요한 것은 "손댈 일이 있는가"뿐이다.
+    needs_attention: bool = False
+    attention_code: str | None = None
+    attention_reason: str | None = None
 
 
 class OpsOrdersResponse(BaseModel):
@@ -445,8 +476,14 @@ async def ops_search_orders(
     except physical_order.OrderError as e:
         raise _http(e) from e
 
-    return OpsOrdersResponse(
-        orders=[
+    # 패키지는 **한 번에** 읽는다. 주문마다 상세를 부르면 목록 한 번에 N 개의
+    # 요청이 나가고, 느린 목록은 아무도 보지 않는다.
+    packages = await production_package.get_packages([o.order_id for o in rows])
+
+    out: list[OpsOrderOut] = []
+    for o in rows:
+        att = order_attention.evaluate(o, packages.get(o.order_id))
+        out.append(
             OpsOrderOut(
                 **_order_out(o).model_dump(),
                 user_id=o.user_id,
@@ -461,7 +498,9 @@ async def ops_search_orders(
                 partner_code=o.partner_code,
                 partner_track=o.partner_track,
                 partner_share_rate=o.partner_share_rate,
+                needs_attention=att.needs_attention,
+                attention_code=att.reason_code,
+                attention_reason=att.reason,
             )
-            for o in rows
-        ]
-    )
+        )
+    return OpsOrdersResponse(orders=out)

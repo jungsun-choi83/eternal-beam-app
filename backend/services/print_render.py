@@ -24,9 +24,13 @@ from __future__ import annotations
 
 import io
 import logging
+import math
 import os
+import re
 from dataclasses import dataclass
 from typing import Optional
+
+from . import letter_print_theme as theme
 
 logger = logging.getLogger(__name__)
 
@@ -83,20 +87,51 @@ def letter_font_name() -> str:
     return _FALLBACK_FONT
 
 
-def font_is_embedded() -> bool:
-    """임베드된 TTF 를 쓰고 있는가. 운영 점검용."""
-    path = (os.getenv("PRINT_LETTER_FONT_PATH") or "").strip()
-    return bool(path and os.path.isfile(path))
+def font_is_embedded(language: Optional[str] = None) -> bool:
+    """
+    이 언어의 인쇄가 **임베드된 TTF** 를 쓰는가. 운영 점검용.
+
+    language 를 주지 않으면 두 언어가 **모두** 준비됐을 때만 True 다 — 한쪽만
+    설정된 배포에서 "임베드됨"으로 보고하면, 그 반대 언어 편지가 임베드되지 않은
+    채 인쇄소로 나간다.
+    """
+    if language in ("ko", "en"):
+        return theme.fonts_are_embedded(language)
+    return theme.fonts_are_embedded("ko") and theme.fonts_are_embedded("en")
 
 
-def wrap_korean(text: str, font: str, size: float, max_width: float) -> list[str]:
+def font_report() -> dict:
+    """언어별 폰트 준비 상태 — manifest·운영 화면이 그대로 싣는다."""
+    return {
+        lang: {
+            "expected_stack": list(theme.font_stack_for(lang)),
+            "local_path": theme.font_path_for(lang),
+            "embedded": theme.fonts_are_embedded(lang),
+        }
+        for lang in ("ko", "en")
+    }
+
+
+def wrap_korean(
+    text: str, font: str, size: float, max_width: float, *, char_space: float = 0.0
+) -> list[str]:
     """
     한글 줄바꿈. **글자 단위**로 자른다.
 
     공백 단위로만 자르면 한국어에서 거의 동작하지 않는다 — 한 어절이 줄 폭을
     넘으면 그대로 넘쳐 재단선 밖으로 나간다. 영어 단어는 가능한 한 붙여 둔다.
+
+    char_space 는 자간(letter-spacing)이다. 영문 편지는 Marcellus 를 0.3em 으로
+    조판하는데(`.font-display-en`), 그 폭을 무시하면 줄이 재단선 밖으로 나간다 —
+    한 줄에 들어가는 글자 수가 실제보다 30% 많게 계산되기 때문이다.
+
+    빈 줄(문단 사이)은 그대로 보존한다 — `whitespace-pre-line` 과 같은 동작이고,
+    편지의 문단 구조가 인쇄에서도 유지되는 근거다.
     """
     from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    def _w(sample: str) -> float:
+        return stringWidth(sample, font, size) + char_space * max(0, len(sample) - 1)
 
     lines: list[str] = []
     for para in (text or "").split("\n"):
@@ -106,7 +141,7 @@ def wrap_korean(text: str, font: str, size: float, max_width: float) -> list[str
         cur = ""
         for ch in para:
             trial = cur + ch
-            if stringWidth(trial, font, size) <= max_width or not cur:
+            if _w(trial) <= max_width or not cur:
                 cur = trial
             else:
                 lines.append(cur)
@@ -114,6 +149,79 @@ def wrap_korean(text: str, font: str, size: float, max_width: float) -> list[str
         if cur:
             lines.append(cur)
     return lines
+
+
+def wrap_with_hanging_indent(
+    text: str,
+    font: str,
+    size: float,
+    *,
+    full_width: float,
+    first_width: float,
+    first_lines: int,
+    char_space: float = 0.0,
+) -> list[tuple[str, bool]]:
+    """
+    첫 N 줄만 좁은 폭으로 접는다 — `float: left` 한 드롭캡을 인쇄로 옮긴 것.
+
+    돌려주는 값은 `(줄, 들여쓸 것인가)`.
+
+    ── 왜 '잘라서 이어 붙이기' 로는 안 되는가 ──────────────────────────────
+    처음에는 좁은 폭으로 한 번 접고, 소비한 글자 수만큼 원문을 잘라 나머지를 다시
+    접었다. 그런데 줄바꿈 함수는 문단 구분자(newline)를 **결과에 남기지 않는다.**
+    그래서 join 한 문자열이 원문의 접두사와 길이가 달랐고, 자른 위치가 문단
+    개수만큼 밀렸다 — 실측에서 세 번째 줄 앞에 공백이 새고 글자가 밀렸다.
+
+    한 번에 걸어가면서 줄 번호에 따라 폭만 바꾸면 그 오차가 아예 생기지 않는다.
+    """
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    def _w(sample: str) -> float:
+        return stringWidth(sample, font, size) + char_space * max(0, len(sample) - 1)
+
+    out: list[tuple[str, bool]] = []
+
+    def _limit() -> tuple[float, bool]:
+        indented = len(out) < first_lines
+        return (first_width if indented else full_width), indented
+
+    def _emit(line: str) -> None:
+        _, indented = _limit()
+        out.append((line, indented))
+
+    for para in (text or "").split("\n"):
+        if not para.strip():
+            _emit("")
+            continue
+
+        # ── 어절 단위로 접는다 (`word-break: keep-all`) ──────────────────
+        # 화면은 한국어에 `break-keep` 을 걸고 영어에는 기본 워드랩을 쓴다 —
+        # 둘 다 **공백에서만** 줄이 바뀐다는 뜻이다. 글자 단위로 접으면
+        # "발소리를" 이 "발소리|를" 로, "footsteps" 가 "foots|teps" 로 갈라져
+        # 화면과 줄 리듬이 완전히 달라진다(실측으로 드러난 차이다).
+        tokens = re.findall(r"\S+\s*", para)
+        cur = ""
+        for tok in tokens:
+            width, _ = _limit()
+            trial = cur + tok
+            if _w(trial.rstrip()) <= width or not cur.strip():
+                cur = trial
+                # 한 어절이 줄 폭보다 길면(긴 URL·합성어) 그때만 강제로 자른다.
+                while _w(cur.rstrip()) > width and len(cur.strip()) > 1:
+                    keep = cur
+                    while keep and _w(keep) > width:
+                        keep = keep[:-1]
+                    if not keep:
+                        break
+                    _emit(keep)
+                    cur = cur[len(keep):]
+                    width, _ = _limit()
+            else:
+                _emit(cur.rstrip())
+                cur = tok
+        if cur.strip():
+            _emit(cur.rstrip())
+    return out
 
 
 @dataclass(frozen=True)
@@ -125,17 +233,295 @@ class LetterContent:
     kicker: Optional[str] = None
 
 
+def _letter_fonts(language: str) -> tuple[str, str]:
+    """
+    (본문 폰트, 디스플레이 폰트) 등록 이름.
+
+    두 이름을 나누는 이유: 한국어 편지에서도 아이브로우(kicker)는 웹에서
+    `.font-display-en` 을 쓴다(대문자 + 넓은 자간). 실제 화면이 그렇게 생겼다.
+    """
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    def _register(path: Optional[str], name: str) -> Optional[str]:
+        if not path:
+            return None
+        try:
+            if name not in pdfmetrics.getRegisteredFontNames():
+                pdfmetrics.registerFont(TTFont(name, path))
+            return name
+        except Exception:
+            logger.warning("인쇄 폰트 등록 실패 — 대체 폰트로 진행 (%s)", path)
+            return None
+
+    body = _register(theme.font_path_for(language), f"EBLetter-{language}")
+    display = _register(theme.font_path_for("en"), "EBLetter-en") or body
+
+    if body is None:
+        # 내장 CID 로 떨어진다. 렌더는 되지만 **임베드되지 않는다** —
+        # 인쇄소 RIP 에 해당 리소스가 없으면 글자가 대체된다.
+        if _FALLBACK_FONT not in pdfmetrics.getRegisteredFontNames():
+            pdfmetrics.registerFont(UnicodeCIDFont(_FALLBACK_FONT))
+        body = _FALLBACK_FONT
+    return body, (display or body)
+
+
+def _fill(c, rgb: tuple, alpha: float = 1.0) -> None:
+    c.setFillColorRGB(*rgb)
+    c.setFillAlpha(alpha)
+
+
+def composite_letter_background(
+    hero: bytes, width_pt: float, height_pt: float, dpi: int = 300
+) -> Optional[bytes]:
+    """
+    히어로 사진 + 화면과 **같은 두 겹의 스크림** → 불투명 JPEG 한 장.
+
+    ── 왜 PDF 그라데이션이 아니라 픽셀 합성인가 ────────────────────────────
+    PDF 에는 **정지점별 알파가 없다.** 알파는 그래픽 상태라 한 번에 하나뿐이다.
+    그래서 처음에는 페이지를 가로 띠로 잘라 띠마다 알파를 조금씩 다르게 칠했다.
+    두 번 실패했다:
+      1) 띠가 적으면 알파가 툭 끊겨 지면 한가운데에 가로줄이 보였다
+      2) 촘촘하게 나누니 띠 경계에 **머리카락 같은 틈**이 생겨 밑바탕이 새어
+         나왔다 — 흰 배경 위에서 밝기 차 131까지 측정됐다
+    두 실패 모두 같은 뿌리다: 반투명 사각형을 이어 붙여 연속 그라데이션을
+    흉내 내는 것 자체가 무리다.
+
+    브라우저는 이런 일을 하지 않는다 — 픽셀마다 알파를 곱해 합성한다.
+    여기서도 그렇게 한다. 수학적으로 정확하고, 띠도 틈도 없고, 결과는 알파가
+    없는 평범한 JPEG 이라 PDF 가 그대로 그릴 수 있다.
+    """
+    try:
+        from PIL import Image
+    except ImportError:
+        return None
+
+    try:
+        target_w = max(1, int(round(width_pt / 72.0 * dpi)))
+        target_h = max(1, int(round(height_pt / 72.0 * dpi)))
+
+        im = Image.open(io.BytesIO(hero))
+        im = im.convert("RGB")
+
+        # 전면 채우기(cover) — contain 은 재단선 안에 흰 띠를 남긴다.
+        ratio = max(target_w / im.width, target_h / im.height)
+        im = im.resize(
+            (max(1, int(round(im.width * ratio))), max(1, int(round(im.height * ratio)))),
+            Image.Resampling.LANCZOS,
+        )
+        left = (im.width - target_w) // 2
+        top = (im.height - target_h) // 2
+        im = im.crop((left, top, left + target_w, top + target_h))
+
+        im = _apply_scrims(im, (theme.HERO_OVERLAY, theme.TEXT_SCRIM))
+
+        out = io.BytesIO()
+        im.save(out, format="JPEG", quality=92)
+        return out.getvalue()
+    except Exception:
+        logger.warning("편지 배경 합성 실패 — 스크림 폴백", exc_info=True)
+        return None
+
+
+def _scrim_columns(h: int, stops):
+    """행마다의 (색, 알파) — 화면 CSS 그라데이션과 같은 선형 보간."""
+    rows = []
+    for y in range(h):
+        t = y / max(1, h - 1)
+        for k in range(len(stops) - 1):
+            p0, (c0, a0) = stops[k]
+            p1, (c1, a1) = stops[k + 1]
+            if t <= p1 or k == len(stops) - 2:
+                span = (p1 - p0) or 1.0
+                u = min(1.0, max(0.0, (t - p0) / span))
+                rows.append((
+                    tuple(c0[i] + (c1[i] - c0[i]) * u for i in range(3)),
+                    a0 + (a1 - a0) * u,
+                ))
+                break
+    return rows
+
+
+def _apply_scrims(im, layers):
+    """
+    여러 겹의 세로 스크림을 이미지에 곱해 넣는다. `out = src·(1-a) + overlay·a`.
+
+    numpy 가 있으면 벡터 연산으로 한 번에 처리한다 — A5 300dpi 는 430만 픽셀이고,
+    픽셀마다 파이썬 루프를 돌면 한 장에 4초쯤 걸린다. 운영자가 편지를 내려받을
+    때마다 그만큼 기다리게 할 이유가 없다. numpy 가 없으면 느리지만 같은 결과를
+    내는 순수 PIL 경로로 떨어진다.
+    """
+    w, h = im.size
+    try:
+        import numpy as np
+
+        arr = np.asarray(im, dtype=np.float32)
+        for stops in layers:
+            rows = _scrim_columns(h, stops)
+            colors = np.array([r[0] for r in rows], dtype=np.float32) * 255.0  # (h,3)
+            alphas = np.array([r[1] for r in rows], dtype=np.float32)[:, None]  # (h,1)
+            arr = arr * (1.0 - alphas)[:, :, None] + (colors * alphas)[:, None, :]
+        from PIL import Image
+
+        return Image.fromarray(np.clip(arr, 0, 255).astype("uint8"), "RGB")
+    except ImportError:
+        px = im.load()
+        for stops in layers:
+            rows = _scrim_columns(h, stops)
+            for y in range(h):
+                (r0, g0, b0), a = rows[y]
+                if a <= 0:
+                    continue
+                inv = 1.0 - a
+                orr, org, orb = r0 * 255.0 * a, g0 * 255.0 * a, b0 * 255.0 * a
+                for x in range(w):
+                    r, g, b = px[x, y]
+                    px[x, y] = (int(r * inv + orr), int(g * inv + org), int(b * inv + orb))
+        return im
+
+
+def _draw_background(
+    c, width: float, height: float, hero: Optional[bytes] = None
+) -> None:
+    """
+    화면과 **같은 배경**: 히어로 사진 → 그 위에 정확한 스크림 두 겹.
+
+    화면은 사진 위에 두 번 어둡게 한다:
+      1) 이미지 전체 오버레이  from-black/.42 via-black/.14 to-black/.48
+      2) 텍스트 영역 스크림    rgba(10,11,14,.78) → (8,9,11,.58) → (7,8,10,.72)
+    한 겹만 옮기면 밝은 하늘 부분에서 본문이 사라진다 — 글자가 읽히는 것은 두
+    겹이 겹친 결과다.
+
+    히어로가 없으면(레거시 편지·복사 실패) 예전처럼 스크림 색만 칠한다 —
+    그때의 인쇄물과 같은 결과가 나온다.
+    """
+    c.saveState()
+
+    if hero:
+        composed = composite_letter_background(hero, width, height)
+        if composed:
+            try:
+                from reportlab.lib.utils import ImageReader
+
+                # 이미 페이지 비율로 잘라 두었으므로 그대로 채운다.
+                c.drawImage(
+                    ImageReader(io.BytesIO(composed)), 0, 0, width=width, height=height
+                )
+                c.restoreState()
+                return
+            except Exception:
+                logger.warning("편지 배경을 그리지 못했다 — 스크림으로 진행", exc_info=True)
+
+    stops = theme.BG_GRADIENT
+    c.linearGradient(
+        0, height, 0, 0,
+        [rgb for _, rgb in stops],
+        positions=[pos for pos, _ in stops],
+        extend=True,
+    )
+    c.restoreState()
+
+
+def _draw_centered(c, text: str, *, font: str, size: float, y: float,
+                   width: float, rgb: tuple, alpha: float = 1.0,
+                   tracking_em: float = 0.0, upper: bool = False) -> None:
+    """가운데 정렬 한 줄. 자간(tracking)까지 화면과 같게 맞춘다."""
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    s = (text or "").strip()
+    if not s:
+        return
+    if upper:
+        s = s.upper()
+    char_space = size * tracking_em
+    # 자간은 **글자 사이**에만 들어간다. 마지막 글자 뒤의 여분을 빼야 가운데가 맞는다.
+    w = stringWidth(s, font, size) + char_space * max(0, len(s) - 1)
+    t = c.beginText((width - w) / 2.0, y)
+    t.setFont(font, size)
+    if char_space:
+        t.setCharSpace(char_space)
+    _fill(c, rgb, alpha)
+    t.textOut(s)
+    c.drawText(t)
+    c.setFillAlpha(1.0)
+
+
+def _draw_divider(c, *, y: float, width: float, max_w: float) -> None:
+    """
+    금색 헤어라인. 화면은 양끝이 투명으로 사라지는 그라데이션이다
+    (`from-transparent via-[#D4AF37]/32 to-transparent`).
+    """
+    x0 = (width - max_w) / 2.0
+    c.saveState()
+    p = c.beginPath()
+    p.rect(x0, y, max_w, 0.5)
+    c.clipPath(p, stroke=0, fill=0)
+    # 양끝은 **투명**이다(`from-transparent ... to-transparent`). PDF 그라데이션에는
+    # 정지점별 알파가 없으므로, 어두운 배경 위에서 같은 결과가 나오도록 끝을
+    # 배경색으로 두고 가운데를 금색 32% 로 합성한다.
+    bg = theme.BG_GRADIENT[1][1]
+    gold = theme.COLOR_GOLD
+    mid = tuple(gold[i] * theme.ALPHA_DIVIDER + bg[i] * (1 - theme.ALPHA_DIVIDER) for i in range(3))
+    c.linearGradient(
+        x0, y, x0 + max_w, y,
+        [bg, mid, bg],
+        positions=[0.0, 0.5, 1.0],
+        extend=True,
+    )
+    c.restoreState()
+
+
+def _draw_drop_cap(c, ch: str, *, font: str, size: float, x: float, baseline: float) -> float:
+    """
+    금박 그라데이션 첫 글자. **글자 모양으로 클립한 뒤** 그라데이션을 칠한다 —
+    `.drop-cap` 의 `background-clip: text` 를 PDF 로 옮긴 것이다.
+
+    돌려주는 값은 글자 폭(자간·오른쪽 여백 제외).
+    """
+    from reportlab.pdfbase.pdfmetrics import stringWidth
+
+    w = stringWidth(ch, font, size)
+    c.saveState()
+    t = c.beginText(x, baseline)
+    t.setFont(font, size)
+    t.setTextRenderMode(7)  # 7 = 그리지 않고 클립 경로에 더한다
+    t.textOut(ch)
+    c.drawText(t)
+    stops = theme.DROPCAP_GRADIENT
+    # 145deg — 좌상 → 우하. 글자 상자를 대각으로 가로지른다.
+    c.linearGradient(
+        x, baseline + size * theme.DROPCAP_LINE_HEIGHT, x + w, baseline,
+        [rgb for _, rgb in stops],
+        positions=[pos for pos, _ in stops],
+        extend=True,
+    )
+    c.restoreState()
+    return w
+
+
 def render_letter_pdf(
     content: LetterContent,
     *,
     order_id: str,
     qr_url: Optional[str] = None,
     qr_png: Optional[bytes] = None,
+    language: Optional[str] = None,
+    background: Optional[bytes] = None,
 ) -> bytes:
     """
-    A5 편지 PDF (148×210mm).
+    A5 편지 PDF (148×210mm) — **Soul Trace 최종 화면과 같은 디자인.**
 
-    QR 을 편지 하단에 넣는다 — 편지 상품의 QR 이 여기다(별도 카드가 없다).
+    ── 템플릿은 하나다 ─────────────────────────────────────────────────────
+    LETTER 와 MEMORY_BOX 가 같은 함수를 쓴다. Living/Memorial 도 갈리지 않는다 —
+    두 갈래는 화면에서도 **같은 렌더러**를 쓰고 문장만 다르며, 그 문장은 이미
+    스냅샷으로 넘어왔다. 갈리는 축은 언어 하나뿐이다(글꼴·자간이 실제로 다르다).
+
+    language 를 넘기지 않으면 본문에서 판정한다 — 과거 주문도 같은 규칙으로
+    같은 렌더러를 탄다.
+
+    background 는 편지의 히어로 이미지 바이트다. 없으면(레거시 편지·복사 실패)
+    예전처럼 어두운 스크림만 칠한다 — 그때의 인쇄물과 같은 결과다.
     """
     body = (content.body or "").strip()
     if not body:
@@ -145,54 +531,117 @@ def render_letter_pdf(
     from reportlab.lib.pagesizes import A5
     from reportlab.pdfgen import canvas
 
-    font = letter_font_name()
+    lang = language if language in ("ko", "en") else theme.detect_language(body)
+    body_font, display_font = _letter_fonts(lang)
+    typo = theme.typography_for(lang, body_font=body_font, display_font=display_font)
+
     buf = io.BytesIO()
     # invariant=1 이 **결정성의 핵심**이다. 기본값에서는 reportlab 이 /CreationDate 와
     # 문서 ID 를 매번 새로 박아, 같은 편지를 두 번 렌더하면 바이트가 달라진다.
-    # 그러면 "파일을 저장하지 않고 입력만 스냅샷한다"는 설계 전제가 무너지고,
-    # "재출력했더니 달라졌다"를 진단할 수 없다. (실측으로 드러난 결함이다.)
     c = canvas.Canvas(buf, pagesize=A5, invariant=1)
     c.setTitle(f"Eternal Beam Letter {order_id}")
     c.setAuthor("Eternal Beam")
 
     width, height = A5
-    margin = _mm(18)
+    margin = _mm(theme.MARGIN_MM)
     text_width = width - margin * 2
-    y = height - margin - _mm(6)
 
+    _draw_background(c, width, height, background)
+
+    y = height - margin - _mm(4)
+
+    # ── 아이브로우 (kicker) — 화면은 .font-display-en + 대문자 + 0.42em ────
     if content.kicker:
-        c.setFont(font, 9)
-        c.setFillGray(0.45)
-        c.drawString(margin, y, content.kicker.strip())
-        y -= _mm(8)
+        size = typo.size(theme.RATIO_EYEBROW)
+        _draw_centered(
+            c, content.kicker, font=display_font, size=size, y=y, width=width,
+            rgb=theme.COLOR_GOLD, alpha=theme.ALPHA_EYEBROW,
+            tracking_em=theme.EYEBROW_TRACKING_EM, upper=True,
+        )
+        # space-y-5(20px) 를 본문 비율로 옮기고, 제목의 대문자 높이를 더한다.
+        y -= typo.body_pt * (20.0 / theme.WEB_BODY_PX) + typo.size(theme.RATIO_TITLE) * 0.82
 
+    # ── 제목 (아이 이름) — 화면 h1 자리 ───────────────────────────────────
     if content.child_name:
-        c.setFont(font, 16)
-        c.setFillGray(0.1)
-        c.drawString(margin, y, content.child_name.strip())
-        y -= _mm(12)
+        size = typo.size(theme.RATIO_TITLE)
+        _draw_centered(
+            c, content.child_name, font=body_font, size=size, y=y, width=width,
+            rgb=theme.COLOR_TITLE, tracking_em=typo.tracking_em,
+        )
+        y -= size * theme.TITLE_LINE_HEIGHT
 
-    c.setFont(font, 11)
-    c.setFillGray(0.15)
-    leading = _mm(6.4)
-    bottom_limit = margin + _mm(34)  # QR 자리를 남긴다
-    for line in wrap_korean(body, font, 11, text_width):
+    # ── 금색 헤어라인 (max-w-xl) ──────────────────────────────────────────
+    y -= _mm(4)
+    _draw_divider(c, y=y, width=width, max_w=text_width * 0.86)
+    y -= _mm(9)
+
+    # ── 본문 ───────────────────────────────────────────────────────────────
+    size = typo.body_pt
+    leading = typo.body_leading
+    char_space = typo.body_char_space
+    bottom_limit = margin + _mm(34) if (qr_png or qr_url) else margin + _mm(6)
+
+    cap_size = typo.size(theme.RATIO_DROPCAP)
+    cap_char = body[0] if body[:1].strip() else ""
+    rest = body[1:] if cap_char else body
+    # `float: left` 를 인쇄로 옮긴다 — 첫 글자가 차지하는 높이만큼의 줄을 들여쓴다.
+    cap_height = cap_size * theme.DROPCAP_LINE_HEIGHT
+    indent_lines = int(math.ceil(cap_height / leading)) if cap_char else 0
+
+    cap_advance = 0.0
+    if cap_char:
+        from reportlab.pdfbase.pdfmetrics import stringWidth
+
+        cap_advance = stringWidth(cap_char, body_font, cap_size) + cap_size * theme.DROPCAP_MARGIN_RIGHT_EM
+
+    wrapped = wrap_with_hanging_indent(
+        rest,
+        body_font,
+        size,
+        full_width=text_width,
+        first_width=text_width - cap_advance,
+        first_lines=indent_lines,
+        char_space=char_space,
+    )
+    lines = [(ln, cap_advance if ind else 0.0) for ln, ind in wrapped]
+
+    first_baseline = y - size
+    if cap_char:
+        # margin-top: 0.06em — 화면과 같은 만큼 아래로 민다.
+        cap_baseline = first_baseline - (cap_height - size) + cap_size * theme.DROPCAP_MARGIN_TOP_EM
+        _draw_drop_cap(
+            c, cap_char, font=body_font, size=cap_size, x=margin, baseline=cap_baseline
+        )
+
+    y = first_baseline
+    for line, indent in lines:
         if y < bottom_limit:
             c.showPage()
-            c.setFont(font, 11)
-            c.setFillGray(0.15)
-            y = height - margin
-        c.drawString(margin, y, line)
+            _draw_background(c, width, height, background)
+            y = height - margin - size
+        t = c.beginText(margin + indent, y)
+        t.setFont(body_font, size)
+        if char_space:
+            t.setCharSpace(char_space)
+        _fill(c, theme.COLOR_BODY)
+        t.textOut(line)
+        c.drawText(t)
         y -= leading
 
     # 보관된 산출물(qr_png)이 있으면 **그것을 쓴다.** 다시 렌더하지 않는 이유:
     # 이미 인쇄된 QR 과 같은 바이트여야 하기 때문이다(Phase 13.1).
     if qr_png or qr_url:
         _draw_qr(c, qr_url, x=margin, y=margin + _mm(2), size=_mm(24), qr_png=qr_png)
-        c.setFont(font, 7.5)
-        c.setFillGray(0.5)
-        c.drawString(margin + _mm(28), margin + _mm(12), "휴대폰으로 스캔하면")
-        c.drawString(margin + _mm(28), margin + _mm(7.5), "아이를 다시 만날 수 있어요.")
+        cap = typo.size(theme.RATIO_TAGS)
+        c.setFont(body_font, cap)
+        _fill(c, theme.COLOR_TAGS, theme.ALPHA_TAGS)
+        if lang == "ko":
+            c.drawString(margin + _mm(28), margin + _mm(12), "휴대폰으로 스캔하면")
+            c.drawString(margin + _mm(28), margin + _mm(7.5), "아이를 다시 만날 수 있어요.")
+        else:
+            c.drawString(margin + _mm(28), margin + _mm(12), "Scan with your phone")
+            c.drawString(margin + _mm(28), margin + _mm(7.5), "to meet them again.")
+        c.setFillAlpha(1.0)
 
     c.showPage()
     c.save()

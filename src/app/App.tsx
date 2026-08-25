@@ -1,11 +1,12 @@
-import { ShakerOpsScreen } from '@/components/memorial/shaker-ops-screen'
-import { OpsProductionScreen } from '@/components/memorial/ops-production-screen'
 import { ThemePurchaseReturnScreen } from '@/components/memorial/theme-purchase-return-screen'
 import { SoulTraceImportScreen } from '@/components/memorial/soul-trace-import-screen'
 import { ShakerScreen } from '@/components/memorial/shaker-screen'
 import { isShakerEntry } from '@/lib/shaker-entry'
-import { OpsPartnersScreen } from '@/components/memorial/ops-partners-screen'
-import { isOpsPartnersEntry, isOpsProductionEntry, isOpsShakerEntry } from '@/lib/shaker-ops-entry'
+import { OpsDashboardScreen } from '@/components/memorial/ops/ops-dashboard-screen'
+import { OpsOrdersScreen } from '@/components/memorial/ops/ops-orders-screen'
+import { OpsPartnersScreen } from '@/components/memorial/ops/ops-partners-screen'
+import { OpsShakerScreen } from '@/components/memorial/ops/ops-shaker-screen'
+import { currentOpsRoute } from '@/lib/ops-nav'
 import { orderReturnEntry, themeReturnEntry } from '@/lib/app-entry'
 import { isSoulTraceImportEntry, peekSoulTraceHandoffState } from '@/lib/soul-trace-handoff'
 import { EternalBeamApp } from './EternalBeamApp'
@@ -37,9 +38,14 @@ export default function App() {
   // effect 가 전부 붙고, 그 사이에 1회용 토큰이 든 URL 이 살아 있게 된다.
   if (isSoulTraceImportEntry(window.location.pathname)) return <SoulTraceImportScreen />
   if (themeReturnEntry()) return <ThemePurchaseReturnScreen />
-  if (isOpsPartnersEntry()) return <OpsPartnersScreen />
-  if (isOpsProductionEntry()) return <OpsProductionScreen />
-  if (isOpsShakerEntry()) return <ShakerOpsScreen />
+  // Ops 워크스페이스 — 한 곳에서 경로를 판정한다(lib/ops-nav.ts).
+  // 예전에는 화면마다 별도 진입 헬퍼가 있었고 `/ops` 와 `/ops/search` 가 같은
+  // 화면으로 접혀 스태프에게 두 개념처럼 보였다.
+  const opsRoute = currentOpsRoute()
+  if (opsRoute === 'dashboard') return <OpsDashboardScreen />
+  if (opsRoute === 'orders') return <OpsOrdersScreen />
+  if (opsRoute === 'partners') return <OpsPartnersScreen />
+  if (opsRoute === 'shaker') return <OpsShakerScreen />
   if (isShakerEntry()) return <ShakerScreen />
 
   // ── 이메일 확인 탭에서 돌아온 경우 ────────────────────────────────────────
