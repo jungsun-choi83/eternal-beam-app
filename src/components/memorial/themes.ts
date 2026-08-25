@@ -38,11 +38,53 @@ export function getThemeFloorY(theme: MemorialTheme | null | undefined): number 
   return Math.min(1, Math.max(0.5, v));
 }
 
-/** "내 사진으로 나만의 배경 만들기" 테마의 고정 id/key — 여러 파일에서 참조하므로 상수로 노출. */
-export const CUSTOM_PHOTO_BG_THEME_ID = 9;
+/**
+ * "내 사진으로 나만의 배경 만들기" 테마의 고정 id/key.
+ *
+ * ⚠️ **10 이다. 9 가 아니다.** 9 는 Beach 가 이미 쓰고 있었고, getMemorialTheme 은
+ * `.find()` 라 배열에서 먼저 나오는 Beach 를 돌려줬다. 그 결과 이 테마는 id 로는
+ * **영영 조회되지 않았다** — persistThemeChoice(CUSTOM_PHOTO_BG_THEME_ID) 가
+ * localStorage 에 9 를 쓰면, 그것을 되읽는 모든 화면이 Beach 를 그렸다.
+ *
+ * 고치는 방향을 이쪽으로 잡은 이유: Beach 의 id 를 바꾸면 이미 9 를 저장해 둔
+ * 사용자의 테마가 통째로 옮겨간다. 이쪽을 옮기면 저장된 9 는 예전과 똑같이
+ * Beach 로 읽히고(동작 변화 없음), 앞으로의 커스텀 배경만 제대로 조회된다.
+ */
+export const CUSTOM_PHOTO_BG_THEME_ID = 10;
 export const CUSTOM_PHOTO_BG_THEME_KEY = "custom_photo_bg";
 
+/**
+ * "원본 사진 그대로" — 업로드한 사진의 배경을 그대로 쓴다.
+ *
+ * 이것을 **테마 목록 안에** 두는 이유: 배경은 한 곳에서만 골라야 한다. 별도의
+ * "배경 종류" 단계를 만들면 고객이 두 번 고르게 되고, 두 선택이 어긋날 수 있다
+ * (테마는 숲인데 배경 종류는 원본, 같은 상태).
+ *
+ * 이 갈래에서는 **재배치가 없다.** 원본 사진에는 아이가 이미 원래 자리에, 원래
+ * 크기로 들어 있고, 그것이 가장 정확한 "원래 장면"이다. 누끼를 다시 얹으면
+ * 경계와 그림자가 원본과 미세하게 어긋난다.
+ */
+export const ORIGINAL_PHOTO_THEME_ID = 11;
+export const ORIGINAL_PHOTO_THEME_KEY = "original_photo";
+
 export const memorialThemes: MemorialTheme[] = [
+  {
+    // 목록 맨 앞 — 누끼 직후 고객이 가장 먼저 보는 선택지다.
+    id: ORIGINAL_PHOTO_THEME_ID,
+    name: "Original Photo",
+    nameKo: "원본 사진 그대로",
+    themeKey: ORIGINAL_PHOTO_THEME_KEY,
+    gradient: "from-stone-800 via-neutral-800 to-black",
+    accent: "#d6cbb8",
+    premium: false,
+    price: "",
+    // 썸네일은 업로드한 사진 자체다. 화면이 원본을 알고 있으므로 여기서는
+    // 자리표시자만 둔다 — 고정 에셋을 두면 다른 사진처럼 보인다.
+    thumb: "",
+    // bgVideo 없음: 배경이 곧 원본 사진이라 고정 영상 자산이 없다.
+    // requiresGeneration 도 아니다 — 생성 화면을 거치지 않고 바로 쓸 수 있다.
+    floorY: 1,
+  },
   {
     id: 8,
     name: "Forest",

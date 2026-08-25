@@ -19,6 +19,18 @@ import { IdleLoopVideo } from "@/components/memorial/idle-loop-video";
 import { usePetGrounding } from "@/components/memorial/use-pet-grounding";
 import { subjectTransform } from "@/lib/pet-grounding";
 import {
+  buildCanonicalScene,
+  readOriginalPhoto,
+  resolveSceneBackground,
+} from "@/lib/build-canonical-scene";
+import { ORIGINAL_PHOTO_THEME_KEY } from "@/components/memorial/themes";
+import type { CanonicalScene } from "@/lib/canonical-scene";
+import {
+  isSceneError,
+  sceneErrorMessage,
+  serverGenerationMessage,
+} from "@/lib/scene-errors";
+import {
   registeredIdleEvents,
   type IdleEvent,
   type PetRuntimeTrigger,
@@ -141,6 +153,15 @@ function PreviewScreenInner({
     (previewThemeId != null ? getMemorialTheme(previewThemeId) : undefined) ??
     getMemorialTheme(DEFAULT_THEME_ID)!;
   const previewBgVideo = getEffectiveBgVideo(currentTheme);
+  /**
+   * "원본 사진 그대로" 갈래.
+   *
+   * 이 갈래에서는 **피사체 레이어를 그리지 않는다.** 원본 사진에 아이가 이미
+   * 들어 있으므로 누끼를 위에 얹으면 같은 아이가 두 번 보인다(살짝 어긋난 채로).
+   * 배치 조절도 의미가 없다 — 원래 구도가 곧 승인된 구도다.
+   */
+  const isOriginalPhotoTheme = currentTheme.themeKey === ORIGINAL_PHOTO_THEME_KEY;
+  const originalPhoto = isOriginalPhotoTheme ? readOriginalPhoto() : null;
   const settingsRef = useRef(settings);
   const displaySettingsRef = useRef(settings);
   const subjectLayerRef = useRef<HTMLDivElement>(null);
@@ -406,12 +427,57 @@ function PreviewScreenInner({
         throw new Error(p.generateMissingCutout);
       }
 
+      // ── 승인된 장면을 굽는다 ─────────────────────────────────────────
+      // 여기가 "고객이 승인한 그림"이 존재하는 유일한 순간이다. 지금 굽지 않으면
+      // 프로바이더는 배경을 영영 보지 못한다.
+      //
+      // ⚠️ **배경을 골랐는데 굽지 못하면 멈춘다** (Phase 20). 예전에는 검정 판으로
+      // 조용히 떨어져 그대로 생성했고, 고객은 고른 적 없는 배경의 영상을 받은 채
+      // 돈만 나갔다. 장면 실패는 제출 **전**이므로 공짜로 복구할 수 있다 —
+      // 그 기회를 없애고 유료 생성으로 넘어가면 안 된다.
+      //
+      // 배경 선택 단계 자체가 없는 레거시 흐름(previewThemeId == null)에서만
+      // 예전 누끼 전용 경로가 허용된다.
+      const userId = getEternalBeamUserId();
+      const backgroundWasChosen = previewThemeId != null;
+      let scene: CanonicalScene | null = null;
+      try {
+        scene = await buildCanonicalScene({
+          userId,
+          contentId: meta.contentId,
+          petCutoutUrl: meta.displayUrl,
+          placement: {
+            scale: displaySettings.scale,
+            posX: displaySettings.posX,
+            posY: displaySettings.posY,
+            // 미리보기가 **실제로 적용한** 보정값. 다시 계산하지 않는다.
+            shiftPct: subjectShiftPct,
+          },
+          floorY,
+          background: resolveSceneBackground(currentTheme),
+          // 피사체 레이어는 inset-0 이라 그 높이가 곧 프레임 높이다
+          // (pet-grounding.ts 의 % 기준과 같다).
+          previewFrameHeight: subjectLayerRef.current?.clientHeight,
+          requireBackground: backgroundWasChosen,
+        });
+      } catch (e) {
+        if (backgroundWasChosen) {
+          // **제출하지 않는다.** 과금되지 않았음을 문구로도 분명히 한다.
+          const code = isSceneError(e) ? e.code : "SCENE_PREPARATION_FAILED";
+          console.warn("[preview] 장면 준비 실패 — 생성하지 않는다", code, e);
+          setGenError(sceneErrorMessage(code, language === "en" ? "en" : "ko"));
+          return;
+        }
+        console.warn("[preview] 레거시 흐름 — 장면 없이 생성", e);
+      }
+
       const pet = await requestIdleGeneration({
         cutFile,
         contentId: meta.contentId,
         // idle 과 COME_CLOSER 가 같은 신원 아래 모이게 한다. 넘기지 않으면
         // 백엔드가 'anonymous' 로 저장해 이후 조회가 영영 어긋난다.
-        userId: getEternalBeamUserId(),
+        userId,
+        scene,
       });
 
       const next: StoredPipeline = {
@@ -420,6 +486,10 @@ function PreviewScreenInner({
         dog_only_nobg_url: pet.dog_only_nobg_url || meta.displayUrl,
         idle_video_url: pet.idle_video_url || "",
         action_video_url: pet.action_video_url || "",
+        // 재생 쪽이 배경을 다시 합성하지 않도록 하는 신호. 서버 응답을 정본으로
+        // 삼는다 — 장면을 보냈어도 서버가 쓰지 못했으면 false 로 온다.
+        background_baked: pet.background_baked === true,
+        scene_id: (pet.scene_id as string | null) ?? scene?.sceneId ?? null,
       };
 
       try {
@@ -456,7 +526,21 @@ function PreviewScreenInner({
 
       onComplete();
     } catch (e) {
-      setGenError(e instanceof Error ? e.message : String(e));
+      // 장면 실패와 서버의 **제출 전** 거절(멱등성 불가·이미 진행 중)은
+      // 프로바이더 실패가 아니다. 같은 문구로 뭉뚱그리면 고객이 "다시 생성"을
+      // 눌러 유료 제출을 반복하게 된다.
+      const lang = language === "en" ? "en" : "ko";
+      if (isSceneError(e)) {
+        setGenError(sceneErrorMessage(e.code, lang));
+      } else {
+        const code =
+          (e as { code?: string })?.code ??
+          ((e as { detail?: { code?: string } })?.detail?.code || "");
+        const preSubmission = code ? serverGenerationMessage(code, lang) : null;
+        setGenError(
+          preSubmission ?? (e instanceof Error ? e.message : String(e))
+        );
+      }
     } finally {
       generatingRef.current = false;
       setGenerating(false);
@@ -756,15 +840,20 @@ function PreviewScreenInner({
           ) : (
             <div
               className="absolute inset-0 bg-center bg-cover"
-              style={{ backgroundImage: `url(${currentTheme.thumb})` }}
+              // 원본 갈래의 배경은 **올린 사진 그 자체**다. 미리보기가 이것을
+              // 보여 줘야 "승인한 그림 = 생성될 그림"이 눈으로 확인된다.
+              style={{ backgroundImage: `url(${originalPhoto || currentTheme.thumb})` }}
             />
           )}
-          <div className={`absolute inset-0 bg-gradient-to-b ${currentTheme.gradient} opacity-25`} />
+          {/* 원본 갈래에는 테마 색조를 얹지 않는다 — 사진 색이 그대로여야 한다. */}
+          {!isOriginalPhotoTheme && (
+            <div className={`absolute inset-0 bg-gradient-to-b ${currentTheme.gradient} opacity-25`} />
+          )}
 
           {/* 접지 그림자 — 피사체 레이어의 형제(자식이 아님)라서 호흡 애니메이션을
               따라 흔들리지 않는다. 항상 테마 접지선(floorY) 위에 머무른다.
               가로 이동·크기 조절만 따라간다(세로 드래그는 따라가지 않음 — 땅은 고정). */}
-          {cutoutDisplay && (
+          {cutoutDisplay && !isOriginalPhotoTheme && (
             <div
               className="preview-contact-shadow"
               aria-hidden
@@ -776,8 +865,9 @@ function PreviewScreenInner({
             />
           )}
 
-          {/* Subject with transformations — first composite with selected theme bg */}
-          {cutoutDisplay && (
+          {/* Subject with transformations — first composite with selected theme bg.
+              원본 갈래에서는 그리지 않는다(사진에 아이가 이미 있다). */}
+          {cutoutDisplay && !isOriginalPhotoTheme && (
             <div
               ref={subjectLayerRef}
               className="absolute inset-0 flex items-end justify-center preview-subject-layer"

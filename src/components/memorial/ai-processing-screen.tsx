@@ -62,6 +62,16 @@ export interface StoredPipeline {
   action_video_url: string;
   /** COME_CLOSER (웹 전용 프리미엄 액션). 미생성 시 없음. */
   come_closer_video_url?: string | null;
+  /**
+   * 이 파이프라인의 영상들이 **배경을 이미 담고 있는가** (Phase 19).
+   *
+   * 없거나 false 면 레거시다 — 재생 쪽이 블랙키를 뽑고 테마 배경을 뒤에 깐다.
+   * true 면 그 처리를 **전부 건너뛴다**(baked-playback.ts). 배경을 두 번
+   * 적용하지 않기 위한 유일한 신호다.
+   */
+  background_baked?: boolean;
+  /** 이 영상들이 나온 정본 장면. 이후 행동 생성이 같은 장면을 재사용한다. */
+  scene_id?: string | null;
 }
 
 interface AIProcessingScreenProps {

@@ -30,6 +30,7 @@ async def generate_with_credit(
   selected_place_id: str,
   pet_id: Optional[str] = None,
   webhook_base_url: str,
+  scene_keyframe_url: Optional[str] = None,
 ) -> GenerateWithCreditResponse:
   uid = user_id.strip()
   image_url = pet_image_url.strip()
@@ -48,9 +49,13 @@ async def generate_with_credit(
   )
 
   try:
-    # 제출 전에 한 번만 검정 플레이트로 평탄화한다 (4건이 같은 키프레임을 공유).
-    # 실패하면 원본 URL 을 그대로 쓴다 — 준비 단계가 생성을 막지 않는다.
-    keyframe_url = await prepare_black_plate_keyframe(image_url, session_id)
+    # ── 정본 장면이 있으면 그것이 키프레임이다 ────────────────────────────
+    # 4건이 **같은 그림**을 공유한다는 성질은 그대로다 — 공유하는 그림이 검정
+    # 플레이트에서 승인된 장면으로 바뀔 뿐이다. 그래서 유료 액션들도 BREATHING
+    # 과 같은 배경을 갖는다.
+    scene_url = (scene_keyframe_url or "").strip()
+    background_baked = bool(scene_url)
+    keyframe_url = scene_url or await prepare_black_plate_keyframe(image_url, session_id)
 
     submitted, errors = await submit_place_motion_set(
       session_id=session_id,
@@ -59,6 +64,7 @@ async def generate_with_credit(
       place_key=place_key,
       pet_image_url=keyframe_url,
       webhook_base_url=webhook_base_url,
+      background_baked=background_baked,
     )
   except Exception:
     await refund_credits(uid, cost)

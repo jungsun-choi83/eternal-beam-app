@@ -75,6 +75,10 @@ def _resolve_action(raw: str | None) -> str:
 class ComeCloserRequest(BaseModel):
     user_id: str
     pet_image_url: str
+    #: 정본 장면 키프레임. 있으면 이 그림에서 출발하고 배경이 구워진 채로 나온다.
+    #: (keyframe_url 과 달리 배경 보존 프롬프트가 함께 켜진다.)
+    scene_keyframe_url: str | None = None
+    scene_id: str | None = None
     #: 하위호환으로 받기만 한다. 테마 독립 액션이라 **무시된다** —
     #: 검정 플레이트 위 펫만 생성하므로 결과물이 배경과 무관하기 때문이다.
     selected_place_id: str | None = None
@@ -224,7 +228,13 @@ async def trigger_come_closer(request: Request, body: ComeCloserRequest):
     # 환불액이 0 이라 지갑에 아무 영향이 없다.
     session_id = await motions_svc.create_credit_session(uid, pid, place_key, image_url, 0)
 
-    keyframe_url = (body.keyframe_url or "").strip()
+    # ── 정본 장면 우선 ──────────────────────────────────────────────────────
+    # 장면이 있으면 검정 플레이트를 만들지 않는다. COME_CLOSER 도 BREATHING 과
+    # **같은 그림**에서 출발해야 한 아이의 영상들이 같은 배경을 갖는다.
+    scene_url = (body.scene_keyframe_url or "").strip()
+    background_baked = bool(scene_url)
+
+    keyframe_url = scene_url or (body.keyframe_url or "").strip()
     if not keyframe_url:
         try:
             keyframe_url = await prepare_black_plate_keyframe(image_url, session_id)
@@ -242,7 +252,9 @@ async def trigger_come_closer(request: Request, body: ComeCloserRequest):
     callback_url = f"{api_base}/api/v1/pet/generation-webhook?session_id={session_id}"
 
     provider = resolve_action_provider(action)
-    prompt = build_scenario_prompt(keyframe_url, place_key, action)
+    prompt = build_scenario_prompt(
+        keyframe_url, place_key, action, background_baked=background_baked
+    )
 
     try:
         job = await submit_generation(

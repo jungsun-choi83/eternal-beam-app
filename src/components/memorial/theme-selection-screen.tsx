@@ -9,6 +9,7 @@ import {
 } from "@/components/memorial/ai-processing-screen";
 import {
   freeMemorialThemes,
+  ORIGINAL_PHOTO_THEME_KEY,
   premiumMemorialThemes,
   isPremiumTheme,
   type MemorialTheme,
@@ -16,6 +17,7 @@ import {
 import { resetThemeBackgroundSyncCache } from "@/lib/device-theme-sync";
 import { useThemeOwnership } from "@/components/memorial/use-theme-ownership";
 import { formatPriceKrw, themeRow, type ThemeOffer } from "@/lib/theme-ownership";
+import { readOriginalPhoto } from "@/lib/build-canonical-scene";
 import { CutoutStage } from "@/components/memorial/cutout-stage";
 import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
 
@@ -63,9 +65,18 @@ const ThemeThumb = memo(function ThemeThumb({
   if (!loadImage) {
     return <div className="absolute inset-0 bg-[#141416]" aria-hidden />;
   }
+  // "원본 사진 그대로"의 썸네일은 **고객이 올린 사진 자체**다. 고정 에셋을 두면
+  // 다른 사진처럼 보이고, 고객은 자기 배경이 어떤 것인지 확인할 수 없다.
+  const src =
+    theme.themeKey === ORIGINAL_PHOTO_THEME_KEY
+      ? readOriginalPhoto() || theme.thumb
+      : theme.thumb;
+  if (!src) {
+    return <div className="absolute inset-0 bg-[#141416]" aria-hidden />;
+  }
   return (
     <img
-      src={theme.thumb}
+      src={src}
       alt=""
       loading="lazy"
       decoding="async"

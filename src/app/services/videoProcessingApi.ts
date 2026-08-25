@@ -514,6 +514,12 @@ export async function generatePetVideo(
     skipPreprocessing?: boolean
     /** 아이들(미세 모션)만 생성 — 기본 true. false면 예전처럼 액션도 함께 생성. */
     idleOnly?: boolean
+    /**
+     * 정본 장면 필드 (canonical-scene.sceneFormFields).
+     * 있으면 프로바이더가 이 장면에서 출발하고 배경이 구워진 영상이 나온다.
+     * 없으면 예전 경로 — 백엔드가 누끼를 단색 판에 눌러 붙인다.
+     */
+    scene?: Record<string, string>
   } = {}
 ): Promise<GeneratePetVideoResult> {
   validateVideoApiBase()
@@ -523,6 +529,13 @@ export async function generatePetVideo(
   if (options.contentId) form.append('content_id', options.contentId)
   form.append('skip_preprocessing', String(options.skipPreprocessing === true))
   form.append('idle_only', String(options.idleOnly !== false))
+  // 장면 필드는 이름 그대로 실어 보낸다 — 서버 폼 파라미터와 1:1 이라
+  // 중간에 이름을 바꾸는 지점이 없다(어긋나면 조용히 레거시로 떨어진다).
+  if (options.scene) {
+    for (const [k, v] of Object.entries(options.scene)) {
+      if (v) form.append(k, v)
+    }
+  }
 
   // [IMAGE-TRACE] Luma 생성으로 넘어가는 누끼 파일의 실제 해상도.
   await traceImage('upload:POST /api/generate-pet-video', file, 'cutout-result')
@@ -551,12 +564,36 @@ export async function generatePetVideo(
     if (import.meta.env.PROD && getBaseUrl() === '' && res.status === 404) {
       throw new Error(missingVideoApiConfigMessage())
     }
+    const err = await safeJson(res)
+
+    // ── 제출 **전** 거절은 프로바이더 실패가 아니다 (Phase 20) ─────────────
+    // 멱등성 저장소 불가(503)·이미 진행 중(409)은 돈이 나가지 않은 상태다.
+    // 코드를 잃어버리면 화면이 "생성 실패"로 뭉뚱그리고, 고객은 다시 눌러
+    // 유료 제출을 반복한다. 그래서 코드를 error 객체에 실어 보낸다.
+    //
+    // ⚠️ 이 검사는 502/503/504 일반 처리보다 **먼저** 와야 한다 — 그렇지 않으면
+    //    503(IDEMPOTENCY_UNAVAILABLE)이 "서버 오류"로 삼켜진다.
+    // **알려진 제출 전 코드만** 가로챈다. 넓게 잡으면 422 누끼 거절
+    // (CutoutRejectedError — 진단 정보와 전용 UI 가 있다)까지 삼켜 평범한
+    // Error 로 바꿔 버린다.
+    const PRE_SUBMISSION = ['GENERATION_IDEMPOTENCY_UNAVAILABLE', 'GENERATION_IN_PROGRESS']
+    const code = String(
+      (err as { detail?: { code?: string } })?.detail?.code ?? ''
+    ).trim()
+    if (code && PRE_SUBMISSION.includes(code)) {
+      const e = new Error(
+        String((err as { detail?: { message?: string } })?.detail?.message ?? code)
+      ) as Error & { code?: string; status?: number }
+      e.code = code
+      e.status = res.status
+      throw e
+    }
+
     if (res.status === 502 || res.status === 503 || res.status === 504) {
       // 주의: 이 메시지에 "generate-pet-video" 문자열을 넣지 말 것 —
       // isSkippableLumaError()가 그 문자열을 포함한 오류는 데모 모드로 스킵 처리함.
       throw new Error(`Pet video server error (HTTP ${res.status})`)
     }
-    const err = await safeJson(res)
     // 서버가 생성 직전에 누끼를 거절한 경우 — 과금 전에 멈춘 것이므로 그대로 노출.
     const rejected = parseCutoutRejection(res.status, err)
     if (rejected) throw rejected
