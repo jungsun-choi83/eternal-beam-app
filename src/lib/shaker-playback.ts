@@ -104,6 +104,13 @@ export interface ShakerViewModel {
   posterUrl: string | null;
   eventSources: RuntimeEventSources;
   doubleTap: ShakerDoubleTap;
+  /**
+   * 이 펫의 영상이 배경을 이미 담고 있는가 (Phase 19).
+   *
+   * 없으면 false — 기존 QR 인쇄물이 가리키는 레거시 자산은 지금까지처럼
+   * 키잉되어 재생된다. 구운 자산만 원본 그대로 나간다.
+   */
+  backgroundBaked: boolean;
 }
 
 export function buildShakerViewModel(pet: ShakerPet): ShakerViewModel {
@@ -113,5 +120,6 @@ export function buildShakerViewModel(pet: ShakerPet): ShakerViewModel {
     posterUrl: pet.posterUrl,
     eventSources: shakerEventSources(pet),
     doubleTap: resolveShakerDoubleTap(pet),
+    backgroundBaked: pet.backgroundBaked === true,
   };
 }

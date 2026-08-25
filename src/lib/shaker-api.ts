@@ -29,6 +29,13 @@ export interface ShakerPet {
   petName: string | null;
   /** 무료 BREATHING 루프. 정책과 무관하게 언제나 온다. */
   breathingUrl: string;
+  /**
+   * 이 펫의 영상이 배경을 이미 담고 있는가 (Phase 19).
+   *
+   * 서버가 보내지 않으면 false — 이미 인쇄돼 나간 QR 이 가리키는 레거시 자산은
+   * 지금까지처럼 키잉되어 재생돼야 한다.
+   */
+  backgroundBaked?: boolean;
   posterUrl: string | null;
   /**
    * 서버 정책이 허용한 READY 액션.
@@ -147,6 +154,7 @@ export function parseShakerPet(body: Record<string, unknown>): ShakerPet {
     petId: String(body.pet_id ?? "").trim(),
     petName: body.pet_name == null ? null : String(body.pet_name).trim() || null,
     breathingUrl: resolveAssetUrl(String(body.breathing_url ?? "").trim()),
+    backgroundBaked: body.background_baked === true,
     posterUrl:
       body.poster_url == null
         ? null

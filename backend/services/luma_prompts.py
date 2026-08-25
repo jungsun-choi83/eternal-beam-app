@@ -820,11 +820,65 @@ def build_background_ambient_prompt(*, retry_boost: bool = False) -> str:
     return " ".join(parts)
 
 
+# ── 배경이 구워진 장면 (Phase 19) ────────────────────────────────────────────
+#
+# 위의 제약들은 전부 **보이드 배경**을 전제로 쓰였다. 기기 구조가 "배경은 Pi,
+# 펫은 S23 키잉" 이었기 때문이고, 그 전제에서는 옳았다.
+#
+# 정본 장면(배경이 이미 합성된 키프레임)을 입력으로 줄 때는 그 요구가 정반대가
+# 된다. "Pure solid black background only" 를 그대로 두면 프로바이더는 고객이
+# 승인한 숲을 지우고 검정으로 덮는다.
+#
+# ── 왜 행동별로 분기하지 않는가 ─────────────────────────────────────────────
+# BREATHING·BLINKING·EAR_TWITCHING·HEAD_TILTING·TAIL_WAGGING·COME_CLOSER 는 각각
+# 다른 제약 상수를 쓰지만, 배경에 대한 문장은 **같은 한 문장**이다. 그래서 행동마다
+# 고치는 대신 최종 프롬프트에서 그 문장을 한 번 바꾼다. 새 행동이 추가돼도 같은
+# 문장을 쓰는 한 자동으로 따라온다.
+
+#: 보이드를 요구하는 문장 — 모든 제약 상수가 공유한다.
+VOID_BACKGROUND_SENTENCE = (
+    "Pure solid black background only — no scenery, no environment, no floor, no "
+    "horizon, no props, no objects, no gradient, no shadows cast on a surface."
+)
+
+#: 장면을 보존하라는 요구. VOID_BACKGROUND_SENTENCE 자리에 들어간다.
+SCENE_BACKGROUND_SENTENCE = (
+    "Preserve the input keyframe's background and scene composition exactly. Do "
+    "not redesign, replace, restyle or regenerate the environment. Keep the "
+    "camera locked — no zoom, no pan, no dolly, no perspective change. Keep the "
+    "subject's position, scale and framing identical to the input frame. "
+    "Background may show only the faintest natural motion; no warping, morphing "
+    "or drifting of scenery."
+)
+
+
+def bake_scene_background(prompt: str) -> str:
+    """
+    보이드 전제 프롬프트 → **배경 보존** 프롬프트.
+
+    문장을 치환하고, 혹시 그 문장이 없었더라도(다른 상수를 쓰는 새 행동) 보존
+    요구를 반드시 덧붙인다 — 빠뜨리면 그 행동만 조용히 배경을 잃는다.
+    """
+    out = prompt.replace(VOID_BACKGROUND_SENTENCE, SCENE_BACKGROUND_SENTENCE)
+    if SCENE_BACKGROUND_SENTENCE not in out:
+        out = f"{out} {SCENE_BACKGROUND_SENTENCE}"
+    # 남아 있는 보이드 어휘를 정리한다. 치환에서 걸리지 않은 변형이 하나라도
+    # 남으면 모델은 "배경을 보존하라"와 "배경을 검게 하라"를 동시에 받는다.
+    stale_to_replacement = {
+        "pure solid black void background only, no gradient, no studio floor.": "",
+        "black background, high resolution": "high resolution",
+    }
+    for stale, replacement in stale_to_replacement.items():
+        out = out.replace(stale, replacement)
+    return " ".join(out.split())
+
+
 def build_scenario_luma_prompt(
     image_url: str,
     action_key: str,
     *,
     motion_ko_suffix: str = "",
+    background_baked: bool = False,
 ) -> str:
     """
     System B 행동 영상용 최종 한 줄 프롬프트 — **펫 전용 레이어**.
@@ -880,7 +934,7 @@ def build_scenario_luma_prompt(
         avoid = LUMA_AVOID_CLAUSE
 
     subject = COME_CLOSER_SUBJECT_RULE if action_key == "COME_CLOSER" else LUMA_SUBJECT_RULE
-    return (
+    prompt = (
         f"Image-to-video from keyframe {image_url}. "
         f"{common}"
         f"Motion: {motion}{extra}. "
@@ -888,3 +942,5 @@ def build_scenario_luma_prompt(
         "High-end minimalist cinematic lighting, hyper-realistic depth, no text. "
         f"{avoid}"
     )
+    # 배경 처리는 **여기 한 곳**에서 갈린다. 행동별 분기가 아니다.
+    return bake_scene_background(prompt) if background_baked else prompt

@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { IdleLoopVideo } from "@/components/memorial/idle-loop-video";
+import { shouldTransparentComposite } from "@/lib/baked-playback";
 import { recognizeTap, type TapPoint } from "@/lib/double-tap";
 import type { PetRuntimeTrigger } from "@/lib/pet-runtime-events";
 import {
@@ -299,6 +300,10 @@ export function ShakerScreen() {
             onFirstFrame={onFirstFrame}
             className="h-full w-full"
             preload="auto"
+            // QR 재생도 같은 규칙을 쓴다 — 구운 자산이면 키잉하지 않는다.
+            transparentComposite={shouldTransparentComposite({
+              backgroundBaked: vm.backgroundBaked,
+            })}
           />
         </div>
 

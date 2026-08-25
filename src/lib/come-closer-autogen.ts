@@ -26,6 +26,7 @@ import {
   isRemoteAssetUrl,
   type CutoutPipelineLike,
 } from "./cutout-remote-asset.ts";
+import { readSceneForContent } from "./canonical-scene.ts";
 
 export type ComeCloserState =
   | "idle"          // 아직 확인 전
@@ -192,6 +193,7 @@ export async function ensureComeCloser(params: EnsureParams): Promise<EnsureResu
 
     // 3) 누끼가 원격이어야 백엔드가 가져갈 수 있다. data: 면 기존 바이트를 1회
     //    업로드한다 — 재누끼/모델 재실행은 하지 않는다.
+    const scene = readSceneForContent(params.pipeline?.content_id ?? null);
     let petImageUrl = params.pipeline?.dog_only_nobg_url ?? null;
     if (!isRemoteAssetUrl(petImageUrl)) {
       const ensured = await ensureRemoteCutoutUrl(params.pipeline ?? null, { userId });
@@ -213,6 +215,13 @@ export async function ensureComeCloser(params: EnsureParams): Promise<EnsureResu
           pet_id: petId ?? undefined,
           // selected_place_id 는 보내지 않는다 — 이 액션은 테마 독립이다.
           pet_image_url: petImageUrl,
+          // ── BREATHING 과 **같은 장면**에서 출발한다 (Phase 19) ────────────
+          // 이것이 없으면 COME_CLOSER 만 검정 플레이트에서 생성되고, 한 아이의
+          // 영상들 사이에서 배경이 갈린다. 장면이 현재 콘텐츠의 것이 아니면
+          // 넘기지 않는다 — 다른 아이의 배경으로 만들지 않기 위해서다.
+          ...(scene
+            ? { scene_keyframe_url: scene.sceneKeyframeUrl, scene_id: scene.sceneId }
+            : {}),
         }),
       });
       if (res.status === 404) {

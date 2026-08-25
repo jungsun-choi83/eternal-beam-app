@@ -333,9 +333,13 @@ async def create_generation_and_get_video_url(
     resolution: Optional[str] = None,
     poll_interval: float = 5.0,
     poll_max_wait: Optional[float] = None,
+    on_submit=None,
 ) -> str:
     """
     이미지 URL + 프롬프트 → 완성된 영상 URL (문자열).
+
+    on_submit(provider_job_id) 은 제출 직후 폴링 전에 불린다(선택). 프로바이더가
+    지원하지 않으면 호출되지 않으며, 호출부는 그 경우에도 동작해야 한다.
 
     기존 호출부(luma_idle_pipeline / generate.py / background_video_pipeline)가
     쓰던 luma_service 동명 함수와 계약이 동일하다 — 반환값도 그대로 URL 문자열이라
@@ -349,6 +353,8 @@ async def create_generation_and_get_video_url(
         # model/resolution 이 None 이면 인자를 넘기지 않는다 —
         # luma_service 자신의 기본값(ray-2 / 720p)을 그대로 쓰기 위함.
         kwargs = {"poll_interval": poll_interval}
+        if on_submit is not None:
+            kwargs["on_submit"] = on_submit
         if model is not None:
             kwargs["model"] = model
         if resolution is not None:

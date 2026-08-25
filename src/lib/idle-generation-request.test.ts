@@ -14,9 +14,11 @@ import assert from 'node:assert/strict'
 
 import {
   requestIdleGeneration,
-  optionsContainThemeData,
+  optionsCarryScene,
+  sceneFieldsAreComplete,
   type GeneratePetVideoFn,
 } from './idle-generation-request.ts'
+import { sceneFormFields, type CanonicalScene } from './canonical-scene.ts'
 import { canEnterDevicePlay, hasRealIdleVideo, isDemoIdleUrl } from './pending-generation.ts'
 
 const FAKE_RESULT = {
@@ -59,7 +61,12 @@ test('생성 결과를 그대로 돌려준다 (기존 백엔드 응답 형태 �
   assert.equal(res.content_id, 'cid-1')
 })
 
-// ── 백엔드로 나가는 인자: 테마 정보 없음 ───────────────────────────────────
+// ── 백엔드로 나가는 인자 ────────────────────────────────────────────────────
+//
+// ⚠️ 이 절의 계약이 Phase 19 에서 **뒤집혔다.** 예전에는 "테마 데이터가 절대
+// 새지 않는다"를 지켰다 — 배경이 프론트 전용 표시 레이어였기 때문이다. 이제는
+// 승인된 장면이 생성 입력의 정본이므로, 장면을 **반드시 실어야** 한다.
+// 다만 장면이 없으면 예전 인자 그대로 나가야 한다(레거시 호환).
 
 test('userId 없이 부르면 옵션은 skipPreprocessing / contentId / idleOnly 뿐', async () => {
   const { fn, calls } = spyGenerate()
@@ -89,22 +96,62 @@ test('빈 userId 는 아예 넣지 않는다 — 백엔드 기본값을 덮어�
   assert.equal('userId' in calls[0].options, false)
 })
 
-test('userId 를 줘도 테마 데이터는 여전히 새지 않는다', async () => {
-  const { fn, calls } = spyGenerate()
-  await requestIdleGeneration({
-    cutFile: cutFile(), contentId: 'c', userId: 'user_abc', generate: fn,
-  })
-  assert.equal(optionsContainThemeData(calls[0].options), false)
-})
+const SCENE: CanonicalScene = {
+  sceneId: 'scene_abc',
+  contentId: 'c',
+  backgroundType: 'theme',
+  backgroundId: 'fresh_forest',
+  petScale: 1.2,
+  petX: 10,
+  petY: -4,
+  floorY: 0.88,
+  shiftPct: -8,
+  sceneKeyframeUrl: 'https://s/scene_abc.png',
+  backgroundBaked: true,
+}
 
-test('테마 데이터가 백엔드로 새지 않는다', async () => {
+test('장면이 없으면 예전 인자 그대로 — 레거시 클라이언트가 계속 동작한다', async () => {
   const { fn, calls } = spyGenerate()
   await requestIdleGeneration({ cutFile: cutFile(), contentId: 'c', generate: fn })
+  assert.equal('scene' in calls[0].options, false)
+  assert.equal(optionsCarryScene(calls[0].options), false)
+})
+
+test('장면이 있으면 **한 벌로** 실린다 — 흩어진 테마 키가 아니라', async () => {
+  const { fn, calls } = spyGenerate()
+  await requestIdleGeneration({
+    cutFile: cutFile(), contentId: 'c', scene: SCENE, generate: fn,
+  })
   const opts = calls[0].options
-  assert.equal(optionsContainThemeData(opts), false)
-  for (const k of ['theme_id', 'themeId', 'theme_key', 'background_id', 'bg_video']) {
-    assert.equal(k in opts, false, `${k} 가 생성 요청에 포함됐다`)
+  assert.equal(optionsCarryScene(opts), true)
+  const scene = opts.scene as Record<string, string>
+  assert.ok(sceneFieldsAreComplete(scene), `장면 필드가 불완전하다: ${JSON.stringify(scene)}`)
+  assert.equal(scene.scene_keyframe_url, 'https://s/scene_abc.png')
+  assert.equal(scene.background_type, 'theme')
+  assert.equal(scene.background_baked, 'true')
+})
+
+test('세 가지 배경 갈래가 모두 같은 필드 모양으로 나간다', async () => {
+  for (const backgroundType of ['original', 'theme', 'custom'] as const) {
+    const { fn, calls } = spyGenerate()
+    await requestIdleGeneration({
+      cutFile: cutFile(),
+      contentId: 'c',
+      scene: { ...SCENE, backgroundType, backgroundId: backgroundType },
+      generate: fn,
+    })
+    const scene = calls[0].options.scene as Record<string, string>
+    assert.ok(sceneFieldsAreComplete(scene), backgroundType)
+    assert.equal(scene.background_type, backgroundType)
   }
+})
+
+test('장면 필드 이름은 서버 폼 파라미터와 1:1 이다', () => {
+  const fields = sceneFormFields(SCENE)
+  assert.deepEqual(Object.keys(fields).sort(), [
+    'background_baked', 'background_id', 'background_type',
+    'pet_scale', 'pet_x', 'pet_y', 'scene_id', 'scene_keyframe_url',
+  ])
 })
 
 test('업로드되는 파일은 확인 시점에 전달한 누끼 그대로', async () => {

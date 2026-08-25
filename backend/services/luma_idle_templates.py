@@ -82,16 +82,59 @@ BLACK_BG_RETRY_BOOST = (
     "dog."
 )
 
+# ── 배경이 구워진 장면용 (Phase 19) ──────────────────────────────────────────
+#
+# 위의 세 문구(TECH_QUALITY_CLAUSE / FOCUS_ONLY_CLAUSE / BLACK_BG_RETRY_BOOST)는
+# **보이드 배경**을 전제로 쓰였다. 정본 장면을 입력으로 주면서 저 문구를 그대로
+# 두면 프로바이더에게 "이 배경을 지우고 검정으로 만들라"고 말하는 셈이고,
+# 실제로 그렇게 나온다 — 고객이 승인한 숲이 검정으로 덮인다.
+#
+# 그래서 장면 경로는 요구가 정반대다: **입력 배경을 그대로 두라.**
+SCENE_QUALITY_CLAUSE = (
+    "high resolution, 4k, cinematic, realistic fur texture, clean edges"
+)
+
+SCENE_PRESERVE_CLAUSE = (
+    "Preserve the input image's background and scene composition exactly as "
+    "given. Do not redesign, replace, restyle, or regenerate the environment. "
+    "Keep the camera locked — no zoom, no pan, no dolly, no parallax, no "
+    "perspective change. Keep the subject's position, scale and framing "
+    "identical to the input frame. Background elements may show only the "
+    "faintest natural motion (leaves, water, light); no warping, morphing, "
+    "melting, or drifting of scenery."
+)
+
+#: 배경 보존이 흔들릴 때 덧붙이는 보강 문구(재시도용).
+SCENE_PRESERVE_RETRY_BOOST = (
+    "The background must remain pixel-stable and identical to the input frame. "
+    "Animate only the animal. Treat the scene as a locked-off live-action plate."
+)
+
 
 def is_known_template(template_key: str) -> bool:
     return template_key in IDLE_TEMPLATES
 
 
-def build_idle_variant_prompt(template_key: str, *, retry_boost: bool = False) -> str:
+def build_idle_variant_prompt(
+    template_key: str,
+    *,
+    retry_boost: bool = False,
+    background_baked: bool = False,
+) -> str:
     """
     템플릿 키 → 최종 Luma 프롬프트.
-    Constraint 2/3(기술 품질 + 배경 금지)과 기존 사람/목줄 금지 규칙을 항상 덧붙인다.
-    retry_boost=True면 블랙 배경 재시도용 보강 문구를 추가한다.
+
+    **모션 문구(IDLE_TEMPLATES)는 두 경로가 공유한다** — 갈라지는 것은 배경에 대한
+    요구뿐이다. 행동별로 배경 처리를 따로 만들지 않는다는 요구사항이 여기서도
+    같은 모양으로 지켜진다.
+
+    background_baked=False (레거시)
+        Constraint 2/3 — 순정 블랙 보이드, 배경 생성 금지.
+    background_baked=True (정본 장면)
+        입력 배경 보존, 카메라 고정, 환경 재설계 금지.
+
+    retry_boost 는 각 경로의 **자기 실패 모드**를 보강한다: 레거시는 배경이
+    검정에서 벗어나는 것이, 장면 경로는 배경이 흔들리는 것이 실패다.
     """
     if not is_known_template(template_key):
         raise ValueError(
@@ -99,9 +142,16 @@ def build_idle_variant_prompt(template_key: str, *, retry_boost: bool = False) -
             f"Valid keys: {list(IDLE_TEMPLATES)}"
         )
     base = IDLE_TEMPLATES[template_key]
-    parts = [base, f"{TECH_QUALITY_CLAUSE}.", FOCUS_ONLY_CLAUSE]
-    if retry_boost:
-        parts.append(BLACK_BG_RETRY_BOOST)
+
+    if background_baked:
+        parts = [base, f"{SCENE_QUALITY_CLAUSE}.", SCENE_PRESERVE_CLAUSE]
+        if retry_boost:
+            parts.append(SCENE_PRESERVE_RETRY_BOOST)
+    else:
+        parts = [base, f"{TECH_QUALITY_CLAUSE}.", FOCUS_ONLY_CLAUSE]
+        if retry_boost:
+            parts.append(BLACK_BG_RETRY_BOOST)
+
     parts.append(LUMA_SUBJECT_RULE)
     parts.append(LUMA_AVOID_CLAUSE)
     return " ".join(parts)

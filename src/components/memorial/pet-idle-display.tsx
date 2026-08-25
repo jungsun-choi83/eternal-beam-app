@@ -3,6 +3,7 @@
 import { resolveIdleDisplaySource } from "@/lib/device-host-flags";
 import { CutoutIdleMotion } from "@/components/memorial/cutout-idle-motion";
 import { IdleLoopVideo } from "@/components/memorial/idle-loop-video";
+import { shouldTransparentComposite } from "@/lib/baked-playback";
 import type { IdleEvent, PetRuntimeTrigger } from "@/lib/pet-runtime-events";
 
 interface PetIdleDisplayProps {
@@ -27,6 +28,11 @@ interface PetIdleDisplayProps {
   style?: React.CSSProperties;
   preload?: "none" | "metadata" | "auto";
   allowDemoFallback?: boolean;
+  /**
+   * 이 자산의 배경이 이미 구워져 있는가 (Phase 19).
+   * 기본 false = 레거시 — 지금까지의 동작(블랙키 제거)이 그대로 유지된다.
+   */
+  backgroundBaked?: boolean;
   /** 영상 경로에서만 호출됨 — 클립 하단 빈 배경 비율(0~1) 1회 통보. */
   onFeetMarginChange?: (bottomMargin: number) => void;
 }
@@ -44,6 +50,7 @@ export function PetIdleDisplay({
   preload = "metadata",
   allowDemoFallback,
   onFeetMarginChange,
+  backgroundBaked = false,
 }: PetIdleDisplayProps) {
   const display = resolveIdleDisplaySource(idleVideoUrl, cutoutUrl, {
     allowDemoFallback,
@@ -65,6 +72,9 @@ export function PetIdleDisplay({
         style={style}
         preload={preload}
         onFeetMarginChange={onFeetMarginChange}
+        // 배경이 구워진 자산은 **키잉하지 않는다.** 하면 장면의 어두운 픽셀이
+        // 뚫리고 그 구멍으로 뒤 배경이 비친다(배경 이중 적용).
+        transparentComposite={shouldTransparentComposite({ backgroundBaked })}
       />
     );
   }
