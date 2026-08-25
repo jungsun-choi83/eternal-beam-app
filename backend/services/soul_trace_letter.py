@@ -84,6 +84,8 @@ class SoulTraceLetter:
     partner_code: Optional[str] = None
     partner_track: Optional[str] = None
     partner_share_rate: Optional[float] = None
+    #: Eternal Beam 스토리지의 배경 이미지 **경로**. None = 스크림 폴백(레거시).
+    letter_background_ref: Optional[str] = None
     #: 가져온 시각. 목록 정렬(최신 우선)의 근거이므로 select 에 반드시 포함한다.
     imported_at: Optional[str] = None
 
@@ -91,7 +93,7 @@ class SoulTraceLetter:
 _SELECT = (
     "letter_id, user_id, pet_id, source_letter_id, source, child_name, "
     "letter_kicker, letter_body, letter_excerpt, partner_id, partner_type, partner_name, "
-    "partner_code, partner_track, partner_share_rate, "
+    "partner_code, partner_track, partner_share_rate, letter_background_ref, "
     "imported_at"
 )
 
@@ -124,6 +126,7 @@ def _to_letter(row: dict[str, Any]) -> SoulTraceLetter:
         partner_code=(row.get("partner_code") or None),
         partner_track=(row.get("partner_track") or None),
         partner_share_rate=_as_rate(row.get("partner_share_rate")),
+        letter_background_ref=(row.get("letter_background_ref") or None),
         imported_at=(row.get("imported_at") or None),
     )
 
@@ -155,6 +158,7 @@ async def link_letter(
     partner_code: str | None = None,
     partner_track: str | None = None,
     partner_share_rate: float | None = None,
+    letter_background_ref: str | None = None,
 ) -> SoulTraceLetter:
     """
     Soul Trace 편지를 등록/갱신한다. **만들지 않는다 — 받는다.**
@@ -195,6 +199,7 @@ async def link_letter(
         "partner_code": (partner_code or "").strip() or None,
         "partner_track": (partner_track or "").strip().lower() or None,
         "partner_share_rate": _as_rate(partner_share_rate),
+        "letter_background_ref": (letter_background_ref or "").strip() or None,
         "imported_at": _now().isoformat(),
     }
 

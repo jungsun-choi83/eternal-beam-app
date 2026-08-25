@@ -55,6 +55,17 @@ services:
       #    그것은 **임베드되지 않아** 인쇄소에서 글자가 깨질 수 있다.
       - key: PRINT_LETTER_FONT_PATH
         sync: false
+      # 언어별 인쇄 폰트 — Soul Trace 최종 화면과 **같은 글꼴**로 찍기 위한 것.
+      #   ko: .font-ko        → "Noto Serif KR", "Nanum Myeongjo"
+      #   en: .font-display-en → "Marcellus"
+      # 원격 Google Fonts 를 쓰지 않는다. 자세한 규약은 backend/fonts/README.md.
+      # 미설정이면 내장 CID 로 떨어지고 **임베드되지 않는다**(인쇄소에서 대체될 수 있다).
+      - key: PRINT_LETTER_FONT_KO_PATH
+        sync: false
+      - key: PRINT_LETTER_FONT_KO_FALLBACK_PATH
+        sync: false
+      - key: PRINT_LETTER_FONT_EN_PATH
+        sync: false
       # ⚠️ 백엔드 전용. 브라우저에 노출되면 Soul Trace 내부 API 가 열린다.
       - key: SOUL_TRACE_SERVICE_TOKEN
         sync: false

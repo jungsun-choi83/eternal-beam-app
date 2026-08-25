@@ -40,12 +40,19 @@ test("unrecoverable authentication stops after the first 401", async () => {
 });
 
 test("Ops input remains controlled and query is not cleared during search", () => {
-  const screen = readFileSync("src/components/memorial/shaker-ops-screen.tsx", "utf8");
+  // 입력 배선은 이제 공용 프리미티브(ops-ui.TextInput)에 있다. 계약은 같다:
+  // 통제된 입력이고, 검색 중에 사용자가 친 글자를 지우지 않는다.
+  const screen = readFileSync("src/components/memorial/ops/ops-shaker-screen.tsx", "utf8");
   assert.match(screen, /value=\{query\}/);
-  assert.match(screen, /onChange=\{\(e\) => setQuery\(e\.target\.value\)\}/);
-  assert.match(screen, /onKeyDown=\{\(e\) => e\.key === "Enter" && void doSearch\(\)\}/);
-  assert.ok(!screen.includes("setQuery(\"\")"));
-  assert.ok(!screen.includes("key={query}"));
+  assert.match(screen, /onChange=\{setQuery\}/);
+  assert.match(screen, /onEnter=\{\(\) => void doSearch\(\)\}/);
+  assert.ok(!screen.includes('setQuery("")'), "검색이 입력을 비운다");
+  assert.ok(!screen.includes("key={query}"), "입력이 매 글자 리마운트된다");
+
+  const ui = readFileSync("src/components/memorial/ops/ops-ui.tsx", "utf8");
+  assert.match(ui, /value=\{value\}/);
+  assert.match(ui, /onChange\(e\.target\.value\)/);
+  assert.match(ui, /e\.key === "Enter"/);
 });
 
 test("backend contract is registry-first with explicit legacy opt-in and failure", () => {

@@ -30,6 +30,17 @@ export interface OpsOrderRow {
   trackingNumber: string | null;
   recipientName: string | null;
   addressLine1: string | null;
+  /** 주문 생성 시각. 최근 순 정렬의 **유일한** 근거다(주문번호로 대신하지 않는다). */
+  createdAt: string | null;
+  /** 목록에서 바로 보이는 처리 필요 여부 — 서버가 판정한다. */
+  needsAttention: boolean;
+  attentionCode: string | null;
+  attentionReason: string | null;
+  /** 주문 시점 파트너 귀속 스냅샷. 목록 필터·표시에 필요한 최소한만. */
+  partnerId: string | null;
+  partnerType: string | null;
+  partnerName: string | null;
+  partnerTrack: string | null;
 }
 
 export interface OpsProductionState {
@@ -65,6 +76,10 @@ export interface OpsProductionState {
   partnerId: string | null;
   partnerType: string | null;
   partnerName: string | null;
+  partnerCode: string | null;
+  partnerTrack: string | null;
+  /** ⚠️ **주문 시점 스냅샷**이다. 파트너의 현재 비율이 아니다. */
+  partnerShareRate: number | null;
 }
 
 export class OpsError extends Error {
@@ -135,6 +150,12 @@ export function parseState(row: Record<string, unknown>): OpsProductionState {
     partnerId: row.partner_id == null ? null : String(row.partner_id),
     partnerType: row.partner_type == null ? null : String(row.partner_type),
     partnerName: row.partner_name == null ? null : String(row.partner_name),
+    // ⚠️ 이 셋은 인터페이스에만 있고 **파서에 없었다** — 상세 화면이 갈래와
+    //    정산 비율을 읽고 있었지만 언제나 비어 있었다(조용히 틀린 종류의 결함).
+    partnerCode: row.partner_code == null ? null : String(row.partner_code),
+    partnerTrack: row.partner_track == null ? null : String(row.partner_track),
+    partnerShareRate:
+      row.partner_share_rate == null ? null : Number(row.partner_share_rate),
   };
 }
 
@@ -147,16 +168,31 @@ export function parseOrderRow(row: Record<string, unknown>): OpsOrderRow {
     productionStatus: s.productionStatus, shippingStatus: s.shippingStatus,
     trackingNumber: s.trackingNumber, recipientName: s.recipientName,
     addressLine1: s.addressLine1,
+    createdAt: row.created_at == null ? null : String(row.created_at),
+    needsAttention: Boolean(row.needs_attention),
+    attentionCode: row.attention_code == null ? null : String(row.attention_code),
+    attentionReason: row.attention_reason == null ? null : String(row.attention_reason),
+    partnerId: s.partnerId,
+    partnerType: s.partnerType,
+    partnerName: s.partnerName,
+    partnerTrack: s.partnerTrack,
   };
 }
 
 /** 결제된 주문 검색 (Phase 12 API 재사용). */
 export async function searchPaidOrders(params: {
   query?: string | null;
+  /** 정확 일치. 부분 일치로 두면 정산 대상이 조용히 부풀어 오른다(서버와 같은 규칙). */
+  partnerId?: string | null;
+  /** HOSPITAL | FUNERAL. */
+  partnerType?: string | null;
   accessToken: string;
 }): Promise<OpsOrderRow[]> {
   const qs = new URLSearchParams();
   if (params.query) qs.set("query", params.query);
+  // 백엔드가 이미 지원하던 필터다 — 프론트가 넘기지 않아 쓰이지 못하고 있었다.
+  if (params.partnerId) qs.set("partner_id", params.partnerId);
+  if (params.partnerType) qs.set("partner_type", params.partnerType);
   const res = await fetch(`${apiBase()}/api/v1/orders/ops/search?${qs}`, {
     cache: "no-store",
     headers: auth(params.accessToken),

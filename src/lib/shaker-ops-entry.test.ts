@@ -96,27 +96,61 @@ describe("운영 진입 경로 — 고객 앱으로 새지 않는다", () => {
   });
 });
 
-describe("구조 고정 — 운영 화면은 스스로 로그인시킨다", () => {
-  const prod = readFileSync("src/components/memorial/ops-production-screen.tsx", "utf8");
-  const shaker = readFileSync("src/components/memorial/shaker-ops-screen.tsx", "utf8");
+describe("구조 고정 — 인증은 셸 한 곳에만 있다", () => {
+  // 예전에는 화면마다 같은 인증 코드가 있었다(생산·Shaker·파트너). 네 벌이면
+  // 한 곳만 고쳐지는 날이 오고, 그 한 곳이 인가면 조용히 열린 문이 된다.
+  // 이제 OpsLayout 하나가 그 판정을 갖는다.
+  const layout = readFileSync("src/components/memorial/ops/ops-layout.tsx", "utf8");
 
-  for (const [name, src] of [["생산 콘솔", prod], ["Shaker 운영", shaker]] as const) {
-    it(`${name}: signed-out 이면 로그인 화면을 그린다 (막다른 안내가 아니다)`, () => {
-      assert.ok(
-        /if \(phase === "signed-out"\)[\s\S]{0,400}<AuthScreen/.test(src),
-        `${name}: 로그인 수단 없이 안내만 띄우면 스태프가 앱 루트로 나가고, 루트는 고객 온보딩이다`,
-      );
-    });
+  it("signed-out 이면 로그인 화면을 그린다 (막다른 안내가 아니다)", () => {
+    assert.ok(
+      /if \(phase === "signed-out"\)[\s\S]{0,400}<AuthScreen/.test(layout),
+      "로그인 수단 없이 안내만 띄우면 스태프가 앱 루트로 나가고, 루트는 고객 온보딩이다",
+    );
+  });
 
-    it(`${name}: forbidden 은 로그인 화면을 그리지 않는다`, () => {
-      const i = src.indexOf('phase === "forbidden"');
-      assert.ok(i > 0, `${name}: forbidden 분기가 없다`);
+  it("forbidden 은 로그인 화면을 그리지 않는다", () => {
+    const i = layout.indexOf('phase === "forbidden"');
+    assert.ok(i > 0, "forbidden 분기가 없다");
+    assert.ok(
+      !layout.slice(i, i + 600).includes("<AuthScreen"),
+      "권한 없는 계정에 로그인 화면을 반복해 띄운다",
+    );
+  });
+
+  it("로그인 직후 새로고침 없이 들어간다 — 토큰만 다시 읽는다", () => {
+    assert.ok(
+      /onAuthComplete=\{readToken\}/.test(layout),
+      "로그인 후 페이지를 다시 불러오면 원래 가려던 Ops 경로를 잃는다",
+    );
+    assert.ok(
+      !/window\.location\.(replace|reload|href)/.test(layout),
+      "셸이 전체 페이지 이동을 한다 — 상태가 사라진다",
+    );
+  });
+
+  it("인가는 여전히 서버 판정을 따른다 (allowlist 를 약화하지 않는다)", () => {
+    // 화면은 서버가 준 코드를 읽을 뿐, 스스로 권한을 결정하지 않는다.
+    assert.ok(layout.includes("deriveOpsPhase"));
+    assert.ok(layout.includes("OPS_FORBIDDEN"));
+    assert.ok(!/SHAKER_OPS_USER_IDS\s*=/.test(layout), "프론트가 allowlist 를 흉내 낸다");
+  });
+
+  it("모든 Ops 화면이 같은 셸을 쓴다", () => {
+    for (const f of [
+      "ops-dashboard-screen",
+      "ops-orders-screen",
+      "ops-partners-screen",
+      "ops-shaker-screen",
+    ]) {
+      const src = readFileSync(`src/components/memorial/ops/${f}.tsx`, "utf8");
+      assert.ok(src.includes("<OpsLayout"), `${f} 가 공용 셸을 쓰지 않는다`);
       assert.ok(
-        !src.slice(i, i + 400).includes("<AuthScreen"),
-        `${name}: 권한 없는 계정에 로그인 화면을 반복해 띄운다`,
+        !src.includes("getPremiumAccessToken"),
+        `${f} 가 인증을 따로 들고 있다 — 셸로 모아야 한다`,
       );
-    });
-  }
+    }
+  });
 });
 
 describe("구조 고정 — App.tsx 분기 순서", () => {
@@ -124,10 +158,11 @@ describe("구조 고정 — App.tsx 분기 순서", () => {
 
   it("운영 분기가 EternalBeamApp 폴백보다 **먼저** 온다", () => {
     const fallback = app.indexOf("return <EternalBeamApp />");
-    for (const guard of ["isOpsProductionEntry()", "isOpsShakerEntry()"]) {
-      const at = app.indexOf(guard);
-      assert.ok(at > 0, `${guard} 분기가 없다`);
-      assert.ok(at < fallback, `${guard} 가 폴백 뒤에 있어 실행되지 않는다`);
+    const at = app.indexOf("currentOpsRoute()");
+    assert.ok(at > 0, "Ops 경로 판정이 없다");
+    assert.ok(at < fallback, "Ops 분기가 폴백 뒤에 있어 실행되지 않는다");
+    for (const route of ["dashboard", "orders", "partners", "shaker"]) {
+      assert.ok(app.includes(`'${route}'`), `${route} 분기가 없다`);
     }
   });
 });

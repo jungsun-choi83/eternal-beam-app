@@ -31,6 +31,7 @@ from backend.services import (
 from .conftest import ASGITestClient
 
 USER = "buyer@example.com"
+OPS_USER = "ops@example.com"
 PET = "pet_track1"
 BODY = "엄마, 나 보리야. 현관에서 기다리던 시간이 제일 좋았어."
 HANDOFF = "h" * 43
@@ -86,6 +87,7 @@ def _isolated(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ALLOW_INSECURE_TEST_AUTH", "1")
     monkeypatch.setenv("TOSS_MOCK", "1")
     monkeypatch.setenv("PUBLIC_WEB_BASE_URL", "https://device.eternalbeam.com")
+    monkeypatch.setenv("SHAKER_OPS_USER_IDS", OPS_USER)
     for m in _MODULES:
         m.__reset_for_tests()
 
@@ -301,3 +303,126 @@ def test_track_vocabulary_matches_soul_trace():
     from backend.services import partner_admin
 
     assert partner_admin.TRACKS == ("living", "memorial")
+
+
+# ── 운영 목록 응답 완전성 (Phase 23) ─────────────────────────────────────────
+
+
+def _paid_order(client, trace: str, pet: str = PET) -> str:
+    """결제까지 마친 주문 — 운영 목록은 기본이 paid_only 다."""
+    oid = _order(client, trace, pet=pet)
+    o = _sync(physical_order.get, oid)
+    client.post(
+        "/api/v1/orders/confirm",
+        json={"payment_key": "pk", "order_id": oid, "amount": o.amount},
+        headers=_auth(),
+    )
+    return oid
+
+
+def test_ops_search_row_carries_created_at_partner_and_attention(client: ASGITestClient):
+    """
+    목록 한 번으로 대시보드가 필요한 것을 다 알 수 있어야 한다 —
+    주문마다 상세를 부르지 않기 위해서다.
+    """
+    oid = _paid_order(client, TRACE_MEMORIAL)
+    r = client.get("/api/v1/orders/ops/search", headers=_auth(OPS_USER))
+    assert r.status_code == 200, r.text
+    row = next(o for o in r.json()["orders"] if o["order_id"] == oid)
+
+    # 최근순 정렬의 근거. 주문번호로 대신하지 않는다.
+    assert row["created_at"], "created_at 이 없으면 최근순을 만들 수 없다"
+
+    # 파트너 최소 필드.
+    assert row["partner_id"] == MEMORIAL["partner_id"]
+    assert row["partner_type"] == "HOSPITAL"
+    assert row["partner_name"] == MEMORIAL["partner_name"]
+    assert row["partner_track"] == "memorial"
+    # 주문 시점 스냅샷 — 파트너의 현재 비율이 아니다.
+    assert row["partner_share_rate"] == 0.15
+
+    # 처리 필요 여부가 목록에 실린다.
+    assert row["needs_attention"] is True   # 결제됐지만 아직 생산 준비 전
+    assert row["attention_code"] == "NOT_PREPARED"
+    assert row["attention_reason"]
+
+
+def test_ops_search_does_not_duplicate_full_pending_files(client: ASGITestClient):
+    """목록에는 불리언과 사유만 싣는다 — pendingFiles 전체를 복제하지 않는다."""
+    _paid_order(client, TRACE_DIRECT)
+    row = client.get("/api/v1/orders/ops/search", headers=_auth(OPS_USER)).json()["orders"][0]
+    assert "pending_files" not in row
+    assert "files" not in row
+
+
+def test_ops_search_partner_filters_are_exact(client: ASGITestClient):
+    """부분 일치로 두면 한 단어가 여러 병원을 긁어 와 정산이 부풀어 오른다."""
+    _paid_order(client, TRACE_MEMORIAL, pet="pet_p")
+    _paid_order(client, TRACE_DIRECT, pet="pet_d")
+
+    hit = client.get(
+        f"/api/v1/orders/ops/search?partner_id={MEMORIAL['partner_id']}",
+        headers=_auth(OPS_USER),
+    ).json()["orders"]
+    assert hit and all(o["partner_id"] == MEMORIAL["partner_id"] for o in hit)
+
+    miss = client.get(
+        "/api/v1/orders/ops/search?partner_id=ptn_nope", headers=_auth(OPS_USER)
+    ).json()["orders"]
+    assert miss == []
+
+    by_type = client.get(
+        "/api/v1/orders/ops/search?partner_type=HOSPITAL", headers=_auth(OPS_USER)
+    ).json()["orders"]
+    assert by_type and all(o["partner_type"] == "HOSPITAL" for o in by_type)
+
+
+def test_share_rate_in_list_is_the_order_time_snapshot(client: ASGITestClient):
+    """목록의 비율도 주문 시점 값이다 — 파트너의 현재 비율로 바뀌지 않는다."""
+    oid = _paid_order(client, TRACE_MEMORIAL)
+    _sync(
+        soul_trace_letter.link_letter,
+        user_id=USER,
+        source_letter_id=TRACE_MEMORIAL,
+        letter_body=BODY,
+        partner_id=MEMORIAL["partner_id"],
+        partner_type="HOSPITAL",
+        partner_name="renamed",
+        partner_share_rate=0.30,
+    )
+    row = next(
+        o
+        for o in client.get("/api/v1/orders/ops/search", headers=_auth(OPS_USER)).json()["orders"]
+        if o["order_id"] == oid
+    )
+    assert row["partner_share_rate"] == 0.15, "목록이 현재 비율로 재계산됐다"
+    assert row["partner_name"] == MEMORIAL["partner_name"]
+
+
+def test_list_does_not_fetch_detail_per_order(client: ASGITestClient, monkeypatch):
+    """
+    **핵심**: 목록이 주문마다 패키지를 개별 조회하면 안 된다. 일괄 조회 한 번이다.
+    """
+    calls = {"single": 0, "bulk": 0}
+    real_single = production_package.get_package
+    real_bulk = production_package.get_packages
+
+    async def _single(order_id):
+        calls["single"] += 1
+        return await real_single(order_id)
+
+    async def _bulk(order_ids):
+        calls["bulk"] += 1
+        return await real_bulk(order_ids)
+
+    monkeypatch.setattr(production_package, "get_package", _single)
+    monkeypatch.setattr(production_package, "get_packages", _bulk)
+
+    for i in range(3):
+        _paid_order(client, TRACE_DIRECT, pet=f"pet_n{i}")
+    calls["single"] = 0
+    calls["bulk"] = 0
+
+    client.get("/api/v1/orders/ops/search", headers=_auth(OPS_USER))
+    assert calls["bulk"] == 1, "일괄 조회가 한 번이 아니다"
+    assert calls["single"] == 0, "목록이 주문마다 상세를 부른다"
