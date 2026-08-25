@@ -15,7 +15,7 @@ from ..services.luma_keyframe import (
     flatten_rgba_to_jpeg_bytes,
     resolve_keyframe_bg_rgb,
 )
-from ..services import scene_generation_jobs, scene_input
+from ..services import generation_endpoints, scene_generation_jobs, scene_input
 from ..services.luma_service import (
     build_idle_action_prompts,
     download_video,
@@ -66,6 +66,18 @@ def _pet_video_seamless_loop_enabled() -> bool:
     돌리면 OOM 위험이 5배가 되어 "5종 테스트 패널이 멈춘다"는 증상의 주 원인이었음.)
     """
     return os.getenv("PET_VIDEO_SEAMLESS_LOOP", "false").lower() in ("1", "true", "yes")
+
+
+def _idle_variant_enabled() -> bool:
+    """개폐 판정은 services/generation_endpoints 에 있다 — 여기서는 위임만 한다."""
+    return generation_endpoints.idle_variant_enabled()
+
+
+def _idle_variant_disabled_response() -> HTTPException:
+    return HTTPException(
+        status_code=generation_endpoints.DISABLED_STATUS,
+        detail=dict(generation_endpoints.DISABLED_DETAIL),
+    )
 
 
 def _idempotency_unavailable(scene_id: str) -> HTTPException:
@@ -494,7 +506,22 @@ async def post_generate_idle_variant(
 
     프론트(VideoGenerationService.ts)는 IDLE_TEMPLATE_ORDER 순서대로 이 엔드포인트를
     5번 순차 호출한다(SAM2 누끼는 최초 1회만 하고 나머지 4번은 skip_preprocessing=true).
+
+    ⚠️ **기본적으로 비활성이다** (ENABLE_IDLE_VARIANT_API). 이 경로는 아직 durable
+    예약과 provider_job_id 복구를 갖추지 않아 재시도가 그대로 이중 과금이 된다.
     """
+    # 가드는 **가장 먼저** 온다 — 파일을 읽기 전, 누끼 전, 업로드 전.
+    # 뒤에 두면 비활성 상태에서도 CPU·스토리지를 쓰고, 무엇보다 실수로 한 줄만
+    # 밀려도 유료 제출에 닿는다.
+    if not _idle_variant_enabled():
+        logger.warning(
+            "generate-idle-variant 요청 거절 — 엔드포인트 비활성 "
+            "(중복 제출 보호 미적용, user=%s template=%s)",
+            user_id,
+            template_key,
+        )
+        raise _idle_variant_disabled_response()
+
     if not is_known_template(template_key):
         raise HTTPException(
             status_code=400,

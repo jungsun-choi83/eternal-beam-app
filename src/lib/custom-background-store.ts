@@ -7,11 +7,13 @@
  * "고정 bgVideo가 있으면 그걸, 없고 custom_photo_bg면 저장된 생성 결과를" 가져온다.
  */
 
+// 값 import 라 상대 경로를 쓴다 — `@/` 별칭은 Vite 만 풀고 node --test 는 못 푼다.
+// (동작은 동일하다: tsconfig 의 allowImportingTsExtensions 덕에 양쪽 다 해석된다.)
 import {
   CUSTOM_PHOTO_BG_THEME_KEY,
   getThemePreviewBgVideo,
   type MemorialTheme,
-} from "@/components/memorial/themes";
+} from "../components/memorial/themes.ts";
 
 export const CUSTOM_BG_VIDEO_URL_KEY = "eternal_beam_custom_bg_video_url";
 export const CUSTOM_BG_JOB_ID_KEY = "eternal_beam_custom_bg_job_id";
