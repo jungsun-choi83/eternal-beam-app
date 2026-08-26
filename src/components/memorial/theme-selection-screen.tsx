@@ -144,6 +144,7 @@ const ThemeCarousel = memo(function ThemeCarousel({
   onSelect,
   onSnapTheme,
   offers,
+  originalPhoto = null,
 }: {
   themes: MemorialTheme[];
   selectedTheme: number | null;
