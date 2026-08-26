@@ -418,7 +418,10 @@ function Detail(p: {
     <>
       <Card>
         <div className="flex flex-wrap items-center gap-2">
-          <h2 className="mr-auto text-[15px] font-semibold" style={{ color: OPS.text }}>
+          <h2
+            className="mr-auto text-[15px] font-semibold"
+            style={{ color: OPS.text, fontSize: "15px", lineHeight: 1.35 }}
+          >
             {s.recipientName || s.petId}
           </h2>
           <Pill tone={statusTone("payment", s.paymentStatus)}>{statusText(s.paymentStatus)}</Pill>

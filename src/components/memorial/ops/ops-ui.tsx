@@ -56,7 +56,10 @@ export function CardTitle({
 }) {
   return (
     <div className="mb-4 flex items-center justify-between gap-3">
-      <h2 className="text-[13px] font-semibold tracking-wide" style={{ color: OPS.text }}>
+      <h2
+        className="text-[13px] font-semibold tracking-wide"
+        style={{ color: OPS.text, fontSize: "13px", lineHeight: 1.4 }}
+      >
         {children}
       </h2>
       {action}

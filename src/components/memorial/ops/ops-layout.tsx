@@ -112,7 +112,10 @@ export function OpsLayout({
       <Shell>
         <div className="mx-auto max-w-md p-8">
           <Card>
-            <h1 className="text-[15px] font-semibold" style={{ color: OPS.text }}>
+            <h1
+              className="text-[15px] font-semibold"
+              style={{ color: OPS.text, fontSize: "15px", lineHeight: 1.35 }}
+            >
               접근 권한이 없습니다
             </h1>
             <p className="mt-2 text-[13px]" style={{ color: OPS.textMuted }}>
@@ -136,12 +139,12 @@ export function OpsLayout({
 
   return (
     <Shell>
-      <div className="flex min-h-[100dvh]">
+      <div className="flex h-[100dvh] overflow-hidden">
         <Sidebar active={active} open={navOpen} onClose={() => setNavOpen(false)} onSignOut={signOut} />
 
-        <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <header
-            className="sticky top-0 z-10 flex items-center gap-3 border-b px-5 py-3.5"
+            className="z-10 flex shrink-0 items-center gap-3 border-b px-5 py-3.5"
             style={{ background: "#fff", borderColor: OPS.border }}
           >
             <button
@@ -154,7 +157,10 @@ export function OpsLayout({
               ☰
             </button>
             <div className="min-w-0">
-              <h1 className="truncate text-[15px] font-semibold" style={{ color: OPS.text }}>
+              <h1
+                className="truncate text-[15px] font-semibold"
+                style={{ color: OPS.text, fontSize: "15px", lineHeight: 1.35 }}
+              >
                 {title}
               </h1>
               {subtitle ? (
@@ -165,7 +171,7 @@ export function OpsLayout({
             </div>
           </header>
 
-          <main className="min-w-0 flex-1 px-5 py-6">
+          <main className="min-h-0 min-w-0 flex-1 overflow-y-auto px-5 py-6">
             {token ? children({ token, onAuthError }) : null}
           </main>
         </div>

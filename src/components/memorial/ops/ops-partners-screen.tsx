@@ -228,7 +228,10 @@ function Body({ token, onAuthError }: OpsChildProps) {
 
         <Card>
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="mr-auto text-[15px] font-semibold" style={{ color: OPS.text }}>
+            <h2
+              className="mr-auto text-[15px] font-semibold"
+              style={{ color: OPS.text, fontSize: "15px", lineHeight: 1.35 }}
+            >
               {open.partnerName}
             </h2>
             <Pill tone={open.active ? "good" : "neutral"}>
