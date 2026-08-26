@@ -473,11 +473,28 @@
 /* 캔버스 합성을 하지 않는 분기(구운 자산 · raw 폴백)의 실제 <video>.
    예전에는 이 분기에 래퍼가 없어 --idle-aspect 를 걸 곳 자체가 없었다. */
 .idle-loop-video__raw {
+  position: relative;
+  z-index: 1;
   display: block;
   width: 100%;
   height: 100%;
   object-fit: contain;
   object-position: center bottom;
+}
+
+/* 구운 장면을 세로 카드에 넣을 때 생기는 빈 영역. 같은 영상을 cover 로 확대한
+   장식 레이어만 흐리게 깔고, 실제 영상은 위에서 contain 으로 전부 보여 준다. */
+.idle-loop-video__backdrop {
+  position: absolute;
+  inset: -10%;
+  z-index: 0;
+  width: 120%;
+  height: 120%;
+  object-fit: cover;
+  object-position: center;
+  filter: blur(22px) brightness(0.58) saturate(0.9);
+  transform: scale(1.06);
+  pointer-events: none;
 }
 
 .cutout-stage--fill .cutout-stage__subject {
@@ -569,14 +586,14 @@
   aspect-ratio: auto;
 }
 
-/* 구운 장면은 **잘라서 채운다**(cover). contain 은 위아래에 검은 띠를 만들고,
-   그 띠가 곧 "영상이 작게 박혀 있다"로 보인다. 잘리는 쪽은 좌우다 —
-   16:9 장면을 3:4 프레임에 넣기 때문이고, 그 비율 차이 자체는 별개 과제다. */
+/* 구운 장면의 실제 영상은 **전부 보인다**. 16:9 를 3:4 에 cover 하면 좌우의
+   약 58%가 잘려 펫이 과도하게 확대돼 보인다. contain 으로 원본 구도를 지키고,
+   남는 영역은 위의 흐린 동일 영상이 채운다. */
 .theme-preview-frame__scene .idle-loop-video__raw,
 .theme-preview-frame__scene > video {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  object-fit: contain;
   object-position: center;
 }
 
