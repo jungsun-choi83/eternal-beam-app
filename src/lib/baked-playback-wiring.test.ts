@@ -116,14 +116,20 @@ test("구운 자산 상자는 프레임을 **가득 채운다** — 작게 박�
   assert.ok(!/16\s*\/\s*9/.test(rule), "16:9 를 못 박아 다시 띠가 된다");
 });
 
-test("구운 영상은 잘라서 채운다(cover) — contain 은 검은 띠를 만든다", () => {
+test("구운 실제 영상은 contain, 여백은 흐린 동일 영상으로 채운다", () => {
   const css = read(CSS);
   const i = css.indexOf(".theme-preview-frame__scene .idle-loop-video__raw");
   assert.ok(i > 0, "구운 상자 안 <video> 규칙이 없다");
   const rule = css.slice(i, css.indexOf("}", i));
-  assert.match(rule, /object-fit:\s*cover/);
+  assert.match(rule, /object-fit:\s*contain/);
   assert.match(rule, /object-position:\s*center/);
   assert.match(rule, /height:\s*100%/);
+
+  const backdropAt = css.indexOf(".idle-loop-video__backdrop {");
+  assert.ok(backdropAt > 0, "흐린 배경 레이어가 없다");
+  const backdrop = css.slice(backdropAt, css.indexOf("}", backdropAt));
+  assert.match(backdrop, /object-fit:\s*cover/);
+  assert.match(backdrop, /filter:\s*blur\(/);
 });
 
 test("합성하지 않는 분기의 <video> 규칙이 있다 — 래퍼가 생겼기 때문이다", () => {
@@ -173,8 +179,15 @@ test("합성하지 않는 분기가 래퍼를 갖는다 — 없으면 걸 곳이
   // 이 분기 전체 — 자기 자신의 `return (` 에서 자르면 본문을 통째로 놓친다.
   const branch = src.slice(i, src.indexOf("\n  }\n", i));
   assert.match(branch, /ref=\{wrapRef\}/, "래퍼에 wrapRef 가 없다");
-  assert.match(branch, /idle-loop-video \$\{className\}/, "className 이 상자로 가지 않는다");
+  assert.match(branch, /className=\{`idle-loop-video [^`]*\$\{className\}`\}/, "className 이 상자로 가지 않는다");
   assert.match(branch, /className="idle-loop-video__raw"/);
+  assert.match(branch, /className="idle-loop-video__backdrop"/);
+  assert.match(branch, /\{blurredBackdrop && \(/);
+});
+
+test("구운 자산만 흐린 배경을 요청한다 — 레거시 키잉 경로는 그대로다", () => {
+  const src = read("src/components/memorial/pet-idle-display.tsx");
+  assert.match(src, /blurredBackdrop=\{backgroundBaked\}/);
 });
 
 // ── 화면 배선 (A1 · A4) ─────────────────────────────────────────────────────

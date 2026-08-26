@@ -75,6 +75,9 @@ export function PetIdleDisplay({
         // 배경이 구워진 자산은 **키잉하지 않는다.** 하면 장면의 어두운 픽셀이
         // 뚫리고 그 구멍으로 뒤 배경이 비친다(배경 이중 적용).
         transparentComposite={shouldTransparentComposite({ backgroundBaked })}
+        // 세로 카드 안에서 구운 가로 영상을 확대/절단하지 않는다. 동일 영상을
+        // 흐린 배경으로만 한 장 더 써 남는 영역을 채운다.
+        blurredBackdrop={backgroundBaked}
       />
     );
   }

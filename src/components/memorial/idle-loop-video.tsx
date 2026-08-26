@@ -52,6 +52,12 @@ interface IdleLoopVideoProps {
   /** true(기본): packed alpha / Luma 블랙배경 제거 후 투명 합성 */
   transparentComposite?: boolean;
   /**
+   * 완성된 장면 영상을 세로 프레임에 넣을 때, 같은 영상을 흐린 cover 배경으로
+   * 한 장 더 깐다. 앞 영상은 contain 이라 잘리지 않고, 남는 영역만 이 배경이
+   * 채운다. 레거시 누끼/키잉 경로에는 사용하지 않는다.
+   */
+  blurredBackdrop?: boolean;
+  /**
    * 클립 하단의 빈 배경 비율을 1회 측정해 알려 준다(0~1).
    * 부모가 이 값만큼 피사체를 내려 실제 발이 테마 접지선에 닿게 한다.
    */
@@ -573,6 +579,7 @@ export function IdleLoopVideo({
   style,
   preload = "metadata",
   transparentComposite = true,
+  blurredBackdrop = false,
   onFeetMarginChange,
   onFirstFrame,
 }: IdleLoopVideoProps) {
@@ -581,6 +588,7 @@ export function IdleLoopVideo({
   // 예전 그대로 videoRef 만 읽으면 되므로 아이들 로직이 전혀 바뀌지 않는다.
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const idleVideoRef = useRef<HTMLVideoElement>(null);
+  const backdropVideoRef = useRef<HTMLVideoElement>(null);
 
   // ── 런타임 이벤트 레지스트리 배선 ─────────────────────────────────────────
   // 소스가 붙은 **등록된** 이벤트만 <video> 를 갖는다. 액션이든 아이들 이벤트든
@@ -1315,6 +1323,35 @@ export function IdleLoopVideo({
       });
     };
 
+    // 흐린 배경은 장식이지만 앞 영상과 같은 순간을 보여야 한다. 두 <video> 가
+    // 독립적으로 loop 하면 Safari 에서 조금씩 벌어질 수 있으므로, 앞 영상을
+    // 정본 시계로 삼아 재생/탐색/loop 때만 가볍게 맞춘다.
+    const syncBackdrop = () => {
+      if (!blurredBackdrop) return;
+      const backdrop = backdropVideoRef.current;
+      if (!backdrop) return;
+
+      backdrop.playbackRate = el.playbackRate;
+      if (
+        Number.isFinite(el.currentTime) &&
+        Number.isFinite(backdrop.currentTime) &&
+        Math.abs(backdrop.currentTime - el.currentTime) > 0.12
+      ) {
+        try {
+          backdrop.currentTime = el.currentTime;
+        } catch {
+          /* metadata 전에는 currentTime 설정이 거절될 수 있다 */
+        }
+      }
+      if (el.paused) {
+        backdrop.pause();
+      } else {
+        void backdrop.play().catch(() => {
+          /* muted 장식 영상 — autoplay 거절 시 다음 play/timeupdate 에 재시도 */
+        });
+      }
+    };
+
     // 실제 클립 비율을 래퍼에 알린다. **모드 판정과 분리해 둔다** —
     // 예전에는 이 코드가 detectMode 안, `if (!transparentComposite) return;`
     // **뒤에** 있었다. 그래서 배경이 구워진 자산(키잉하지 않는 자산)은 비율이
@@ -1386,10 +1423,16 @@ export function IdleLoopVideo({
     el.addEventListener("loadeddata", notifyFirstFrame);
     el.addEventListener("loadedmetadata", detectMode);
     el.addEventListener("error", onVideoError);
+    el.addEventListener("play", syncBackdrop);
+    el.addEventListener("pause", syncBackdrop);
+    el.addEventListener("seeked", syncBackdrop);
+    el.addEventListener("ratechange", syncBackdrop);
+    el.addEventListener("timeupdate", syncBackdrop);
     if (el.readyState >= 1) detectMode();
     if (el.readyState >= 2) {
       measureFeet();
       notifyFirstFrame();
+      syncBackdrop();
     }
 
     return () => {
@@ -1398,8 +1441,13 @@ export function IdleLoopVideo({
       el.removeEventListener("loadeddata", notifyFirstFrame);
       el.removeEventListener("loadedmetadata", detectMode);
       el.removeEventListener("error", onVideoError);
+      el.removeEventListener("play", syncBackdrop);
+      el.removeEventListener("pause", syncBackdrop);
+      el.removeEventListener("seeked", syncBackdrop);
+      el.removeEventListener("ratechange", syncBackdrop);
+      el.removeEventListener("timeupdate", syncBackdrop);
     };
-  }, [src, transparentComposite, triggerRawFallback, crossOrigin]);
+  }, [src, transparentComposite, blurredBackdrop, triggerRawFallback, crossOrigin]);
 
   useEffect(() => {
     if (!transparentComposite || useRawFallback) return;
@@ -1429,7 +1477,26 @@ export function IdleLoopVideo({
     // 그 결과 이 경로(구운 자산 · raw 폴백)만 비율 폴백에 걸렸다.
     // className 은 래퍼로 옮긴다 — 크기를 정하는 것은 상자이지 영상이 아니다.
     return (
-      <div ref={wrapRef} className={`idle-loop-video ${className}`} style={style}>
+      <div
+        ref={wrapRef}
+        className={`idle-loop-video ${blurredBackdrop ? "idle-loop-video--blurred-fill" : ""} ${className}`}
+        style={style}
+      >
+        {blurredBackdrop && (
+          <video
+            ref={backdropVideoRef}
+            src={src}
+            className="idle-loop-video__backdrop"
+            autoPlay
+            loop
+            muted
+            playsInline
+            preload={preload}
+            tabIndex={-1}
+            {...(crossOrigin ? { crossOrigin } : {})}
+            aria-hidden
+          />
+        )}
         <video
           ref={idleVideoRef}
           src={src}

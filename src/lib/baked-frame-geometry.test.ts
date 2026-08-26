@@ -135,12 +135,20 @@ test("구운 상자는 비율도 상한도 물지 않는다", () => {
   assert.equal(scene.height, "100%");
 });
 
-test("구운 영상은 상자를 잘라서 채운다 — 검은 띠를 만들지 않는다", () => {
+test("구운 실제 영상은 contain 으로 전체 구도를 보존한다", () => {
   const v = ruleFor(css, ".theme-preview-frame__scene .idle-loop-video__raw");
-  assert.equal(v["object-fit"], "cover");
+  assert.equal(v["object-fit"], "contain");
   assert.equal(v["object-position"], "center");
   assert.equal(v.width, "100%");
   assert.equal(v.height, "100%");
+});
+
+test("contain 여백은 같은 영상의 흐린 cover 배경이 채운다", () => {
+  const bg = ruleFor(css, ".idle-loop-video__backdrop");
+  assert.equal(bg.position, "absolute");
+  assert.equal(bg["object-fit"], "cover");
+  assert.match(bg.filter || "", /blur\(/);
+  assert.equal(bg["pointer-events"], "none");
 });
 
 // ── 레거시는 그대로 ─────────────────────────────────────────────────────────
@@ -163,16 +171,15 @@ test("두 상자는 서로 다른 규칙이다 — 하나를 고쳐 다른 하�
   assert.ok(sceneAt > css.indexOf(".idle-loop-video {"), "구운 규칙이 너무 앞에 있다");
 });
 
-// ── 지금은 남겨 두는 문제: 3:4 프레임 vs 16:9 장면 ──────────────────────────
+// ── 3:4 프레임 vs 16:9 장면 ─────────────────────────────────────────────────
 
-test("cover 로 채우면 좌우가 잘린다 — 비율 차이는 아직 남아 있다", () => {
-  // 이 테스트는 결함을 막는 것이 아니라 **알려진 손실을 기록**한다.
-  // 1280×720 장면을 3:4 프레임에 cover 로 넣으면 가로가 크게 잘린다.
+test("예전 cover 는 좌우를 58% 잘랐다 — 실제 영상에 다시 쓰지 않는다", () => {
   const sceneRatio = 16 / 9;
   const frameRatio = FRAME_W / FRAME_H;
   const visibleWidthFraction = frameRatio / sceneRatio;
   assert.ok(visibleWidthFraction < 0.5, String(visibleWidthFraction));
-  // 약 42% 만 보인다. 세로로 잘리는 것(contain=검은 띠)보다는 낫지만,
-  // 근본 해결은 생성 비율이나 프레임 비율을 맞추는 별개 과제다.
   assert.ok(Math.abs(visibleWidthFraction - 0.4219) < 0.001);
+
+  const video = ruleFor(css, ".theme-preview-frame__scene .idle-loop-video__raw");
+  assert.notEqual(video["object-fit"], "cover");
 });
