@@ -53,7 +53,7 @@ describe("one-scene asset contract", () => {
     assert.equal(canonical[1], 0xd8);
     assert.equal(depth.subarray(1, 4).toString("ascii"), "PNG");
     assert.equal(depth.readUInt32BE(16), 480);
-    assert.equal(depth.readUInt32BE(20), 720);
+    assert.equal(depth.readUInt32BE(20), 832);
   });
 });
 

@@ -8,9 +8,9 @@
 export const SHAKER_DEPTH_PROTOTYPE_PATH = "/prototype/shaker-depth";
 
 export const SHAKER_DEPTH_PROTOTYPE_ASSETS = {
-  video: "/prototypes/shaker-depth/goya-forest-baked-v2.mp4",
-  canonical: "/prototypes/shaker-depth/goya-forest-canonical-v2.jpg",
-  depth: "/prototypes/shaker-depth/goya-forest-depth-v2.png",
+  video: "/prototypes/shaker-depth/real-baked-pet-client-v3.mp4",
+  canonical: "/prototypes/shaker-depth/real-baked-pet-client-canonical-v3.jpg",
+  depth: "/prototypes/shaker-depth/real-baked-pet-client-depth-v3.png",
 } as const;
 
 export const DEPTH_DISPLACEMENT = {
