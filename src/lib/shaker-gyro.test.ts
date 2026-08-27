@@ -6,17 +6,126 @@
  */
 
 import { strict as assert } from "node:assert";
+import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
   NO_PARALLAX,
+  ORIENTATION_SAMPLE_TIMEOUT_MS,
   PARALLAX_DEFAULT,
+  createOrientationMotionSession,
+  createParallaxFrameLoop,
   createParallaxTracker,
   normalizeTilt,
   pointerToGyroSample,
   sanitizeParallaxConfig,
   shouldAnimateParallax,
 } from "./shaker-gyro.ts";
+
+const SHAKER_SCREEN = readFileSync(
+  "src/components/memorial/shaker-screen.tsx",
+  "utf8"
+);
+
+function createMotionHarness() {
+  let hidden = false;
+  let nextFrameId = 1;
+  let nextTimerId = 1;
+  let orientationListener: ((sample: { beta: number | null; gamma: number | null }) => void) | null = null;
+  let orientationChangeListener: (() => void) | null = null;
+  let visibilityListener: (() => void) | null = null;
+  const frameCallbacks = new Map<number, (timestamp: number) => void>();
+  const timerCallbacks = new Map<number, () => void>();
+  const timerDelays: number[] = [];
+  const cancelledFrames: number[] = [];
+  const removedListeners: string[] = [];
+  const frames: typeof NO_PARALLAX[] = [];
+  const activeChanges: boolean[] = [];
+
+  const frameLoop = createParallaxFrameLoop({
+    onFrame: (frame) => frames.push(frame),
+    requestFrame(callback) {
+      const id = nextFrameId++;
+      frameCallbacks.set(id, callback);
+      return id;
+    },
+    cancelFrame(id) {
+      cancelledFrames.push(id);
+      frameCallbacks.delete(id);
+    },
+  });
+
+  const session = createOrientationMotionSession({
+    frameLoop,
+    subscribeOrientation(listener) {
+      orientationListener = listener;
+      return () => {
+        orientationListener = null;
+        removedListeners.push("orientation");
+      };
+    },
+    subscribeOrientationChange(listener) {
+      orientationChangeListener = listener;
+      return () => {
+        orientationChangeListener = null;
+        removedListeners.push("orientationchange");
+      };
+    },
+    subscribeVisibilityChange(listener) {
+      visibilityListener = listener;
+      return () => {
+        visibilityListener = null;
+        removedListeners.push("visibilitychange");
+      };
+    },
+    isHidden: () => hidden,
+    scheduleTimeout(callback, delayMs) {
+      const id = nextTimerId++;
+      timerCallbacks.set(id, callback);
+      timerDelays.push(delayMs);
+      return id;
+    },
+    cancelTimeout(handle) {
+      timerCallbacks.delete(handle as number);
+    },
+    onActiveChange: (active) => activeChanges.push(active),
+  });
+
+  return {
+    session,
+    frames,
+    activeChanges,
+    timerDelays,
+    cancelledFrames,
+    removedListeners,
+    pendingFrames: () => frameCallbacks.size,
+    pendingTimers: () => timerCallbacks.size,
+    emit(sample: { beta: number | null; gamma: number | null }) {
+      orientationListener?.(sample);
+    },
+    rotate() {
+      orientationChangeListener?.();
+    },
+    setHidden(next: boolean) {
+      hidden = next;
+      visibilityListener?.();
+    },
+    flushFrame() {
+      const entry = frameCallbacks.entries().next().value as
+        | [number, (timestamp: number) => void]
+        | undefined;
+      if (!entry) return;
+      frameCallbacks.delete(entry[0]);
+      entry[1](0);
+    },
+    fireTimeout() {
+      const entry = timerCallbacks.entries().next().value as [number, () => void] | undefined;
+      if (!entry) return;
+      timerCallbacks.delete(entry[0]);
+      entry[1]();
+    },
+  };
+}
 
 /** 감쇠를 통과시키기 위해 같은 샘플을 여러 번 넣는다 (지수 감쇠는 점근한다). */
 function settle(
@@ -240,5 +349,175 @@ describe("비-자이로 폴백 (포인터)", () => {
     const s = pointerToGyroSample({ x: 10, y: 10 }, { width: 0, height: 0 });
     assert.ok(Number.isFinite(s.gamma as number));
     assert.ok(Number.isFinite(s.beta as number));
+  });
+});
+
+describe("animation frame 스케줄링", () => {
+  it("센서 이벤트가 여러 번 와도 한 프레임에는 한 번만 그린다", () => {
+    let requested = 0;
+    let callback: ((timestamp: number) => void) | null = null;
+    const frames: typeof NO_PARALLAX[] = [];
+    const loop = createParallaxFrameLoop({
+      onFrame: (frame) => frames.push(frame),
+      requestFrame(next) {
+        requested += 1;
+        callback = next;
+        return requested;
+      },
+      cancelFrame() {},
+    });
+
+    loop.push({ beta: 10, gamma: 10 });
+    loop.push({ beta: 11, gamma: 11 });
+    loop.push({ beta: 12, gamma: 12 });
+
+    assert.equal(requested, 1);
+    assert.equal(frames.length, 0, "센서 이벤트 자체가 화면을 그리면 안 된다");
+    assert.ok(callback);
+    (callback as (timestamp: number) => void)(0);
+    assert.equal(frames.length, 1);
+
+    loop.push({ beta: 13, gamma: 13 });
+    assert.equal(requested, 2, "다음 화면 프레임에는 다시 한 번 예약할 수 있다");
+  });
+
+  it("null/비정상 샘플은 프레임을 예약하지 않는다", () => {
+    let requested = 0;
+    const loop = createParallaxFrameLoop({
+      onFrame() {},
+      requestFrame() {
+        requested += 1;
+        return requested;
+      },
+      cancelFrame() {},
+    });
+    assert.equal(loop.push({ beta: null, gamma: null }), false);
+    assert.equal(loop.push({ beta: NaN, gamma: 0 }), false);
+    assert.equal(requested, 0);
+  });
+
+  it("destroy 는 대기 중인 animation frame 을 취소한다", () => {
+    const cancelled: number[] = [];
+    const loop = createParallaxFrameLoop({
+      onFrame() {},
+      requestFrame: () => 77,
+      cancelFrame: (id) => cancelled.push(id),
+    });
+    loop.push({ beta: 0, gamma: 0 });
+    loop.destroy();
+    assert.deepEqual(cancelled, [77]);
+  });
+});
+
+describe("센서 수명주기", () => {
+  it("유효 샘플이 없으면 1.5초 후 조용히 정적 폴백을 유지한다", () => {
+    const h = createMotionHarness();
+    h.session.start();
+    assert.deepEqual(h.timerDelays, [ORIENTATION_SAMPLE_TIMEOUT_MS]);
+
+    h.emit({ beta: null, gamma: null });
+    assert.equal(h.pendingFrames(), 0);
+    h.fireTimeout();
+    h.emit({ beta: 10, gamma: 10 });
+
+    assert.equal(h.pendingFrames(), 0, "타임아웃 뒤의 오래된 구독 값은 처리하지 않는다");
+    assert.deepEqual(h.activeChanges, []);
+    assert.equal(h.frames.length, 0);
+  });
+
+  it("첫 유효 샘플부터 활성화하고 이후 값은 rAF 에서만 그린다", () => {
+    const h = createMotionHarness();
+    h.session.start();
+    h.emit({ beta: 30, gamma: 5 });
+
+    assert.deepEqual(h.activeChanges, [true]);
+    assert.equal(h.pendingTimers(), 0);
+    assert.equal(h.frames.length, 0);
+    assert.equal(h.pendingFrames(), 1);
+
+    h.flushFrame();
+    assert.deepEqual(h.frames.at(-1), NO_PARALLAX, "첫 샘플은 기준 자세여야 한다");
+  });
+
+  it("hidden 에서 멈추고 visible 복귀 후 새 샘플을 새 기준으로 쓴다", () => {
+    const h = createMotionHarness();
+    h.session.start();
+    h.emit({ beta: 0, gamma: 0 });
+    h.flushFrame();
+    h.emit({ beta: 20, gamma: 20 });
+    h.flushFrame();
+    assert.ok((h.frames.at(-1)?.pet.x ?? 0) > 0);
+
+    h.emit({ beta: 24, gamma: 24 });
+    assert.equal(h.pendingFrames(), 1);
+    h.setHidden(true);
+    assert.equal(h.pendingFrames(), 0);
+    assert.ok(h.cancelledFrames.length >= 1);
+
+    h.setHidden(false);
+    assert.equal(h.pendingTimers(), 1);
+    h.emit({ beta: 65, gamma: -25 });
+    h.flushFrame();
+    assert.deepEqual(h.frames.at(-1), NO_PARALLAX, "복귀 후 첫 샘플이 새 중립점이어야 한다");
+    assert.deepEqual(h.activeChanges, [true, false, true]);
+  });
+
+  it("화면 방향 전환 후에도 첫 새 샘플로 재보정한다", () => {
+    const h = createMotionHarness();
+    h.session.start();
+    h.emit({ beta: 0, gamma: 0 });
+    h.flushFrame();
+    h.emit({ beta: 20, gamma: 20 });
+    h.flushFrame();
+
+    h.rotate();
+    h.emit({ beta: 80, gamma: -30 });
+    h.flushFrame();
+
+    assert.deepEqual(h.frames.at(-1), NO_PARALLAX);
+    assert.deepEqual(h.activeChanges, [true, false, true]);
+  });
+
+  it("destroy 는 모든 listener, timeout, animation frame 을 정리한다", () => {
+    const h = createMotionHarness();
+    h.session.start();
+    h.emit({ beta: 0, gamma: 0 });
+    assert.equal(h.pendingFrames(), 1);
+
+    h.session.destroy();
+
+    assert.deepEqual(h.removedListeners.sort(), [
+      "orientation",
+      "orientationchange",
+      "visibilitychange",
+    ]);
+    assert.equal(h.pendingFrames(), 0);
+    assert.equal(h.pendingTimers(), 0);
+    assert.ok(h.cancelledFrames.length >= 1);
+  });
+});
+
+describe("Shaker 화면 배선", () => {
+  it("orientation 이벤트가 React frame state 를 직접 갱신하지 않는다", () => {
+    assert.ok(!SHAKER_SCREEN.includes("setFrame("));
+    assert.match(SHAKER_SCREEN, /createParallaxFrameLoop\(/);
+    assert.match(SHAKER_SCREEN, /window\.requestAnimationFrame\(callback\)/);
+  });
+
+  it("구운 장면은 translate3d 와 3% overscan 만 사용한다", () => {
+    assert.match(SHAKER_SCREEN, /const SCENE_OVERSCAN = 1\.03/);
+    assert.match(SHAKER_SCREEN, /translate3d\(/);
+    assert.ok(!SHAKER_SCREEN.includes("rotateX("));
+    assert.ok(!SHAKER_SCREEN.includes("rotateY("));
+    assert.ok(!SHAKER_SCREEN.includes("perspective("));
+  });
+
+  it("BREATHING 플레이어는 권한 상태와 분리되어 있다", () => {
+    assert.match(SHAKER_SCREEN, /<IdleLoopVideo/);
+    assert.match(SHAKER_SCREEN, /onClick=\{askMotion\}/);
+    assert.ok(
+      SHAKER_SCREEN.indexOf("<IdleLoopVideo") < SHAKER_SCREEN.indexOf("onClick={askMotion}"),
+      "동영상은 motion 권한 버튼보다 먼저 독립적으로 렌더돼야 한다"
+    );
   });
 });
