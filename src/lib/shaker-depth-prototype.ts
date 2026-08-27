@@ -16,7 +16,7 @@ export const SHAKER_DEPTH_PROTOTYPE_ASSETS = {
 export const DEPTH_DISPLACEMENT = {
   farPx: 2,
   maxPx: 12,
-  horizontalMaxPx: 8,
+  horizontalMaxPx: 10,
   horizontalEdgeGuardPx: 2.5,
   overscan: 1.055,
   maxDevicePixelRatio: 1.5,
@@ -81,7 +81,7 @@ export const DEPTH_FRAGMENT_SHADER = /* glsl */ `
     // thin features such as ears remain part of the near layer while moving.
     float horizontalDirection = sign(uTilt.x);
     vec2 horizontalProbeUv = vec2(
-      uTilt.x * 8.0 / max(uViewport.x, 1.0),
+      uTilt.x * 10.0 / max(uViewport.x, 1.0),
       0.0
     );
     vec2 horizontalGuardUv = vec2(
@@ -97,7 +97,7 @@ export const DEPTH_FRAGMENT_SHADER = /* glsl */ `
 
     float shapedDepth = pow(clamp(depth, 0.0, 1.0), 1.5);
     vec2 displacementPx = vec2(
-      2.0 + 6.0 * shapedDepth,
+      2.0 + 8.0 * shapedDepth,
       2.0 + 10.0 * shapedDepth
     );
     vec2 displacementUv = uTilt * displacementPx / max(uViewport, vec2(1.0));

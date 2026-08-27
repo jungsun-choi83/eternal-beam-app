@@ -73,17 +73,17 @@ describe("depth displacement", () => {
 
   it("samples depth separately and applies overscanned UV displacement", () => {
     assert.match(DEPTH_FRAGMENT_SHADER, /texture2D\(uDepth, baseUv\)\.r/);
-    assert.match(DEPTH_FRAGMENT_SHADER, /2\.0 \+ 6\.0 \* shapedDepth/);
+    assert.match(DEPTH_FRAGMENT_SHADER, /2\.0 \+ 8\.0 \* shapedDepth/);
     assert.match(DEPTH_FRAGMENT_SHADER, /2\.0 \+ 10\.0 \* shapedDepth/);
     assert.match(DEPTH_FRAGMENT_SHADER, /baseUv - displacementUv/);
-    assert.equal(DEPTH_DISPLACEMENT.horizontalMaxPx, 8);
+    assert.equal(DEPTH_DISPLACEMENT.horizontalMaxPx, 10);
     assert.ok(DEPTH_DISPLACEMENT.overscan >= 1.04);
     assert.ok(DEPTH_DISPLACEMENT.overscan <= 1.07);
   });
 
   it("protects horizontal silhouette edges with a motion-directional depth probe", () => {
     assert.match(DEPTH_FRAGMENT_SHADER, /horizontalDirection = sign\(uTilt\.x\)/);
-    assert.match(DEPTH_FRAGMENT_SHADER, /uTilt\.x \* 8\.0/);
+    assert.match(DEPTH_FRAGMENT_SHADER, /uTilt\.x \* 10\.0/);
     assert.match(DEPTH_FRAGMENT_SHADER, /horizontalDirection \* 2\.5/);
     assert.match(
       DEPTH_FRAGMENT_SHADER,
