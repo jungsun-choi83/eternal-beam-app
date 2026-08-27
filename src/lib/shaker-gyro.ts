@@ -107,6 +107,18 @@ export interface ParallaxTracker {
   current(): ParallaxFrame;
 }
 
+export function isValidGyroSample(sample: GyroSample): sample is {
+  beta: number;
+  gamma: number;
+} {
+  return (
+    typeof sample?.beta === "number" &&
+    Number.isFinite(sample.beta) &&
+    typeof sample?.gamma === "number" &&
+    Number.isFinite(sample.gamma)
+  );
+}
+
 /**
  * 기울기 → 레이어 오프셋. **첫 샘플이 기준 자세가 된다.**
  *
@@ -134,12 +146,10 @@ export function createParallaxTracker(config?: Partial<ParallaxConfig>): Paralla
 
   return {
     push(sample: GyroSample): ParallaxFrame {
-      const beta = sample?.beta;
-      const gamma = sample?.gamma;
       // 센서가 null 을 주는 경우가 실제로 있다(권한은 있는데 하드웨어가 조용한
       // 순간). 그때 0 으로 취급하면 펫이 중앙으로 튄다 — 마지막 값을 유지한다.
-      if (typeof beta !== "number" || typeof gamma !== "number") return frame();
-      if (!Number.isFinite(beta) || !Number.isFinite(gamma)) return frame();
+      if (!isValidGyroSample(sample)) return frame();
+      const { beta, gamma } = sample;
 
       if (originBeta === null || originGamma === null) {
         originBeta = beta;
@@ -160,6 +170,174 @@ export function createParallaxTracker(config?: Partial<ParallaxConfig>): Paralla
       smoothY = 0;
     },
     current: frame,
+  };
+}
+
+// ── 프레임 스케줄링 · 센서 수명주기 ─────────────────────────────────────────
+
+export interface ParallaxFrameLoop {
+  /** 최신 유효 샘플을 저장하고, 아직 없다면 다음 애니메이션 프레임을 예약한다. */
+  push(sample: GyroSample): boolean;
+  /** 예약 프레임과 이전 기준 자세를 버린다. 다음 유효 샘플이 새 기준이 된다. */
+  reset(): void;
+  /** 예약 프레임을 취소하고 다시 사용할 수 없게 만든다. */
+  destroy(): void;
+}
+
+/**
+ * 센서 이벤트를 화면 주사율에 맞춰 합친다.
+ *
+ * DeviceOrientationEvent 는 기기에 따라 60Hz 보다 훨씬 자주 올 수 있다. 이벤트마다
+ * React state 를 바꾸지 않고 여기서 마지막 값만 보관한 뒤, 한 animation frame 에
+ * 정확히 한 번만 트래커와 DOM 콜백을 갱신한다.
+ */
+export function createParallaxFrameLoop(input: {
+  onFrame: (frame: ParallaxFrame) => void;
+  requestFrame: (callback: (timestamp: number) => void) => number;
+  cancelFrame: (id: number) => void;
+  config?: Partial<ParallaxConfig>;
+}): ParallaxFrameLoop {
+  const tracker = createParallaxTracker(input.config);
+  let latest: GyroSample | null = null;
+  let frameId: number | null = null;
+  let destroyed = false;
+
+  const flush = () => {
+    frameId = null;
+    if (destroyed || !latest) return;
+    const sample = latest;
+    latest = null;
+    input.onFrame(tracker.push(sample));
+  };
+
+  return {
+    push(sample) {
+      if (destroyed || !isValidGyroSample(sample)) return false;
+      latest = { beta: sample.beta, gamma: sample.gamma };
+      if (frameId === null) frameId = input.requestFrame(flush);
+      return true;
+    },
+    reset() {
+      latest = null;
+      if (frameId !== null) input.cancelFrame(frameId);
+      frameId = null;
+      tracker.reset();
+    },
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      latest = null;
+      if (frameId !== null) input.cancelFrame(frameId);
+      frameId = null;
+      tracker.reset();
+    },
+  };
+}
+
+export const ORIENTATION_SAMPLE_TIMEOUT_MS = 1_500;
+
+export interface OrientationMotionSession {
+  start(): void;
+  destroy(): void;
+}
+
+type Unsubscribe = () => void;
+type TimerHandle = unknown;
+
+/**
+ * 브라우저 센서의 수명주기를 한곳에서 관리한다.
+ *
+ * 구독 방법을 주입받으므로 이 모듈은 DOM 없이도 다음을 검증할 수 있다:
+ * 무샘플 타임아웃, hidden 일 때 중지, visible 복귀 후 새 기준점, 방향 전환 재보정,
+ * 그리고 unmount 정리.
+ */
+export function createOrientationMotionSession(input: {
+  frameLoop: ParallaxFrameLoop;
+  subscribeOrientation: (listener: (sample: GyroSample) => void) => Unsubscribe;
+  subscribeOrientationChange: (listener: () => void) => Unsubscribe;
+  subscribeVisibilityChange: (listener: () => void) => Unsubscribe;
+  isHidden: () => boolean;
+  scheduleTimeout: (callback: () => void, delayMs: number) => TimerHandle;
+  cancelTimeout: (handle: TimerHandle) => void;
+  timeoutMs?: number;
+  onActiveChange?: (active: boolean) => void;
+}): OrientationMotionSession {
+  const timeoutMs = input.timeoutMs ?? ORIENTATION_SAMPLE_TIMEOUT_MS;
+  let started = false;
+  let destroyed = false;
+  let acceptingSamples = false;
+  let active = false;
+  let timeoutHandle: TimerHandle | null = null;
+  let unsubscribers: Unsubscribe[] = [];
+
+  const setActive = (next: boolean) => {
+    if (active === next) return;
+    active = next;
+    input.onActiveChange?.(next);
+  };
+
+  const clearSampleTimeout = () => {
+    if (timeoutHandle === null) return;
+    input.cancelTimeout(timeoutHandle);
+    timeoutHandle = null;
+  };
+
+  const pause = () => {
+    acceptingSamples = false;
+    clearSampleTimeout();
+    input.frameLoop.reset();
+    setActive(false);
+  };
+
+  const armForFreshSample = () => {
+    pause();
+    if (destroyed || input.isHidden()) return;
+    acceptingSamples = true;
+    timeoutHandle = input.scheduleTimeout(() => {
+      timeoutHandle = null;
+      acceptingSamples = false;
+      input.frameLoop.reset();
+      setActive(false);
+    }, timeoutMs);
+  };
+
+  const onOrientation = (sample: GyroSample) => {
+    if (!acceptingSamples || !isValidGyroSample(sample)) return;
+    if (!active) {
+      clearSampleTimeout();
+      setActive(true);
+    }
+    input.frameLoop.push(sample);
+  };
+
+  const onVisibilityChange = () => {
+    if (input.isHidden()) pause();
+    else armForFreshSample();
+  };
+
+  const onOrientationChange = () => {
+    if (!input.isHidden()) armForFreshSample();
+  };
+
+  return {
+    start() {
+      if (started || destroyed) return;
+      started = true;
+      unsubscribers = [
+        input.subscribeOrientation(onOrientation),
+        input.subscribeOrientationChange(onOrientationChange),
+        input.subscribeVisibilityChange(onVisibilityChange),
+      ];
+      armForFreshSample();
+    },
+    destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      pause();
+      for (const unsubscribe of unsubscribers) unsubscribe();
+      unsubscribers = [];
+      input.frameLoop.destroy();
+    },
   };
 }
 

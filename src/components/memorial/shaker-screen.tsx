@@ -34,18 +34,20 @@ import {
 import { currentShakerParams, resolveShakerEntry } from "@/lib/shaker-entry";
 import {
   NO_PARALLAX,
-  createParallaxTracker,
+  createOrientationMotionSession,
+  createParallaxFrameLoop,
   detectGyroSupport,
   pointerToGyroSample,
   prefersReducedMotion,
   requestGyroPermission,
-  shouldAnimateParallax,
   type GyroPermission,
   type ParallaxFrame,
 } from "@/lib/shaker-gyro";
 import { buildShakerViewModel } from "@/lib/shaker-playback";
 
 type Lang = "ko" | "en";
+
+const SCENE_OVERSCAN = 1.03;
 
 const T = {
   ko: {
@@ -138,29 +140,66 @@ export function ShakerScreen() {
     // iOS 는 사용자 제스처가 필요하므로 버튼을 눌러야 granted 가 된다.
     () => (detectGyroSupport() === "auto" ? "granted" : null)
   );
-  const [pointerFallback, setPointerFallback] = useState(false);
-  const [frame, setFrame] = useState<ParallaxFrame>(NO_PARALLAX);
-  const trackerRef = useRef(createParallaxTracker());
+  const sceneLayerRef = useRef<HTMLDivElement>(null);
+  const backgroundLayerRef = useRef<HTMLDivElement>(null);
 
-  const animate = shouldAnimateParallax({
-    permission,
-    reducedMotion,
-    pointerFallbackActive: pointerFallback,
-  });
+  const applyParallaxFrame = useCallback((frame: ParallaxFrame) => {
+    if (sceneLayerRef.current) {
+      sceneLayerRef.current.style.transform =
+        `translate3d(${frame.pet.x.toFixed(2)}px, ${frame.pet.y.toFixed(2)}px, 0) ` +
+        `scale(${SCENE_OVERSCAN})`;
+    }
+    if (backgroundLayerRef.current) {
+      backgroundLayerRef.current.style.transform =
+        `translate3d(${frame.background.x.toFixed(2)}px, ${frame.background.y.toFixed(2)}px, 0)`;
+    }
+  }, []);
 
-  // 자이로 구독. 움직임 최소화가 켜져 있으면 **아예 구독하지 않는다** —
-  // 구독해 두고 값만 버리면 배터리를 쓰면서 아무것도 하지 않는 셈이다.
+  // 자이로 구독. 센서 이벤트는 최신 값만 저장하고 requestAnimationFrame 에서
+  // DOM transform 을 갱신한다. 센서 주기만큼 React 를 다시 렌더하지 않는다.
   useEffect(() => {
     if (reducedMotion) return;
     if (permission !== "granted") return;
+    if (state.phase !== "ready") return;
     if (typeof window === "undefined") return;
 
-    const onOrient = (e: DeviceOrientationEvent) => {
-      setFrame(trackerRef.current.push({ beta: e.beta, gamma: e.gamma }));
+    const frameLoop = createParallaxFrameLoop({
+      onFrame: applyParallaxFrame,
+      requestFrame: (callback) => window.requestAnimationFrame(callback),
+      cancelFrame: (id) => window.cancelAnimationFrame(id),
+    });
+    const session = createOrientationMotionSession({
+      frameLoop,
+      subscribeOrientation(listener) {
+        const handler = (event: DeviceOrientationEvent) => {
+          listener({ beta: event.beta, gamma: event.gamma });
+        };
+        window.addEventListener("deviceorientation", handler, { passive: true });
+        return () => window.removeEventListener("deviceorientation", handler);
+      },
+      subscribeOrientationChange(listener) {
+        window.addEventListener("orientationchange", listener);
+        return () => window.removeEventListener("orientationchange", listener);
+      },
+      subscribeVisibilityChange(listener) {
+        document.addEventListener("visibilitychange", listener);
+        return () => document.removeEventListener("visibilitychange", listener);
+      },
+      isHidden: () => document.hidden,
+      scheduleTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
+      cancelTimeout: (handle) => window.clearTimeout(handle as number),
+      // hidden, 방향 전환, 무샘플 타임아웃 때 남아 있는 transform 을 버린다.
+      onActiveChange: (active) => {
+        if (!active) applyParallaxFrame(NO_PARALLAX);
+      },
+    });
+    session.start();
+
+    return () => {
+      session.destroy();
+      applyParallaxFrame(NO_PARALLAX);
     };
-    window.addEventListener("deviceorientation", onOrient);
-    return () => window.removeEventListener("deviceorientation", onOrient);
-  }, [permission, reducedMotion]);
+  }, [applyParallaxFrame, permission, reducedMotion, state.phase]);
 
   // 비-자이로 폴백. 자이로가 없거나 거부됐을 때만 포인터를 쓴다.
   // 데스크톱에서 마우스를 움직이면 같은 깊이감이 나고, 아무것도 안 하면 정지 상태다.
@@ -170,34 +209,31 @@ export function ShakerScreen() {
     if (gyroSupport === "ios-permission" && permission === null) return; // 아직 물어보는 중
     if (typeof window === "undefined") return;
 
+    const frameLoop = createParallaxFrameLoop({
+      onFrame: applyParallaxFrame,
+      requestFrame: (callback) => window.requestAnimationFrame(callback),
+      cancelFrame: (id) => window.cancelAnimationFrame(id),
+    });
     const onMove = (e: PointerEvent) => {
-      setPointerFallback(true);
-      setFrame(
-        trackerRef.current.push(
-          pointerToGyroSample(
-            { x: e.clientX, y: e.clientY },
-            { width: window.innerWidth, height: window.innerHeight }
-          )
+      frameLoop.push(
+        pointerToGyroSample(
+          { x: e.clientX, y: e.clientY },
+          { width: window.innerWidth, height: window.innerHeight }
         )
       );
     };
     window.addEventListener("pointermove", onMove, { passive: true });
-    return () => window.removeEventListener("pointermove", onMove);
-  }, [permission, reducedMotion, gyroSupport]);
-
-  // 방향 전환 시 기준 자세를 다시 잡는다 — 안 그러면 세로에서 잡은 기준이
-  // 가로에서 최대치로 붙어 버린다.
-  useEffect(() => {
-    const onOrientationChange = () => trackerRef.current.reset();
-    window.addEventListener("orientationchange", onOrientationChange);
-    return () => window.removeEventListener("orientationchange", onOrientationChange);
-  }, []);
+    return () => {
+      window.removeEventListener("pointermove", onMove);
+      frameLoop.destroy();
+      applyParallaxFrame(NO_PARALLAX);
+    };
+  }, [applyParallaxFrame, permission, reducedMotion, gyroSupport]);
 
   const askMotion = useCallback(async () => {
     // **반드시 이 클릭 핸들러 안에서** 부른다 — 제스처 밖이면 Safari 가 조용히 거부한다.
     const result = await requestGyroPermission();
     setPermission(result);
-    trackerRef.current.reset();
   }, []);
 
   // ── 더블탭 ─────────────────────────────────────────────────────────────────
@@ -242,7 +278,7 @@ export function ShakerScreen() {
   // ── 렌더 ───────────────────────────────────────────────────────────────────
   if (state.phase === "error") {
     return (
-      <ShakerShell frame={NO_PARALLAX} animate={false}>
+      <ShakerShell backgroundRef={backgroundLayerRef}>
         <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-8 text-center">
           <p className="text-base font-medium text-white/90">{t.unavailable}</p>
           <p className="max-w-xs text-sm leading-relaxed text-white/55">
@@ -264,7 +300,7 @@ export function ShakerScreen() {
 
   if (state.phase === "loading" || !vm) {
     return (
-      <ShakerShell frame={NO_PARALLAX} animate={false}>
+      <ShakerShell backgroundRef={backgroundLayerRef}>
         <div className="flex h-full w-full items-center justify-center">
           <p className="text-sm text-white/40">{t.loading}</p>
         </div>
@@ -273,7 +309,7 @@ export function ShakerScreen() {
   }
 
   return (
-    <ShakerShell frame={frame} animate={animate}>
+    <ShakerShell backgroundRef={backgroundLayerRef}>
       <div
         className="relative h-full w-full touch-none select-none"
         onPointerDown={onPointerDown}
@@ -282,15 +318,15 @@ export function ShakerScreen() {
           pointerStartRef.current = undefined;
         }}
       >
-        {/* 펫 레이어 — 배경보다 많이 움직여 앞에 있는 것처럼 보인다. */}
+        {/* 구운 장면 전체를 한 레이어로 움직인다. 3% 오버스캔으로 빈 가장자리를 막는다. */}
         <div
+          ref={sceneLayerRef}
           className="absolute inset-0 flex items-end justify-center"
           style={{
-            transform: animate
-              ? `translate3d(${frame.pet.x.toFixed(2)}px, ${frame.pet.y.toFixed(2)}px, 0)`
-              : undefined,
+            transform: `translate3d(0, 0, 0) scale(${SCENE_OVERSCAN})`,
+            transformOrigin: "center center",
             // 감쇠는 트래커가 이미 한다. 여기 transition 을 걸면 두 번 감쇠돼 늘어진다.
-            willChange: animate ? "transform" : undefined,
+            willChange: reducedMotion ? undefined : "transform",
           }}
         >
           <IdleLoopVideo
@@ -305,17 +341,17 @@ export function ShakerScreen() {
               backgroundBaked: vm.backgroundBaked,
             })}
           />
-        </div>
 
-        {/* 포스터 — 첫 프레임이 올 때까지 덮는다. 검은 화면을 보여 주지 않기 위한 것. */}
-        {vm.posterUrl && !firstFrameShown && (
-          <img
-            src={vm.posterUrl}
-            alt=""
-            aria-hidden
-            className="pointer-events-none absolute inset-0 h-full w-full object-contain"
-          />
-        )}
+          {/* 포스터도 같은 장면 레이어에 두어 영상 전환 때 위치가 뛰지 않게 한다. */}
+          {vm.posterUrl && !firstFrameShown && (
+            <img
+              src={vm.posterUrl}
+              alt=""
+              aria-hidden
+              className="pointer-events-none absolute inset-0 h-full w-full object-contain"
+            />
+          )}
+        </div>
 
         {/* 이름 */}
         {vm.petName && (
@@ -352,24 +388,21 @@ export function ShakerScreen() {
  * 하나만으로 충분히 무겁다.
  */
 function ShakerShell({
-  frame,
-  animate,
+  backgroundRef,
   children,
 }: {
-  frame: ParallaxFrame;
-  animate: boolean;
+  backgroundRef: React.RefObject<HTMLDivElement>;
   children: React.ReactNode;
 }) {
   return (
     <div className="fixed inset-0 overflow-hidden bg-[#07070a]">
       <div
+        ref={backgroundRef}
         className="absolute inset-[-6%] bg-[radial-gradient(ellipse_at_50%_35%,rgba(120,110,150,0.20),transparent_62%)]"
         aria-hidden
         style={{
-          transform: animate
-            ? `translate3d(${frame.background.x.toFixed(2)}px, ${frame.background.y.toFixed(2)}px, 0)`
-            : undefined,
-          willChange: animate ? "transform" : undefined,
+          transform: "translate3d(0, 0, 0)",
+          willChange: "transform",
         }}
       />
       <div className="relative h-full w-full">{children}</div>
