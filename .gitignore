@@ -40,6 +40,7 @@ media/
 !EternalBeam/Assets/Backgrounds/*.mp4
 !public/backgrounds/**/*.mp4
 !public/demo/*.mp4
+!public/prototypes/shaker-depth/goya-forest-baked-v2.mp4
 !python/backgrounds/*.mp4
 __pycache__/
 *.rtf
