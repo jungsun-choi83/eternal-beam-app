@@ -16,6 +16,8 @@ export const SHAKER_DEPTH_PROTOTYPE_ASSETS = {
 export const DEPTH_DISPLACEMENT = {
   farPx: 2,
   maxPx: 12,
+  horizontalMaxPx: 8,
+  horizontalEdgeGuardPx: 2.5,
   overscan: 1.055,
   maxDevicePixelRatio: 1.5,
 } as const;
@@ -72,7 +74,32 @@ export const DEPTH_FRAGMENT_SHADER = /* glsl */ `
     baseUv = (baseUv - 0.5) / uOverscan + 0.5;
 
     float depth = texture2D(uDepth, baseUv).r;
-    float displacementPx = 2.0 + 10.0 * pow(clamp(depth, 0.0, 1.0), 1.5);
+
+    // A single depth lookup erodes a near object's leading edge: the output pixel
+    // still sees background depth even though the moving pet should occupy it.
+    // Probe back toward the possible source pixel, plus a small mask guard, so
+    // thin features such as ears remain part of the near layer while moving.
+    float horizontalDirection = sign(uTilt.x);
+    vec2 horizontalProbeUv = vec2(
+      uTilt.x * 8.0 / max(uViewport.x, 1.0),
+      0.0
+    );
+    vec2 horizontalGuardUv = vec2(
+      horizontalDirection * 2.5 / max(uTextureSize.x, 1.0),
+      0.0
+    );
+    vec2 probeUv = clamp(
+      baseUv - horizontalProbeUv - horizontalGuardUv,
+      vec2(0.001),
+      vec2(0.999)
+    );
+    depth = max(depth, texture2D(uDepth, probeUv).r);
+
+    float shapedDepth = pow(clamp(depth, 0.0, 1.0), 1.5);
+    vec2 displacementPx = vec2(
+      2.0 + 6.0 * shapedDepth,
+      2.0 + 10.0 * shapedDepth
+    );
     vec2 displacementUv = uTilt * displacementPx / max(uViewport, vec2(1.0));
 
     // Sampling in the opposite direction makes the visible pixels travel with the tilt.

@@ -146,7 +146,8 @@ export function ShakerDepthPrototypeScreen() {
         </div>
         <div className="rounded-2xl border border-white/10 bg-black/35 px-3 py-2 text-right text-[10px] leading-relaxed text-white/55 backdrop-blur-md">
           <p>far {DEPTH_DISPLACEMENT.farPx}px</p>
-          <p>near {DEPTH_DISPLACEMENT.maxPx}px</p>
+          <p>x near {DEPTH_DISPLACEMENT.horizontalMaxPx}px</p>
+          <p>y near {DEPTH_DISPLACEMENT.maxPx}px</p>
           <p>overscan {DEPTH_DISPLACEMENT.overscan.toFixed(3)}×</p>
         </div>
       </div>
