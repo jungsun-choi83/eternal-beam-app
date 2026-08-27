@@ -4,6 +4,7 @@ import { SoulTraceImportScreen } from '@/components/memorial/soul-trace-import-s
 import { ShakerScreen } from '@/components/memorial/shaker-screen'
 import { isShakerEntry } from '@/lib/shaker-entry'
 import { isShakerDepthPrototypePath } from '@/lib/shaker-depth-prototype'
+import { isShakerLayeredPrototypePath } from '@/lib/shaker-layered-prototype'
 import { OpsDashboardScreen } from '@/components/memorial/ops/ops-dashboard-screen'
 import { OpsOrdersScreen } from '@/components/memorial/ops/ops-orders-screen'
 import { OpsPartnersScreen } from '@/components/memorial/ops/ops-partners-screen'
@@ -16,6 +17,12 @@ import { EternalBeamApp } from './EternalBeamApp'
 const ShakerDepthPrototypeScreen = lazy(() =>
   import('@/components/memorial/shaker-depth-prototype-screen').then((module) => ({
     default: module.ShakerDepthPrototypeScreen,
+  }))
+)
+
+const ShakerLayeredPrototypeScreen = lazy(() =>
+  import('@/components/memorial/shaker-layered-prototype-screen').then((module) => ({
+    default: module.ShakerLayeredPrototypeScreen,
   }))
 )
 
@@ -59,6 +66,13 @@ export default function App() {
     return (
       <Suspense fallback={<div className="fixed inset-0 bg-[#050609]" />}>
         <ShakerDepthPrototypeScreen />
+      </Suspense>
+    )
+  // One-pet separate-layer experiment. Production /shaker remains unchanged.
+  if (isShakerLayeredPrototypePath(window.location.pathname))
+    return (
+      <Suspense fallback={<div className="fixed inset-0 bg-[#050609]" />}>
+        <ShakerLayeredPrototypeScreen />
       </Suspense>
     )
   if (isShakerEntry()) return <ShakerScreen />
