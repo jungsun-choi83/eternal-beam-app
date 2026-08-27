@@ -17,7 +17,7 @@ export const DEPTH_DISPLACEMENT = {
   farPx: 2,
   maxPx: 12,
   horizontalMaxPx: 10,
-  horizontalEdgeGuardPx: 2.5,
+  horizontalDepthFeatherPx: 2,
   horizontalInputGain: 1.7,
   overscan: 1.055,
   maxDevicePixelRatio: 1.5,
@@ -76,30 +76,23 @@ export const DEPTH_FRAGMENT_SHADER = /* glsl */ `
 
     float depth = texture2D(uDepth, baseUv).r;
 
-    // A single depth lookup erodes a near object's leading edge: the output pixel
-    // still sees background depth even though the moving pet should occupy it.
-    // Probe back toward the possible source pixel, plus a small mask guard, so
-    // thin features such as ears remain part of the near layer while moving.
-    float horizontalDirection = sign(uTilt.x);
-    vec2 horizontalProbeUv = vec2(
-      uTilt.x * 10.0 / max(uViewport.x, 1.0),
-      0.0
-    );
-    vec2 horizontalGuardUv = vec2(
-      horizontalDirection * 2.5 / max(uTextureSize.x, 1.0),
-      0.0
-    );
-    vec2 probeUv = clamp(
-      baseUv - horizontalProbeUv - horizontalGuardUv,
-      vec2(0.001),
-      vec2(0.999)
-    );
-    depth = max(depth, texture2D(uDepth, probeUv).r);
+    // The depth map comes from one still while the baked dog continues moving.
+    // Directional dilation creates a second hard silhouette when those outlines
+    // diverge. Feather only the horizontal depth transition symmetrically so the
+    // boundary bends once instead of rendering a shifted duplicate contour.
+    vec2 horizontalTexel = vec2(1.0 / max(uTextureSize.x, 1.0), 0.0);
+    float horizontalDepth =
+      depth * 0.40 +
+      texture2D(uDepth, clamp(baseUv - horizontalTexel, vec2(0.001), vec2(0.999))).r * 0.20 +
+      texture2D(uDepth, clamp(baseUv + horizontalTexel, vec2(0.001), vec2(0.999))).r * 0.20 +
+      texture2D(uDepth, clamp(baseUv - horizontalTexel * 2.0, vec2(0.001), vec2(0.999))).r * 0.10 +
+      texture2D(uDepth, clamp(baseUv + horizontalTexel * 2.0, vec2(0.001), vec2(0.999))).r * 0.10;
 
-    float shapedDepth = pow(clamp(depth, 0.0, 1.0), 1.5);
+    float shapedHorizontalDepth = pow(clamp(horizontalDepth, 0.0, 1.0), 1.5);
+    float shapedVerticalDepth = pow(clamp(depth, 0.0, 1.0), 1.5);
     vec2 displacementPx = vec2(
-      2.0 + 8.0 * shapedDepth,
-      2.0 + 10.0 * shapedDepth
+      2.0 + 8.0 * shapedHorizontalDepth,
+      2.0 + 10.0 * shapedVerticalDepth
     );
     vec2 displacementUv = uTilt * displacementPx / max(uViewport, vec2(1.0));
 

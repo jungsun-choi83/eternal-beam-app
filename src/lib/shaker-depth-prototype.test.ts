@@ -73,23 +73,22 @@ describe("depth displacement", () => {
 
   it("samples depth separately and applies overscanned UV displacement", () => {
     assert.match(DEPTH_FRAGMENT_SHADER, /texture2D\(uDepth, baseUv\)\.r/);
-    assert.match(DEPTH_FRAGMENT_SHADER, /2\.0 \+ 8\.0 \* shapedDepth/);
-    assert.match(DEPTH_FRAGMENT_SHADER, /2\.0 \+ 10\.0 \* shapedDepth/);
+    assert.match(DEPTH_FRAGMENT_SHADER, /2\.0 \+ 8\.0 \* shapedHorizontalDepth/);
+    assert.match(DEPTH_FRAGMENT_SHADER, /2\.0 \+ 10\.0 \* shapedVerticalDepth/);
     assert.match(DEPTH_FRAGMENT_SHADER, /baseUv - displacementUv/);
     assert.equal(DEPTH_DISPLACEMENT.horizontalMaxPx, 10);
     assert.ok(DEPTH_DISPLACEMENT.overscan >= 1.04);
     assert.ok(DEPTH_DISPLACEMENT.overscan <= 1.07);
   });
 
-  it("protects horizontal silhouette edges with a motion-directional depth probe", () => {
-    assert.match(DEPTH_FRAGMENT_SHADER, /horizontalDirection = sign\(uTilt\.x\)/);
-    assert.match(DEPTH_FRAGMENT_SHADER, /uTilt\.x \* 10\.0/);
-    assert.match(DEPTH_FRAGMENT_SHADER, /horizontalDirection \* 2\.5/);
-    assert.match(
-      DEPTH_FRAGMENT_SHADER,
-      /depth = max\(depth, texture2D\(uDepth, probeUv\)\.r\)/
-    );
-    assert.equal(DEPTH_DISPLACEMENT.horizontalEdgeGuardPx, 2.5);
+  it("feathers horizontal depth symmetrically without duplicating the silhouette", () => {
+    assert.match(DEPTH_FRAGMENT_SHADER, /depth \* 0\.40/);
+    assert.match(DEPTH_FRAGMENT_SHADER, /baseUv - horizontalTexel/);
+    assert.match(DEPTH_FRAGMENT_SHADER, /baseUv \+ horizontalTexel/);
+    assert.match(DEPTH_FRAGMENT_SHADER, /horizontalTexel \* 2\.0/);
+    assert.ok(!DEPTH_FRAGMENT_SHADER.includes("max(depth, texture2D"));
+    assert.ok(!DEPTH_FRAGMENT_SHADER.includes("horizontalDirection"));
+    assert.equal(DEPTH_DISPLACEMENT.horizontalDepthFeatherPx, 2);
   });
 });
 
