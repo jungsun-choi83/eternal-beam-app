@@ -4,7 +4,7 @@ services:
   - type: web
     name: eternal-beam-video-api
     region: singapore
-    plan: free
+    plan: starter
     runtime: docker
     dockerfilePath: ./Dockerfile
     autoDeploy: true
