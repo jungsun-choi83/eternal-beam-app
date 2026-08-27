@@ -6,6 +6,7 @@ import * as THREE from "three";
 import {
   NO_PARALLAX,
   PARALLAX_DEFAULT,
+  alignGyroSampleToScreen,
   createOrientationMotionSession,
   createParallaxFrameLoop,
   detectGyroSupport,
@@ -43,7 +44,11 @@ export function ShakerDepthPrototypeScreen() {
 
     const frameLoop = createParallaxFrameLoop({
       onFrame(frame) {
-        tiltRef.current.x = frame.pet.x / PARALLAX_DEFAULT.petMaxPx;
+        const normalizedX = frame.pet.x / PARALLAX_DEFAULT.petMaxPx;
+        tiltRef.current.x = Math.max(
+          -1,
+          Math.min(1, normalizedX * DEPTH_DISPLACEMENT.horizontalInputGain)
+        );
         tiltRef.current.y = frame.pet.y / PARALLAX_DEFAULT.petMaxPx;
       },
       requestFrame: (callback) => window.requestAnimationFrame(callback),
@@ -52,8 +57,22 @@ export function ShakerDepthPrototypeScreen() {
     const session = createOrientationMotionSession({
       frameLoop,
       subscribeOrientation(listener) {
-        const handler = (event: DeviceOrientationEvent) =>
-          listener({ beta: event.beta, gamma: event.gamma });
+        const handler = (event: DeviceOrientationEvent) => {
+          const modernAngle = window.screen.orientation?.angle;
+          const legacyAngle = (window as unknown as { orientation?: number }).orientation;
+          const screenAngle =
+            typeof modernAngle === "number"
+              ? modernAngle
+              : typeof legacyAngle === "number"
+                ? legacyAngle
+                : 0;
+          listener(
+            alignGyroSampleToScreen(
+              { beta: event.beta, gamma: event.gamma },
+              screenAngle
+            )
+          );
+        };
         window.addEventListener("deviceorientation", handler, { passive: true });
         return () => window.removeEventListener("deviceorientation", handler);
       },
@@ -147,6 +166,7 @@ export function ShakerDepthPrototypeScreen() {
         <div className="rounded-2xl border border-white/10 bg-black/35 px-3 py-2 text-right text-[10px] leading-relaxed text-white/55 backdrop-blur-md">
           <p>far {DEPTH_DISPLACEMENT.farPx}px</p>
           <p>x near {DEPTH_DISPLACEMENT.horizontalMaxPx}px</p>
+          <p>x gain {DEPTH_DISPLACEMENT.horizontalInputGain.toFixed(1)}×</p>
           <p>y near {DEPTH_DISPLACEMENT.maxPx}px</p>
           <p>overscan {DEPTH_DISPLACEMENT.overscan.toFixed(3)}×</p>
         </div>

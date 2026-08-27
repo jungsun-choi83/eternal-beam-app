@@ -18,6 +18,7 @@ export const DEPTH_DISPLACEMENT = {
   maxPx: 12,
   horizontalMaxPx: 10,
   horizontalEdgeGuardPx: 2.5,
+  horizontalInputGain: 1.7,
   overscan: 1.055,
   maxDevicePixelRatio: 1.5,
 } as const;

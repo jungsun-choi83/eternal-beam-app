@@ -120,6 +120,28 @@ export function isValidGyroSample(sample: GyroSample): sample is {
 }
 
 /**
+ * DeviceOrientation axes stay attached to the physical device. Rotate the raw
+ * gamma/beta pair into the current screen axes so "left/right" remains X in
+ * portrait and either landscape orientation.
+ */
+export function alignGyroSampleToScreen(
+  sample: GyroSample,
+  screenAngleDeg: number
+): GyroSample {
+  if (!isValidGyroSample(sample)) return sample;
+  const angle = Number.isFinite(screenAngleDeg) ? screenAngleDeg : 0;
+  const radians = (angle * Math.PI) / 180;
+  const cos = Math.cos(radians);
+  const sin = Math.sin(radians);
+  const deviceX = sample.gamma;
+  const deviceY = sample.beta;
+  return {
+    gamma: deviceX * cos - deviceY * sin,
+    beta: deviceX * sin + deviceY * cos,
+  };
+}
+
+/**
  * 기울기 → 레이어 오프셋. **첫 샘플이 기준 자세가 된다.**
  *
  * 기준점을 잡는 것이 핵심이다. 사람은 폰을 45° 쯤 기울여 들고 보는데, 절대 각도를

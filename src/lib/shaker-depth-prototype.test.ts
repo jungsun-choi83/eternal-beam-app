@@ -111,6 +111,8 @@ describe("fallback and gyro reuse", () => {
     assert.match(SCREEN, /requestGyroPermission\(\)/);
     assert.match(SCREEN, /createParallaxFrameLoop\(/);
     assert.match(SCREEN, /createOrientationMotionSession\(/);
+    assert.match(SCREEN, /alignGyroSampleToScreen\(/);
+    assert.match(SCREEN, /horizontalInputGain/);
     assert.ok(!SCREEN.includes("normalizeTilt("));
   });
 

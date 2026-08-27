@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { describe, it } from "node:test";
 
 import {
+  alignGyroSampleToScreen,
   NO_PARALLAX,
   ORIENTATION_SAMPLE_TIMEOUT_MS,
   PARALLAX_DEFAULT,
@@ -159,6 +160,34 @@ describe("기울기 정규화", () => {
   it("부호를 보존한다", () => {
     assert.ok(normalizeTilt(10, 26, 1.2) > 0);
     assert.ok(normalizeTilt(-10, 26, 1.2) < 0);
+  });
+});
+
+describe("화면 방향에 맞춘 센서 축", () => {
+  it("세로 화면에서는 gamma/beta 축을 그대로 유지한다", () => {
+    assert.deepEqual(alignGyroSampleToScreen({ gamma: 8, beta: 20 }, 0), {
+      gamma: 8,
+      beta: 20,
+    });
+  });
+
+  it("오른쪽 가로 화면에서는 beta 를 화면의 좌우 축으로 돌린다", () => {
+    const sample = alignGyroSampleToScreen({ gamma: 8, beta: 20 }, 90);
+    assert.ok(Math.abs((sample.gamma ?? 0) + 20) < 1e-9);
+    assert.ok(Math.abs((sample.beta ?? 0) - 8) < 1e-9);
+  });
+
+  it("왼쪽 가로 화면에서도 beta 가 화면의 좌우 축이 된다", () => {
+    const sample = alignGyroSampleToScreen({ gamma: 8, beta: 20 }, -90);
+    assert.ok(Math.abs((sample.gamma ?? 0) - 20) < 1e-9);
+    assert.ok(Math.abs((sample.beta ?? 0) + 8) < 1e-9);
+  });
+
+  it("센서가 아직 null 이면 보정하지 않고 그대로 둔다", () => {
+    assert.deepEqual(alignGyroSampleToScreen({ gamma: null, beta: null }, 90), {
+      gamma: null,
+      beta: null,
+    });
   });
 });
 
