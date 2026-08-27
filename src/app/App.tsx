@@ -1,7 +1,9 @@
+import { lazy, Suspense } from 'react'
 import { ThemePurchaseReturnScreen } from '@/components/memorial/theme-purchase-return-screen'
 import { SoulTraceImportScreen } from '@/components/memorial/soul-trace-import-screen'
 import { ShakerScreen } from '@/components/memorial/shaker-screen'
 import { isShakerEntry } from '@/lib/shaker-entry'
+import { isShakerDepthPrototypePath } from '@/lib/shaker-depth-prototype'
 import { OpsDashboardScreen } from '@/components/memorial/ops/ops-dashboard-screen'
 import { OpsOrdersScreen } from '@/components/memorial/ops/ops-orders-screen'
 import { OpsPartnersScreen } from '@/components/memorial/ops/ops-partners-screen'
@@ -10,6 +12,12 @@ import { currentOpsRoute } from '@/lib/ops-nav'
 import { orderReturnEntry, themeReturnEntry } from '@/lib/app-entry'
 import { isSoulTraceImportEntry, peekSoulTraceHandoffState } from '@/lib/soul-trace-handoff'
 import { EternalBeamApp } from './EternalBeamApp'
+
+const ShakerDepthPrototypeScreen = lazy(() =>
+  import('@/components/memorial/shaker-depth-prototype-screen').then((module) => ({
+    default: module.ShakerDepthPrototypeScreen,
+  }))
+)
 
 /**
  * 세 갈래 진입 — 소유 모델을 그대로 반영한다.
@@ -46,6 +54,13 @@ export default function App() {
   if (opsRoute === 'orders') return <OpsOrdersScreen />
   if (opsRoute === 'partners') return <OpsPartnersScreen />
   if (opsRoute === 'shaker') return <OpsShakerScreen />
+  // One-scene WebGL experiment only. It does not change /shaker or printed QR behavior.
+  if (isShakerDepthPrototypePath(window.location.pathname))
+    return (
+      <Suspense fallback={<div className="fixed inset-0 bg-[#050609]" />}>
+        <ShakerDepthPrototypeScreen />
+      </Suspense>
+    )
   if (isShakerEntry()) return <ShakerScreen />
 
   // ── 이메일 확인 탭에서 돌아온 경우 ────────────────────────────────────────
