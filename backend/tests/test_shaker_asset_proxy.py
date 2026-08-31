@@ -30,6 +30,7 @@ from backend.services import behavior_preferences
 from backend.services import generated_motions_service as motions_svc
 from backend.services import premium_entitlement, premium_purchase
 from backend.services import shaker_rate_limit, shaker_share
+from backend.services import shaker_layered_assets
 
 from .conftest import ASGITestClient
 
@@ -52,12 +53,14 @@ def _isolated(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("SHAKER_DOUBLE_TAP_POLICY", raising=False)
     monkeypatch.delenv("SHAKER_PROXY_ASSET_URLS", raising=False)
     shaker_share.__reset_for_tests()
+    shaker_layered_assets.__reset_for_tests()
     shaker_rate_limit.__reset_for_tests()
     behavior_preferences.__reset_for_tests()
     motions_svc._MOCK_MOTIONS.clear()
     premium_purchase.__reset_for_tests()
     yield
     shaker_share.__reset_for_tests()
+    shaker_layered_assets.__reset_for_tests()
     shaker_rate_limit.__reset_for_tests()
     behavior_preferences.__reset_for_tests()
     motions_svc._MOCK_MOTIONS.clear()
@@ -164,6 +167,40 @@ def test_proxy_redirects_to_a_freshly_signed_url(client: ASGITestClient):
     assert "token=FRESH" in loc      # 저장된 OLD 서명이 아니다
     assert "token=OLD" not in loc
     assert r.headers["cache-control"] == "no-store"
+
+
+def test_ready_v2_proxy_slots_require_the_same_share(client: ASGITestClient):
+    item = _sync(
+        shaker_layered_assets.reserve,
+        user_id=CUSTOMER, pet_id=PET, content_id=CONTENT, scene_id="scene-v2",
+    )
+    ready = _sync(
+        shaker_layered_assets.publish_ready,
+        item.asset_id,
+        pet=shaker_layered_assets.StorageRef(BUCKET, "layered/pet/scene-v2/v1/pet.mp4"),
+        background_type="image",
+        background=shaker_layered_assets.StorageRef(BUCKET, "layered/pet/scene-v2/v1/bg.jpg"),
+        qa={"passed": True},
+    )
+    _sid, token = _sync(
+        shaker_share.create_share,
+        user_id=CUSTOMER,
+        pet_id=PET,
+        breathing_url=BREATH,
+        scene_id=ready.scene_id,
+        layered_asset_id=ready.asset_id,
+    )
+
+    pet = client.get("/api/v1/shaker/pet", params={"share": token}).json()
+    assert "k=v2-pet" in pet["layered"]["pet"]["url"]
+    r = client.get("/api/v1/shaker/asset", params={"share": token, "k": "v2-pet"})
+    assert r.status_code == 302
+    assert "layered/pet/scene-v2/v1/pet.mp4" in r.headers["location"]
+
+    legacy = _mint()
+    assert client.get(
+        "/api/v1/shaker/asset", params={"share": legacy, "k": "v2-pet"}
+    ).status_code == 404
 
 
 # ── 프록시가 정책을 우회하지 않는다 ─────────────────────────────────────────

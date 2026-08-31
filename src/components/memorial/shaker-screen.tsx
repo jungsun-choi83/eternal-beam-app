@@ -19,9 +19,11 @@
  * 여기서 쓰는 문구는 열 줄이 안 되므로 자급자족이 더 안전하다.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { IdleLoopVideo } from "@/components/memorial/idle-loop-video";
+import { ShakerLayeredBoundary } from "@/components/memorial/shaker-layered-boundary";
+import type { LayeredMotionMode } from "@/components/memorial/shaker-layered-player";
 import { shouldTransparentComposite } from "@/lib/baked-playback";
 import { recognizeTap, type TapPoint } from "@/lib/double-tap";
 import type { PetRuntimeTrigger } from "@/lib/pet-runtime-events";
@@ -33,21 +35,22 @@ import {
 } from "@/lib/shaker-api";
 import { currentShakerParams, resolveShakerEntry } from "@/lib/shaker-entry";
 import {
-  NO_PARALLAX,
-  createOrientationMotionSession,
-  createParallaxFrameLoop,
   detectGyroSupport,
-  pointerToGyroSample,
   prefersReducedMotion,
   requestGyroPermission,
   type GyroPermission,
-  type ParallaxFrame,
 } from "@/lib/shaker-gyro";
-import { buildShakerViewModel } from "@/lib/shaker-playback";
+import { buildShakerViewModel, deriveShakerPlaybackRoute } from "@/lib/shaker-playback";
 
 type Lang = "ko" | "en";
 
-const SCENE_OVERSCAN = 1.03;
+// Three.js is loaded only after the server returns a complete READY manifest.
+// V1/legacy QR visitors and the customer app do not pay the WebGL bundle cost.
+const ShakerLayeredPlayer = lazy(() =>
+  import("@/components/memorial/shaker-layered-player").then((module) => ({
+    default: module.ShakerLayeredPlayer,
+  })),
+);
 
 const T = {
   ko: {
@@ -97,6 +100,11 @@ function detectLang(): Lang {
   return (navigator.language || "").toLowerCase().startsWith("en") ? "en" : "ko";
 }
 
+function motionDebugEnabled(): boolean {
+  if (typeof window === "undefined") return false;
+  return new URLSearchParams(window.location.search).get("motionDebug") === "1";
+}
+
 type LoadState =
   | { phase: "loading" }
   | { phase: "ready"; pet: ShakerPet }
@@ -105,6 +113,7 @@ type LoadState =
 export function ShakerScreen() {
   const lang = useMemo(detectLang, []);
   const t = T[lang];
+  const motionDebug = useMemo(motionDebugEnabled, []);
 
   const entry = useMemo(() => resolveShakerEntry(currentShakerParams()), []);
   const [state, setState] = useState<LoadState>({ phase: "loading" });
@@ -140,95 +149,8 @@ export function ShakerScreen() {
     // iOS 는 사용자 제스처가 필요하므로 버튼을 눌러야 granted 가 된다.
     () => (detectGyroSupport() === "auto" ? "granted" : null)
   );
-  const sceneLayerRef = useRef<HTMLDivElement>(null);
-  const backgroundLayerRef = useRef<HTMLDivElement>(null);
-
-  const applyParallaxFrame = useCallback((frame: ParallaxFrame) => {
-    if (sceneLayerRef.current) {
-      sceneLayerRef.current.style.transform =
-        `translate3d(${frame.pet.x.toFixed(2)}px, ${frame.pet.y.toFixed(2)}px, 0) ` +
-        `scale(${SCENE_OVERSCAN})`;
-    }
-    if (backgroundLayerRef.current) {
-      backgroundLayerRef.current.style.transform =
-        `translate3d(${frame.background.x.toFixed(2)}px, ${frame.background.y.toFixed(2)}px, 0)`;
-    }
-  }, []);
-
-  // 자이로 구독. 센서 이벤트는 최신 값만 저장하고 requestAnimationFrame 에서
-  // DOM transform 을 갱신한다. 센서 주기만큼 React 를 다시 렌더하지 않는다.
-  useEffect(() => {
-    if (reducedMotion) return;
-    if (permission !== "granted") return;
-    if (state.phase !== "ready") return;
-    if (typeof window === "undefined") return;
-
-    const frameLoop = createParallaxFrameLoop({
-      onFrame: applyParallaxFrame,
-      requestFrame: (callback) => window.requestAnimationFrame(callback),
-      cancelFrame: (id) => window.cancelAnimationFrame(id),
-    });
-    const session = createOrientationMotionSession({
-      frameLoop,
-      subscribeOrientation(listener) {
-        const handler = (event: DeviceOrientationEvent) => {
-          listener({ beta: event.beta, gamma: event.gamma });
-        };
-        window.addEventListener("deviceorientation", handler, { passive: true });
-        return () => window.removeEventListener("deviceorientation", handler);
-      },
-      subscribeOrientationChange(listener) {
-        window.addEventListener("orientationchange", listener);
-        return () => window.removeEventListener("orientationchange", listener);
-      },
-      subscribeVisibilityChange(listener) {
-        document.addEventListener("visibilitychange", listener);
-        return () => document.removeEventListener("visibilitychange", listener);
-      },
-      isHidden: () => document.hidden,
-      scheduleTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
-      cancelTimeout: (handle) => window.clearTimeout(handle as number),
-      // hidden, 방향 전환, 무샘플 타임아웃 때 남아 있는 transform 을 버린다.
-      onActiveChange: (active) => {
-        if (!active) applyParallaxFrame(NO_PARALLAX);
-      },
-    });
-    session.start();
-
-    return () => {
-      session.destroy();
-      applyParallaxFrame(NO_PARALLAX);
-    };
-  }, [applyParallaxFrame, permission, reducedMotion, state.phase]);
-
-  // 비-자이로 폴백. 자이로가 없거나 거부됐을 때만 포인터를 쓴다.
-  // 데스크톱에서 마우스를 움직이면 같은 깊이감이 나고, 아무것도 안 하면 정지 상태다.
-  useEffect(() => {
-    if (reducedMotion) return;
-    if (permission === "granted") return;
-    if (gyroSupport === "ios-permission" && permission === null) return; // 아직 물어보는 중
-    if (typeof window === "undefined") return;
-
-    const frameLoop = createParallaxFrameLoop({
-      onFrame: applyParallaxFrame,
-      requestFrame: (callback) => window.requestAnimationFrame(callback),
-      cancelFrame: (id) => window.cancelAnimationFrame(id),
-    });
-    const onMove = (e: PointerEvent) => {
-      frameLoop.push(
-        pointerToGyroSample(
-          { x: e.clientX, y: e.clientY },
-          { width: window.innerWidth, height: window.innerHeight }
-        )
-      );
-    };
-    window.addEventListener("pointermove", onMove, { passive: true });
-    return () => {
-      window.removeEventListener("pointermove", onMove);
-      frameLoop.destroy();
-      applyParallaxFrame(NO_PARALLAX);
-    };
-  }, [applyParallaxFrame, permission, reducedMotion, gyroSupport]);
+  const [layeredActive, setLayeredActive] = useState(false);
+  const [failedLayeredAssetId, setFailedLayeredAssetId] = useState<string | null>(null);
 
   const askMotion = useCallback(async () => {
     // **반드시 이 클릭 핸들러 안에서** 부른다 — 제스처 밖이면 Safari 가 조용히 거부한다.
@@ -243,6 +165,67 @@ export function ShakerScreen() {
 
   const vm = state.phase === "ready" ? buildShakerViewModel(state.pet) : null;
   const doubleTap = vm?.doubleTap;
+  const layeredManifest = vm?.layered ?? null;
+  const layeredAssetId = layeredManifest?.assetId ?? null;
+  const layeredMotionMode: LayeredMotionMode = reducedMotion
+    ? "off"
+    : permission === "granted" && gyroSupport !== "unsupported"
+      ? "sensor"
+      : "off";
+  const onLayeredFailure = useCallback(() => {
+    setLayeredActive(false);
+    if (layeredManifest) setFailedLayeredAssetId(layeredManifest.assetId);
+  }, [layeredManifest]);
+
+  useEffect(() => {
+    setLayeredActive(false);
+    setFailedLayeredAssetId(null);
+  }, [layeredManifest?.assetId]);
+
+  // Premium assets keep their existing IdleLoopVideo path.  While V2 idle is
+  // active, mount V1 only for the requested action, then return to layered idle.
+  const [actionOverlay, setActionOverlay] = useState(false);
+  const [pendingAction, setPendingAction] = useState<Parameters<PetRuntimeTrigger>[0] | null>(null);
+  const actionStartedRef = useRef(false);
+
+  useEffect(() => {
+    if (!actionOverlay || !pendingAction) return;
+    let cancelled = false;
+    let tries = 0;
+    let timer: number | null = null;
+    const invoke = () => {
+      if (cancelled) return;
+      if (triggerRef.current) {
+        const action = pendingAction;
+        triggerRef.current(action);
+        // A malformed/unsupported action must not strand the page on hidden V1.
+        timer = window.setTimeout(() => {
+          if (!actionStartedRef.current) setActionOverlay(false);
+        }, 13_000);
+        return;
+      }
+      if (tries++ < 40) timer = window.setTimeout(invoke, 50);
+      else setActionOverlay(false);
+    };
+    invoke();
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [actionOverlay, pendingAction]);
+
+  const onActionStateChange = useCallback((playing: boolean) => {
+    if (playing) {
+      actionStartedRef.current = true;
+      setPendingAction(null);
+      return;
+    }
+    if (actionStartedRef.current) {
+      actionStartedRef.current = false;
+      setPendingAction(null);
+      setActionOverlay(false);
+    }
+  }, []);
 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     pointerStartRef.current = { x: e.clientX, y: e.clientY };
@@ -262,9 +245,17 @@ export function ShakerScreen() {
       // 더블탭 성립. 정책이 허락한 액션이 없으면 아무 일도 하지 않는다 —
       // trigger 도 소스가 없으면 스스로 거절하므로 이중으로 안전하다.
       lastTapRef.current = null;
-      if (doubleTap?.available) triggerRef.current?.(doubleTap.actionId);
+      if (doubleTap?.available) {
+        if (layeredActive) {
+          actionStartedRef.current = false;
+          setPendingAction(doubleTap.actionId);
+          setActionOverlay(true);
+        } else {
+          triggerRef.current?.(doubleTap.actionId);
+        }
+      }
     },
-    [doubleTap]
+    [doubleTap, layeredActive]
   );
 
   // ── 포스터 ─────────────────────────────────────────────────────────────────
@@ -275,10 +266,17 @@ export function ShakerScreen() {
     setFirstFrameShown(false);
   }, [vm?.breathingUrl]);
 
+  const playbackRoute = deriveShakerPlaybackRoute({
+    layeredAssetId,
+    failedLayeredAssetId,
+    layeredActive,
+    actionOverlay,
+  });
+
   // ── 렌더 ───────────────────────────────────────────────────────────────────
   if (state.phase === "error") {
     return (
-      <ShakerShell backgroundRef={backgroundLayerRef}>
+      <ShakerShell>
         <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-8 text-center">
           <p className="text-base font-medium text-white/90">{t.unavailable}</p>
           <p className="max-w-xs text-sm leading-relaxed text-white/55">
@@ -300,7 +298,7 @@ export function ShakerScreen() {
 
   if (state.phase === "loading" || !vm) {
     return (
-      <ShakerShell backgroundRef={backgroundLayerRef}>
+      <ShakerShell>
         <div className="flex h-full w-full items-center justify-center">
           <p className="text-sm text-white/40">{t.loading}</p>
         </div>
@@ -309,7 +307,7 @@ export function ShakerScreen() {
   }
 
   return (
-    <ShakerShell backgroundRef={backgroundLayerRef}>
+    <ShakerShell>
       <div
         className="relative h-full w-full touch-none select-none"
         onPointerDown={onPointerDown}
@@ -318,40 +316,49 @@ export function ShakerScreen() {
           pointerStartRef.current = undefined;
         }}
       >
-        {/* 구운 장면 전체를 한 레이어로 움직인다. 3% 오버스캔으로 빈 가장자리를 막는다. */}
-        <div
-          ref={sceneLayerRef}
-          className="absolute inset-0 flex items-end justify-center"
-          style={{
-            transform: `translate3d(0, 0, 0) scale(${SCENE_OVERSCAN})`,
-            transformOrigin: "center center",
-            // 감쇠는 트래커가 이미 한다. 여기 transition 을 걸면 두 번 감쇠돼 늘어진다.
-            willChange: reducedMotion ? undefined : "transform",
-          }}
-        >
-          <IdleLoopVideo
-            src={vm.breathingUrl}
-            eventSources={vm.eventSources}
-            actionTriggerRef={triggerRef}
-            onFirstFrame={onFirstFrame}
-            className="h-full w-full"
-            preload="auto"
-            // QR 재생도 같은 규칙을 쓴다 — 구운 자산이면 키잉하지 않는다.
-            transparentComposite={shouldTransparentComposite({
-              backgroundBaked: vm.backgroundBaked,
-            })}
-          />
+        {layeredManifest && playbackRoute.mountV2 ? (
+          <ShakerLayeredBoundary
+            assetId={layeredManifest.assetId}
+            onFailure={onLayeredFailure}
+          >
+            <Suspense fallback={null}>
+              <ShakerLayeredPlayer
+                manifest={layeredManifest}
+                motionMode={layeredMotionMode}
+                debugMotion={motionDebug}
+                onActiveChange={setLayeredActive}
+                onFailure={onLayeredFailure}
+              />
+            </Suspense>
+          </ShakerLayeredBoundary>
+        ) : null}
 
-          {/* 포스터도 같은 장면 레이어에 두어 영상 전환 때 위치가 뛰지 않게 한다. */}
-          {vm.posterUrl && !firstFrameShown && (
-            <img
-              src={vm.posterUrl}
-              alt=""
-              aria-hidden
-              className="pointer-events-none absolute inset-0 h-full w-full object-contain"
+        {/* V1 is deliberately plain baked playback. Only complete READY V2 gets motion. */}
+        {playbackRoute.showV1 ? (
+          <div className="absolute inset-0 flex items-end justify-center">
+            <IdleLoopVideo
+              src={vm.breathingUrl}
+              eventSources={vm.eventSources}
+              actionTriggerRef={triggerRef}
+              onActionStateChange={onActionStateChange}
+              onFirstFrame={onFirstFrame}
+              className="h-full w-full"
+              preload="auto"
+              transparentComposite={shouldTransparentComposite({
+                backgroundBaked: vm.backgroundBaked,
+              })}
             />
-          )}
-        </div>
+
+            {vm.posterUrl && !firstFrameShown && (
+              <img
+                src={vm.posterUrl}
+                alt=""
+                aria-hidden
+                className="pointer-events-none absolute inset-0 h-full w-full object-contain"
+              />
+            )}
+          </div>
+        ) : null}
 
         {/* 이름 */}
         {vm.petName && (
@@ -361,15 +368,21 @@ export function ShakerScreen() {
         )}
 
         {/* 하단 안내 — 더블탭은 재생 가능할 때만, 움직임 버튼은 iOS 미허용일 때만. */}
-        <div className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col items-center gap-3 pb-[max(2rem,env(safe-area-inset-bottom))]">
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 z-[20] flex flex-col items-center gap-3 pb-[max(2rem,env(safe-area-inset-bottom))]">
           {doubleTap?.available && (
             <p className="text-xs text-white/45">{t.doubleTapHint}</p>
           )}
-          {gyroSupport === "ios-permission" && permission !== "granted" && !reducedMotion && (
+          {playbackRoute.mountV2 && gyroSupport === "ios-permission" &&
+            permission !== "granted" && !reducedMotion && (
             <button
               type="button"
-              onClick={askMotion}
-              className="pointer-events-auto rounded-full border border-white/20 px-4 py-2 text-xs text-white/70 active:bg-white/10"
+              onPointerDown={(event) => event.stopPropagation()}
+              onPointerUp={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                void askMotion();
+              }}
+              className="pointer-events-auto touch-manipulation rounded-full border border-white/20 px-4 py-2 text-xs text-white/70 active:bg-white/10"
             >
               {t.enableMotion}
             </button>
@@ -381,29 +394,15 @@ export function ShakerScreen() {
 }
 
 /**
- * 전체 화면 껍데기 + 배경 레이어.
- *
- * 배경을 펫보다 **덜** 움직여 깊이를 만든다. 배경 자체는 무거운 자산을 쓰지 않는다 —
- * 공개 페이지는 QR 을 찍은 사람이 모바일 데이터로 여는 곳이라, BREATHING 영상
- * 하나만으로 충분히 무겁다.
+ * 전체 화면 껍데기 + 정적인 장식 배경. READY V2의 움직임은 layered player
+ * 내부에만 있고, 실패하면 이 셸의 평범한 V1 장면이 다시 보인다.
  */
-function ShakerShell({
-  backgroundRef,
-  children,
-}: {
-  backgroundRef: React.RefObject<HTMLDivElement>;
-  children: React.ReactNode;
-}) {
+function ShakerShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="fixed inset-0 overflow-hidden bg-[#07070a]">
       <div
-        ref={backgroundRef}
         className="absolute inset-[-6%] bg-[radial-gradient(ellipse_at_50%_35%,rgba(120,110,150,0.20),transparent_62%)]"
         aria-hidden
-        style={{
-          transform: "translate3d(0, 0, 0)",
-          willChange: "transform",
-        }}
       />
       <div className="relative h-full w-full">{children}</div>
     </div>

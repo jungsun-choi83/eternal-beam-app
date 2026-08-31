@@ -93,6 +93,11 @@ class ShareRecord:
     purpose: Optional[str] = None
     #: Phase 12–13 주문 참조. 지금은 항상 None — 붙을 자리만 예약돼 있다.
     order_ref: Optional[str] = None
+    #: 새 공유가 발급될 때의 정본 장면. NULL 인 기존 공유는 V1 만 쓴다.
+    scene_id: Optional[str] = None
+    #: 발급 시점 READY V2 스냅샷. 없고 scene_id 만 있으면 공개 조회가 같은
+    #: 장면의 READY manifest 를 찾을 수 있다(처리가 공유 발급 뒤 끝나는 경우).
+    layered_asset_id: Optional[str] = None
 
 
 def _table() -> str:
@@ -179,6 +184,8 @@ async def create_share(
     created_by: str | None = None,
     purpose: str | None = None,
     order_ref: str | None = None,
+    scene_id: str | None = None,
+    layered_asset_id: str | None = None,
 ) -> tuple[str, str]:
     """
     새 공유 링크 발급 → (share_id, 원문 토큰).
@@ -237,6 +244,39 @@ async def create_share(
     b_bucket = (breathing_bucket or "").strip() or (b_obj.bucket if b_obj else None)
     b_path = (breathing_object_path or "").strip() or (b_obj.path if b_obj else None)
 
+    # ── 선택적 V2 스냅샷 ────────────────────────────────────────────────────
+    # 조회 실패/미완료는 공유 발급을 막지 않는다. V2 는 선택 기능이고 V1
+    # BREATHING 이 이미 준비돼 있으므로, 이 경계에서는 항상 V1 로 안전하게
+    # 떨어지는 것이 맞다. 기존 공유는 scene_id 자체가 NULL 이라 자동 업그레이드
+    # 되지 않는다.
+    selected_scene = (scene_id or "").strip() or None
+    selected_layered = (layered_asset_id or "").strip() or None
+    try:
+        from . import shaker_layered_assets
+
+        candidate = None
+        if selected_layered:
+            candidate = await shaker_layered_assets.get_ready(
+                selected_layered, user_id=uid, pet_id=pid, scene_id=selected_scene
+            )
+        elif selected_scene:
+            candidate = await shaker_layered_assets.latest_ready_for_scene(
+                user_id=uid, pet_id=pid, scene_id=selected_scene
+            )
+        else:
+            # Scene-less callers cannot prove that their V1 clip and a V2
+            # manifest represent the same canonical scene. Keep those shares
+            # on V1 instead of guessing from the newest pet asset.
+            candidate = None
+        if candidate:
+            selected_scene = candidate.scene_id
+            selected_layered = candidate.asset_id
+        else:
+            selected_layered = None
+    except Exception:  # noqa: BLE001 — V2 장애가 무료 V1 공유를 막지 않는다
+        selected_layered = None
+        logger.warning("V2 manifest 스냅샷 실패 — V1 공유로 발급한다 (pet=%s)", pid, exc_info=True)
+
     # ── 구움 여부 사본 (Phase 27) ────────────────────────────────────────────
     # 이 표는 이미 breathing_url·bucket·object_path 를 복제한다. 이유는 하나다:
     # 공유는 **종이에 인쇄되어** 다른 어떤 행보다 오래 살 수 있고, 해석 시점에
@@ -269,6 +309,8 @@ async def create_share(
         "created_by": (created_by or "").strip() or uid,
         "purpose": (purpose or "CUSTOMER").strip().upper(),
         "order_ref": (order_ref or "").strip() or None,
+        "scene_id": selected_scene,
+        "layered_asset_id": selected_layered,
         "created_at": created.isoformat(),
         "revoked_at": None,
         "expires_at": expires.isoformat() if expires else None,
@@ -328,6 +370,8 @@ def _to_record(row: dict[str, Any]) -> ShareRecord:
         created_by=(row.get("created_by") or None),
         purpose=(row.get("purpose") or None),
         order_ref=(row.get("order_ref") or None),
+        scene_id=(row.get("scene_id") or None),
+        layered_asset_id=(row.get("layered_asset_id") or None),
     )
 
 
@@ -357,7 +401,7 @@ async def resolve_share(token: str, *, expected_pet_id: str | None = None) -> Sh
                     "poster_url, created_at, revoked_at, expires_at, "
                     "breathing_bucket, breathing_object_path, background_baked, "
                     "poster_bucket, poster_object_path, "
-                    "created_by, purpose, order_ref"
+                    "created_by, purpose, order_ref, scene_id, layered_asset_id"
                 )
                 .eq("token_hash", th)
                 .limit(1)
@@ -474,7 +518,7 @@ async def list_shares(*, user_id: str, pet_id: str | None = None) -> list[ShareR
                     "poster_url, created_at, revoked_at, expires_at, "
                     "breathing_bucket, breathing_object_path, background_baked, "
                     "poster_bucket, poster_object_path, "
-                    "created_by, purpose, order_ref"
+                    "created_by, purpose, order_ref, scene_id, layered_asset_id"
                 )
                 .eq("user_id", uid)
             )

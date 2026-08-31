@@ -46,6 +46,8 @@ interface ShakerShareCardProps {
   petId: string | null;
   /** 이미 생성된 BREATHING URL. 없으면 공유할 대상이 없다. */
   breathingUrl: string | null;
+  /** Optional canonical scene snapshot for READY V2 selection on newly issued shares. */
+  sceneId?: string | null;
   /** 포스터 후보 (누끼 우선). data: URL 은 자동으로 걸러진다. */
   posterCandidates?: Array<string | null | undefined>;
   /** BREATHING 자산이 실제로 있을 때만 켠다 — MembershipCard 와 같은 게이트. */
@@ -72,6 +74,7 @@ export function customerShareEnabled(): boolean {
 export function ShakerShareCard({
   petId,
   breathingUrl,
+  sceneId = null,
   posterCandidates = [],
   enabled,
   language = "ko",
@@ -141,6 +144,7 @@ export function ShakerShareCard({
         breathingUrl,
         petName: getPetName() || null,
         posterUrl: pickSharePoster(posterCandidates),
+        sceneId,
         accessToken: token,
       });
       // 원문 토큰은 **이 응답에서만** 온다. 즉시 화면에 올린다.
@@ -152,7 +156,7 @@ export function ShakerShareCard({
     } finally {
       setBusy(null);
     }
-  }, [token, petId, breathingUrl, posterCandidates, refresh]);
+  }, [token, petId, breathingUrl, posterCandidates, sceneId, refresh]);
 
   const onRevokeAll = useCallback(async () => {
     if (!token) return;

@@ -235,6 +235,9 @@ class OpsCreateShareRequest(BaseModel):
     ttl_days: int | None = None
     #: Phase 12–13 에서 주문을 연결할 자리. 지금은 저장만 한다.
     order_ref: str | None = None
+    #: Optional canonical scene for a new READY V2 snapshot. QR format is unchanged.
+    scene_id: str | None = None
+    layered_asset_id: str | None = None
 
 
 class OpsShareResponse(BaseModel):
@@ -328,6 +331,8 @@ async def ops_create_share(
             created_by=ops.user_id,           # 감사 추적: 누가 만들었는가
             purpose=purpose,
             order_ref=body.order_ref,
+            scene_id=body.scene_id,
+            layered_asset_id=body.layered_asset_id,
         )
     except shaker_share.ShareError as e:
         raise _as_http(e) from e

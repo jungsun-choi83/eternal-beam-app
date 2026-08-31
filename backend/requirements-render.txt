@@ -22,6 +22,7 @@ supabase>=2.3.0
 PyJWT[crypto]>=2.8.0
 python-dotenv==1.0.1
 requests>=2.31.0
+httpx>=0.25.0,<1
 
 # QR Shaker (Phase 10) 판매자/운영 QR 생성 서비스.
 # 순수 파이썬·의존성 없음(76KB). QR 은 물리 제품에 인쇄되므로 직접 구현하지 않는다 —

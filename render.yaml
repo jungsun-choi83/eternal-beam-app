@@ -76,6 +76,11 @@ services:
         value: "3"
       - key: SUPABASE_STORAGE_BUCKET
         value: user-assets
+      # Layered V2 post-process rollout gate. Keep 0 until the migration is
+      # applied and the real dark/light/long-fur device matrix passes. V1 is
+      # unaffected either way; switch to 1 to process new canonical scenes.
+      - key: SHAKER_LAYERED_V2_POSTPROCESS
+        value: "0"
       # 아이들(Idle) 영상 목업 테스트 — 실제 Luma 과금 없이 파이프라인만 확인.
       # 진짜 생성으로 바꾸려면 LUMA_MOCK 삭제 + 아래 LUMA_API_KEY 채우기.
       - key: ENABLE_GENERATE_API

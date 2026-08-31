@@ -505,6 +505,7 @@ function MemorialDevicePlayScreenInner({
               <ShakerShareCard
                 petId={pipeline ? getEternalBeamPetId(pipeline.content_id) : null}
                 breathingUrl={hasRealIdleVideo(pipeline) ? (pipeline?.idle_video_url ?? null) : null}
+                sceneId={pipeline?.scene_id ?? null}
                 posterCandidates={[
                   pipeline?.dog_only_nobg_url,
                   pipeline?.cutout_display_url,

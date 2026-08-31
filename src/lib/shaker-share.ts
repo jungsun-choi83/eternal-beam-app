@@ -103,6 +103,8 @@ export async function createShakerShare(params: {
   petName?: string | null;
   posterUrl?: string | null;
   ttlDays?: number | null;
+  sceneId?: string | null;
+  layeredAssetId?: string | null;
   accessToken: string;
   signal?: AbortSignal;
 }): Promise<CreatedShare> {
@@ -118,6 +120,8 @@ export async function createShakerShare(params: {
       pet_name: params.petName ?? undefined,
       poster_url: params.posterUrl ?? undefined,
       ttl_days: params.ttlDays ?? undefined,
+      scene_id: params.sceneId ?? undefined,
+      layered_asset_id: params.layeredAssetId ?? undefined,
     }),
     signal: params.signal,
   });

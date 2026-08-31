@@ -58,6 +58,9 @@ export interface CanonicalScene {
   shiftPct: number;
   /** 합성된 장면 이미지의 주소. 프로바이더가 보는 바로 그 그림. */
   sceneKeyframeUrl: string;
+  /** Independent, pet-free background used only by optional layered V2. */
+  layeredBackgroundType?: "image" | "video" | null;
+  layeredBackgroundUrl?: string | null;
   /**
    * 이 장면으로 만든 영상은 **배경이 이미 구워져 있다.**
    *
@@ -124,6 +127,12 @@ export function readCanonicalScene(): CanonicalScene | null {
       floorY: Number(s.floorY) || 0.86,
       shiftPct: Number(s.shiftPct) || 0,
       sceneKeyframeUrl: s.sceneKeyframeUrl,
+      layeredBackgroundType:
+        s.layeredBackgroundType === "image" || s.layeredBackgroundType === "video"
+          ? s.layeredBackgroundType
+          : null,
+      layeredBackgroundUrl:
+        typeof s.layeredBackgroundUrl === "string" ? s.layeredBackgroundUrl : null,
       backgroundBaked: true,
     };
   } catch {
@@ -173,7 +182,7 @@ export function readSceneForContent(
 
 /** 백엔드로 보낼 폼 필드 — 이름은 서버 스키마와 1:1 이다. */
 export function sceneFormFields(scene: CanonicalScene): Record<string, string> {
-  return {
+  const base = {
     scene_id: scene.sceneId,
     background_type: scene.backgroundType,
     background_id: scene.backgroundId,
@@ -183,4 +192,12 @@ export function sceneFormFields(scene: CanonicalScene): Record<string, string> {
     scene_keyframe_url: scene.sceneKeyframeUrl,
     background_baked: "true",
   };
+  if (scene.layeredBackgroundType && scene.layeredBackgroundUrl) {
+    return {
+      ...base,
+      layered_background_type: scene.layeredBackgroundType,
+      layered_background_url: scene.layeredBackgroundUrl,
+    };
+  }
+  return base;
 }

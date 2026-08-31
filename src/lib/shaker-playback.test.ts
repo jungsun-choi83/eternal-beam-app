@@ -11,6 +11,7 @@ import { describe, it } from "node:test";
 import type { ShakerPet } from "./shaker-api.ts";
 import {
   buildShakerViewModel,
+  deriveShakerPlaybackRoute,
   resolveShakerDoubleTap,
   shakerEventSources,
   shouldShowDoubleTapHint,
@@ -151,5 +152,56 @@ describe("화면 모델", () => {
     assert.deepEqual(vm.eventSources, { COME_CLOSER: CC.url });
     assert.deepEqual(vm.doubleTap, { available: true, actionId: "COME_CLOSER" });
     assert.equal(vm.posterUrl, "https://p/x.png");
+  });
+
+  it("V2 는 선택 필드이고 없으면 명시적으로 null 이다", () => {
+    assert.equal(buildShakerViewModel(pet()).layered, null);
+  });
+});
+
+describe("V1/V2 재생 라우팅", () => {
+  it("READY V2는 로딩 중에도 V1을 숨기고 V2 경로만 보인다", () => {
+    assert.deepEqual(deriveShakerPlaybackRoute({
+      layeredAssetId: "lay_1",
+      failedLayeredAssetId: null,
+      layeredActive: false,
+      actionOverlay: false,
+    }), { mountV2: true, showV1: false });
+    assert.deepEqual(deriveShakerPlaybackRoute({
+      layeredAssetId: "lay_1",
+      failedLayeredAssetId: null,
+      layeredActive: true,
+      actionOverlay: false,
+    }), { mountV2: true, showV1: false });
+  });
+
+  it("V2가 없거나 실패했으면 항상 V1이다", () => {
+    assert.deepEqual(deriveShakerPlaybackRoute({
+      layeredAssetId: null,
+      failedLayeredAssetId: null,
+      layeredActive: false,
+      actionOverlay: false,
+    }), { mountV2: false, showV1: true });
+    assert.deepEqual(deriveShakerPlaybackRoute({
+      layeredAssetId: "lay_1",
+      failedLayeredAssetId: "lay_1",
+      layeredActive: false,
+      actionOverlay: false,
+    }), { mountV2: false, showV1: true });
+  });
+
+  it("premium action 동안 V1을 사용하고 끝나면 같은 V2 idle로 돌아갈 수 있다", () => {
+    assert.deepEqual(deriveShakerPlaybackRoute({
+      layeredAssetId: "lay_1",
+      failedLayeredAssetId: null,
+      layeredActive: true,
+      actionOverlay: true,
+    }), { mountV2: false, showV1: true });
+    assert.deepEqual(deriveShakerPlaybackRoute({
+      layeredAssetId: "lay_1",
+      failedLayeredAssetId: null,
+      layeredActive: false,
+      actionOverlay: false,
+    }), { mountV2: true, showV1: false });
   });
 });

@@ -2,7 +2,7 @@ import logging
 import os
 import uuid
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
 
 from ..services import supabase_assets
 from ..services.cutout_errors import CutoutError
@@ -16,6 +16,7 @@ from ..services.luma_keyframe import (
     resolve_keyframe_bg_rgb,
 )
 from ..services import generation_endpoints, scene_generation_jobs, scene_input
+from ..services import layered_v2_pipeline
 from ..services.luma_service import (
     build_idle_action_prompts,
     download_video,
@@ -27,6 +28,39 @@ from ..services.vitmatte_service import DEBUG_ARTIFACTS_ENABLED, validate_cutout
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _schedule_layered_v2(
+    background_tasks: BackgroundTasks,
+    *,
+    user_id: str,
+    content_id: str,
+    scene: scene_input.SceneInput | None,
+    v1_video_url: str | None,
+    background_type: str | None,
+    background_url: str | None,
+) -> None:
+    """Queue optional V2 after V1 is durable; never changes the V1 response."""
+    if (
+        not layered_v2_pipeline.enabled()
+        or scene is None
+        or not v1_video_url
+        or background_type not in ("image", "video")
+        or not (background_url or "").strip()
+    ):
+        return
+    background_tasks.add_task(
+        layered_v2_pipeline.run_postprocess,
+        layered_v2_pipeline.LayeredPostProcessInput(
+            user_id=user_id,
+            pet_id=f"pet_{content_id}",
+            content_id=content_id,
+            scene_id=scene.scene_id,
+            v1_video_url=v1_video_url,
+            background_type=background_type,
+            background_url=(background_url or "").strip(),
+        ),
+    )
 
 
 def _cutout_error_response(cid: str, exc: CutoutError) -> HTTPException:
@@ -176,6 +210,7 @@ async def _recover_provider_job(job) -> str | None:
 
 @router.post("/generate-pet-video")
 async def post_generate_pet_video(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     user_id: str = Form("anonymous"),
     content_id: str | None = Form(None),
@@ -191,6 +226,10 @@ async def post_generate_pet_video(
     background_id: str | None = Form(None),
     scene_keyframe_url: str | None = Form(None),
     background_baked: str | None = Form(None),
+    # Optional independent pet-free background for asynchronous layered V2.
+    # Original-photo scenes intentionally omit these fields and remain V1.
+    layered_background_type: str | None = Form(None),
+    layered_background_url: str | None = Form(None),
 ):
     raw = await file.read()
     if not raw:
@@ -274,6 +313,9 @@ async def post_generate_pet_video(
             logger.warning(
                 "generate-pet-video: 같은 장면의 완료된 IDLE 재사용 (scene=%s)", scene.scene_id
             )
+            # Historical/completed V1 pets are not implicitly backfilled.
+            # V2 is queued only by a fresh completion (or recovery of the
+            # current in-flight provider job) below.
             return {
                 "success": True,
                 "content_id": cid,
@@ -298,6 +340,15 @@ async def post_generate_pet_video(
         if done and done.active and done.provider_job_id:
             recovered = await _recover_provider_job(done)
             if recovered:
+                _schedule_layered_v2(
+                    background_tasks,
+                    user_id=user_id,
+                    content_id=cid,
+                    scene=scene,
+                    v1_video_url=recovered,
+                    background_type=layered_background_type,
+                    background_url=layered_background_url,
+                )
                 return {
                     "success": True,
                     "content_id": cid,
@@ -513,6 +564,16 @@ async def post_generate_pet_video(
             )
         except Exception:
             logger.warning("scene job 완료 기록 실패", exc_info=True)
+
+    _schedule_layered_v2(
+        background_tasks,
+        user_id=user_id,
+        content_id=cid,
+        scene=scene,
+        v1_video_url=idle_url,
+        background_type=layered_background_type,
+        background_url=layered_background_url,
+    )
 
     return {
         "success": True,

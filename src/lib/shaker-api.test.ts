@@ -10,6 +10,7 @@ import { describe, it } from "node:test";
 
 import {
   classifyShakerError,
+  parseLayeredManifest,
   parseShakerPet,
   resolveAssetUrl,
   ShakerApiError,
@@ -33,6 +34,85 @@ describe("응답 파싱", () => {
     assert.equal(p.posterUrl, "https://cdn.test/poster.png");
     assert.deepEqual(p.actions, [{ id: "COME_CLOSER", url: "https://cdn.test/cc.mp4" }]);
     assert.equal(p.doubleTapActionId, "COME_CLOSER");
+  });
+
+  it("완전한 READY V2 manifest 를 파싱한다", () => {
+    const layered = parseLayeredManifest({
+      version: 2,
+      asset_id: "lay_1",
+      asset_version: "vabc",
+      scene_id: "scene_1",
+      pet: {
+        url: "/api/v1/shaker/asset?share=t&k=v2-pet",
+        encoding: "packed-vstack-h264",
+        alpha_layout: "rgb-top-alpha-bottom",
+      },
+      background: {
+        type: "video",
+        url: "/api/v1/shaker/asset?share=t&k=v2-background",
+      },
+      placement: { mode: "scene-frame" },
+      shadow: { kind: "css-contact", opacity: 0.28 },
+      foreground: null,
+    });
+    assert.ok(layered);
+    assert.equal(layered.background.type, "video");
+    assert.equal(layered.pet.encoding, "packed-vstack-h264");
+    assert.deepEqual(layered.placement, { mode: "scene-frame" });
+  });
+
+  it("이미지·비디오 테마가 같은 V2 pet 계약을 사용한다", () => {
+    const base = {
+      version: 2,
+      asset_id: "lay-shared-pet",
+      asset_version: "v1",
+      scene_id: "scene-theme",
+      pet: {
+        url: "/pet-packed.mp4",
+        encoding: "packed-vstack-h264",
+        alpha_layout: "rgb-top-alpha-bottom",
+      },
+      placement: { mode: "scene-frame" },
+      shadow: null,
+      foreground: null,
+    };
+    const image = parseLayeredManifest({
+      ...base,
+      background: { type: "image", url: "/forest.jpg" },
+    });
+    const video = parseLayeredManifest({
+      ...base,
+      background: { type: "video", url: "/forest.mp4" },
+    });
+    assert.ok(image);
+    assert.ok(video);
+    assert.equal(image.background.type, "image");
+    assert.equal(video.background.type, "video");
+    assert.deepEqual(image.pet, video.pet);
+  });
+
+  it("부분/알 수 없는 V2 manifest 는 전체를 거절하고 V1 로 떨어진다", () => {
+    const base = {
+      version: 2,
+      asset_id: "lay_1",
+      asset_version: "vabc",
+      scene_id: "scene_1",
+      pet: {
+        url: "/pet",
+        encoding: "packed-vstack-h264",
+        alpha_layout: "rgb-top-alpha-bottom",
+      },
+      background: { type: "image", url: "/bg" },
+      placement: { mode: "scene-frame" },
+    };
+    assert.equal(parseLayeredManifest({ ...base, background: null }), null);
+    assert.equal(
+      parseLayeredManifest({ ...base, pet: { ...base.pet, encoding: "black-key" } }),
+      null,
+    );
+    assert.equal(parseLayeredManifest({ ...base, version: 3 }), null);
+    assert.equal(parseLayeredManifest({ ...base, placement: {} }), null);
+    assert.equal(parseLayeredManifest({ ...base, shadow: "invalid" }), null);
   });
 
   it("기본 정책(액션 없음)을 그대로 받는다", () => {

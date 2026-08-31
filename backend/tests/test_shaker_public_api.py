@@ -23,7 +23,12 @@ from backend.models.hybrid_business import GeneratedMotion
 from backend.routers import shaker_v1
 from backend.services import generated_motions_service as motions_svc
 from backend.services import behavior_preferences, premium_purchase
-from backend.services import shaker_policy, shaker_rate_limit, shaker_share
+from backend.services import (
+    shaker_layered_assets,
+    shaker_policy,
+    shaker_rate_limit,
+    shaker_share,
+)
 
 from .conftest import ASGITestClient, follow_shaker_asset
 
@@ -41,12 +46,14 @@ def _isolated(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv("SHAKER_PUBLIC_RATE_LIMIT", raising=False)
     monkeypatch.setenv("SHAKER_RATE_LIMIT_ENABLED", "0")  # 리밋 전용 테스트에서만 켠다
     shaker_share.__reset_for_tests()
+    shaker_layered_assets.__reset_for_tests()
     shaker_rate_limit.__reset_for_tests()
     motions_svc._MOCK_MOTIONS.clear()
     premium_purchase.__reset_for_tests()
     behavior_preferences.__reset_for_tests()
     yield
     shaker_share.__reset_for_tests()
+    shaker_layered_assets.__reset_for_tests()
     shaker_rate_limit.__reset_for_tests()
     motions_svc._MOCK_MOTIONS.clear()
     premium_purchase.__reset_for_tests()
@@ -104,6 +111,7 @@ def _get(client: ASGITestClient, token: str | None = None, **params):
 ALLOWED_KEYS = {
     "pet_id", "pet_name", "breathing_url", "poster_url", "actions", "double_tap_action_id",
     "background_baked",
+    "layered",
 }
 
 #: 절대 나타나면 안 되는 문자열. 값과 키 양쪽을 본다.
@@ -131,8 +139,66 @@ def test_public_payload_is_an_allowlist(client: ASGITestClient):
     assert set(body) == ALLOWED_KEYS, f"예상 밖 필드: {set(body) ^ ALLOWED_KEYS}"
     assert body["pet_id"] == PET
     assert body["pet_name"] == "고야"
+    assert body["layered"] is None
     assert follow_shaker_asset(client, body["breathing_url"]) == BREATH
     assert follow_shaker_asset(client, body["poster_url"]) == POSTER
+
+
+def test_complete_ready_layered_manifest_is_additive(client: ASGITestClient, monkeypatch):
+    item = _sync(
+        shaker_layered_assets.reserve,
+        user_id=OWNER, pet_id=PET, content_id="goya", scene_id="scene-goya",
+    )
+    ready = _sync(
+        shaker_layered_assets.publish_ready,
+        item.asset_id,
+        pet=shaker_layered_assets.StorageRef("user-assets", "layered/pet.mp4"),
+        background_type="video",
+        background=shaker_layered_assets.StorageRef("user-assets", "layered/bg.mp4"),
+        qa={"passed": True},
+        shadow={"kind": "css-contact", "opacity": 0.28},
+    )
+    token = _mint(scene_id=ready.scene_id, layered_asset_id=ready.asset_id)
+    monkeypatch.setattr(
+        shaker_v1,
+        "_fresh_url",
+        lambda path, bucket, stored: stored or (f"https://cdn.test/{path}" if path else None),
+    )
+
+    body = _get(client, token).json()
+    assert body["breathing_url"]
+    assert body["layered"]["version"] == 2
+    assert body["layered"]["scene_id"] == "scene-goya"
+    assert body["layered"]["pet"]["encoding"] == "packed-vstack-h264"
+    assert "k=v2-pet" in body["layered"]["pet"]["url"]
+    assert body["layered"]["background"]["type"] == "video"
+    assert "k=v2-background" in body["layered"]["background"]["url"]
+
+
+def test_scene_less_share_does_not_guess_a_v2_scene(client: ASGITestClient):
+    item = _sync(
+        shaker_layered_assets.reserve,
+        user_id=OWNER, pet_id=PET, content_id="goya", scene_id="scene-goya",
+    )
+    _sync(
+        shaker_layered_assets.publish_ready,
+        item.asset_id,
+        pet=shaker_layered_assets.StorageRef("user-assets", "layered/pet.mp4"),
+        background_type="image",
+        background=shaker_layered_assets.StorageRef("user-assets", "layered/bg.jpg"),
+        qa={"passed": True},
+    )
+    token = _mint()
+    assert _get(client, token).json()["layered"] is None
+
+
+def test_processing_layered_manifest_is_never_exposed(client: ASGITestClient):
+    item = _sync(
+        shaker_layered_assets.reserve,
+        user_id=OWNER, pet_id=PET, content_id="goya", scene_id="scene-goya",
+    )
+    token = _mint(scene_id=item.scene_id, layered_asset_id=item.asset_id)
+    assert _get(client, token).json()["layered"] is None
 
 
 def test_response_never_leaks_private_fields(client: ASGITestClient):
@@ -445,4 +511,3 @@ def test_rate_limit_counts_invalid_tokens_too(client: ASGITestClient, monkeypatc
     assert client.get(
         "/api/v1/shaker/pet", params={"share": "a" * 43}, headers=headers
     ).status_code == 429
-

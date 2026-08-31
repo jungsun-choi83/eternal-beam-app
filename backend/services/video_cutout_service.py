@@ -56,6 +56,76 @@ def replace_background_for_rembg(
     return out
 
 
+def _temporal_alpha(
+    current: np.ndarray,
+    current_gray: np.ndarray,
+    previous: Optional[np.ndarray],
+    previous_gray: Optional[np.ndarray],
+    previous_weight: float = 0.18,
+) -> np.ndarray:
+    """Motion-compensated temporal matte stabilization.
+
+    A plain frame-by-frame rembg pass makes fur/ears flicker.  We estimate
+    backward optical flow (current -> previous), warp the previous matte into
+    the current frame, then blend a small amount only where the current image
+    and matte agree with that history. This follows motion without leaving an
+    EMA ghost trail at fur, ears, paws, or other moving boundaries.
+    """
+    if previous is None or previous_gray is None or previous.shape != current.shape:
+        return current
+    flow = cv2.calcOpticalFlowFarneback(
+        current_gray,
+        previous_gray,
+        None,
+        0.5,
+        3,
+        21,
+        3,
+        5,
+        1.2,
+        0,
+    )
+    h, w = current.shape
+    grid_x, grid_y = np.meshgrid(
+        np.arange(w, dtype=np.float32), np.arange(h, dtype=np.float32)
+    )
+    warped = cv2.remap(
+        previous,
+        grid_x + flow[:, :, 0],
+        grid_y + flow[:, :, 1],
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    warped_gray = cv2.remap(
+        previous_gray,
+        grid_x + flow[:, :, 0],
+        grid_y + flow[:, :, 1],
+        interpolation=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+    cur = current.astype(np.float32)
+    old = warped.astype(np.float32)
+    # Optical flow is unreliable on fine fur, ears and occlusion boundaries.
+    # Carry history only where both the image content and the alpha matte agree.
+    # Soft boundary pixels get one quarter of the interior history so temporal
+    # stabilization cannot turn a moving hair into a visible trailing contour.
+    photometric_error = np.abs(current_gray.astype(np.float32) - warped_gray.astype(np.float32))
+    alpha_error = np.abs(cur - old)
+    reliable = (photometric_error <= 20.0) & (alpha_error <= 48.0)
+    soft_boundary = ((cur > 4.0) & (cur < 250.0)) | ((old > 4.0) & (old < 250.0))
+    history_weight = np.where(reliable, previous_weight, 0.0).astype(np.float32)
+    history_weight[soft_boundary] *= 0.25
+    blended = cur * (1.0 - history_weight) + old * history_weight
+
+    # Never resurrect a previous-frame silhouette outside the current matte.
+    # The former union support was the source of hair/ear ghost trails.
+    support = cur > 4.0
+    blended[~support] = 0.0
+    return np.clip(blended, 0, 255).astype(np.uint8)
+
+
 def process_video_to_rgba(
     input_video_path: str,
     output_dir: str,
@@ -67,6 +137,8 @@ def process_video_to_rgba(
     progress_callback=None,
     replace_bg_before_rembg: Optional[str] = None,  # "white" (블랙탄) | "black" (밝은강아지)
     output_resolution: Optional[Tuple[int, int]] = (1280, 720),  # 720p 비율유지. None=원본
+    temporal_alpha_stabilization: bool = False,
+    require_alpha_matting: bool = False,
 ) -> tuple[str, ...]:
     """
     Runway 영상 → RGBA PNG 시퀀스 또는 RGBA 영상
@@ -89,6 +161,8 @@ def process_video_to_rgba(
 
     frame_idx = 0
     paths = []
+    previous_alpha: Optional[np.ndarray] = None
+    previous_gray: Optional[np.ndarray] = None
 
     while True:
         ret, frame = cap.read()
@@ -118,11 +192,15 @@ def process_video_to_rgba(
             raw = buf.getvalue()
 
             try:
+                matte_meta: dict = {}
                 png_bytes = remove_background(
                     raw,
                     use_alpha_matting=use_alpha_matting,
                     model_name=model_name,
+                    **({"meta_out": matte_meta} if require_alpha_matting else {}),
                 )
+                if require_alpha_matting and matte_meta.get("alpha_matting_used") is not True:
+                    raise RuntimeError("alpha matting was unavailable for this frame")
             except Exception as e:
                 raise RuntimeError(f"프레임 {frame_idx} 배경 제거 실패: {e}") from e
 
@@ -144,15 +222,28 @@ def process_video_to_rgba(
             pil_img.save(buf, format="PNG")
             raw = buf.getvalue()
             try:
+                matte_meta = {}
                 png_bytes = remove_background(
                     raw,
                     use_alpha_matting=use_alpha_matting,
                     model_name=model_name,
+                    **({"meta_out": matte_meta} if require_alpha_matting else {}),
                 )
+                if require_alpha_matting and matte_meta.get("alpha_matting_used") is not True:
+                    raise RuntimeError("alpha matting was unavailable for this frame")
             except Exception as e:
                 raise RuntimeError(f"프레임 {frame_idx} 배경 제거 실패: {e}") from e
             rgba = np.array(Image.open(io.BytesIO(png_bytes)).convert("RGBA"))
             bgra = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGRA)
+
+        if temporal_alpha_stabilization:
+            gray = cv2.cvtColor(bgra[:, :, :3], cv2.COLOR_BGR2GRAY)
+            stabilized = _temporal_alpha(
+                bgra[:, :, 3], gray, previous_alpha, previous_gray
+            )
+            bgra[:, :, 3] = stabilized
+            previous_alpha = stabilized.copy()
+            previous_gray = gray
 
         png_path = os.path.join(output_dir, f"{base}_{frame_idx:05d}.png")
         cv2.imwrite(png_path, bgra)

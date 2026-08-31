@@ -27,6 +27,10 @@ const SHAKER_SCREEN = readFileSync(
   "src/components/memorial/shaker-screen.tsx",
   "utf8"
 );
+const LAYERED_PLAYER = readFileSync(
+  "src/components/memorial/shaker-layered-player.tsx",
+  "utf8"
+);
 
 function createMotionHarness() {
   let hidden = false;
@@ -528,14 +532,15 @@ describe("센서 수명주기", () => {
 
 describe("Shaker 화면 배선", () => {
   it("orientation 이벤트가 React frame state 를 직접 갱신하지 않는다", () => {
-    assert.ok(!SHAKER_SCREEN.includes("setFrame("));
-    assert.match(SHAKER_SCREEN, /createParallaxFrameLoop\(/);
-    assert.match(SHAKER_SCREEN, /window\.requestAnimationFrame\(callback\)/);
+    assert.ok(!LAYERED_PLAYER.includes("setFrame("));
+    assert.match(LAYERED_PLAYER, /createParallaxFrameLoop\(/);
+    assert.match(LAYERED_PLAYER, /window\.requestAnimationFrame\(callback\)/);
   });
 
-  it("구운 장면은 translate3d 와 3% overscan 만 사용한다", () => {
-    assert.match(SHAKER_SCREEN, /const SCENE_OVERSCAN = 1\.03/);
-    assert.match(SHAKER_SCREEN, /translate3d\(/);
+  it("V1 구운 장면은 자이로·포인터 transform 없이 평범하게 재생한다", () => {
+    assert.ok(!SHAKER_SCREEN.includes("SCENE_OVERSCAN"));
+    assert.ok(!SHAKER_SCREEN.includes("sceneLayerRef"));
+    assert.ok(!SHAKER_SCREEN.includes("applyParallaxFrame"));
     assert.ok(!SHAKER_SCREEN.includes("rotateX("));
     assert.ok(!SHAKER_SCREEN.includes("rotateY("));
     assert.ok(!SHAKER_SCREEN.includes("perspective("));
@@ -543,9 +548,9 @@ describe("Shaker 화면 배선", () => {
 
   it("BREATHING 플레이어는 권한 상태와 분리되어 있다", () => {
     assert.match(SHAKER_SCREEN, /<IdleLoopVideo/);
-    assert.match(SHAKER_SCREEN, /onClick=\{askMotion\}/);
+    assert.match(SHAKER_SCREEN, /void askMotion\(\)/);
     assert.ok(
-      SHAKER_SCREEN.indexOf("<IdleLoopVideo") < SHAKER_SCREEN.indexOf("onClick={askMotion}"),
+      SHAKER_SCREEN.indexOf("<IdleLoopVideo") < SHAKER_SCREEN.indexOf("void askMotion()"),
       "동영상은 motion 권한 버튼보다 먼저 독립적으로 렌더돼야 한다"
     );
   });

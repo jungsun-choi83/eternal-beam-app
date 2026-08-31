@@ -111,6 +111,36 @@ export interface ShakerViewModel {
    * 키잉되어 재생된다. 구운 자산만 원본 그대로 나간다.
    */
   backgroundBaked: boolean;
+  layered: ShakerPet["layered"];
+}
+
+export interface ShakerPlaybackRoute {
+  /** Mount the optional layered idle branch. */
+  mountV2: boolean;
+  /** Keep/mount the canonical baked player for fallback or premium actions. */
+  showV1: boolean;
+}
+
+/**
+ * READY validation happens server-side and again while parsing the manifest.
+ * This final UI decision is intentionally small: failed/missing V2 is V1 and
+ * actions temporarily own V1. A valid V2 stays visually exclusive while it
+ * loads so the baked composition cannot flash at a different scale before the
+ * layered scene is ready; a reported failure still switches immediately to V1.
+ */
+export function deriveShakerPlaybackRoute(input: {
+  layeredAssetId: string | null;
+  failedLayeredAssetId: string | null;
+  layeredActive: boolean;
+  actionOverlay: boolean;
+}): ShakerPlaybackRoute {
+  const v2Available = Boolean(
+    input.layeredAssetId && input.failedLayeredAssetId !== input.layeredAssetId,
+  );
+  return {
+    mountV2: v2Available && !input.actionOverlay,
+    showV1: !v2Available || input.actionOverlay,
+  };
 }
 
 export function buildShakerViewModel(pet: ShakerPet): ShakerViewModel {
@@ -121,5 +151,6 @@ export function buildShakerViewModel(pet: ShakerPet): ShakerViewModel {
     eventSources: shakerEventSources(pet),
     doubleTap: resolveShakerDoubleTap(pet),
     backgroundBaked: pet.backgroundBaked === true,
+    layered: pet.layered ?? null,
   };
 }

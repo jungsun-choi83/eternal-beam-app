@@ -223,6 +223,23 @@ export async function buildCanonicalScene(
   );
 
   const isOriginal = input.background.type === "original";
+  // Original photos already contain the pet and must remain V1.  Other
+  // independently addressable backgrounds can be copied into immutable V2
+  // storage after V1 succeeds. data:/blob: values are browser-local and cannot
+  // be safely fetched by the backend.
+  let layeredBackgroundType: "image" | "video" | null = null;
+  let layeredBackgroundUrl: string | null = null;
+  if (!isOriginal && backgroundUrl && !/^(data|blob):/i.test(backgroundUrl)) {
+    layeredBackgroundType = /\.(mp4|webm|mov)(?:[?#]|$)/i.test(backgroundUrl)
+      ? "video"
+      : "image";
+    try {
+      const origin = typeof window !== "undefined" ? window.location.origin : "http://localhost";
+      layeredBackgroundUrl = new URL(backgroundUrl, origin).toString();
+    } catch {
+      layeredBackgroundType = null;
+    }
+  }
   // 원본은 배치가 곧 원본 그대로다 — 배치 값을 중립으로 기록해야 이후 화면이
   // 원본 위에 펫을 한 번 더 얹지 않는다.
   const placement: ScenePlacement = isOriginal
@@ -288,6 +305,8 @@ export async function buildCanonicalScene(
     floorY: input.floorY,
     shiftPct: placement.shiftPct,
     sceneKeyframeUrl,
+    layeredBackgroundType,
+    layeredBackgroundUrl,
     backgroundBaked: true,
   };
   saveCanonicalScene(scene);

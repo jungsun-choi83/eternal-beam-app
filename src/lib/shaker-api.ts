@@ -24,6 +24,24 @@ export interface ShakerAction {
   url: string;
 }
 
+export type ShakerLayeredMediaType = "image" | "video";
+
+export interface ShakerLayeredManifest {
+  version: 2;
+  assetId: string;
+  assetVersion: string;
+  sceneId: string;
+  pet: {
+    url: string;
+    encoding: "packed-vstack-h264";
+    alphaLayout: "rgb-top-alpha-bottom";
+  };
+  background: { type: ShakerLayeredMediaType; url: string };
+  placement: Record<string, unknown>;
+  shadow: Record<string, unknown> | null;
+  foreground: { type: ShakerLayeredMediaType; url: string } | null;
+}
+
 export interface ShakerPet {
   petId: string;
   petName: string | null;
@@ -37,6 +55,8 @@ export interface ShakerPet {
    */
   backgroundBaked?: boolean;
   posterUrl: string | null;
+  /** Complete READY V2 manifest only. Null preserves the existing V1 contract. */
+  layered?: ShakerLayeredManifest | null;
   /**
    * 서버 정책이 허용한 READY 액션.
    *
@@ -150,6 +170,8 @@ export function parseShakerPet(body: Record<string, unknown>): ShakerPet {
   const doubleTapActionId =
     declared && actions.some((a) => a.id === declared) ? declared : null;
 
+  const layered = parseLayeredManifest(body.layered);
+
   return {
     petId: String(body.pet_id ?? "").trim(),
     petName: body.pet_name == null ? null : String(body.pet_name).trim() || null,
@@ -159,8 +181,76 @@ export function parseShakerPet(body: Record<string, unknown>): ShakerPet {
       body.poster_url == null
         ? null
         : resolveAssetUrl(String(body.poster_url).trim()) || null,
+    layered,
     actions,
     doubleTapActionId,
+  };
+}
+
+function mediaType(value: unknown): ShakerLayeredMediaType | null {
+  return value === "image" || value === "video" ? value : null;
+}
+
+/** Fail closed: one malformed/missing V2 field makes the whole manifest unavailable. */
+export function parseLayeredManifest(value: unknown): ShakerLayeredManifest | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  if (Number(row.version) !== 2) return null;
+
+  const assetId = String(row.asset_id ?? "").trim();
+  const assetVersion = String(row.asset_version ?? "").trim();
+  const sceneId = String(row.scene_id ?? "").trim();
+  const pet = row.pet as Record<string, unknown> | null;
+  const background = row.background as Record<string, unknown> | null;
+  if (!assetId || !assetVersion || !sceneId || !pet || !background) return null;
+
+  const petUrl = resolveAssetUrl(String(pet.url ?? "").trim());
+  const encoding = String(pet.encoding ?? "").trim();
+  const alphaLayout = String(pet.alpha_layout ?? "").trim();
+  const backgroundType = mediaType(background.type);
+  const backgroundUrl = resolveAssetUrl(String(background.url ?? "").trim());
+  if (
+    !petUrl || encoding !== "packed-vstack-h264" ||
+    alphaLayout !== "rgb-top-alpha-bottom" ||
+    !backgroundType || !backgroundUrl
+  ) return null;
+
+  let foreground: ShakerLayeredManifest["foreground"] = null;
+  if (row.foreground != null) {
+    if (typeof row.foreground !== "object" || Array.isArray(row.foreground)) return null;
+    const raw = row.foreground as Record<string, unknown>;
+    const type = mediaType(raw.type);
+    const url = resolveAssetUrl(String(raw.url ?? "").trim());
+    if (!type || !url) return null;
+    foreground = { type, url };
+  }
+
+  if (!row.placement || typeof row.placement !== "object" || Array.isArray(row.placement)) {
+    return null;
+  }
+  const placement = { ...(row.placement as Record<string, unknown>) };
+  if (placement.mode !== "scene-frame" && placement.mode !== "anchored") return null;
+
+  let shadow: Record<string, unknown> | null = null;
+  if (row.shadow != null) {
+    if (typeof row.shadow !== "object" || Array.isArray(row.shadow)) return null;
+    shadow = { ...(row.shadow as Record<string, unknown>) };
+  }
+
+  return {
+    version: 2,
+    assetId,
+    assetVersion,
+    sceneId,
+    pet: {
+      url: petUrl,
+      encoding: "packed-vstack-h264",
+      alphaLayout: "rgb-top-alpha-bottom",
+    },
+    background: { type: backgroundType, url: backgroundUrl },
+    placement,
+    shadow,
+    foreground,
   };
 }
 

@@ -32,13 +32,19 @@ from dataclasses import dataclass
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..auth import AuthedUser, require_user
 from ..scenarios.pet_scenarios import IDLE_EVENTS, PET_ACTIONS
 from ..services import asset_url_refresh
 from ..services import generated_motions_service as motions_svc
-from ..services import premium_purchase, shaker_policy, shaker_rate_limit, shaker_share
+from ..services import (
+    premium_purchase,
+    shaker_layered_assets,
+    shaker_policy,
+    shaker_rate_limit,
+    shaker_share,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/shaker", tags=["shaker-v1"])
@@ -97,6 +103,36 @@ class ShakerAction(BaseModel):
     url: str
 
 
+class ShakerLayeredPetAsset(BaseModel):
+    url: str
+    encoding: str
+    alpha_layout: str
+
+
+class ShakerLayeredBackgroundAsset(BaseModel):
+    type: str
+    url: str
+
+
+class ShakerLayeredForegroundAsset(BaseModel):
+    type: str
+    url: str
+
+
+class ShakerLayeredManifest(BaseModel):
+    """Public READY-only V2 contract. No owner or storage object path leaks."""
+
+    version: int = 2
+    asset_id: str
+    asset_version: str
+    scene_id: str
+    pet: ShakerLayeredPetAsset
+    background: ShakerLayeredBackgroundAsset
+    placement: dict = Field(default_factory=dict)
+    shadow: dict | None = None
+    foreground: ShakerLayeredForegroundAsset | None = None
+
+
 class ShakerPetResponse(BaseModel):
     """
     공개 응답의 **전체**. 이 모델이 곧 허용 목록이다.
@@ -121,6 +157,8 @@ class ShakerPetResponse(BaseModel):
     #:
     #: 기본 false = 레거시. 기존 인쇄물이 가리키는 자산은 전부 지금까지처럼 나간다.
     background_baked: bool = False
+    #: Optional and additive. NULL means the existing V1 contract is authoritative.
+    layered: ShakerLayeredManifest | None = None
     #: 정책이 허용한 READY 액션만. 기본 정책(disabled)에서는 빈 목록이다.
     actions: list[ShakerAction] = []
     #: 더블탭이 재생할 액션 id. 없으면 null — 프론트는 더블탭을 무시한다.
@@ -153,6 +191,9 @@ class _ResolvedShaker:
     #: 정책이 허용한 액션 → 지금 유효한 URL
     action_urls: dict[str, str]
     double_tap: str | None
+    layered_asset: shaker_layered_assets.LayeredAsset | None = None
+    #: v2-pet / v2-background / optional v2-foreground -> fresh signed URL
+    layered_urls: dict[str, str] | None = None
 
 
 async def _resolve_public_shaker(
@@ -239,12 +280,86 @@ async def _resolve_public_shaker(
         {a: ready_urls[a] for a in permitted if a in ready_urls}
     )
 
+    # ── 선택적 READY V2 조회 ─────────────────────────────────────────────────
+    # 기존 공유(scene_id/layered_asset_id NULL)는 resolve_for_share 가 None 을
+    # 돌려 V1 에 머문다. 조회/서명 장애도 V1 을 죽이면 안 되므로 fail open-to-V1.
+    layered_asset = None
+    layered_urls: dict[str, str] = {}
+    try:
+        candidate = await shaker_layered_assets.resolve_for_share(
+            user_id=rec.user_id,
+            pet_id=rec.pet_id,
+            scene_id=rec.scene_id,
+            layered_asset_id=rec.layered_asset_id,
+        )
+        if candidate and candidate.complete_ready and candidate.pet and candidate.background:
+            pet_url = _fresh_url(candidate.pet.object_path, candidate.pet.bucket, None)
+            background_url = _fresh_url(
+                candidate.background.object_path, candidate.background.bucket, None
+            )
+            foreground_url = None
+            if candidate.foreground:
+                foreground_url = _fresh_url(
+                    candidate.foreground.object_path, candidate.foreground.bucket, None
+                )
+            required_signed = bool(pet_url and background_url)
+            optional_signed = candidate.foreground is None or bool(foreground_url)
+            if required_signed and optional_signed:
+                layered_asset = candidate
+                layered_urls = {
+                    "v2-pet": pet_url or "",
+                    "v2-background": background_url or "",
+                    **({"v2-foreground": foreground_url or ""} if foreground_url else {}),
+                }
+    except Exception:  # noqa: BLE001 — optional V2 must never take down V1
+        logger.warning("Shaker V2 조회 실패 — V1 로 제공한다 (pet=%s)", rec.pet_id, exc_info=True)
+
     return _ResolvedShaker(
         rec=rec,
         breathing_url=breathing_url or "",
         poster_url=poster_url,
         action_urls=fresh_actions,
         double_tap=double_tap if (double_tap in fresh_actions) else None,
+        layered_asset=layered_asset,
+        layered_urls=layered_urls,
+    )
+
+
+def _public_layered(resolved: _ResolvedShaker, share: str) -> ShakerLayeredManifest | None:
+    asset = resolved.layered_asset
+    urls = resolved.layered_urls or {}
+    if not asset or not asset.complete_ready:
+        return None
+
+    if _proxy_assets_enabled():
+        pet_url = _asset_proxy_url(share, "v2-pet")
+        background_url = _asset_proxy_url(share, "v2-background")
+        foreground_url = _asset_proxy_url(share, "v2-foreground") if asset.foreground else None
+    else:
+        pet_url = urls.get("v2-pet", "")
+        background_url = urls.get("v2-background", "")
+        foreground_url = urls.get("v2-foreground")
+    if not pet_url or not background_url or (asset.foreground and not foreground_url):
+        return None
+
+    return ShakerLayeredManifest(
+        asset_id=asset.asset_id,
+        asset_version=asset.asset_version,
+        scene_id=asset.scene_id,
+        pet=ShakerLayeredPetAsset(
+            url=pet_url,
+            encoding=asset.pet_encoding or "",
+            alpha_layout=asset.alpha_layout or "",
+        ),
+        background=ShakerLayeredBackgroundAsset(
+            type=asset.background_type or "image", url=background_url
+        ),
+        placement=dict(asset.placement or {}),
+        shadow=dict(asset.shadow) if asset.shadow else None,
+        foreground=(
+            ShakerLayeredForegroundAsset(type=asset.foreground_type or "image", url=foreground_url or "")
+            if asset.foreground else None
+        ),
     )
 
 
@@ -294,6 +409,7 @@ async def get_shaker_pet(
         breathing_url=breathing,
         poster_url=poster,
         background_baked=resolved.rec.background_baked,
+        layered=_public_layered(resolved, share),
         actions=actions,
         double_tap_action_id=resolved.double_tap,
     )
@@ -309,7 +425,7 @@ async def get_shaker_asset(
     """
     재생 자산 리다이렉트. **바이트를 흘려보내지 않는다** — 302 만 준다.
 
-    k = "breathing" | "poster" | 액션 id
+    k = "breathing" | "poster" | READY V2 slot | 액션 id
 
     액션은 /pet 과 **같은 정책 판정**을 통과해야 한다. 이 엔드포인트가 판정을
     건너뛰면 멤버십 게이트를 통째로 우회하는 구멍이 된다 — 그래서 두 경로가
@@ -322,6 +438,8 @@ async def get_shaker_asset(
         target = resolved.breathing_url
     elif kind == "poster":
         target = resolved.poster_url or ""
+    elif kind in (resolved.layered_urls or {}):
+        target = (resolved.layered_urls or {}).get(kind, "")
     else:
         # 정책이 허용한 액션만. 허용 목록 밖이면 존재 여부도 알려 주지 않는다.
         target = resolved.action_urls.get(kind.upper(), "")
@@ -351,6 +469,10 @@ class CreateShareRequest(BaseModel):
     poster_url: str | None = None
     #: null 이면 무기한. 인쇄된 QR 은 회수할 수 없으므로 기본이 무기한이다.
     ttl_days: int | None = None
+    #: 새 공유만 장면을 스냅샷한다. 기존 공유 행은 NULL 이라 V1 에 남는다.
+    scene_id: str | None = None
+    #: 내부/운영이 특정 READY manifest 를 고를 때만. 서버가 owner/pet/scene 을 재검증한다.
+    layered_asset_id: str | None = None
 
 
 class CreateShareResponse(BaseModel):
@@ -395,6 +517,8 @@ async def create_shaker_share(
             breathing_url=body.breathing_url,
             poster_url=body.poster_url,
             ttl_days=body.ttl_days,
+            scene_id=body.scene_id,
+            layered_asset_id=body.layered_asset_id,
         )
     except shaker_share.ShareError as e:
         raise _as_http(e) from e

@@ -13,6 +13,7 @@ numpy>=1.24.0
 # 알파 경계 정제 + SAM2/GrabCut 마스크→트라이맵 변환(erode/dilate)에 필수
 # opencv-python-headless==4.9.0.80
 opencv-python-headless>=4.8.0
+httpx>=0.25.0,<1
 
 # 영상 합성
 ffmpeg-python==0.2.0
