@@ -38,11 +38,11 @@ def _install(monkeypatch, *, prepare, submit_result=(4, [])):
     """지갑/세션/제출을 전부 가짜로 바꾸고 호출 기록을 돌려준다."""
     calls: dict = {"deduct": [], "refund": [], "submit": []}
 
-    async def fake_deduct(uid, cost):
+    async def fake_deduct(uid, cost, **_ledger):
         calls["deduct"].append((uid, cost))
         return _Wallet()
 
-    async def fake_refund(uid, cost):
+    async def fake_refund(uid, cost, **_ledger):
         calls["refund"].append((uid, cost))
         return _Wallet()
 

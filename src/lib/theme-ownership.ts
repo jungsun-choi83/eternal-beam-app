@@ -25,7 +25,14 @@ export interface ThemeOffer {
   themeKey: string;
   free: boolean;
   owned: boolean;
+  /** 레거시 KRW 가격 (Toss 경로). 크레딧 전환 후 표시에는 쓰지 않는다. */
   priceKrw: number | null;
+  /**
+   * **Beam Credit 가격.** null 이면 크레딧으로 팔지 않는다.
+   * 0 은 명시적 무료라 null 과 다르다 — 미설정을 0 으로 읽으면 유료 테마가
+   * 공짜로 보인다.
+   */
+  creditPrice: number | null;
   purchasable: boolean;
 }
 
@@ -50,6 +57,8 @@ export interface ThemeRow {
   state: ThemeOwnershipState;
   action: ThemeAction;
   priceKrw: number | null;
+  /** 이 테마를 사는 데 드는 Beam Credit. 살 수 없으면 null. */
+  creditPrice: number | null;
   /** 지금 이 테마를 선택(사용)해도 되는가. */
   usable: boolean;
 }
@@ -89,6 +98,7 @@ export function themeRow(
       state: free ? "free" : "unknown",
       action: free ? "use" : "none",
       priceKrw: null,
+      creditPrice: null,
       usable: free,
     };
   }
@@ -99,6 +109,7 @@ export function themeRow(
       state: "free",
       action: "use",
       priceKrw: 0,
+      creditPrice: 0,
       usable: true,
     };
   }
@@ -109,17 +120,23 @@ export function themeRow(
       state: "owned",
       action: "use",
       priceKrw: offer.priceKrw,
+      creditPrice: offer.creditPrice,
       usable: true,
     };
   }
 
-  // 유료 · 미보유. 가격이 없으면 팔 수도 없다.
-  const sellable = offer.purchasable && offer.priceKrw != null && offer.priceKrw > 0;
+  // 유료 · 미보유. **크레딧 가격이 없으면 팔 수 없다** (Phase 4).
+  //
+  // 예전에는 priceKrw 로 판정했다. 테마가 Beam Credit 으로 팔리게 되면서 그
+  // 기준이 바뀌었다 — KRW 가격이 남아 있어도 크레딧 가격이 없으면 살 수 없다.
+  // null 을 0 으로 읽지 않는 규칙은 그대로다: 미설정은 무료가 아니라 판매 불가다.
+  const sellable = offer.purchasable && offer.creditPrice != null && offer.creditPrice > 0;
   return {
     themeKey: theme.themeKey,
     state: sellable ? "not-owned" : "coming-soon",
     action: sellable ? "buy" : "none",
     priceKrw: offer.priceKrw,
+    creditPrice: offer.creditPrice,
     usable: false,
   };
 }
@@ -137,10 +154,21 @@ export function canUseTheme(
   return themeRow(theme, offers).usable;
 }
 
-/** 표시용 가격. 가격이 없으면 null — 화면이 "준비 중"으로 그린다. */
+/** 표시용 KRW 가격 (레거시 Toss 경로). 가격이 없으면 null. */
 export function formatPriceKrw(price: number | null): string | null {
   if (price == null || price <= 0) return null;
   return `₩${price.toLocaleString("ko-KR")}`;
+}
+
+/**
+ * 표시용 크레딧 가격. 없으면 null — 화면이 "준비 중"으로 그린다.
+ *
+ * 0 을 null 로 접는 이유: 0 은 무료라는 뜻이고, 무료 테마는 가격 배지가 아니라
+ * FREE 배지를 단다. 여기서 "0 크레딧"을 그리면 살 수 있는 것처럼 보인다.
+ */
+export function formatCredits(price: number | null): string | null {
+  if (price == null || price <= 0) return null;
+  return String(price);
 }
 
 /**

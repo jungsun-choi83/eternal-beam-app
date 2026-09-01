@@ -39,8 +39,14 @@ export interface PremiumAssets {
   /** 서버 레지스트리 그대로 — 프론트가 개수를 하드코딩하지 않게. */
   idleEvents: string[];
   actionEvents: string[];
-  idleBundleCredits: number;
-  actionEventCredits: number;
+  /**
+   * 상품 키 → 크레딧 가격. **상품마다 다르다** (백엔드 digital_products).
+   *
+   * 예전에는 idleBundleCredits / actionEventCredits 두 스칼라였다. 그 모양 자체가
+   * "카테고리가 가격을 정한다"는 전제를 담고 있어서, 아이들 이벤트 넷에 서로 다른
+   * 값을 매길 방법이 없었다. 가격의 권위는 이제 서버 카탈로그 하나뿐이다.
+   */
+  prices: Record<string, number>;
   /**
    * 프리미엄 **생성**이 허용되는가 (구독 active 또는 해지 유예 기간).
    *
@@ -141,8 +147,7 @@ export async function discoverPremiumAssets(params: {
     missing: (b.missing as string[]) ?? [],
     idleEvents: (b.idle_events as string[]) ?? [],
     actionEvents: (b.action_events as string[]) ?? [],
-    idleBundleCredits: Number(b.idle_bundle_credits ?? 1),
-    actionEventCredits: Number(b.action_event_credits ?? 1),
+    prices: (b.prices as Record<string, number>) ?? {},
     entitled: Boolean(b.entitled),
     preferences: (b.preferences as Record<string, boolean>) ?? {},
     subscriptionStatus:

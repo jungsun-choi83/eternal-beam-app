@@ -167,7 +167,7 @@ def test_generation_uses_the_flattened_keyframe(monkeypatch):
     async def fake_session(*a, **k):
         return "sess9"
 
-    async def fake_deduct(uid, cost):
+    async def fake_deduct(uid, cost, **_ledger):
         class W:
             current_credits = 10
 

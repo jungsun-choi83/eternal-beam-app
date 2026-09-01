@@ -15,7 +15,6 @@ import {
 } from '@/components/memorial/ai-processing-screen'
 import { ThemeSelectionScreen } from '@/components/memorial/theme-selection-screen'
 import { CustomBackgroundScreen } from '@/components/memorial/custom-background-screen'
-import { PaymentScreen } from '@/components/memorial/payment-screen'
 import { PreviewScreen } from '@/components/memorial/preview-screen'
 import { ShippingAddressScreen } from '@/components/memorial/shipping-address-screen'
 import { PhysicalOrderScreen } from '@/components/memorial/physical-order-screen'
@@ -27,17 +26,14 @@ import { SettingsScreen } from '@/components/memorial/settings-screen'
 import { memorialT } from '@/components/memorial/memorial-i18n'
 import {
   getMemorialTheme,
+  getMemorialThemeByKey,
   CUSTOM_PHOTO_BG_THEME_ID,
   isPremiumTheme,
-  freeMemorialThemes,
-  DEFAULT_THEME_ID,
 } from '@/components/memorial/themes'
 import { clearStoredCustomBgVideoUrl } from '@/lib/custom-background-store'
 import { finalizePreviewContent } from '@/lib/finalize-preview-content'
-import { scheduleThemeBackgroundSync, shouldSyncThemeToDevice } from '@/lib/device-theme-sync'
-import { resolveSkipThemeId } from '@/lib/theme-skip'
+import { scheduleThemeBackgroundSync } from '@/lib/device-theme-sync'
 import { schedulePiDiscovery } from '@/lib/pi-sensor-bridge'
-import { isForestTheme } from '@/lib/forest-demo-config'
 import { billingReturnEntry, isPublicForestEntry, orderReturnEntry } from '@/lib/app-entry'
 import { consumeSoulTracePendingUpload } from '@/lib/soul-trace-handoff'
 import {
@@ -58,7 +54,15 @@ import {
   resolveOriginalPhoto,
   type MediaKind,
 } from '@/lib/main-media-store'
-import { canEnterDevicePlay, readStoredPipeline } from '@/lib/pending-generation'
+import {
+  canEnterDevicePlay,
+  getPendingCutoutMeta,
+  readStoredPipeline,
+} from '@/lib/pending-generation'
+import {
+  clearThemePurchaseReturnState,
+  readThemePurchaseReturnState,
+} from '@/lib/theme-purchase-return-state'
 import { OrderConfirmationScreen } from '@/components/memorial/order-confirmation-screen'
 import { getEternalBeamPetId } from '@/lib/pet-identity'
 import { traceImage } from '@/lib/image-trace' // [IMAGE-TRACE]
@@ -74,7 +78,6 @@ type Screen =
   | 'aiProcessing'
   | 'themeSelection'
   | 'customBackground'
-  | 'checkout'
   | 'preview'
   | 'shippingAddress'
   | 'physicalOrder'
@@ -95,6 +98,9 @@ function resolveInitialScreen(): Screen {
   // 가로챘고, 그 화면을 나가는 유일한 길이 루트 새로고침이었다 — 루트는 아래
   // 폴백(qrConnection)으로 떨어지므로 결제를 마친 고객이 온보딩을 다시 봤다.
   if (orderReturnEntry()) return 'orderResult'
+  // 테마 Toss 결제는 앱 바깥의 확인 화면을 거친 뒤 이 표식과 함께 루트로
+  // 돌아온다. QR 온보딩 대신 방금 보던 테마 선택 화면을 복원한다.
+  if (readThemePurchaseReturnState()) return 'themeSelection'
   // Soul Trace 편지를 막 가져왔다 — 다음은 아이를 만드는 단계다.
   // **기존 Upload Pet 흐름을 그대로 쓴다**(새 화면을 만들지 않는다).
   // 표식은 한 번만 소비되므로 다음 방문부터는 평소 진입 화면으로 돌아간다.
@@ -145,12 +151,19 @@ function persistThemeChoice(themeId: number) {
 }
 
 export function EternalBeamApp() {
+  const [themePurchaseReturn] = useState(() => readThemePurchaseReturnState())
   const [screen, setScreen] = useState<Screen>(() => resolveInitialScreen())
   const [publicForestDemo] = useState(() => isPublicForestEntry())
   const [deviceDemo] = useState(() => isDeviceKickstarterDemo())
-  const [uploadedImage, setUploadedImage] = useState<string | null>(null)
-  const [cutoutImage, setCutoutImage] = useState<string | null>(null)
-  const [selectedTheme, setSelectedTheme] = useState<number | null>(null)
+  const [uploadedImage, setUploadedImage] = useState<string | null>(() =>
+    themePurchaseReturn ? resolveOriginalPhoto() : null
+  )
+  const [cutoutImage, setCutoutImage] = useState<string | null>(() =>
+    themePurchaseReturn ? getPendingCutoutMeta()?.displayUrl ?? null : null
+  )
+  const [selectedTheme, setSelectedTheme] = useState<number | null>(() =>
+    getMemorialThemeByKey(themePurchaseReturn?.themeKey)?.id ?? null
+  )
   const [previewSettings, setPreviewSettings] = useState({ scale: 1, posX: 0, posY: 0 })
   const [language, setLanguage] = useState(() => {
     if (typeof window === 'undefined') return 'ko'
@@ -185,6 +198,17 @@ export function EternalBeamApp() {
   //
   // qrBackTarget 과 같은 패턴이다 — 들어온 화면을 기억했다가 그리로 돌려보낸다.
   const [settingsBackTarget, setSettingsBackTarget] = useState<Screen | null>(null)
+
+  // 초기 state 가 복귀 표식을 모두 읽은 뒤 제거한다. 다음번 평범한 루트 방문까지
+  // themeSelection 으로 고정시키지 않기 위해 1회만 소비한다.
+  useEffect(() => {
+    if (!themePurchaseReturn) return
+    if (themePurchaseReturn.confirmed) {
+      const restoredTheme = getMemorialThemeByKey(themePurchaseReturn.themeKey)
+      if (restoredTheme) persistThemeChoice(restoredTheme.id)
+    }
+    clearThemePurchaseReturnState()
+  }, [themePurchaseReturn])
 
   // ── 결제 왕복 스냅샷 ───────────────────────────────────────────────────────
   // Toss 는 결제창을 마치면 페이지를 **이동**시킨다 → React state 가 사라진다.
@@ -359,68 +383,14 @@ export function EternalBeamApp() {
   const handleCustomBackgroundComplete = () => {
     setSelectedTheme(CUSTOM_PHOTO_BG_THEME_ID)
     persistThemeChoice(CUSTOM_PHOTO_BG_THEME_ID)
-    navigateTo('checkout')
+    navigateTo('themeSelection', 'back')
   }
 
   const handleThemeContinue = (themeId: number) => {
     setSelectedTheme(themeId)
     persistThemeChoice(themeId)
     scheduleThemeBackgroundSync(themeId)
-    if (deviceDemo && isForestTheme(themeId)) {
-      navigateTo('devicePlay')
-      return
-    }
-    const theme = getMemorialTheme(themeId)
-    if (
-      shouldSyncThemeToDevice() &&
-      theme &&
-      !theme.premium &&
-      !theme.requiresGeneration &&
-      // 실제 idle 영상이 생기기 전에는 기기 송출로 건너뛰지 않는다 —
-      // 미리보기에서 확인을 눌러야 생성이 시작된다.
-      canEnterDevicePlay(readStoredPipeline(), { demo: deviceDemo })
-    ) {
-      navigateTo('devicePlay')
-      return
-    }
-    navigateTo(isPremiumTheme(themeId) ? 'checkout' : 'preview')
-  }
-
-  const handleThemeSkip = () => {
-    // '건너뛰기' 는 "새로 고르지 않겠다" 는 뜻이지 "고른 걸 버리겠다" 가 아니다.
-    // 예전에는 무조건 freeMemorialThemes[0](fresh_forest, id 8)로 덮어써서,
-    // snow_forest 를 고른 뒤 Skip 을 누르면 선택이 사라졌다(localStorage 까지).
-    // 이미 유효한 선택이 있으면 그대로 유지하고, 없을 때만 기본 무료 테마를 쓴다.
-    const themeId = resolveSkipThemeId(selectedTheme, {
-      isValidTheme: (id) => !!getMemorialTheme(id),
-      defaultThemeId: DEFAULT_THEME_ID,
-    })
-    setSelectedTheme(themeId)
-    persistThemeChoice(themeId)
-    scheduleThemeBackgroundSync(themeId)
-    if (deviceDemo && isForestTheme(themeId)) {
-      navigateTo('devicePlay')
-      return
-    }
-    const theme = getMemorialTheme(themeId)
-    if (
-      shouldSyncThemeToDevice() &&
-      theme &&
-      !theme.requiresGeneration &&
-      canEnterDevicePlay(readStoredPipeline(), { demo: deviceDemo })
-    ) {
-      navigateTo('devicePlay')
-      return
-    }
     navigateTo('preview')
-  }
-
-  const handlePaymentComplete = () => {
-    navigateTo('preview')
-  }
-
-  const handlePaymentSkip = () => {
-    navigateTo('themeSelection', 'back')
   }
 
   const handlePreviewSettingsChange = (settings: {
@@ -483,13 +453,6 @@ export function EternalBeamApp() {
     const target = qrBackTarget
     setQrBackTarget(null)
     navigateTo(target, 'back')
-  }
-
-  const getCheckoutThemeInfo = () => {
-    const theme = getMemorialTheme(selectedTheme)
-    return theme
-      ? { id: theme.id, themeKey: theme.themeKey, name: theme.name, price: theme.price, thumb: theme.thumb }
-      : { id: 0, themeKey: '', name: 'Theme', price: '' }
   }
 
   /**
@@ -616,10 +579,9 @@ export function EternalBeamApp() {
                 language={language}
                 onLanguageChange={handleLanguageChange}
                 initialMode="signup"
-                lockMode="signup"
-                onAuthComplete={(name?: string) => {
+                onAuthComplete={(name?: string, completedMode?: 'login' | 'signup') => {
                   if (name) setUserName(name)
-                  navigateTo('photoUpload')
+                  navigateTo(completedMode === 'login' ? 'home' : 'photoUpload')
                 }}
               />
             </motion.div>
@@ -639,9 +601,9 @@ export function EternalBeamApp() {
                 language={language}
                 onLanguageChange={handleLanguageChange}
                 initialMode="login"
-                onAuthComplete={(name?: string) => {
+                onAuthComplete={(name?: string, completedMode?: 'login' | 'signup') => {
                   if (name) setUserName(name)
-                  navigateTo('home')
+                  navigateTo(completedMode === 'signup' ? 'photoUpload' : 'home')
                 }}
               />
             </motion.div>
@@ -772,11 +734,9 @@ export function EternalBeamApp() {
                 originalPhoto={originalPhoto}
                 selectedTheme={selectedTheme}
                 language={language}
-                deviceLinked={shouldSyncThemeToDevice()}
                 onSelectTheme={handleThemeSelect}
                 onSelectCustomBackground={handleSelectCustomBackground}
                 onContinue={handleThemeContinue}
-                onSkip={handleThemeSkip}
                 onBack={() => navigateTo('home', 'back')}
               />
             </motion.div>
@@ -796,26 +756,6 @@ export function EternalBeamApp() {
                 uploadedImage={uploadedImage}
                 language={language}
                 onComplete={handleCustomBackgroundComplete}
-                onBack={() => navigateTo('themeSelection', 'back')}
-              />
-            </motion.div>
-          )}
-
-          {screen === 'checkout' && (
-            <motion.div
-              key="checkout"
-              custom={pageMotionCustom()}
-              variants={pageVariants}
-              initial="initial"
-              animate="animate"
-              exit="exit"
-              className="h-full"
-            >
-              <PaymentScreen
-                language={language}
-                selectedTheme={getCheckoutThemeInfo()}
-                onComplete={handlePaymentComplete}
-                onSkip={handlePaymentSkip}
                 onBack={() => navigateTo('themeSelection', 'back')}
               />
             </motion.div>
@@ -852,12 +792,7 @@ export function EternalBeamApp() {
                   if (!canEnterDevicePlay(readStoredPipeline(), { demo: deviceDemo })) return
                   navigateTo('devicePlay')
                 }}
-                onBack={() =>
-                  navigateTo(
-                    selectedTheme && isPremiumTheme(selectedTheme) ? 'checkout' : 'themeSelection',
-                    'back'
-                  )
-                }
+                onBack={() => navigateTo('themeSelection', 'back')}
               />
             </motion.div>
           )}

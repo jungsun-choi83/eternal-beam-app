@@ -65,7 +65,7 @@ def spy(monkeypatch):
         calls["keyframes"] += 1
         return "https://cdn/black_plate.jpg"
 
-    async def fake_deduct(uid, cost):
+    async def fake_deduct(uid, cost, **_ledger):
         calls["deducts"].append((uid, cost))
         raise AssertionError("dev 트리거는 크레딧을 차감하면 안 된다")
 

@@ -7,6 +7,7 @@ Unity `/device/sync` 는 완료된 4액션 세트만 반환.
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 from datetime import datetime
@@ -30,6 +31,8 @@ from ..scenarios.pet_scenarios import (
   to_place_id,
 )
 from . import supabase_assets
+
+logger = logging.getLogger(__name__)
 
 _MOCK_MOTIONS: dict[str, GeneratedMotion] = {}  # key: user::pet::place::action
 _MOCK_JOBS: dict[str, MotionJobRow] = {}  # luma_generation_id -> job
@@ -69,7 +72,24 @@ async def create_credit_session(
   place_key: str,
   pet_image_url: str,
   credits_charged: int,
+  *,
+  reservation_ledger_id: str | None = None,
+  product_key: str | None = None,
+  legacy_charge: bool = False,
 ) -> str:
+  """
+  생성 세션 한 건.
+
+  reservation_ledger_id 는 **유료 생성의 근거**다 (Phase 7). credits_charged > 0
+  인데 이 값이 없으면 스키마 CHECK(credit_sessions_paid_has_reservation)가
+  insert 를 막는다 — 예약 없는 과금이 기록될 수 없다.
+
+  legacy_charge 는 그 규칙의 **유일한 예외**다: 4크레딧 기기 생성 팩은 기기
+  호환성이 이전되지 않아 은퇴하지 못했고(docs/LEGACY_RETIREMENT.md §5), 아직
+  예약 없이 차감한다. 새 호출부는 이 값을 쓰지 않는다 — 쓰는 순간 "예약 없이
+  과금할 수 있다"가 되살아난다. 호출부가 하나뿐임을
+  backend/tests/test_legacy_charge_exemption.py 가 고정한다.
+  """
   session_id = str(uuid.uuid4())
   place_id = place_public_id(place_key)
   meta = {
@@ -80,6 +100,9 @@ async def create_credit_session(
     "place_id": place_id,
     "pet_image_url": pet_image_url,
     "credits_charged": credits_charged,
+    "reservation_ledger_id": reservation_ledger_id,
+    "product_key": product_key,
+    "legacy_charge": legacy_charge,
     "status": "processing",
     "created_at": datetime.utcnow().isoformat(),
   }
@@ -96,6 +119,9 @@ async def create_credit_session(
         "place_id": place_id,
         "pet_image_url": pet_image_url,
         "credits_charged": credits_charged,
+        "reservation_ledger_id": reservation_ledger_id,
+        "product_key": product_key,
+        "legacy_charge": legacy_charge,
         "status": "processing",
       }
     ).execute()
@@ -422,24 +448,95 @@ def validate_candidate(job: MotionJobRow, mp4: bytes) -> tuple[bool, dict]:
     return True, {"error": f"{type(e).__name__}: {e}"[:200], "gate_enforced": False}
 
 
+def library_object_name(place_key: str, action_id: str, job_id: str) -> str:
+  """
+  **버전별** 보관 경로 세그먼트.
+
+  ── 왜 canonical 경로를 그대로 쓰면 안 되는가 (Phase 6) ────────────────────
+  예전에는 {PLACE}_{ACTION}.mp4 한 곳에 덮어썼다. generated_motions 의 행만
+  덮어쓰는 것이 아니라 **파일 자체가 사라졌다.** 그러면 소유 원장에 Sleeping 을
+  세 줄 적어도 셋 다 같은(마지막) 파일을 가리키게 되고, "버전이 공존한다"는 말이
+  기록상으로만 참이 된다.
+
+  작업 id 를 넣어 승격마다 다른 객체를 만든다. 후보 경로가 이미 같은 이유로
+  attempt/job 을 넣고 있다(candidate_object_name).
+  """
+  base = storage_object_name(place_key, action_id)  # {PLACE}_{ACTION}.mp4
+  stem = base[:-4] if base.endswith(".mp4") else base
+  return f"library/{stem}_{job_id}.mp4"
+
+
 async def promote_candidate(job: MotionJobRow, mp4: bytes) -> GeneratedMotion:
-  """검증을 통과한 후보를 canonical 로 승격한다."""
-  # 테마 독립 액션은 센티널 place_id 로 접어 넣는다 — unique(user,pet,place,action)
-  # 덕에 펫당 정확히 한 행이 되고, 저장 경로에도 장소가 들어가지 않는다.
+  """
+  검증을 통과한 후보를 승격한다 — **소유 자산으로 남기고, 포인터를 옮긴다.**
+
+  순서가 계약이다:
+      1) 버전별 경로에 업로드   (이전 버전을 덮어쓰지 않는다)
+      2) 소유 자산 기록          (고객이 값을 낸 것 = 이것)
+      3) generated_motions 갱신  (기기가 지금 재생할 것)
+
+  2 를 3 보다 먼저 하는 이유: 3 은 이전 버전을 가리키던 포인터를 덮어쓴다.
+  2 가 실패한 채로 3 이 성공하면 옛 자산이 소유 목록에도 포인터에도 없게 된다.
+  """
+  # 테마 독립 액션은 센티널 place_id 로 접어 넣는다 — 포인터 표의
+  # unique(user,pet,place,action) 덕에 펫당 정확히 한 행이 된다.
   place_id = (
     THEME_INDEPENDENT_PLACE_ID
     if is_theme_independent_action(job.action_id)
     else to_place_id(job.place_key)
   )
-  storage_path = f"{job.user_id}/{job.pet_id}/{storage_object_name(job.place_key, job.action_id)}"
 
   if (job.action_id or "").upper() == "IDLE" and _seamless_loop_enabled():
     from .seamless_loop_service import make_seamless_loop_mp4
 
     mp4, _loop_meta = make_seamless_loop_mp4(mp4)
 
+  job_id = (job.luma_generation_id or uuid.uuid4().hex)[:12]
+  storage_path = (
+    f"{job.user_id}/{job.pet_id}/"
+    f"{library_object_name(job.place_key, job.action_id, job_id)}"
+  )
   stored_url = await supabase_assets.upload_asset_to_storage(storage_path, mp4, "video/mp4")
+
+  await _record_owned_asset(job, stored_url, storage_path)
   return await _record_promoted_motion(job, place_id, stored_url)
+
+
+async def _record_owned_asset(job: MotionJobRow, stored_url: str, storage_path: str) -> None:
+  """
+  검증 PASS → **예약 확정 + 영구 소유 자산 기록** (Phase 7).
+
+  세션이 예약을 들고 있으면(유료 생성) 여기서 확정된다. 확정은 잔액을 건드리지
+  않는다 — 예약 시점에 이미 빠졌다. 그 예약 id 가 자산의 ledger_id 가 되어,
+  "이 자산은 이 지출로 생겼다"가 원장과 소유 양쪽에서 조인된다.
+
+  실패하면 승격을 멈춘다. 조용히 넘어가면 고객이 값을 낸 자산이 소유 목록에
+  없게 되고, 포인터가 다음 버전으로 넘어간 뒤에는 되짚을 수 없다.
+  """
+  from . import generation_credits
+
+  session = await get_session(job.session_id) or {}
+  reservation = session.get("reservation_ledger_id") or None
+  credits = int(session.get("credits_charged") or 0)
+
+  try:
+    await generation_credits.commit_for_asset(
+      reservation_ledger_id=reservation,
+      credits=credits,
+      user_id=job.user_id,
+      pet_id=job.pet_id,
+      action_id=job.action_id,
+      video_url=stored_url,
+      object_path=storage_path,
+      bucket=os.getenv("SUPABASE_STORAGE_BUCKET", "user-assets"),
+      source_job_id=job.luma_generation_id,
+    )
+  except Exception:
+    logger.exception(
+      "소유 자산 기록/예약 확정 실패 — 승격을 중단한다 (user=%s pet=%s action=%s)",
+      job.user_id, job.pet_id, job.action_id,
+    )
+    raise
 
 
 async def save_completed_motion(
@@ -663,6 +760,45 @@ async def mark_session_refunded(session_id: str) -> bool:
       return False
     _MOCK_SESSIONS[session_id]["refunded_at"] = stamp
   return True
+
+
+async def unmark_session_refunded(session_id: str) -> bool:
+  """
+  환불 표시를 **되돌린다.** 표시는 찍었는데 지갑 환불이 확정되지 않은 경우 전용.
+
+  환불은 두 걸음이다: ① refunded_at 선점 → ② 지갑에 크레딧 반환. 선점을 먼저
+  하는 것은 옳다(동시 웹훅의 이중 환불을 막는 유일한 지점이다). 그런데 ② 가
+  실패했는데 선점이 남으면:
+
+      세션: "환불됨"          지갑: 크레딧 없음
+
+  이 상태에서는 재시도조차 일어나지 않는다 — 다음 웹훅의 `not sess.get("refunded_at")`
+  검사가 걸러 내기 때문이다. 고객은 크레딧을 잃고 기록은 잃지 않았다고 말한다.
+  되돌려 놓으면 다음 종료 이벤트가 같은 판정을 다시 내려 환불을 재시도한다.
+
+  ⚠️ 되돌리기가 실패하면 자동 복구 경로가 없다 — 호출부가 critical 로 남긴다.
+  """
+  if _use_db() and _supabase():
+    try:
+      r = (
+        _supabase()
+        .table(os.getenv("CREDIT_SESSIONS_TABLE", "credit_generation_sessions"))
+        .update({"refunded_at": None})
+        .eq("session_id", session_id)
+        .execute()
+      )
+      won = bool(getattr(r, "data", None))
+      if won and session_id in _MOCK_SESSIONS:
+        _MOCK_SESSIONS[session_id]["refunded_at"] = None
+      return won
+    except Exception:
+      logger.exception("환불 표시 되돌리기 실패 (session_id=%s)", session_id)
+      return False
+
+  if session_id in _MOCK_SESSIONS:
+    _MOCK_SESSIONS[session_id]["refunded_at"] = None
+    return True
+  return False
 
 
 async def mark_job_failed(luma_generation_id: str, error: str) -> None:

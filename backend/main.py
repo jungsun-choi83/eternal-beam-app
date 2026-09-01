@@ -216,6 +216,13 @@ from .routers import partner_ops_v1  # noqa: E402
 
 app.include_router(partner_ops_v1.router, prefix="/api", tags=["partner-ops"])
 
+# Beam Credit 지갑·팩 (Phase 5). **KRW 가 크레딧으로 들어오는 유일한 문**이며,
+# 크레딧을 넣기만 한다 — 쓰는 것은 각 상품의 구매 경로가 한다.
+# 항상 마운트되고, 모든 경로가 검증된 토큰을 요구한다.
+from .routers import credits_v1  # noqa: E402
+
+app.include_router(credits_v1.router, prefix="/api", tags=["credits"])
+
 # canonical 펫 레지스트리 (Phase 13.2). 생성 로직을 건드리지 않고, 앱이 파이프라인
 # 완료 후 결과를 등록한다 — BREATHING 만 있는 무료 펫도 운영이 발견할 수 있다.
 from .routers import pet_registry_v1  # noqa: E402

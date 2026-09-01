@@ -13,6 +13,22 @@
 Toss 도 주문 금액이 다르면 거절하지만, 방어를 결제사에 위임하지 않는다.
 
 구독도 크레딧도 건드리지 않는다 — 그런 import 가 없다.
+
+── 레거시: **새 주문을 만드는 프로덕션 경로는 없다** (Phase 11) ─────────────
+테마는 이제 Beam Credit 으로만 판다. create() / find_reusable() 을 부르던
+theme_purchase.start_checkout 은 삭제됐다.
+
+    남은 것    theme_purchase.confirm_checkout  — 배포 시점에 결제창에 머물러
+               있던 고객의 승인을 받아 주는 드레인 경로 (get / mark_paid /
+               mark_failed 만 쓴다)
+
+    create()   프로덕션 호출부 없음. 지우지 않는 이유는 드레인 경로를 시험하려면
+               "배포 전에 만들어진 미결 주문"을 재현해야 하기 때문이다.
+               프로덕션이 다시 부르지 못하도록
+               backend/tests/test_theme_legacy_retired.py 가 고정한다.
+
+미결 주문이 0 건이 되면 표를 동결한다 —
+supabase/migrations/20261009000000_freeze_legacy_purchase_tables.sql 참고.
 """
 
 from __future__ import annotations

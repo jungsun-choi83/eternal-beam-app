@@ -309,8 +309,19 @@ def test_assets_reports_registry_not_a_hardcoded_count(client: ASGITestClient):
     body = r.json()
     assert body["idle_events"] == list(IDLE_EVENTS)
     assert body["action_events"] == list(PET_ACTIONS)
-    assert body["idle_bundle_credits"] == 1
-    assert body["action_event_credits"] == 1
+
+    # 가격은 **상품 단위**로 실린다 (Phase 3). 예전에는 카테고리 스칼라 두 개
+    # (idle_bundle_credits / action_event_credits)였고, 그 값은 환경변수에서
+    # import 시점에 읽혀 응답 모델의 기본값으로 박혀 있었다 — 아이들 넷이 반드시
+    # 같은 값이어야 했고, 바꾸려면 재배포가 필요했다.
+    prices = body["prices"]
+    assert prices["idle:BUNDLE"] == 1
+    assert prices["action:COME_CLOSER"] == 1
+    # 아이들 이벤트도 **각각** 값을 갖는다 — 서로 다른 값을 매길 수 있다는 뜻이다.
+    for event in IDLE_EVENTS:
+        assert f"idle:{event}" in prices
+    assert "idle_bundle_credits" not in body, "카테고리 전역 가격 필드가 남아 있다"
+    assert "action_event_credits" not in body
 
 
 # ── dev 라우트는 프로덕션에 없다 ─────────────────────────────────────────────

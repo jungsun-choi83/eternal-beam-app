@@ -32,6 +32,29 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _clean_credit_ledger():
+    """
+    인메모리 원장을 테스트마다 비운다.
+
+    ── 왜 autouse 인가 ────────────────────────────────────────────────────────
+    원장은 **재무 상태의 일부**다. 지갑(_MOCK_WALLETS)만 지우고 원장을 남기면
+    두 저장소가 어긋난 채로 다음 테스트가 시작되고, 그 어긋남이 실제 결함처럼
+    보인다. 실제로 그랬다: 가입 보너스는 사용자당 한 번뿐이라(멱등 키
+    'starter:<uid>') 원장에 기록이 남아 있으면 지갑을 다시 만들어도 보너스가
+    지급되지 않는다 — 올바른 동작이지만, 원장을 안 지운 테스트에서는 잔액 0 으로
+    보인다.
+
+    지갑을 지우는 픽스처마다 원장 초기화를 덧붙이는 대신 여기 한 곳에 둔다.
+    빠뜨릴 수 있는 자리를 없애는 것이 요점이다.
+    """
+    from backend.services import credit_ledger
+
+    credit_ledger.__reset_for_tests()
+    yield
+    credit_ledger.__reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
 def _clean_cutout_env(monkeypatch: pytest.MonkeyPatch):
     """임계값 관련 환경변수가 로컬 .env 에서 새어 들어오지 않도록 초기화."""
     for key in (

@@ -34,8 +34,7 @@ function assets(over: Partial<PremiumAssets> = {}): PremiumAssets {
     missing: [...IDLE, COME_CLOSER_ACTION],
     idleEvents: IDLE,
     actionEvents: [COME_CLOSER_ACTION],
-    idleBundleCredits: 1,
-    actionEventCredits: 1,
+    prices: { "idle:BUNDLE": 1, "action:COME_CLOSER": 1 },
     // 이 파일은 크레딧 시대의 가격/상태 계산을 고정한다. 구독 필드는 그 계산에
     // 관여하지 않으므로(deriveUnlockState 는 읽지 않는다) 기본값으로 채운다.
     entitled: true,

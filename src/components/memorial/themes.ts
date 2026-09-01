@@ -7,7 +7,6 @@ export interface MemorialTheme {
   gradient: string;
   accent: string;
   premium: boolean;
-  price: string;
   thumb: string;
   /** public/ 기준 동영상 배경 (있으면 프리뷰에 재생) */
   bgVideo?: string;
@@ -77,7 +76,6 @@ export const memorialThemes: MemorialTheme[] = [
     gradient: "from-stone-800 via-neutral-800 to-black",
     accent: "#d6cbb8",
     premium: false,
-    price: "",
     // 썸네일은 업로드한 사진 자체다. 화면이 원본을 알고 있으므로 여기서는
     // 자리표시자만 둔다 — 고정 에셋을 두면 다른 사진처럼 보인다.
     thumb: "",
@@ -93,7 +91,6 @@ export const memorialThemes: MemorialTheme[] = [
     gradient: "from-emerald-950 via-green-900 to-black",
     accent: "#34d399",
     premium: false,
-    price: "",
     thumb: "/theme-thumbs/fresh_forest.jpg",
     bgVideo: "/demo/forest.mp4",
     // 숲 바닥이 하단 ~12%에 또렷하게 깔린다(영상 배경).
@@ -107,7 +104,6 @@ export const memorialThemes: MemorialTheme[] = [
     gradient: "from-sky-500 via-cyan-700 to-blue-950",
     accent: "#67e8f9",
     premium: false,
-    price: "",
   
     thumb: "/theme-thumbs/beach.jpg",
     bgVideo: "/backgrounds/snow_forest/beach.mp4",
@@ -123,7 +119,6 @@ export const memorialThemes: MemorialTheme[] = [
     gradient: "from-slate-800 via-blue-950 to-black",
     accent: "#93c5fd",
     premium: false,
-    price: "",
     // winter_forest_path (EternalBeam/Assets/Backgrounds) 를 웹용으로 트랜스코딩한 것.
     // 예전 snow_forest.jpg 는 눈이 전혀 없는 여름 숲이었고 celestial.jpg 와 바이트 동일했다.
     thumb: "/theme-thumbs/snow_forest_winter.jpg",
@@ -139,7 +134,6 @@ export const memorialThemes: MemorialTheme[] = [
     gradient: "from-indigo-900 via-purple-900 to-black",
     accent: "#8b5cf6",
     premium: false,
-    price: "",
     // ⚠ UNRESOLVED: 이 리포에 "천상(celestial)"에 맞는 에셋이 없다.
     // 예전에는 celestial.jpg(= snow_forest.jpg 와 바이트 동일한 숲 사진)를 써서
     // 두 테마가 같은 그림을 보여줬다. 진짜 에셋을 구할 때까지는 테마 자체의
@@ -155,7 +149,6 @@ export const memorialThemes: MemorialTheme[] = [
     gradient: "from-amber-900 via-yellow-900 to-black",
     accent: "#f59e0b",
     premium: false,
-    price: "",
     thumb: "/theme-thumbs/golden_meadow.jpg",
     // 포장된 산책로가 하단에 뚜렷하다.
     floorY: 0.90,
@@ -168,7 +161,6 @@ export const memorialThemes: MemorialTheme[] = [
     gradient: "from-slate-900 via-zinc-800 to-black",
     accent: "#e4e4e7",
     premium: false,
-    price: "",
     thumb: "/theme-thumbs/starlight.jpg",
   },
   {
@@ -179,7 +171,6 @@ export const memorialThemes: MemorialTheme[] = [
     gradient: "from-emerald-900 via-teal-900 to-black",
     accent: "#10b981",
     premium: true,
-    price: "$2.99",
     thumb: "/theme-thumbs/aurora.jpg",
     // ⚠ aurora.jpg 는 실내 크리스마스 사진이다(이름과 불일치). 나무 마루가 매우 명확.
     floorY: 0.90,
@@ -192,7 +183,6 @@ export const memorialThemes: MemorialTheme[] = [
     gradient: "from-rose-900 via-orange-900 to-black",
     accent: "#f43f5e",
     premium: true,
-    price: "$2.99",
     thumb: "/theme-thumbs/sunset.jpg",
   },
   {
@@ -203,7 +193,6 @@ export const memorialThemes: MemorialTheme[] = [
     gradient: "from-blue-900 via-cyan-900 to-black",
     accent: "#06b6d4",
     premium: true,
-    price: "$2.99",
     thumb: "/theme-thumbs/ocean_deep.jpg",
     // 파도선 아래 젖은 모래사장이 뚜렷하다.
     floorY: 0.93,
@@ -216,7 +205,6 @@ export const memorialThemes: MemorialTheme[] = [
     gradient: "from-fuchsia-950 via-purple-900 to-black",
     accent: "#c084fc",
     premium: true,
-    price: "$2.99",
     // 생성 전에는 고정 배경이 없다. 예전 경로(custom_photo_bg.jpg)는 파일 자체가
     // 없어서 카드가 깨진 이미지로 보였다 — 테마 gradient 자리표시자로 대체.
     thumb: "/theme-thumbs/custom_photo_bg_placeholder.jpg",
@@ -228,6 +216,12 @@ export const memorialThemes: MemorialTheme[] = [
 export function getMemorialTheme(id: number | null): MemorialTheme | undefined {
   if (id == null) return undefined;
   return memorialThemes.find((t) => t.id === id);
+}
+
+export function getMemorialThemeByKey(themeKey: string | null | undefined): MemorialTheme | undefined {
+  const key = String(themeKey || "").trim();
+  if (!key) return undefined;
+  return memorialThemes.find((t) => t.themeKey === key);
 }
 
 /**

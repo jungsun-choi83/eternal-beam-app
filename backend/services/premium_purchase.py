@@ -33,6 +33,10 @@ from datetime import datetime
 from typing import Any, Optional
 
 from ..scenarios.pet_scenarios import IDLE_EVENTS, PET_ACTIONS, PREMIUM_ACTIONS
+from . import credit_ledger
+from . import credit_reservation
+from . import generation_credits
+from . import product_catalog
 from . import generated_motions_service as motions_svc
 from . import generation_queue
 from . import premium_entitlement
@@ -52,11 +56,11 @@ KIND_IDLE_BUNDLE = "IDLE_BUNDLE"
 #: 액션 이벤트 접두사. kind = "ACTION:COME_CLOSER".
 ACTION_KIND_PREFIX = "ACTION:"
 
-#: 번들 가격. **개수와 무관하다** — 상수 4 를 쓰지 않는 이유가 이것이다.
-IDLE_BUNDLE_CREDITS = int(os.getenv("IDLE_BUNDLE_CREDITS", "1"))
-
-#: 액션 이벤트 1건 가격.
-ACTION_EVENT_CREDITS = int(os.getenv("ACTION_EVENT_CREDITS", "1"))
+# ── 가격은 여기 없다 (Phase 3) ────────────────────────────────────────────────
+# 예전에는 두 환경변수가 **카테고리 전체**의 값을 정했다. 아이들 이벤트 넷이 반드시
+# 같은 값이어야 했고, 값을 바꾸려면 재배포해야 했다.
+#
+# 이제 가격은 digital_products 의 **상품 행**이 정한다 → credits_for_kind().
 
 
 def _table() -> str:
@@ -95,12 +99,74 @@ def action_kind(action_id: str) -> str:
     return f"{ACTION_KIND_PREFIX}{(action_id or '').strip().upper()}"
 
 
-def credits_for_kind(kind: str) -> int:
+def existing_id(row: Optional[dict[str, Any]]) -> str:
+    """기존 구매 행의 id — 재시도가 같은 예약 키를 쓰게 한다."""
+    return str((row or {}).get("purchase_id") or "")
+
+
+def _product_key(kind: str) -> str:
+    """
+    구매 종류 → 카탈로그/원장의 product_key.
+
+        'IDLE_BUNDLE'         → 'idle:BUNDLE'
+        'ACTION:BLINKING'     → 'idle:BLINKING'      ← 아이들 이벤트다
+        'ACTION:COME_CLOSER'  → 'action:COME_CLOSER'
+
+    ⚠️ **접두사를 kind 에서 그대로 베끼면 안 된다.** 두 이름공간이 겹치지 않는다:
+
+        kind 의 'ACTION:' 은 "한 건짜리 구매"라는 뜻이다 (번들의 반대말).
+        product_key 의 'action:' 은 "액션 상품"이라는 뜻이다 (아이들의 반대말).
+
+    Behavior Library 는 아이들 모션도 **한 건씩** 산다(resolve_kind 참고). 그래서
+    BLINKING 은 kind 로는 ACTION:BLINKING 이지만 상품으로는 idle:BLINKING 이다.
+    kind 접두사를 그대로 쓰면 카탈로그에 없는 'action:BLINKING' 을 찾게 되고,
+    가격 조회가 "판매하지 않는 상품"으로 실패한다.
+
+    그래서 분류는 **레지스트리**가 한다 — 문자열이 아니라.
+    """
     if kind == KIND_IDLE_BUNDLE:
-        return IDLE_BUNDLE_CREDITS
+        return product_catalog.KEY_IDLE_BUNDLE
     if kind.startswith(ACTION_KIND_PREFIX):
-        return ACTION_EVENT_CREDITS
-    raise PurchaseError("UNKNOWN_KIND", f"알 수 없는 구매 종류: {kind}")
+        action = kind[len(ACTION_KIND_PREFIX) :].strip().upper()
+        if action in IDLE_EVENTS:
+            return product_catalog.idle_key(action)
+        return product_catalog.action_key(action)
+    return kind
+
+
+async def credits_for_kind(kind: str) -> int:
+    """
+    이 구매의 크레딧 가격. **카탈로그가 정한다** (Phase 3).
+
+    예전에는 카테고리 환경변수 두 개(IDLE_BUNDLE_CREDITS / ACTION_EVENT_CREDITS)가
+    각각 **카테고리 전체**의 값을 정했다. 그래서 BLINKING 과 TAIL_WAGGING 에 다른
+    값을 매길 방법이 없었고, 값을 바꾸려면 재배포가 필요했다.
+
+    이제 상품마다 행이 있고, 가격을 바꾸는 것은 UPDATE 한 줄이다.
+
+    Raises:
+        PurchaseError: 알 수 없는 구매 종류, 또는 카탈로그에 없는 상품(판매 불가)
+    """
+    key = _product_key(kind)
+    if kind != KIND_IDLE_BUNDLE and not kind.startswith(ACTION_KIND_PREFIX):
+        raise PurchaseError("UNKNOWN_KIND", f"알 수 없는 구매 종류: {kind}")
+
+    try:
+        price = await product_catalog.credit_price(key)
+    except product_catalog.CatalogUnavailableError as e:
+        # 가격을 모르면 **과금하지 않는다.** 0 으로 떨어뜨리면 장애 중에 공짜로
+        # 유료 생성이 돌고, 예전 기본값으로 떨어뜨리면 카탈로그가 권위라는 말이
+        # 거짓이 된다.
+        raise PurchaseError("CATALOG_UNAVAILABLE", e.message, status=503) from e
+
+    if price is None:
+        # 행이 없다 = 판매 불가. **무료가 아니다.**
+        raise PurchaseError(
+            "PRODUCT_NOT_SOLD",
+            f"현재 판매하지 않는 상품입니다: {key}",
+            status=409,
+        )
+    return price
 
 
 def target_actions(kind: str) -> tuple[str, ...]:
@@ -300,6 +366,46 @@ async def _mark_purchase_refunded(purchase: dict[str, Any]) -> bool:
     return True
 
 
+async def _unmark_purchase_refunded(purchase: dict[str, Any]) -> bool:
+    """
+    환불 표시를 **되돌린다.** 표시는 찍었는데 지갑 환불이 확정되지 않은 경우 전용.
+
+    ── 왜 필요한가 ─────────────────────────────────────────────────────────
+    환불은 두 걸음이다: ① 원장에 '환불됨' 도장 → ② 지갑에 크레딧 반환.
+    도장을 먼저 찍는 것은 옳다(동시 웹훅에서 이중 환불을 막는 유일한 방법이다).
+    그런데 ② 가 실패했는데 도장이 남으면 상태가 이렇게 된다:
+
+        원장: "이 구매는 환불됐다"   지갑: 크레딧 없음
+
+    그러면 재시도조차 일어나지 않는다 — 다음 웹훅은 활성 구매를 못 찾고
+    조용히 지나간다. 고객은 크레딧을 잃고, 기록은 잃지 않았다고 말한다.
+    도장을 되돌려 놓으면 다음 종료 이벤트가 같은 판정을 다시 내려 환불을
+    재시도한다.
+
+    반환값은 되돌리기 성공 여부다. 실패하면 호출부가 **크게 로그를 남긴다** —
+    수동 조치가 필요한 유일한 상태이기 때문이다.
+    """
+    if _use_db() and _supabase():
+        try:
+            r = (
+                _supabase()
+                .table(_table())
+                .update({"refunded_at": None})
+                .eq("purchase_id", purchase["purchase_id"])
+                .execute()
+            )
+            return bool(getattr(r, "data", None))
+        except Exception:
+            logger.exception("환불 표시 되돌리기 실패 (purchase_id=%s)", purchase["purchase_id"])
+            return False
+    key = f"{purchase['user_id']}|{purchase['pet_id']}|{purchase['kind']}"
+    row = _MOCK_PURCHASES.get(key)
+    if not row or row.get("purchase_id") != purchase["purchase_id"]:
+        return False
+    row["refunded_at"] = None
+    return True
+
+
 # ── 상태 조회 (과금 없음, 생성 없음) ──────────────────────────────────────────
 
 
@@ -371,7 +477,7 @@ async def purchase(
     때만 예전 크레딧 경로(원장 선점 → 차감 → 실패 시 환불)가 돈다.
     """
     actions = target_actions(kind)
-    credits = credits_for_kind(kind)
+    credits = await credits_for_kind(kind)
 
     await assert_pet_owned(user_id, pet_id)
 
@@ -427,6 +533,8 @@ async def purchase(
     charged = 0
     remaining: Optional[int] = None
     purchase_id: Optional[str] = None
+    #: 이 구매를 뒷받침하는 예약. 세션에 매달려 확정/해제 판정에 쓰인다.
+    reservation_ledger_id: Optional[str] = None
 
     if not entitlement.enforced:
         existing = await find_active_purchase(user_id, pet_id, kind)
@@ -439,20 +547,41 @@ async def purchase(
             existing = await find_active_purchase(user_id, pet_id, kind)
         else:
             try:
-                wallet = await deduct_credits(user_id, credits, strict=True)
-            except InsufficientCreditsError:
+                # ── 차감이 아니라 **예약**이다 (Phase 7) ──────────────────
+                # 잔액은 지금 빠지지만, 원장 행은 RESERVED 로 남는다. 생성이
+                # 검증을 통과하면 확정되고, 실패하면 해제되어 되돌아온다.
+                #
+                # 사유는 **무엇을 샀는가**로 정한다. 번들은 아이들 묶음이고
+                # ACTION:<ID> 는 액션 한 건이다.
+                # 멱등 키는 구매 원장의 선점 행 id — 그 행이 이 지출의 근거이고,
+                # 부분 unique 인덱스가 이미 "한 구매에 하나"를 보장한다.
+                reservation = await credit_reservation.reserve(
+                    user_id=user_id,
+                    credits=credits,
+                    idempotency_key=credit_ledger.purchase_key(purchase_id),
+                    product_key=_product_key(kind),
+                    reason=(
+                        credit_ledger.REASON_IDLE_GENERATION
+                        if kind == KIND_IDLE_BUNDLE
+                        else credit_ledger.REASON_ACTION_GENERATION
+                    ),
+                    ref_type="premium_purchases",
+                    ref_id=purchase_id,
+                )
+            except credit_reservation.InsufficientCreditsError:
                 await _release_purchase(user_id, pet_id, kind, purchase_id)
                 raise PurchaseError(
                     "INSUFFICIENT_CREDITS", "크레딧이 부족합니다.", status=402
                 )
-            except WalletUnavailableError as e:
-                # 지갑을 신뢰성 있게 갱신하지 못했다 → 과금도 생성도 하지 않는다.
+            except credit_reservation.ReservationError as e:
+                # 예약을 DB 로 확정하지 못했다 → 과금도 생성도 하지 않는다.
                 await _release_purchase(user_id, pet_id, kind, purchase_id)
                 raise PurchaseError(
                     "WALLET_UNAVAILABLE", e.message, status=503
                 ) from e
             charged = credits
-            remaining = wallet.current_credits
+            reservation_ledger_id = reservation.ledger_id
+            remaining = reservation.balance_after
 
     # ④ 누락분 제출. 큐 상한은 generation_queue 가 쥐고, 남는 것은 서버가
     #    종료 이벤트마다 자동 전진시킨다(premium_generation.advance_generation_queue).
@@ -463,13 +592,41 @@ async def purchase(
             pet_image_url=pet_image_url, api_base=api_base,
             # ACTION:<ID> = 사용자가 고른 한 건. 번들은 예전 그대로 우선순위를 따른다.
             explicit_pick=kind.startswith(ACTION_KIND_PREFIX),
+            # kind 단위로 잡아 둔 예약을 세션에 매단다 — 종료 경로가 이 값으로
+            # 확정/해제를 판정한다.
+            reservation_ledger_id=reservation_ledger_id,
+            credits_reserved=charged,
         )
 
     # ⑤ 방금 과금했는데 작업이 하나도 안 생겼다면 되돌린다.
     #    (키프레임 준비 실패·프로바이더 거절 등 — 예전에는 이 경로에서 크레딧이 샜다:
     #     작업 행이 없는 세션은 영원히 processing 이라 종료 환불이 돌지 않는다.)
     if charged and not submitted and not state.active:
-        await refund_credits(user_id, charged, strict=False)
+        try:
+            await refund_credits(
+                user_id,
+                charged,
+                idempotency_key=credit_ledger.refund_key(purchase_id or ""),
+                product_key=_product_key(kind),
+                ref_type="premium_purchases",
+                ref_id=purchase_id,
+            )
+        except WalletUnavailableError as e:
+            # 환불을 DB 로 확정하지 못했다. **원장 행을 남긴다** — 지우면 고객은
+            # 이미 차감된 채로 다시 구매하게 되고(이중 과금), 그건 되돌리기가
+            # 훨씬 어렵다. 행이 남아 있으면 다음 요청이 find_active_purchase 로
+            # 이 구매를 찾아 charged=0 으로 재시도한다: 고객은 낸 값에 해당하는
+            # 자산을 결국 받는다.
+            logger.error(
+                "프리미엄 제출 실패 후 환불 미확정 — 원장 유지 (user=%s pet=%s kind=%s credits=%s): %s",
+                user_id, pet_id, kind, charged, e.message,
+            )
+            raise PurchaseError(
+                "REFUND_UNCONFIRMED",
+                "생성을 제출하지 못했습니다. 크레딧은 그대로 보관되며 "
+                "잠시 후 다시 시도하면 추가 과금 없이 이어집니다.",
+                status=503,
+            ) from e
         if purchase_id:
             await _release_purchase(user_id, pet_id, kind, purchase_id)
         raise PurchaseError(
@@ -509,6 +666,8 @@ async def _submit_missing(
     pet_image_url: str,
     api_base: str,
     explicit_pick: bool = False,
+    reservation_ledger_id: str | None = None,
+    credits_reserved: int = 0,
 ) -> list[str]:
     """
     큐가 허락하는 만큼 제출한다. 나머지는 서버 자동 전진에 맡긴다.
@@ -533,9 +692,14 @@ async def _submit_missing(
         ).allowed:
             continue  # 상한 — 자동 전진이 나중에 집어 간다
         try:
+            # 예약은 **kind 단위로 한 번** 잡혀 있다(purchase() 참고). 여기서는
+            # 그 예약을 세션에 실어 보낼 뿐이다 — 액션마다 다시 잡으면 번들
+            # (N개 아이들 = 1 크레딧)의 가격이 N배가 된다.
             r = await premium_generation.submit_premium_action(
                 user_id=user_id, pet_id=pet_id, action_id=action,
                 pet_image_url=pet_image_url, api_base=api_base,
+                reservation_ledger_id=reservation_ledger_id,
+                credits_reserved=credits_reserved,
             )
         except premium_generation.PremiumSubmitError as e:
             logger.warning("프리미엄 제출 실패 — %s (stage=%s): %s", action, e.stage, e)
@@ -582,11 +746,50 @@ async def reconcile_after_terminal(user_id: str, pet_id: str, action_id: str) ->
         if state.ready:
             continue  # 하나라도 나왔다 — 환불하지 않는다
         # 전부 종료됐는데 승격이 0건이다.
+        #
+        # 순서가 중요하다: 도장을 **먼저** 찍는다. 동시 웹훅 둘이 같은 판정에
+        # 도달해도 도장은 하나만 통과하므로 환불도 한 번뿐이다.
         if not await _mark_purchase_refunded(purchase_row):
             continue
         amount = int(purchase_row.get("credits_charged") or 0)
         if amount > 0:
-            await refund_credits(user_id, amount, strict=False)
+            try:
+                # 멱등 키가 구매 id 기반이라, 웹훅이 여러 번 배달돼도 환불은
+                # 한 번만 원장에 남는다 — refunded_at 도장과 이중으로 막는다.
+                await refund_credits(
+                    user_id,
+                    amount,
+                    idempotency_key=credit_ledger.refund_key(
+                        str(purchase_row.get("purchase_id") or "")
+                    ),
+                    product_key=_product_key(kind),
+                    ref_type="premium_purchases",
+                    ref_id=str(purchase_row.get("purchase_id") or ""),
+                )
+            except WalletUnavailableError as e:
+                # ⚠️ 여기가 고객이 크레딧을 잃던 자리다 (Phase 1 감사).
+                #
+                # 예전에는 비-strict 환불이라 인메모리에만 반영되고 성공을 반환했다:
+                # 도장은 찍혔고, 지갑은 프로세스 메모리에서만 늘었고, Render 가
+                # 인스턴스를 재활용하면 그 증분은 사라졌다. 원장은 "환불됨"이라
+                # 말하므로 다음 웹훅도 이 구매를 찾지 못하고, 아무도 발견하지 못했다.
+                #
+                # 이제 도장을 되돌려 다음 종료 이벤트가 같은 판정을 다시 내리게 한다.
+                restored = await _unmark_purchase_refunded(purchase_row)
+                logger.error(
+                    "프리미엄 환불 미확정 — kind=%s user=%s pet=%s credits=%s "
+                    "환불표시_되돌림=%s: %s",
+                    kind, user_id, pet_id, amount, restored, e.message,
+                )
+                if not restored:
+                    # 되돌리기까지 실패했다 = 자동 복구 경로가 없다. 사람이 봐야 한다.
+                    logger.critical(
+                        "수동 조치 필요 — 환불 표시는 남고 크레딧은 반환되지 않았다 "
+                        "(purchase_id=%s user=%s credits=%s)",
+                        purchase_row.get("purchase_id"), user_id, amount,
+                    )
+                # 이 kind 는 환불되지 않았다. 다른 kind 판정은 계속 진행한다.
+                continue
         logger.warning(
             "프리미엄 환불 — kind=%s user=%s pet=%s credits=%s (승격 0건)",
             kind, user_id, pet_id, amount,

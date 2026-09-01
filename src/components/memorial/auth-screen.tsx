@@ -27,7 +27,7 @@ interface AuthScreenProps {
    * 이어서 할 일이 있는" 진입은 자기 경로를 명시한다.
    */
   emailRedirectTo?: string;
-  onAuthComplete: (userName?: string) => void;
+  onAuthComplete: (userName?: string, mode?: "login" | "signup") => void;
 }
 
 const inputClass =
@@ -120,7 +120,7 @@ export function AuthScreen({
     }
 
     setIsLoading(false);
-    onAuthComplete(label || undefined);
+    onAuthComplete(label || undefined, mode);
   };
 
   return (

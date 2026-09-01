@@ -72,7 +72,7 @@ def h(monkeypatch, tmp_path):
         return {"action_id": kw["action_id"], "ok": True, "external_id": ext,
                 "attempt": kw["attempt"]}
 
-    async def fake_refund(uid, amount):
+    async def fake_refund(uid, amount, **_ledger):
         hh.refunds.append((uid, amount))
         class W:
             current_credits = 99
@@ -235,7 +235,9 @@ def test_accepted_candidate_is_promoted_to_canonical(h):
     canon = [p for p in h.uploads if "/candidates/" not in p]
     assert len(cand) == 1 and len(canon) == 1
     assert cand[0] == "u1/p1/candidates/SNOW_FOREST_TOUCH_1_ext-TOUCH.mp4"
-    assert canon[0] == "u1/p1/SNOW_FOREST_TOUCH.mp4", "정규 경로는 그대로여야 한다"
+    # Phase 6: 고정 경로가 아니라 **버전별** 경로다. 고정 경로는 두 번째 생성이
+    # 첫 번째 파일을 지웠고, 그것이 소유 모델과 충돌하는 결함이었다.
+    assert canon[0].startswith("u1/p1/library/SNOW_FOREST_TOUCH_"), "버전별 경로여야 한다"
     assert gms._MOCK_JOBS["ext-TOUCH"].promoted_at is not None
 
 
@@ -267,7 +269,9 @@ def test_repeated_attempts_keep_candidates_separate(h):
     assert "_1_" in cands[0] and "_2_" in cands[1], "시도 번호가 경로에 들어간다"
 
     canon = [p for p in h.uploads if "/candidates/" not in p]
-    assert set(canon) == {"u1/p1/SNOW_FOREST_TOUCH.mp4"}, "canonical 경로는 하나로 유지"
+    # 재시도가 **같은 작업 id** 로 승격되면 경로도 같다 — 재전송이 파일을 늘리지
+    # 않는다. 다른 작업(새 구매)이면 다른 경로가 되어 버전이 공존한다.
+    assert all(c.startswith("u1/p1/library/SNOW_FOREST_TOUCH_") for c in canon)
 
 
 def test_candidate_name_is_unique_per_attempt():

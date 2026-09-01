@@ -74,7 +74,6 @@ test('freeMemorialThemes[0] 과 DEFAULT_THEME_ID 가 이제 일치한다', () =>
 // ── 모든 폴백 경로가 같은 값을 쓴다 ─────────────────────────────────────────
 
 const FALLBACK_SITES: [string, RegExp][] = [
-  ['src/app/EternalBeamApp.tsx', /defaultThemeId: DEFAULT_THEME_ID/],
   ['src/components/memorial/preview-screen.tsx', /getMemorialTheme\(DEFAULT_THEME_ID\)!/],
   ['src/components/memorial/memorial-device-play-screen.tsx', /getMemorialTheme\(DEFAULT_THEME_ID\)!/],
   ['src/lib/credit-pipeline.ts', /theme\?\.themeKey \?\? DEFAULT_THEME_KEY/],

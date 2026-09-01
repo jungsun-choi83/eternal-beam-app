@@ -1,4 +1,21 @@
-"""Supabase: user_assets 업로드 및 purchased_slots 조회"""
+"""Supabase: user_assets 업로드 및 purchased_slots 조회
+
+⚠️ **purchased_slots 는 legacy / dev-only 다** (docs/PAYPAL_LEGACY.md).
+
+이 표는 PayPal(USD) 시절의 테마 소유권 저장소이고, PayPal 은 개발 중에만 쓰였다.
+근거: 이 파일의 record_theme_purchase 가 그 표에 쓰는 **유일한** 함수인데,
+호출부는 routers/paypal.py 하나뿐이고 그 라우터는 backend/main.py 에 **한 번도
+마운트된 적이 없다**(저장소 전체 이력 기준). 즉 배포된 API 는 이 표에 한 줄도
+쓸 수 없었다 — 실 고객 결제는 코드 배치상 불가능했다.
+
+따라서:
+  * 이 표의 데이터는 크레딧·소유권 마이그레이션에서 **제외한다.**
+  * user_theme_entitlements 로 이관하지 않는다. 이관 코드도 만들지 않는다.
+  * 새 기능이 이 표를 참조해서는 안 된다. 소유권의 권위는
+    services/theme_entitlement.py (user_theme_entitlements) 하나뿐이다.
+
+규칙은 backend/tests/test_paypal_data_excluded.py 가 강제한다.
+"""
 
 import os
 import re
@@ -101,22 +118,14 @@ async def ensure_user_asset_row(
         pass
 
 
-async def record_theme_purchase(
-    user_id: str, theme_key: str, payment_id: Optional[str] = None
-) -> None:
-    """PayPal 결제 확정(capture 성공) 후 purchased_slots에 upsert."""
-    supabase = _client()
-    if not supabase:
-        raise RuntimeError("Supabase가 설정되지 않았습니다.")
-    supabase.table("purchased_slots").upsert(
-        {
-            "user_id": user_id,
-            "theme_id": theme_key,
-            "payment_id": payment_id,
-            "payment_status": True,
-        },
-        on_conflict="user_id,theme_id",
-    ).execute()
+# ── record_theme_purchase 는 삭제됐다 (Phase 11) ─────────────────────────────
+# purchased_slots 에 쓰던 유일한 함수였고, 호출부는 PayPal capture 하나뿐이었다.
+# PayPal 이 은퇴하면서 이 함수도 함께 사라진다 — **표는 남는다.**
+#
+# 표를 지우지 않는 이유: 과거 구매 증거는 새 아키텍처가 생겼다는 이유로 버리는
+# 것이 아니다. 조회는 아래 get_purchased_themes 로 계속 가능하고, 쓰기는
+# 마이그레이션 20261009000000 이 DB 수준에서 막는다.
+# 근거·재검증 방법: docs/PAYPAL_LEGACY.md
 
 
 async def get_purchased_themes(user_id: str) -> list[str]:

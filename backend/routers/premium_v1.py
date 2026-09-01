@@ -30,6 +30,8 @@ from ..services import behavior_preferences
 from ..services import generated_motions_service as motions_svc
 from ..services import premium_entitlement
 from ..services import premium_purchase
+from ..services import generation_credits
+from ..services import product_catalog
 from ..services.credit_keyframe import is_remote_asset_url
 
 logger = logging.getLogger(__name__)
@@ -82,8 +84,16 @@ class AssetsResponse(BaseModel):
     #: 레지스트리 그대로 — 프론트가 개수를 하드코딩하지 않게.
     idle_events: list[str] = []
     action_events: list[str] = []
-    idle_bundle_credits: int = premium_purchase.IDLE_BUNDLE_CREDITS
-    action_event_credits: int = premium_purchase.ACTION_EVENT_CREDITS
+    #: 상품 키 → 크레딧 가격. **상품마다 다를 수 있다** (Phase 3).
+    #:
+    #: 예전에는 idle_bundle_credits / action_event_credits 두 스칼라였고, 그 값은
+    #: 환경변수에서 **import 시점에** 읽혀 응답 모델의 기본값으로 박혔다. 그래서
+    #: (a) 아이들 이벤트 넷이 반드시 같은 값이어야 했고,
+    #: (b) 가격을 바꾸려면 재배포해야 했으며,
+    #: (c) 프로세스가 뜬 뒤 값을 바꿔도 응답은 옛 값을 계속 실어 보냈다.
+    #:
+    #: 이제 요청마다 카탈로그에서 읽는다. 화면은 이 map 을 그대로 보여 주면 된다.
+    prices: dict[str, int] = {}
     #: 행동 id → ON/OFF. **등록된 프리미엄 행동 전체**가 들어온다(기본 켬).
     #: ⚠️ READY 와 무관한 별개 상태다 — 아직 만들지 않은 행동에도 값이 있다.
     #: ⚠️ 아직 재생에 연결되지 않았다 (Phase 5 는 저장까지).
@@ -155,6 +165,18 @@ async def get_premium_assets(
     except behavior_preferences.PreferenceError as e:
         raise HTTPException(status_code=e.status, detail={"code": e.code, "message": e.message}) from e
 
+    # 가격은 **요청 시점의 카탈로그**에서 읽는다. 카탈로그가 잠깐 죽어도 발견은
+    # 계속돼야 하므로(위 구독 조회와 같은 이유 — ready 목록은 재생에 쓰이고 재생은
+    # 가격과 무관하다) 빈 map 으로 떨어진다. 실제 과금은 POST /purchase 가 자기
+    # 자리에서 fail-closed 로 다시 판정한다.
+    prices: dict[str, int] = {}
+    try:
+        for p in await product_catalog.list_products():
+            if p.product_type in (product_catalog.TYPE_IDLE, product_catalog.TYPE_ACTION):
+                prices[p.product_key] = p.credit_price
+    except product_catalog.CatalogUnavailableError:
+        logger.warning("자산 조회 중 카탈로그 확인 실패 — 발견은 계속한다 (user=%s)", user.user_id)
+
     return AssetsResponse(
         pet_id=pid,
         ready=state.ready,
@@ -162,6 +184,7 @@ async def get_premium_assets(
         missing=sorted(state.missing),
         idle_events=list(IDLE_EVENTS),
         action_events=list(PET_ACTIONS),
+        prices=prices,
         preferences=prefs,
         entitled=ent.entitled,
         subscription_status=ent.status,
@@ -278,4 +301,95 @@ async def purchase_premium(
         submitted=result.submitted,
         already_owned=result.already_owned,
         pet_id=pid,
+    )
+
+
+# ── 공용 생성 구매 (Phase 8) ─────────────────────────────────────────────────
+
+
+class GeneratePurchaseRequest(BaseModel):
+    pet_id: str
+    #: IDLE_EVENTS 또는 PET_ACTIONS 의 canonical id (BLINKING / COME_CLOSER …)
+    action_id: str
+    #: **한 번의 사용자 조작**을 가리키는 키. 재시도·새로고침은 같은 값을,
+    #: 새로 만들기는 새 값을 보낸다. 이것이 "다시 만들면 다시 낸다"를 가능하게 한다.
+    idempotency_key: str
+    pet_image_url: str | None = None
+
+
+class GeneratePurchaseResponse(BaseModel):
+    action_id: str
+    product_key: str
+    #: **이번 호출이 실제로 잡은 크레딧.** 재시도면 0.
+    credits_charged: int
+    credits_remaining: int
+    submitted: bool
+    #: 이번 생성 **전** 기준으로 이미 갖고 있던 버전 수. 게이트가 아니라 표시용.
+    owned_versions: int
+
+
+@router.post("/generate", response_model=GeneratePurchaseResponse)
+async def post_generate_with_credits(
+    request: Request,
+    body: GeneratePurchaseRequest,
+    user: AuthedUser = Depends(require_user),
+):
+    """
+    **아이들·액션 공용** 크레딧 생성 (Phase 8).
+
+        Paw Wave → 4 예약 → 생성 → 검증 → 확정 → Paw Wave #1 영구 소유
+        또 Paw Wave → 또 4  → …            → Paw Wave #2 영구 소유
+
+    테마 구매(/v1/themes/purchase-with-credits)와 **같은 지갑·같은 원장·같은
+    카탈로그·같은 멱등 모델**을 쓴다. 다른 것은 가격과 사유뿐이고 둘 다 데이터다.
+
+    이미 갖고 있어도 막지 않는다 — 소유 개수는 표시용이지 게이트가 아니다.
+    """
+    pid = motions_svc.default_pet_id(user.user_id, body.pet_id)
+    try:
+        await premium_purchase.assert_pet_owned(user.user_id, pid)
+    except premium_purchase.PurchaseError as e:
+        raise _as_http(e) from e
+
+    image_url = (body.pet_image_url or "").strip() or None
+    if image_url and not is_remote_asset_url(image_url):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "PET_IMAGE_URL_NOT_REMOTE",
+                "message": "pet_image_url 은 http(s) URL 이어야 합니다.",
+            },
+        )
+    if not image_url:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "PET_IMAGE_REQUIRED", "message": "pet_image_url 이 필요합니다."},
+        )
+
+    try:
+        out = await generation_credits.purchase_generation(
+            user_id=user.user_id,
+            pet_id=pid,
+            action_id=body.action_id,
+            idempotency_key=body.idempotency_key,
+            pet_image_url=image_url,
+            api_base=_public_api_base(request),
+        )
+    except generation_credits.GenerationCreditError as e:
+        raise HTTPException(
+            status_code=e.status, detail={"code": e.code, "message": e.message}
+        ) from e
+
+    if out.credits_charged:
+        logger.warning(
+            "생성 구매 — user=%s pet=%s product=%s credits=%s 잔액=%s",
+            user.user_id, pid, out.product_key, out.credits_charged, out.credits_remaining,
+        )
+    return GeneratePurchaseResponse(
+        action_id=out.action_id,
+        product_key=out.product_key,
+        credits_charged=out.credits_charged,
+        credits_remaining=out.credits_remaining,
+        submitted=out.submitted,
+        owned_versions=out.owned_versions,
     )
