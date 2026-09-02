@@ -70,3 +70,9 @@ segno>=1.6.0
 # ⚠️ CID 폰트는 **임베드되지 않는다**. 최종 인쇄 전 PRINT_LETTER_FONT_PATH 로
 #    라이선스된 한글 TTF 를 지정해 임베드할 것 (아래 .env.example 참고).
 reportlab>=4.0.0
+
+# 펫 신원 VLM 시맨틱 분석 (Phase 2, 옵션). PET_VLM_IDENTITY_ENABLED=1 +
+# ANTHROPIC_API_KEY 가 있을 때만 쓰인다 — 없으면 lazy import 가 조용히 건너뛰고
+# semantic_traits 는 unknown 으로 기록된다. requirements-render.txt 에는 넣지
+# 않는다 (torch 와 같은 관례: 기능을 켜는 환경에서만 설치).
+anthropic>=1.0.0

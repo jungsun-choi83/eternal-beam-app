@@ -38,6 +38,8 @@ import { useProcessingClock } from "@/lib/use-processing-clock";
 import { isClientCutoutFirst } from "@/lib/device-host-flags";
 import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
 import { setPendingCutout } from "@/lib/pending-generation";
+import { persistOriginalReference } from "@/lib/original-reference";
+import { getEternalBeamUserId } from "@/lib/eternal-beam-user";
 import { traceImage, dumpImageTrace } from "@/lib/image-trace"; // [IMAGE-TRACE]
 
 export const ETERNAL_BEAM_PIPELINE_KEY = "eternal_beam_pipeline_v1";
@@ -95,6 +97,8 @@ type CutoutOutcome = {
   cutFile: File;
   contentId: string;
   subjectDetected?: boolean;
+  /** 서버 누끼의 cutout_quality 메타 — 원본 레퍼런스 인테이크에 동봉한다. */
+  quality?: unknown;
 };
 
 async function tryServerCutout(
@@ -125,6 +129,7 @@ async function tryServerCutout(
       cutFile: await cutoutResultToFile(cut),
       contentId: cut.content_id || `srv_${Date.now()}`,
       subjectDetected: cut.subject_detected !== false,
+      quality: cut.cutout_quality ?? null,
     };
   } catch (e) {
     // 사진 자체가 거절된 경우(피사체 미검출 등)는 폴백으로 우회하지 않는다 —
@@ -510,6 +515,16 @@ export function AIProcessingScreen({
 
         const contentId = cutContentId || `cut_${Date.now()}`;
         setPendingCutout(cutFile, contentId, display);
+
+        // 원본 레퍼런스 영구 보존 (Durable Pet Identity Intake). fire-and-forget —
+        // 실패해도 온보딩 플로우는 계속된다. normalize 이전의 진짜 원본
+        // (uploadedImage)을 올린다. 서버 누끼가 받은 파일은 축소본이다.
+        void persistOriginalReference({
+          userId: getEternalBeamUserId(),
+          contentId,
+          dataUrl: uploadedImage,
+          diagnostics: cutout.quality ?? undefined,
+        });
 
         const stored: StoredPipeline = {
           content_id: contentId,

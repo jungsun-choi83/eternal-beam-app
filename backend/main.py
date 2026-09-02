@@ -229,6 +229,36 @@ from .routers import pet_registry_v1  # noqa: E402
 
 app.include_router(pet_registry_v1.router, prefix="/api", tags=["pet-registry"])
 
+# 펫 레퍼런스 대장 (Durable Pet Identity Intake). 원본/파생 레퍼런스 조회 —
+# 쓰기는 인테이크 시점의 무료 경로(/api/assets/original, 누끼 훅)가 담당한다.
+from .routers import pet_references_v1  # noqa: E402
+
+app.include_router(pet_references_v1.router, prefix="/api", tags=["pet-references"])
+
+# 펫 신원 프로필 (Phase 2). 레퍼런스에서 파생된 버전드 시각/구조 신원 —
+# 생성 파이프라인은 건드리지 않는다. 빌드/조회 모두 인증 필수.
+from .routers import pet_identity_v1  # noqa: E402
+
+app.include_router(pet_identity_v1.router, prefix="/api", tags=["pet-identity"])
+
+# 정본 펫 빌더 (Phase 4). 신뢰 레퍼런스 → 생성된 마스터 펫 (버전드).
+# 프로덕션 영상 생성과 무관하게 병행 동작한다. 인증 필수, 내부/디버그 용도.
+from .routers import canonical_v1  # noqa: E402
+
+app.include_router(canonical_v1.router, prefix="/api", tags=["pet-canonical"])
+
+# 액션 키프레임 빌더 (Phase 5). 정본 펫 → 포즈별 스틸 (버전드).
+# 기존 액션 레지스트리를 재사용하며, 프로덕션 영상 생성과 무관하다.
+from .routers import keyframes_v1  # noqa: E402
+
+app.include_router(keyframes_v1.router, prefix="/api", tags=["pet-keyframes"])
+
+# 모션 비디오 빌더 (Phase 6). 승인 키프레임 → 테마 독립 펫 모션 영상 (버전드).
+# 프로덕션 Luma/Wan 경로와 무관하게 병행 동작한다. 라이브 호출은 PHASE6_LIVE_MODE 로 게이트.
+from .routers import motion_videos_v1  # noqa: E402
+
+app.include_router(motion_videos_v1.router, prefix="/api", tags=["pet-motions"])
+
 # Optional heavy pipeline endpoints (Luma/generate). Disable by default on lightweight deployments.
 _enable_generate = os.getenv("ENABLE_GENERATE_API", "0").strip().lower() in ("1", "true", "yes")
 if _enable_generate:
