@@ -16,6 +16,7 @@ from fastapi import FastAPI
 from backend.routers import motion_videos_v1
 from backend.services import action_keyframe_service as kf
 from backend.services import canonical_pet_service as canon
+from backend.services import durable_provider_jobs
 from backend.services import motion_video_qa as qa_mod
 from backend.services import motion_video_service as mv
 from backend.services import pet_identity_service as ids
@@ -42,6 +43,9 @@ def _mock_backend(monkeypatch):
     monkeypatch.setenv("CANONICAL_QA_MIN_RESOLUTION", "100")
     monkeypatch.setenv("PHASE6_LIVE_MODE", "all")  # 개별 테스트가 되돌려 검증한다
     monkeypatch.delenv("VIDEO_GENERATION_MOCK", raising=False)
+    # 레거시 하네스는 200×150 가짜 프레임을 그대로 공급한다 — 앵커는 전용
+    # 테스트(test_video_anchor_*)에서 켜서 검증한다.
+    monkeypatch.setenv("PHASE6_VIDEO_ANCHOR", "0")
     for m in (refs, pet_registry, ids, sets, canon, kf, mv):
         m.__reset_for_tests()
     yield
@@ -81,7 +85,7 @@ VLM_MV_OK = {
     "background_neutral": "yes",
     "ends_in_target_pose": "yes",
     "notes": "",
-    "source": "vlm-motion-qa-v1",
+    "source": vlm_identity.VLM_MOTION_QA_VERSION,
     "model": "test-stub",
 }
 
@@ -161,6 +165,34 @@ def _build_motion(h, motion_id, providers, sampler=sampler_identical, conformanc
     )
 
 
+def test_durable_motion_resumes_one_building_version(storage, monkeypatch):
+    h, _canonical = _prepare_pipeline(monkeypatch, storage)
+    monkeypatch.setenv("PHASE6_MAX_PRIMARY", "1")
+    monkeypatch.setenv("PHASE6_STOP_AFTER_PASSES", "1")
+
+    class YieldOnce(FakeVideoProvider):
+        durable_execution = True
+
+        def generate(self, request):
+            self.calls += 1
+            if self.calls == 1:
+                raise durable_provider_jobs.ProviderWorkPending("operation-1", "PENDING")
+            return MotionVideoResult(
+                video_bytes=GOOD(), provider=self.name, model=self.model_name(),
+                external_job_id="job-1",
+            )
+
+    provider = YieldOnce("seedance", [])
+    with pytest.raises(durable_provider_jobs.ProviderWorkPending):
+        _build_motion(h, "BREATHING", [provider])
+    assert len(_run(mv._version_rows(PET, "BREATHING"))) == 1
+
+    completed = _build_motion(h, "BREATHING", [provider])
+    assert completed.status == mv.STATUS_COMPLETE
+    assert len(_run(mv._version_rows(PET, "BREATHING"))) == 1
+    assert len(completed.candidates) == 1
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 라우팅 정책
 # ══════════════════════════════════════════════════════════════════════════
@@ -190,7 +222,7 @@ def test_micro_breathing_success(storage, monkeypatch):
     v = _build_motion(h, "BREATHING", [primary, fallback])
     assert v.status == mv.STATUS_COMPLETE and v.version == 1
     assert v.motion_class == "MICRO" and v.video_strategy == "IMAGE_TO_VIDEO"
-    assert v.motion_spec_version == "motion-spec-v2"
+    assert v.motion_spec_version == __import__("backend.services.motion_spec", fromlist=["x"]).MOTION_SPEC_VERSION
     assert fallback.calls == 0
     assert primary.calls == 1  # stop_after_passes 기본 1 — 비디오는 비싸다
 
@@ -343,8 +375,114 @@ def test_provider_error_vs_qa_failure_and_fallback(storage, monkeypatch):
     v = _build_motion(h, "BREATHING", [primary, fallback])
     assert v.status == mv.STATUS_COMPLETE
     errors = [c for c in v.candidates if c.provider == "seedance"]
-    assert len(errors) == 3 and all(c.decision == "ERROR" and c.error for c in errors)
+    # 클래스 인지 상한: BREATHING(MICRO) PRIMARY 기본 2 — 실패가 이어져도 그 이상
+    # 과금하지 않고 폴백으로 넘어간다.
+    assert len(errors) == 2 and all(c.decision == "ERROR" and c.error for c in errors)
     assert next(c for c in v.candidates if c.selected).provider == "kling"
+
+
+def test_contract_violation_consumes_no_retries_and_no_fallback(storage, monkeypatch):
+    """어댑터/스키마 계약 실패 (PROVIDER_SCHEMA/CONTRACT) — QA 실패가 아니다.
+
+    같은 잘못된 요청을 반복하지 않고, 폴백 프로바이더 과금도 태우지 않는다.
+    """
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+    err = VideoProviderError("PROVIDER_SCHEMA", "fal 결과가 문서화된 스키마와 다릅니다")
+    primary = FakeVideoProvider("seedance", [err, GOOD(), GOOD()])
+    fallback = FakeVideoProvider("kling", [GOOD()])
+
+    v = _build_motion(h, "BREATHING", [primary, fallback])
+    assert primary.calls == 1        # 반복 없음
+    assert fallback.calls == 0       # 폴백 금지
+    assert v.status == mv.STATUS_FAILED
+    assert "contract" in (v.selection_reason or "")
+    errors = [c for c in v.candidates if c.decision == "ERROR"]
+    assert len(errors) == 1
+    assert errors[0].generation_metadata.get("contract_violation") is True
+
+
+def test_video_anchor_applied_for_non_916_keyframe(storage, monkeypatch):
+    """1:1 키프레임 → 결정론적 9:16 DERIVED 앵커가 프로바이더 시작 이미지가 된다."""
+    import io as _io
+
+    from PIL import Image
+
+    monkeypatch.setenv("PHASE6_VIDEO_ANCHOR", "1")
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+
+    class EchoProvider(FakeVideoProvider):
+        """완벽한 프로바이더 — 시작 이미지(앵커) 그대로의 정지 클립을 돌려준다."""
+
+        def generate(self, request):
+            self.calls += 1
+            self.requests.append(request)
+            from backend.services.video_motion_providers import MotionVideoResult
+
+            return MotionVideoResult(
+                video_bytes=request.start_image_bytes, provider=self.name,
+                model=self._model, external_job_id="echo-1",
+            )
+
+    primary = EchoProvider("seedance", [])
+    v = _build_motion(h, "BREATHING", [primary])
+    assert v.status == mv.STATUS_COMPLETE
+
+    req = primary.requests[0]
+    with Image.open(_io.BytesIO(req.start_image_bytes)) as im:
+        w, hh = im.size
+    assert w * 16 == hh * 9  # 시작 이미지가 정확한 9:16 앵커다
+    assert req.start_image_url and req.start_image_url.endswith("_anchor9x16.png")
+
+    # 앵커는 DERIVED 로 대장에 기록된다 (원본 키프레임 근거 포함).
+    anchors = [
+        r for r in _run(refs.list_references(user_id=USER, pet_id=PET))
+        if r.derived_kind == "video_anchor"
+    ]
+    assert len(anchors) == 1
+
+    sel = next(c for c in v.candidates if c.selected)
+    anchor_meta = sel.generation_metadata["video_anchor"]["start"]
+    assert anchor_meta["canvas_size"][0] * 16 == anchor_meta["canvas_size"][1] * 9
+    assert any(r["kind"] == "video_anchor_start" for r in sel.input_references)
+    assert any(p.endswith("_anchor9x16.png") for p in storage)
+
+
+def test_progressive_generation_qa_gates_each_next_attempt(storage, monkeypatch):
+    """점진적 생성: 후보 1 FAIL → 그때서야 후보 2 → PASS → 즉시 중단.
+
+    "3개를 만들어 놓고 평가"가 아니라 시도마다 QA 판정이 다음 제출을 게이트한다 —
+    제출·QA 의 인터리브 순서를 실제로 기록해 검증한다.
+    """
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+    order: list[str] = []
+
+    calls = {"n": 0}
+
+    def first_fails_sampler(video_bytes):
+        calls["n"] += 1
+        order.append(f"qa{calls['n']}")
+        rgb = mv._rgb_from_bytes(video_bytes)
+        if calls["n"] == 1:  # 후보 1 만 정체성 붕괴 → FAIL
+            return [rgb, rgb, white_frame(), white_frame(), white_frame()]
+        return [rgb] * 5
+
+    primary = FakeVideoProvider("seedance", [GOOD(), GOOD(), GOOD()])
+    original_generate = primary.generate
+
+    def tracking_generate(request):
+        order.append(f"gen{primary.calls + 1}")
+        return original_generate(request)
+
+    primary.generate = tracking_generate
+
+    v = _build_motion(h, "BREATHING", [primary], sampler=first_fails_sampler)
+    assert v.status == mv.STATUS_COMPLETE
+    # 제출과 QA 가 엄격히 교대한다 — 후보 2 는 후보 1 의 판정 뒤에만 나간다.
+    assert order == ["gen1", "qa1", "gen2", "qa2"]
+    assert primary.calls == 2  # MICRO 상한(2) 안에서 두 번째가 PASS → 중단
+    decisions = [c.decision for c in sorted(v.candidates, key=lambda c: c.attempt)]
+    assert decisions == ["FAIL", "PASS"]
+    assert next(c for c in v.candidates if c.selected).attempt == 2
 
 
 def test_qa_failure_triggers_fallback(storage, monkeypatch):
@@ -354,9 +492,11 @@ def test_qa_failure_triggers_fallback(storage, monkeypatch):
 
     def drifting_sampler(video_bytes):
         # 첫 프로바이더의 클립은 정체성이 무너진다(흰 프레임으로 드리프트).
+        # 클래스 인지 상한(MICRO 기본 2)과 무관하게 "seedance 는 전부 FAIL,
+        # kling 은 PASS" 를 유지하려고 호출 횟수가 아니라 상한을 기준으로 센다.
         calls["n"] += 1
         rgb = mv._rgb_from_bytes(video_bytes)
-        if calls["n"] <= 3:
+        if calls["n"] <= mv.candidate_policy("MICRO")["max_primary"]:
             return [rgb, rgb, white_frame(), white_frame(), white_frame()]
         return [rgb] * 5
 
@@ -435,6 +575,26 @@ def test_qa_loop_return_review_when_end_pose_differs():
     assert r["decision"] in ("REVIEW", "FAIL")
 
 
+def test_qa_loop_return_uses_structure_not_hsv_bin_cliff():
+    # 60% of pixels move only two gray levels across the coarse HSV V-bin
+    # boundary. v1's histogram says the frames are only 0.4 similar even
+    # though their structure/pixels are perceptually the same.
+    first = np.full((150, 200, 3), 90, dtype=np.uint8)
+    first[:, :120] = 127
+    last = first.copy()
+    last[:, :120] = 129
+    r = qa_mod.evaluate_motion_video(
+        frames=[first, first, first, first, last],
+        spec_contract={"motion_class": "MICRO", "video_compat": {"returns_to_start_pose": True}},
+        start_keyframe_rgb=first,
+        target_keyframe_rgb=None,
+        vlm_qa=VLM_MV_OK,
+    )
+    assert r["loop_metrics"]["legacy_hist_intersection"] < 0.85
+    assert r["loop_metrics"]["ssim_first_vs_decoded_last"] > 0.99
+    assert r["checks"]["loop_return"] == "PASS"
+
+
 def test_qa_transition_endpoint_checks():
     g = _good_frame()
     contract = {"motion_class": "TRANSITION", "video_compat": {}}
@@ -484,7 +644,87 @@ def test_real_frame_sampling_from_mp4(tmp_path):
     )
     frames = qa_mod.sample_frames(out.read_bytes())
     assert frames is not None and len(frames) == len(qa_mod.SAMPLE_FRACTIONS)
-    assert sum(1 for f in frames if f is not None) >= 3
+    assert len(frames) == 9
+    assert sum(1 for f in frames if f is not None) >= 7
+
+
+def test_versioned_qa_rerun_reuses_asset_and_is_idempotent(storage, monkeypatch):
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+    monkeypatch.setenv("PHASE6_MAX_PRIMARY", "1")
+    old_unknown = {
+        **VLM_MV_OK,
+        "requested_motion_occurs": "unknown",
+        "source": "vlm-motion-qa-v1",
+        "notes": "still frames insufficient",
+    }
+    install_mv_vlm(monkeypatch, old_unknown)
+    provider = FakeVideoProvider("seedance", [GOOD()])
+    version = _build_motion(h, "BREATHING", [provider])
+    assert version.status == mv.STATUS_REVIEW
+    candidate = version.candidates[0]
+
+    calls = {"vlm": 0}
+
+    def corrected_vlm(*args, **kwargs):
+        calls["vlm"] += 1
+        return VLM_MV_OK
+
+    rerun = _run(
+        mv.reevaluate_motion_candidate(
+            user_id=USER,
+            pet_id=PET,
+            motion_id="BREATHING",
+            motion_version_id=version.id,
+            candidate_id=candidate.id,
+            video_bytes=GOOD(),
+            fetch_bytes=h.kf_fetch,
+            frame_sampler=sampler_identical,
+            vlm_qa_fn=corrected_vlm,
+            conformance_fn=conformance_ok,
+        )
+    )
+    assert rerun.status == mv.STATUS_COMPLETE
+    assert rerun.selected_candidate_id == candidate.id
+    selected = next(c for c in rerun.candidates if c.selected)
+    assert selected.decision == "PASS"
+    assert selected.qa_result["qa_version"] == qa_mod.MOTION_VIDEO_QA_VERSION
+    assert selected.generation_metadata["qa_history"][0]["decision"] == "REVIEW"
+    assert provider.calls == 1  # QA retry made no generation-provider call.
+
+    duplicate = _run(
+        mv.reevaluate_motion_candidate(
+            user_id=USER,
+            pet_id=PET,
+            motion_id="BREATHING",
+            motion_version_id=version.id,
+            candidate_id=candidate.id,
+            video_bytes=GOOD(),
+            fetch_bytes=h.kf_fetch,
+            frame_sampler=sampler_identical,
+            vlm_qa_fn=corrected_vlm,
+            conformance_fn=conformance_ok,
+        )
+    )
+    assert duplicate.deduplicated is True
+    assert calls["vlm"] == 1
+    assert provider.calls == 1
+
+
+def test_qa_rerun_rejects_wrong_user(storage, monkeypatch):
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+    version = _build_motion(h, "BREATHING", [FakeVideoProvider("seedance", [GOOD()])])
+    with pytest.raises(mv.MotionVideoError) as exc:
+        _run(
+            mv.reevaluate_motion_candidate(
+                user_id="mallory@test",
+                pet_id=PET,
+                motion_id="BREATHING",
+                motion_version_id=version.id,
+                candidate_id=version.candidates[0].id,
+                video_bytes=GOOD(),
+            )
+        )
+    assert exc.value.code == "PET_NOT_OWNED"
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -521,7 +761,7 @@ def test_provenance_chain(storage, monkeypatch):
     motion_assets = [r for r in ledger if r.role == refs.ROLE_GENERATED and r.derived_kind == "motion_raw"]
     assert len(motion_assets) == 1
     prov = motion_assets[0].diagnostics
-    assert prov["motion_spec_version"] == "motion-spec-v2"
+    assert prov["motion_spec_version"] == __import__("backend.services.motion_spec", fromlist=["x"]).MOTION_SPEC_VERSION
     assert prov["start_keyframe_id"] == kf_row.id
     assert prov["canonical_version_id"] == canonical.id
 

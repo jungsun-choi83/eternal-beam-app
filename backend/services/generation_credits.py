@@ -152,6 +152,7 @@ async def commit_for_asset(
     bucket: Optional[str] = None,
     scene_id: Optional[str] = None,
     source_job_id: Optional[str] = None,
+    lineage: Optional[dict] = None,
 ) -> None:
     """
     검증 PASS → **예약 확정 + 영구 소유 자산 기록.**
@@ -181,6 +182,8 @@ async def commit_for_asset(
                 else owned_assets.SOURCE_FREE
             ),
             source_job_id=source_job_id,
+            # Phase 7H — 새 생성 시스템 계보. 레거시 호출부는 넘기지 않는다(빈 dict).
+            lineage=dict(lineage or {}),
         )
     )
 

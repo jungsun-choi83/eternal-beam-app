@@ -55,6 +55,24 @@ def _clean_credit_ledger():
 
 
 @pytest.fixture(autouse=True)
+def _no_live_supabase_in_tests(monkeypatch: pytest.MonkeyPatch):
+    """
+    테스트 프로세스에서 **실 Supabase 자격 증명을 매 테스트마다 제거**한다.
+
+    ── 왜 필요한가 (실제 사고) ────────────────────────────────────────────────
+    어떤 테스트가 backend.main 을 임포트하면 dotenv 캐스케이드가 .env.local 의
+    실 SUPABASE_URL/SERVICE_ROLE_KEY 를 os.environ 에 올리고, 그 뒤의 모든
+    테스트가 목업 대신 **라이브 프로덕션 DB** 를 때린다. 실제로 이렇게
+    test_queue_auto_advance 가 프로덕션에 u_adv 행 20개를 썼다(즉시 정리됨).
+    이 픽스처가 있으면 어떤 임포트 순서로도 그 사고가 재발할 수 없다 —
+    라이브 DB 가 필요한 테스트는 존재하지 않으며, 필요하면 명시적으로
+    monkeypatch.setenv 로 가짜 값을 넣는다 (test_generation_cost_safety 처럼).
+    """
+    for var in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "VITE_SUPABASE_URL", "SUPABASE_ANON_KEY"):
+        monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _clean_cutout_env(monkeypatch: pytest.MonkeyPatch):
     """임계값 관련 환경변수가 로컬 .env 에서 새어 들어오지 않도록 초기화."""
     for key in (

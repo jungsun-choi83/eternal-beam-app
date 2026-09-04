@@ -296,6 +296,32 @@ def pair_cutouts(refs: list[PetReference]) -> dict[str, Optional[PetReference]]:
     return out
 
 
+def intake_readiness(
+    refs: list[PetReference],
+) -> tuple[bool, Optional[PetReference], Optional[PetReference]]:
+    """Return the accepted original/cutout pair that makes Phase 1 ready."""
+    originals = [
+        r
+        for r in refs
+        if r.role == ROLE_ORIGINAL
+        and r.acceptance_state == STATE_ACCEPTED
+        and r.recorded
+        and r.id
+    ]
+    paired = pair_cutouts(refs)
+    for original in originals:
+        cutout = paired.get(str(original.id))
+        if (
+            cutout
+            and cutout.role == ROLE_DERIVED
+            and cutout.acceptance_state == STATE_ACCEPTED
+            and cutout.recorded
+            and cutout.parent_reference_id == original.id
+        ):
+            return True, original, cutout
+    return False, originals[0] if originals else None, None
+
+
 # ── 기록 ────────────────────────────────────────────────────────────────────
 
 
@@ -464,8 +490,29 @@ async def record_derived(
     pid = pet_id_for_content(cid)
     rows = await _assert_pet_accessible(uid, pid)
 
+    if parent_reference_id:
+        parent = next((r for r in rows if str(r.get("id") or "") == parent_reference_id), None)
+        if (
+            not parent
+            or parent.get("role") != ROLE_ORIGINAL
+            or parent.get("user_id") != uid
+            or parent.get("content_id") != cid
+        ):
+            raise PetReferenceError(
+                "PET_REFERENCE_PARENT_INVALID",
+                "파생 레퍼런스의 원본 연결이 유효하지 않습니다.",
+                status=409,
+            )
+
     for r in rows:
         if r.get("role") == ROLE_DERIVED and r.get("object_path") == path:
+            existing_parent = str(r.get("parent_reference_id") or "")
+            if parent_reference_id and existing_parent != parent_reference_id:
+                raise PetReferenceError(
+                    "PET_REFERENCE_PARENT_CONFLICT",
+                    "이미 다른 원본에 연결된 파생 레퍼런스입니다.",
+                    status=409,
+                )
             return _to_ref(r, deduplicated=True)
 
     row: dict[str, Any] = {

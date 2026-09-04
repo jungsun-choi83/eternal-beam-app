@@ -30,10 +30,25 @@ export function actionKind(actionId: string): string {
   return `ACTION:${(actionId || "").trim().toUpperCase()}`;
 }
 
+export interface ReadyAsset {
+  /** 호출 시점에 새로 서명된 URL — 저장하지 말고 그대로 재생에 쓴다. */
+  url: string;
+  /**
+   * 명시 전달 포맷 (Phase 7I.1). "packed_alpha" = 새 시스템 vstack 파생물
+   * (packed 렌더러 필수). null = 레거시 — 기존 규칙(blackkey/휴리스틱)이 맞다.
+   */
+  deliveryFormat: string | null;
+}
+
 export interface PremiumAssets {
   petId: string;
   /** 액션 id → 재생 가능한 URL */
   ready: Record<string, string>;
+  /**
+   * 액션 id → {새 서명 URL, 전달 포맷} (Phase 7I.1). ready 와 같은 키 집합.
+   * 구서버(필드 없음)와 붙으면 ready 에서 파생되고 포맷은 null(레거시)이다.
+   */
+  readyAssets: Record<string, ReadyAsset>;
   generating: string[];
   missing: string[];
   /** 서버 레지스트리 그대로 — 프론트가 개수를 하드코딩하지 않게. */
@@ -126,6 +141,39 @@ async function readError(res: Response): Promise<PremiumApiError> {
  * **읽기 전용이다.** 자산이 없다고 해서 이 호출이 생성을 시작하지 않는다 —
  * 그러려면 purchasePremium() 으로 명시적 의사가 있어야 한다.
  */
+/**
+ * ready_assets 파싱 — 구서버(필드 없음)에서는 ready 로 파생한다.
+ *
+ * **순수 함수**다: 어느 쪽으로 오든 호출부는 readyAssets 하나만 보면 되고,
+ * 레거시 파생 항목의 포맷은 null(기존 규칙)이다.
+ */
+export function parseReadyAssets(
+  raw: unknown,
+  ready: Record<string, string>
+): Record<string, ReadyAsset> {
+  const out: Record<string, ReadyAsset> = {};
+  if (raw && typeof raw === "object") {
+    for (const [id, entry] of Object.entries(raw as Record<string, unknown>)) {
+      const e = entry as { url?: unknown; delivery_format?: unknown };
+      const url = typeof e?.url === "string" ? e.url.trim() : "";
+      if (!url) continue;
+      out[id] = {
+        url,
+        deliveryFormat:
+          typeof e.delivery_format === "string" && e.delivery_format
+            ? e.delivery_format
+            : null,
+      };
+    }
+  }
+  for (const [id, url] of Object.entries(ready)) {
+    if (!out[id] && typeof url === "string" && url) {
+      out[id] = { url, deliveryFormat: null };
+    }
+  }
+  return out;
+}
+
 export async function discoverPremiumAssets(params: {
   petId: string;
   accessToken: string;
@@ -140,9 +188,11 @@ export async function discoverPremiumAssets(params: {
   });
   if (!res.ok) throw await readError(res);
   const b = (await res.json()) as Record<string, unknown>;
+  const ready = (b.ready as Record<string, string>) ?? {};
   return {
     petId: String(b.pet_id ?? params.petId),
-    ready: (b.ready as Record<string, string>) ?? {},
+    ready,
+    readyAssets: parseReadyAssets(b.ready_assets, ready),
     generating: (b.generating as string[]) ?? [],
     missing: (b.missing as string[]) ?? [],
     idleEvents: (b.idle_events as string[]) ?? [],

@@ -33,6 +33,17 @@ interface PetIdleDisplayProps {
    * 기본 false = 레거시 — 지금까지의 동작(블랙키 제거)이 그대로 유지된다.
    */
   backgroundBaked?: boolean;
+  /**
+   * BREATH 자산의 명시적 전달 포맷 (Phase 7F).
+   * "packed_alpha" 면 재생기가 packed 렌더러를 휴리스틱 없이 선택한다.
+   * 없으면 레거시 자동 감지 그대로다.
+   */
+  deliveryFormat?: string | null;
+  /**
+   * 이벤트 소스별 명시 전달 포맷 (Phase 7I.1). 이벤트 id → 포맷.
+   * 이벤트 모드는 BREATH 모드에서 파생되지 않는다 — 세대 혼합을 허용한다.
+   */
+  eventDeliveryFormats?: Partial<Record<string, string | null>>;
   /** 영상 경로에서만 호출됨 — 클립 하단 빈 배경 비율(0~1) 1회 통보. */
   onFeetMarginChange?: (bottomMargin: number) => void;
 }
@@ -51,6 +62,8 @@ export function PetIdleDisplay({
   allowDemoFallback,
   onFeetMarginChange,
   backgroundBaked = false,
+  deliveryFormat = null,
+  eventDeliveryFormats,
 }: PetIdleDisplayProps) {
   const display = resolveIdleDisplaySource(idleVideoUrl, cutoutUrl, {
     allowDemoFallback,
@@ -75,6 +88,11 @@ export function PetIdleDisplay({
         // 배경이 구워진 자산은 **키잉하지 않는다.** 하면 장면의 어두운 픽셀이
         // 뚫리고 그 구멍으로 뒤 배경이 비친다(배경 이중 적용).
         transparentComposite={shouldTransparentComposite({ backgroundBaked })}
+        // 데모 폴백 소스에는 명시 포맷을 넘기지 않는다 — 포맷은 진짜 BREATH
+        // 자산에 대한 선언이고, 데모 mp4 는 자기 파일명/크로마로 판정돼야 한다.
+        deliveryFormat={display.src === idleVideoUrl ? deliveryFormat : null}
+        // 이벤트 모드는 소스별로 판정된다 (Phase 7I.1) — BREATH 와 세대가 달라도 된다.
+        eventDeliveryFormats={eventDeliveryFormats}
         // 세로 카드 안에서 구운 가로 영상을 확대/절단하지 않는다. 동일 영상을
         // 흐린 배경으로만 한 장 더 써 남는 영역을 채운다.
         blurredBackdrop={backgroundBaked}

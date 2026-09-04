@@ -429,6 +429,15 @@ async def asset_state(user_id: str, pet_id: str, actions: tuple[str, ...]) -> As
     active_ids = {
         a.upper() for a in await motions_svc.list_active_action_ids_for_pet(user_id, pet_id)
     }
+    # Phase 7H — 새 이행은 레거시 작업 표가 아니라 생성 실행 표에 산다. 두 표를
+    # OR 로 본다: 구매 중복 방지와 Behavior Library 의 'generating' 이 같은 값을
+    # 봐야 이중 과금/이중 제출이 없다.
+    from . import premium_run_fulfillment
+
+    try:
+        active_ids |= await premium_run_fulfillment.active_premium_motion_ids(user_id, pet_id)
+    except premium_run_fulfillment.PremiumRunSubmitError as e:
+        raise PurchaseError("RUNS_UNAVAILABLE", e.message, status=e.status) from e
     state = AssetState()
     state.ready = ready
     for a in actions:
@@ -586,7 +595,13 @@ async def purchase(
     # ④ 누락분 제출. 큐 상한은 generation_queue 가 쥐고, 남는 것은 서버가
     #    종료 이벤트마다 자동 전진시킨다(premium_generation.advance_generation_queue).
     submitted: list[str] = []
-    if state.missing and pet_image_url:
+    # Phase 7H — 새 이행은 원본 이미지를 요청에서 받지 않는다: 생성 입력은
+    # Phase 7B intake(원본+누끼)가 정본이다. 레거시 모드에서만 pet_image_url 이
+    # 제출 조건으로 남는다.
+    from . import premium_run_fulfillment as _fulfillment
+
+    can_submit = bool(pet_image_url) or _fulfillment.phase7_premium_enabled()
+    if state.missing and can_submit:
         submitted = await _submit_missing(
             user_id=user_id, pet_id=pet_id, missing=state.missing,
             pet_image_url=pet_image_url, api_base=api_base,
@@ -691,6 +706,26 @@ async def _submit_missing(
             respect_priority=not explicit_pick,
         ).allowed:
             continue  # 상한 — 자동 전진이 나중에 집어 간다
+
+        # ── Phase 7H — 새 생성 시스템 이행 (기본) ─────────────────────────
+        # 상거래(검증·예약)는 위에서 끝났다. 여기서는 durable generation run
+        # 하나를 만들/재사용할 뿐이고, 확정/환불은 실행의 종료 경로가 판정한다.
+        # 레거시 경로는 PREMIUM_FULFILLMENT=legacy 로만 돌아간다.
+        from . import premium_run_fulfillment
+
+        if premium_run_fulfillment.phase7_premium_enabled():
+            try:
+                await premium_run_fulfillment.submit_premium_run(
+                    user_id=user_id, pet_id=pet_id, action_id=action,
+                    reservation_ledger_id=reservation_ledger_id,
+                    credits_reserved=credits_reserved,
+                )
+            except premium_run_fulfillment.PremiumRunSubmitError as e:
+                logger.warning("프리미엄 실행 제출 실패 — %s (%s): %s", action, e.code, e.message)
+                continue
+            submitted.append(action)
+            continue
+
         try:
             # 예약은 **kind 단위로 한 번** 잡혀 있다(purchase() 참고). 여기서는
             # 그 예약을 세션에 실어 보낼 뿐이다 — 액션마다 다시 잡으면 번들

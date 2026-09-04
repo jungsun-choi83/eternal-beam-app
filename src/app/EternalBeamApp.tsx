@@ -67,6 +67,12 @@ import { OrderConfirmationScreen } from '@/components/memorial/order-confirmatio
 import { getEternalBeamPetId } from '@/lib/pet-identity'
 import { traceImage } from '@/lib/image-trace' // [IMAGE-TRACE]
 import type { PickedMedia } from '@/lib/pick-media-file'
+import {
+  beginPhase1Intake,
+  clearPhase1Intake,
+  readPhase1Intake,
+  type Phase1IntakeIdentity,
+} from '@/lib/phase1-intake-session'
 
 type Screen =
   | 'signup'
@@ -157,6 +163,9 @@ export function EternalBeamApp() {
   const [deviceDemo] = useState(() => isDeviceKickstarterDemo())
   const [uploadedImage, setUploadedImage] = useState<string | null>(() =>
     themePurchaseReturn ? resolveOriginalPhoto() : null
+  )
+  const [intakeIdentity, setIntakeIdentity] = useState<Phase1IntakeIdentity | null>(() =>
+    readPhase1Intake()
   )
   const [cutoutImage, setCutoutImage] = useState<string | null>(() =>
     themePurchaseReturn ? getPendingCutoutMeta()?.displayUrl ?? null : null
@@ -306,6 +315,12 @@ export function EternalBeamApp() {
   const commitUpload = (url: string, kind: MediaKind) => {
     setUploadedImage(url)
     commitMainMedia(kind, url)
+    if (kind === 'image') {
+      setIntakeIdentity(beginPhase1Intake())
+    } else {
+      clearPhase1Intake()
+      setIntakeIdentity(null)
+    }
   }
 
   /**
@@ -408,8 +423,10 @@ export function EternalBeamApp() {
       /* ignore */
     }
     clearStoredCustomBgVideoUrl()
+    clearPhase1Intake()
     setScreen('home')
     setUploadedImage(null)
+    setIntakeIdentity(null)
     setCutoutImage(null)
     setSelectedTheme(null)
     setPreviewSettings({ scale: 1, posX: 0, posY: 0 })
@@ -424,7 +441,9 @@ export function EternalBeamApp() {
       /* ignore */
     }
     clearStoredCustomBgVideoUrl()
+    clearPhase1Intake()
     setUploadedImage(null)
+    setIntakeIdentity(null)
     setCutoutImage(null)
     setSelectedTheme(null)
     setPreviewSettings({ scale: 1, posX: 0, posY: 0 })
@@ -712,6 +731,7 @@ export function EternalBeamApp() {
             >
               <AIProcessingScreen
                 uploadedImage={uploadedImage}
+                intakeIdentity={intakeIdentity}
                 language={language}
                 onComplete={handleAIProcessingComplete}
               />

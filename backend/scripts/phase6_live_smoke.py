@@ -36,12 +36,28 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-# backend/main.py 의 .env 캐스케이드(.env → env.local → .env.local → backend/*)를
-# 그대로 로드한다 — 셸에 없는 키가 .env 파일에만 있어도 preflight 가 본다.
-import backend.main  # noqa: E402,F401 — import 부수효과로 dotenv 로드
+def _load_env_cascade() -> None:
+    """
+    backend/main.py 의 .env 캐스케이드를 로드한다 — 셸에 없는 키가 .env 파일에만
+    있어도 preflight 가 본다.
+
+    ⚠️ 반드시 **런타임에만** 호출한다 (main() 안). 모듈 임포트 시 로드하면
+    이 스크립트를 임포트하는 테스트 프로세스의 os.environ 에 실 Supabase 자격
+    증명이 새어 들어가, 이후의 모든 테스트가 목업 대신 라이브 DB 를 때린다 —
+    실제로 그 사고가 났다.
+    """
+    import backend.main  # noqa: F401 — import 부수효과로 dotenv 로드
 
 SMOKE_MOTIONS = ("BREATHING", "LIE_DOWN", "PET_HEAD")
 DEGRADED_LOCOMOTION = ("COME_CLOSER",)
+
+
+def _profile_row() -> str:
+    from backend.services import motion_video_service as mv
+
+    name, profile = mv.generation_profile()
+    spec, _ = mv.build_output_spec(duration_range=[3.0, 6.0], motion_class="MICRO")
+    return f"{name} → {spec['resolution']}, MICRO {spec['duration_sec']}s (예시)"
 
 
 def preflight() -> bool:
@@ -54,17 +70,20 @@ def preflight() -> bool:
     seedance = vp.get_provider("seedance")
     kling = vp.get_provider("kling")
     rows = [
-        ("SEEDANCE_API_KEY / ARK_API_KEY", flag("SEEDANCE_API_KEY") if os.getenv("SEEDANCE_API_KEY") else flag("ARK_API_KEY")),
+        ("RUNWAY_API_KEY (runway 트랜스포트)", flag("RUNWAY_API_KEY")),
+        ("FAL_KEY (fal 트랜스포트)", flag("FAL_KEY") if os.getenv("FAL_KEY") else flag("FAL_API_KEY")),
+        ("seedance transport", vp.transport_for("seedance")),
         ("  seedance model", seedance.model_name()),
-        ("  seedance base", os.getenv("SEEDANCE_API_BASE", "https://ark.ap-southeast.bytepluses.com/api/v3")),
-        ("KLING_ACCESS_KEY", flag("KLING_ACCESS_KEY")),
-        ("KLING_SECRET_KEY", flag("KLING_SECRET_KEY")),
+        ("  seedance available", "yes" if seedance.available() else "NO"),
+        ("kling transport", vp.transport_for("kling")),
         ("  kling model", kling.model_name()),
-        ("  kling base", os.getenv("KLING_API_BASE", "https://api-singapore.klingai.com")),
+        ("  kling available", "yes" if kling.available() else "NO"),
+        ("(direct 폴백) SEEDANCE_API_KEY/ARK", flag("SEEDANCE_API_KEY") if os.getenv("SEEDANCE_API_KEY") else flag("ARK_API_KEY")),
+        ("(direct 폴백) KLING_ACCESS/SECRET", f"{flag('KLING_ACCESS_KEY')}/{flag('KLING_SECRET_KEY')}"),
         ("PHASE6_LIVE_MODE", os.getenv("PHASE6_LIVE_MODE", "off")),
         ("PHASE6_LIVE_ALLOWLIST", os.getenv("PHASE6_LIVE_ALLOWLIST", "(empty)")),
         ("PHASE6_ASPECT_RATIO", os.getenv("PHASE6_ASPECT_RATIO", "9:16 (펫 전용 자산 정본)")),
-        ("PHASE6_RESOLUTION", os.getenv("PHASE6_RESOLUTION", "720p")),
+        ("PHASE6_GENERATION_PROFILE", _profile_row()),
         ("PHASE6_MAX_PRIMARY/FALLBACK/STOP", f"{os.getenv('PHASE6_MAX_PRIMARY', '3')}/{os.getenv('PHASE6_MAX_FALLBACK', '2')}/{os.getenv('PHASE6_STOP_AFTER_PASSES', '1')}"),
         ("audio", "항상 off (출력 규격 검증이 오디오 스트림 존재 시 FAIL)"),
         ("VIDEO_GENERATION_MOCK", os.getenv("VIDEO_GENERATION_MOCK", "0")),
@@ -138,8 +157,11 @@ async def main() -> int:
     ap.add_argument("--confirm", action="store_true", help="실 결제 호출 승인")
     ap.add_argument("--degraded-locomotion", action="store_true",
                     help="COME_CLOSER 를 저하 모드(레퍼런스 없음)로 추가 실행")
+    ap.add_argument("--motions", default=",".join(SMOKE_MOTIONS),
+                    help="실행할 모션 (쉼표 구분, 기본: BREATHING,LIE_DOWN,PET_HEAD)")
     args = ap.parse_args()
 
+    _load_env_cascade()  # 런타임 전용 — 임포트 부수효과 금지 (위 경고 참고)
     creds_ok = preflight()
     if args.preflight or not args.confirm:
         if not args.preflight:
@@ -154,7 +176,7 @@ async def main() -> int:
         return 1
 
     results = {}
-    for motion in SMOKE_MOTIONS:
+    for motion in [m.strip().upper() for m in args.motions.split(",") if m.strip()]:
         results[motion] = await run_motion(args.user_id, args.pet_id, motion)
     if args.degraded_locomotion:
         for motion in DEGRADED_LOCOMOTION:

@@ -17,11 +17,13 @@ from backend.scenarios.pet_scenarios import ACTION_ORDER, IDLE_EVENTS, PET_ACTIO
 from backend.services import action_keyframe_service as kf
 from backend.services import action_keyframe_spec as spec_mod
 from backend.services import canonical_pet_service as canon
+from backend.services import durable_provider_jobs
 from backend.services import pet_identity_service as ids
 from backend.services import pet_reference_service as refs
 from backend.services import pet_reference_set_service as sets
 from backend.services import pet_registry, vlm_identity
 from backend.services.luma_idle_templates import IDLE_TEMPLATE_ORDER
+from backend.services.canonical_image_providers import CanonicalImageResult
 
 from .conftest import ASGITestClient
 from .test_pet_identity_profile import make_pet_cutout_png, make_striped_cutout_png
@@ -124,6 +126,35 @@ class RecordingProvider(FakeProvider):
         self.seen_references.append(list(references))
         self.seen_prompts.append(prompt)
         return super().generate(references, prompt, output_spec, metadata)
+
+
+def test_durable_keyframe_resumes_one_building_version(storage, monkeypatch):
+    h, _canonical = _prepare_canonical(monkeypatch, storage)
+    install_kf_vlm(monkeypatch, VLM_KF_OK)
+    monkeypatch.setenv("CANONICAL_MAX_PRIMARY", "1")
+    monkeypatch.setenv("CANONICAL_STOP_AFTER_PASSES", "1")
+
+    class YieldOnce(FakeProvider):
+        durable_execution = True
+
+        def generate(self, references, prompt, output_spec, metadata):
+            self.calls += 1
+            if self.calls == 1:
+                raise durable_provider_jobs.ProviderWorkPending("operation-1", "PENDING")
+            return CanonicalImageResult(
+                image_bytes=GOOD(), provider=self.name, model=self.model_name(),
+                external_job_id="job-1",
+            )
+
+    provider = YieldOnce("runway")
+    with pytest.raises(durable_provider_jobs.ProviderWorkPending):
+        _build_kf(h, [provider])
+    assert len(_run(kf._keyframe_rows(PET, "NEUTRAL_IDLE"))) == 1
+
+    completed = _build_kf(h, [provider])
+    assert completed.status == kf.STATUS_COMPLETE
+    assert len(_run(kf._keyframe_rows(PET, "NEUTRAL_IDLE"))) == 1
+    assert len(completed.candidates) == 1
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -329,8 +360,8 @@ def test_early_stop_and_limits(storage, monkeypatch):
     install_kf_vlm(monkeypatch, VLM_KF_OK)
     provider = FakeProvider("runway", [GOOD()] * 10)
     k = _build_kf(h, [provider])
-    assert provider.calls == 2  # stop_after_passes 기본 2
-    assert k.qa_summary["candidate_count"] == 2
+    assert provider.calls == 1  # 점진적 조기 중단: 첫 PASS 에서 즉시 멈춘다
+    assert k.qa_summary["candidate_count"] == 1
 
     monkeypatch.setenv("CANONICAL_MAX_PRIMARY", "1")
     install_kf_vlm(monkeypatch, None)  # PASS 없음 → 상한까지만

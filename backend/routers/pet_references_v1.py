@@ -35,6 +35,7 @@ class ReferenceOut(BaseModel):
     role: str
     source: str
     derived_kind: str | None = None
+    parent_reference_id: str | None = None
     bucket: str
     object_path: str
     original_filename: str | None = None
@@ -52,6 +53,9 @@ class ReferenceOut(BaseModel):
 
 class ReferencesResponse(BaseModel):
     pet_id: str
+    intake_ready: bool = False
+    original_reference_id: str | None = None
+    cutout_reference_id: str | None = None
     references: list[ReferenceOut] = []
 
 
@@ -70,8 +74,12 @@ async def list_pet_references(
             status_code=e.status, detail={"code": e.code, "message": e.message}
         ) from e
 
+    ready, original, cutout = pet_reference_service.intake_readiness(refs)
     return ReferencesResponse(
         pet_id=pet_id,
+        intake_ready=ready,
+        original_reference_id=original.id if original else None,
+        cutout_reference_id=cutout.id if cutout else None,
         references=[
             ReferenceOut(
                 id=r.id,
@@ -80,6 +88,7 @@ async def list_pet_references(
                 role=r.role,
                 source=r.source,
                 derived_kind=r.derived_kind,
+                parent_reference_id=r.parent_reference_id,
                 bucket=r.bucket,
                 object_path=r.object_path,
                 original_filename=r.original_filename,

@@ -68,6 +68,10 @@ class CanonicalImageResult:
 
 class CanonicalImageProvider:
     name: str = "abstract"
+    supports_durable_jobs: bool = False
+    #: 프로바이더의 프롬프트 문자 상한 (라이브 검증된 실제 계약). None = 무제한.
+    #: 빌더는 이 값에 맞는 컴팩트 프롬프트를 쓰고, 어댑터는 과금 전 로컬 검증한다.
+    max_prompt_chars: Optional[int] = None
 
     def available(self) -> bool:  # pragma: no cover - 인터페이스
         return False
@@ -92,6 +96,16 @@ class CanonicalImageProvider:
 
 class RunwayImageProvider(CanonicalImageProvider):
     name = PROVIDER_RUNWAY
+    supports_durable_jobs = True
+
+    @property
+    def max_prompt_chars(self) -> int:  # type: ignore[override]
+        # 라이브 검증 (2026-09-02): gen4_image promptText 는 1000자 초과 시
+        # 400 "too_big" — 계약 위반이며 재시도 대상이 아니다.
+        try:
+            return int(os.getenv("RUNWAY_MAX_PROMPT_CHARS", "1000"))
+        except ValueError:
+            return 1000
 
     def _key(self) -> str:
         return (os.getenv("RUNWAY_API_KEY") or "").strip()
@@ -105,17 +119,24 @@ class RunwayImageProvider(CanonicalImageProvider):
     def available(self) -> bool:
         return bool(self._key())
 
-    def generate(self, references, prompt, output_spec, metadata) -> CanonicalImageResult:
-        import httpx
-
-        if not self.available():
-            raise CanonicalProviderError("PROVIDER_NOT_CONFIGURED", "RUNWAY_API_KEY 가 없습니다.")
-
-        headers = {
+    def _headers(self) -> dict[str, str]:
+        return {
             "Authorization": f"Bearer {self._key()}",
             "X-Runway-Version": os.getenv("RUNWAY_API_VERSION", "2024-11-06"),
             "Content-Type": "application/json",
         }
+
+    def _payload(self, references, prompt, output_spec) -> dict[str, Any]:
+        # ── 과금 전 로컬 계약 검증 — 초과 프롬프트로는 API 를 호출조차 않는다 ──
+        if len(prompt) > self.max_prompt_chars:
+            raise CanonicalProviderError(
+                "PROVIDER_CONTRACT",
+                f"Runway promptText {len(prompt)}자 > 상한 {self.max_prompt_chars}자 — "
+                "어댑터/프롬프트 설정 오류 (재시도·폴백 대상 아님)",
+            )
+        if not self.available():
+            raise CanonicalProviderError("PROVIDER_NOT_CONFIGURED", "RUNWAY_API_KEY 가 없습니다.")
+
         # Gen-4 References — 최대 3장, 태그는 역할에서 유도 (프롬프트에서 @tag 로
         # 참조 가능하지만 v1 프롬프트는 "the supplied references" 로 통칭한다).
         ref_payload = [
@@ -126,15 +147,26 @@ class RunwayImageProvider(CanonicalImageProvider):
         if not ref_payload:
             raise CanonicalProviderError("NO_REFERENCE_URLS", "레퍼런스 서명 URL 이 없습니다.")
 
-        payload = {
+        return {
             "model": self.model_name(),
             "promptText": prompt,
             "ratio": str(output_spec.get("ratio") or "1024:1024"),
             "referenceImages": ref_payload,
         }
 
+    def submit(self, references, prompt, output_spec, metadata):
+        from .provider_job_contract import ProviderSubmission
+
+        import httpx
+
+        payload = self._payload(references, prompt, output_spec)
         try:
-            r = httpx.post(f"{self._base()}/text_to_image", json=payload, headers=headers, timeout=60.0)
+            r = httpx.post(
+                f"{self._base()}/text_to_image",
+                json=payload,
+                headers=self._headers(),
+                timeout=60.0,
+            )
         except Exception as e:
             raise CanonicalProviderError("PROVIDER_TRANSPORT", f"Runway 요청 실패: {e}") from e
         if r.status_code >= 300:
@@ -145,32 +177,71 @@ class RunwayImageProvider(CanonicalImageProvider):
         if not task_id:
             raise CanonicalProviderError("PROVIDER_NO_JOB_ID", "Runway 가 task id 를 주지 않았습니다.")
         logger.info("[canonical-receipt] provider=runway model=%s external_id=%s", self.model_name(), task_id)
+        return ProviderSubmission(external_job_id=task_id)
+
+    def check(self, external_job_id: str):
+        from .provider_job_contract import FAILED, PENDING, SUCCEEDED, ProviderJobCheck
+
+        import httpx
+
+        try:
+            response = httpx.get(
+                f"{self._base()}/tasks/{external_job_id}",
+                headers=self._headers(),
+                timeout=30.0,
+            )
+        except Exception as exc:
+            raise CanonicalProviderError("PROVIDER_TRANSPORT", f"Runway 폴링 실패: {exc}") from exc
+        if response.status_code >= 300:
+            raise CanonicalProviderError(
+                "PROVIDER_TRANSPORT",
+                f"Runway 폴링 HTTP {response.status_code}: {response.text[:300]}",
+            )
+        body = response.json() or {}
+        provider_status = str(body.get("status") or "").upper()
+        if provider_status == "SUCCEEDED":
+            return ProviderJobCheck(SUCCEEDED, provider_status, metadata=body)
+        if provider_status in ("FAILED", "CANCELLED"):
+            return ProviderJobCheck(
+                FAILED,
+                provider_status,
+                error=str(body.get("failure") or provider_status)[:500],
+                metadata=body,
+            )
+        return ProviderJobCheck(PENDING, provider_status or "PENDING", metadata=body)
+
+    def collect(self, external_job_id: str) -> CanonicalImageResult:
+        import httpx
+
+        check = self.check(external_job_id)
+        if check.status != "SUCCEEDED":
+            raise CanonicalProviderError("PROVIDER_NOT_READY", "Runway 이미지 태스크가 완료되지 않았습니다.")
+        outputs = check.metadata.get("output") or []
+        if not outputs:
+            raise CanonicalProviderError("PROVIDER_EMPTY", "Runway 출력이 비어 있습니다.")
+        image = httpx.get(str(outputs[0]), timeout=60.0, follow_redirects=True)
+        if image.status_code >= 300 or not image.content:
+            raise CanonicalProviderError("PROVIDER_DOWNLOAD", "Runway 결과 다운로드 실패")
+        return CanonicalImageResult(
+            image_bytes=image.content,
+            provider=self.name,
+            model=self.model_name(),
+            external_job_id=external_job_id,
+            usage={"status": check.provider_status},
+        )
+
+    def generate(self, references, prompt, output_spec, metadata) -> CanonicalImageResult:
+        submission = self.submit(references, prompt, output_spec, metadata)
 
         deadline = time.monotonic() + float(os.getenv("RUNWAY_POLL_MAX_SEC", "300"))
         while time.monotonic() < deadline:
-            try:
-                s = httpx.get(f"{self._base()}/tasks/{task_id}", headers=headers, timeout=30.0)
-            except Exception as e:
-                raise CanonicalProviderError("PROVIDER_TRANSPORT", f"Runway 폴링 실패: {e}") from e
-            body = s.json() if s.status_code < 300 else {}
-            status = str(body.get("status") or "").upper()
-            if status == "SUCCEEDED":
-                outputs = body.get("output") or []
-                if not outputs:
-                    raise CanonicalProviderError("PROVIDER_EMPTY", "Runway 출력이 비어 있습니다.")
-                img = httpx.get(str(outputs[0]), timeout=60.0, follow_redirects=True)
-                if img.status_code >= 300 or not img.content:
-                    raise CanonicalProviderError("PROVIDER_DOWNLOAD", "Runway 결과 다운로드 실패")
-                return CanonicalImageResult(
-                    image_bytes=img.content,
-                    provider=self.name,
-                    model=self.model_name(),
-                    external_job_id=task_id,
-                    usage={"status": status},
-                )
-            if status in ("FAILED", "CANCELLED"):
+            check = self.check(submission.external_job_id)
+            if check.status == "SUCCEEDED":
+                return self.collect(submission.external_job_id)
+            if check.status == "FAILED":
                 raise CanonicalProviderError(
-                    "PROVIDER_FAILED", f"Runway task {status}: {str(body.get('failure'))[:300]}"
+                    "PROVIDER_FAILED",
+                    f"Runway task {check.provider_status}: {str(check.error)[:300]}",
                 )
             time.sleep(float(os.getenv("RUNWAY_POLL_INTERVAL_SEC", "4")))
         raise CanonicalProviderError("PROVIDER_TIMEOUT", "Runway task 폴링 시간 초과")

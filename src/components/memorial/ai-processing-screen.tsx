@@ -38,8 +38,14 @@ import { useProcessingClock } from "@/lib/use-processing-clock";
 import { isClientCutoutFirst } from "@/lib/device-host-flags";
 import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
 import { setPendingCutout } from "@/lib/pending-generation";
-import { persistOriginalReference } from "@/lib/original-reference";
+import { persistPhase1Intake } from "@/lib/original-reference";
 import { getEternalBeamUserId } from "@/lib/eternal-beam-user";
+import { getPremiumAccessToken } from "@/lib/premium-auth-token";
+import { syncEternalBeamIdentity } from "@/lib/supabase-auth";
+import {
+  requirePhase1Intake,
+  type Phase1IntakeIdentity,
+} from "@/lib/phase1-intake-session";
 import { traceImage, dumpImageTrace } from "@/lib/image-trace"; // [IMAGE-TRACE]
 
 export const ETERNAL_BEAM_PIPELINE_KEY = "eternal_beam_pipeline_v1";
@@ -72,12 +78,41 @@ export interface StoredPipeline {
    * 적용하지 않기 위한 유일한 신호다.
    */
   background_baked?: boolean;
+  /**
+   * BREATH 자산의 명시적 전달 포맷 (Phase 7F).
+   *
+   * "packed_alpha" = vstack(상단 RGB·하단 알파 매트) 파생물 — 재생기가 packed
+   * 렌더러를 **명시적으로** 선택한다(크로마 휴리스틱에 기대지 않는다).
+   * 없으면 레거시 — background_baked 규칙(baked/blackkey)이 그대로 적용된다.
+   */
+  delivery_format?: string | null;
+  /**
+   * BREATH 를 만든 시스템 (Phase 7G).
+   *
+   * "phase7-run" = 새 Phase 1–7 실행 산출물. 이 값이 있으면 레거시
+   * registry/register 쓰기를 하지 않는다 — 서버 발행(Phase 7A)이 pets 포인터의
+   * 단일 저자이고, 클라이언트 등록이 그것을 덮으면 새 상태가 사라진다.
+   */
+  generation_source?: string | null;
+  /**
+   * 데이터베이스의 실제 QA 결정 (Phase 7G). "REVIEW" 면 발행되지 않은
+   * 개발/현재-실행 재생이다 — PASS 로 가공하지 않는다.
+   */
+  qa_decision?: string | null;
   /** 이 영상들이 나온 정본 장면. 이후 행동 생성이 같은 장면을 재사용한다. */
   scene_id?: string | null;
+  /** Phase 7B receipt: generation may start only from an intake-ready pair. */
+  phase1_intake?: {
+    status: "ready";
+    pet_id: string;
+    original_reference_id: string;
+    cutout_reference_id: string;
+  };
 }
 
 interface AIProcessingScreenProps {
   uploadedImage: string | null;
+  intakeIdentity?: Phase1IntakeIdentity | null;
   language?: string;
   onComplete: (cutoutUrl: string) => void;
 }
@@ -104,7 +139,10 @@ type CutoutOutcome = {
 async function tryServerCutout(
   file: File,
   onStatus: (line: string) => void,
-  t: ProcessingCopy
+  t: ProcessingCopy,
+  identity: Phase1IntakeIdentity,
+  userId: string,
+  accessToken: string,
 ): Promise<CutoutOutcome | null> {
   if (isServerCutoutSkipped()) return null;
   try {
@@ -112,11 +150,13 @@ async function tryServerCutout(
     await warmupVideoApi({ coldStart: true, maxWaitMs: CUTOUT_WARMUP_MAX_MS });
     onStatus(CUTOUT_SPEED_MODE ? t.serverCutoutFast : t.serverCutout);
     const cut = await cutoutImage(file, {
-      userId: "anonymous",
+      userId,
+      contentId: identity.contentId,
       saveToStorage: false,
       model: "isnet-general-use",
       autoRefine: CUTOUT_AUTO_REFINE,
       timeoutMs: CUTOUT_SERVER_TIMEOUT_MS,
+      accessToken,
     });
     assertUsableCutout(cut);
     // 실제로 정제 패스가 돈 경우에만 안내 문구를 띄운다.
@@ -127,7 +167,7 @@ async function tryServerCutout(
     return {
       display: cutoutDisplayUrl(cut),
       cutFile: await cutoutResultToFile(cut),
-      contentId: cut.content_id || `srv_${Date.now()}`,
+      contentId: cut.content_id,
       subjectDetected: cut.subject_detected !== false,
       quality: cut.cutout_quality ?? null,
     };
@@ -148,14 +188,15 @@ async function tryClientCutout(
   file: File,
   onStatus: (line: string) => void,
   t: ProcessingCopy,
-  language: string
+  language: string,
+  identity: Phase1IntakeIdentity,
 ): Promise<CutoutOutcome> {
   onStatus(CUTOUT_SPEED_MODE ? t.waitHintFast : t.waitHint);
   const display = await clientCutoutFromFile(file, onStatus, language);
   return {
     display,
     cutFile: dataUrlToFile(display, "cutout.png"),
-    contentId: `client_${Date.now()}`,
+    contentId: identity.contentId,
   };
 }
 
@@ -163,7 +204,10 @@ async function runCutoutWithFallback(
   file: File,
   onStatus: (line: string) => void,
   t: ProcessingCopy,
-  language: string
+  language: string,
+  identity: Phase1IntakeIdentity,
+  userId: string,
+  accessToken: string,
 ): Promise<CutoutOutcome> {
   if (MOCK_CUTOUT_ENABLED) {
     onStatus(t.mockCutout);
@@ -171,31 +215,31 @@ async function runCutoutWithFallback(
     return {
       display,
       cutFile: dataUrlToFile(display, "cutout.jpg"),
-      contentId: `mock_${Date.now()}`,
+      contentId: identity.contentId,
     };
   }
 
   // 기본: Render 서버 누끼(1회·90초). 실패 시 폰 WASM(768px, 1~3분).
   if (!CLIENT_CUTOUT_FIRST) {
-    const server = await tryServerCutout(file, onStatus, t);
+    const server = await tryServerCutout(file, onStatus, t, identity, userId, accessToken);
     if (server) return server;
 
     if (!CLIENT_CUTOUT_FALLBACK) {
       throw new Error(t.serverOnlyFailed);
     }
     onStatus(t.serverThenClient);
-    return tryClientCutout(file, onStatus, t, language);
+    return tryClientCutout(file, onStatus, t, language, identity);
   }
 
   onStatus(t.clientCutout);
   try {
-    return await tryClientCutout(file, onStatus, t, language);
+    return await tryClientCutout(file, onStatus, t, language, identity);
   } catch (clientErr) {
     if (!CLIENT_CUTOUT_FALLBACK) {
       throw clientErr;
     }
     onStatus(t.clientThenServer);
-    const server = await tryServerCutout(file, onStatus, t);
+    const server = await tryServerCutout(file, onStatus, t, identity, userId, accessToken);
     if (server) return server;
     throw clientErr;
   }
@@ -317,6 +361,7 @@ const CompareImages = memo(function CompareImages({
 
 export function AIProcessingScreen({
   uploadedImage,
+  intakeIdentity,
   language = "ko",
   onComplete,
 }: AIProcessingScreenProps) {
@@ -474,6 +519,33 @@ export function AIProcessingScreen({
 
       try {
         setStatusLine(t.steps[0].description);
+        const stableIdentity = requirePhase1Intake(intakeIdentity);
+        const auth = await getPremiumAccessToken();
+        if (!auth.token) throw new Error("로그인 세션을 확인하지 못했습니다. 다시 로그인해 주세요.");
+        const userId =
+          auth.source === "supabase"
+            ? await syncEternalBeamIdentity()
+            : getEternalBeamUserId();
+        if (!userId) throw new Error("인증된 사용자 신원을 확인하지 못했습니다.");
+
+        // The unmodified upload is authoritative evidence and must be durable
+        // before preprocessing. A cutout failure therefore cannot erase intake.
+        const original = await persistPhase1Intake({
+          userId,
+          contentId: stableIdentity.contentId,
+          dataUrl: uploadedImage,
+          accessToken: auth.token,
+        });
+        if (
+          !original.recorded ||
+          !original.referenceId ||
+          original.userId !== userId ||
+          original.contentId !== stableIdentity.contentId ||
+          original.petId !== stableIdentity.petId
+        ) {
+          throw new Error("원본 사진의 Phase 1 저장 결과가 업로드 신원과 일치하지 않습니다.");
+        }
+
         // [IMAGE-TRACE] 파이프라인 입구 — 앱 상태에 들어있는 "원본"의 실제 크기.
         await traceImage("pipeline:uploadedImage", uploadedImage, "original-upload");
         const file = await normalizeImageForCutout(uploadedImage);
@@ -484,7 +556,10 @@ export function AIProcessingScreen({
             if (!cancelled && myToken === runTokenRef.current) setStatusLine(line);
           },
           t,
-          language
+          language,
+          stableIdentity,
+          userId,
+          auth.token,
         );
         const { display, cutFile, contentId: cutContentId } = cutout;
 
@@ -513,18 +588,31 @@ export function AIProcessingScreen({
         // 확인 → 생성). 원본 해상도 누끼는 그때 다시 필요하므로 보관해 둔다.
         if (cancelled || myToken !== runTokenRef.current) return;
 
-        const contentId = cutContentId || `cut_${Date.now()}`;
-        setPendingCutout(cutFile, contentId, display);
+        const contentId = cutContentId;
+        if (contentId !== stableIdentity.contentId) {
+          throw new Error("누끼 결과의 업로드 식별자가 원본과 일치하지 않습니다.");
+        }
 
-        // 원본 레퍼런스 영구 보존 (Durable Pet Identity Intake). fire-and-forget —
-        // 실패해도 온보딩 플로우는 계속된다. normalize 이전의 진짜 원본
-        // (uploadedImage)을 올린다. 서버 누끼가 받은 파일은 축소본이다.
-        void persistOriginalReference({
-          userId: getEternalBeamUserId(),
+        // Attach the produced cutout to the already-recorded original. The
+        // endpoint deduplicates both rows and reports the explicit parent pair.
+        const ready = await persistPhase1Intake({
+          userId,
           contentId,
           dataUrl: uploadedImage,
+          accessToken: auth.token,
+          cutoutFile: cutFile,
           diagnostics: cutout.quality ?? undefined,
         });
+        if (
+          !ready.intakeReady ||
+          !ready.referenceId ||
+          !ready.cutoutReferenceId ||
+          ready.referenceId !== original.referenceId ||
+          ready.petId !== stableIdentity.petId
+        ) {
+          throw new Error("Phase 1 원본과 누끼의 연결을 확인하지 못했습니다.");
+        }
+        setPendingCutout(cutFile, contentId, display);
 
         const stored: StoredPipeline = {
           content_id: contentId,
@@ -532,6 +620,12 @@ export function AIProcessingScreen({
           dog_only_nobg_url: display,
           idle_video_url: "", // 아직 생성 전 — 확인 후에 채워진다
           action_video_url: "",
+          phase1_intake: {
+            status: "ready",
+            pet_id: ready.petId,
+            original_reference_id: ready.referenceId,
+            cutout_reference_id: ready.cutoutReferenceId,
+          },
         };
         try {
           sessionStorage.setItem(ETERNAL_BEAM_PIPELINE_KEY, JSON.stringify(stored));
@@ -570,7 +664,7 @@ export function AIProcessingScreen({
       cancelled = true;
       setProcessingActive(false);
     };
-  }, [uploadedImage, language, retryKey]);
+  }, [uploadedImage, intakeIdentity, language, retryKey]);
 
   const originalForUi = displayOriginal || uploadedImage;
   const showComparePanel =

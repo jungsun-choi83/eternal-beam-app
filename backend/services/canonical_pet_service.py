@@ -116,11 +116,22 @@ def _int_env(name: str, default: int) -> int:
 
 
 def candidate_policy() -> dict[str, int]:
-    """후보 상한 정책 — 전부 env 로 조정 가능 (요구 15)."""
+    """
+    후보 상한 정책 — 전부 env 로 조정 가능 (요구 15).
+
+    점진적 조기 중단 (Phase 7 최적화): 기본 stop_after_passes=1 — **첫 PASS 에서
+    즉시 멈춘다.** 후보 N 의 QA 판정이 나기 전에 N+1 을 제출하는 일은 루프 구조상
+    없고(순차 생성→QA), 이 값은 "PASS 뒤에도 여분을 만들 것인가"만 정한다.
+    예전 기본 2 는 PASS 하나가 나온 뒤에도 유료 시도를 한 번 더 태웠다 —
+    중복 PASS 가 필요하면 env 로 명시적으로 올린다.
+
+    Phase 5 키프레임도 이 정책을 그대로 빌려 쓴다 (action_keyframe_service).
+    Phase 1/3 업로드 레퍼런스에는 적용되지 않는다 — 그쪽은 생성이 아니다.
+    """
     return {
         "max_primary": _int_env("CANONICAL_MAX_PRIMARY", 3),
         "max_fallback": _int_env("CANONICAL_MAX_FALLBACK", 2),
-        "stop_after_passes": _int_env("CANONICAL_STOP_AFTER_PASSES", 2),
+        "stop_after_passes": _int_env("CANONICAL_STOP_AFTER_PASSES", 1),
     }
 
 
@@ -200,7 +211,8 @@ def _to_candidate(row: dict[str, Any]) -> CanonicalCandidate:
         provider=str(row.get("provider") or ""),
         model=(row.get("model") or None),
         model_version=(row.get("model_version") or None),
-        attempt=int(row.get("attempt") or 1),
+        # attempt 0 = 계약 위반 감사 기록 (시도 소모 없음) — or-1 로 뭉개면 안 된다.
+        attempt=int(row["attempt"]) if row.get("attempt") is not None else 1,
         external_job_id=(row.get("external_job_id") or None),
         raw_bucket=(row.get("raw_bucket") or None),
         raw_object_path=(row.get("raw_object_path") or None),
@@ -501,44 +513,132 @@ async def build_canonical(
 
     # ── 버전 행 — 프로바이더 호출 **전** ─────────────────────────────────
     rows = await _version_rows(pid)
-    version_row: dict[str, Any] = {
-        "id": str(uuid.uuid4()),
-        "pet_id": pid,
-        "user_id": uid,
-        "version": (max((int(r.get("version") or 0) for r in rows), default=0)) + 1,
-        "status": STATUS_BUILDING,
-        "reference_set_id": refset.id,
-        "reference_set_version": refset.version,
-        "identity_profile_version": refset.identity_profile_version,
-        "input_reference_ids": input_ids,
-        "prompt": prompt,
-        "prompt_version": canonical_prompt.CANONICAL_PROMPT_VERSION,
-        # input_references: 어떤 역할의 레퍼런스가 들어갔는지 (검토 페이로드용).
-        "output_spec": {**canonical_prompt.CANONICAL_OUTPUT_SPEC, "input_references": picks},
-        "selected_candidate_id": None,
-        "selection_reason": None,
-        "qa_summary": {},
-        "analyzer_versions": versions_stamp,
-        "created_at": _now_iso(),
-        "completed_at": None,
-    }
-    if not await _insert(_versions_table(), _MOCK_VERSIONS, version_row):
-        raise CanonicalPetError(
-            "CANONICAL_UNAVAILABLE", "정본 버전을 기록하지 못했습니다.", status=503
-        )
-    version_id = version_row["id"]
+    durable_execution = any(getattr(provider, "durable_execution", False) for provider in resolved_providers)
+    resumable = rows[-1] if rows else None
+    if not (
+        durable_execution
+        and resumable
+        and resumable.get("status") == STATUS_BUILDING
+        and str(resumable.get("reference_set_id") or "") == str(refset.id or "")
+        and resumable.get("reference_set_version") == refset.version
+        and resumable.get("prompt_version") == canonical_prompt.CANONICAL_PROMPT_VERSION
+        and (resumable.get("analyzer_versions") or {}) == versions_stamp
+    ):
+        resumable = None
+
+    if resumable:
+        version_row = resumable
+    else:
+        version_row = {
+            "id": str(uuid.uuid4()),
+            "pet_id": pid,
+            "user_id": uid,
+            "version": (max((int(r.get("version") or 0) for r in rows), default=0)) + 1,
+            "status": STATUS_BUILDING,
+            "reference_set_id": refset.id,
+            "reference_set_version": refset.version,
+            "identity_profile_version": refset.identity_profile_version,
+            "input_reference_ids": input_ids,
+            "prompt": prompt,
+            "prompt_version": canonical_prompt.CANONICAL_PROMPT_VERSION,
+            # input_references: 어떤 역할의 레퍼런스가 들어갔는지 (검토 페이로드용).
+            "output_spec": {**canonical_prompt.CANONICAL_OUTPUT_SPEC, "input_references": picks},
+            "selected_candidate_id": None,
+            "selection_reason": None,
+            "qa_summary": {},
+            "analyzer_versions": versions_stamp,
+            "created_at": _now_iso(),
+            "completed_at": None,
+        }
+        if not await _insert(_versions_table(), _MOCK_VERSIONS, version_row):
+            raise CanonicalPetError(
+                "CANONICAL_UNAVAILABLE", "정본 버전을 기록하지 못했습니다.", status=503
+            )
+    version_id = str(version_row["id"])
 
     # ── 후보 루프 ────────────────────────────────────────────────────────
-    candidates: list[dict[str, Any]] = []
-    passes = 0
+    candidates = await _candidate_rows(version_id) if resumable else []
+    passes = sum(1 for candidate in candidates if candidate.get("decision") == "PASS")
+    contract_violation = any(
+        bool((candidate.get("generation_metadata") or {}).get("contract_violation"))
+        for candidate in candidates
+    )
+
+    def _prompt_for(provider: Any) -> tuple[Optional[str], str]:
+        """
+        프로바이더 상한에 맞는 프롬프트. (None, 이유) = 로컬 계약 검증 실패 —
+        과금 호출 없이 해당 프로바이더를 중단한다 (라이브 검증된 Runway 1000자 계약).
+        """
+        limit = getattr(provider, "max_prompt_chars", None)
+        if not limit or len(prompt) <= limit:
+            return prompt, "full"
+        compact = canonical_prompt.build_compact_canonical_prompt(
+            visual_identity=(profile.visual_identity if profile else {}), max_chars=limit
+        )
+        if len(compact) <= limit:
+            return compact, "compact"
+        return None, f"compact prompt {len(compact)} chars still exceeds {provider.name} limit {limit}"
 
     async def run_provider(provider: Any, max_candidates: int, tier: str) -> None:
-        nonlocal passes
+        nonlocal passes, contract_violation
+
+        provider_prompt, prompt_variant = _prompt_for(provider)
+        if provider_prompt is None:
+            existing_contract = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.get("provider") == provider.name
+                    and int(candidate.get("attempt") or 0) == 0
+                ),
+                None,
+            )
+            if existing_contract:
+                contract_violation = True
+                return
+            # 계약 위반 — 시도 1회도 소모하지 않고 감사 기록만 남긴다.
+            contract_violation = True
+            row = {
+                "id": str(uuid.uuid4()), "canonical_version_id": version_id,
+                "pet_id": pid, "user_id": uid, "provider": provider.name,
+                "model": provider.model_name(), "model_version": None, "attempt": 0,
+                "external_job_id": None, "raw_bucket": None, "raw_object_path": None,
+                "cutout_bucket": None, "cutout_object_path": None,
+                "prompt_version": canonical_prompt.CANONICAL_COMPACT_PROMPT_VERSION,
+                "input_reference_ids": input_ids,
+                "generation_metadata": {"tier": tier, "contract_violation": True},
+                "qa_result": {}, "decision": "ERROR", "selected": False,
+                "error": f"PROVIDER_CONTRACT: {prompt_variant}"[:500],
+                "created_at": _now_iso(),
+            }
+            await _insert(_candidates_table(), _MOCK_CANDIDATES, row)
+            candidates.append(row)
+            logger.error("정본 프로바이더 계약 위반 (%s): %s", provider.name, prompt_variant)
+            return
+
         for attempt in range(1, max_candidates + 1):
             if passes >= policy["stop_after_passes"]:
                 return
-            cand_id = str(uuid.uuid4())
-            cand_row: dict[str, Any] = {
+            existing = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.get("provider") == provider.name
+                    and int(candidate.get("attempt") or 0) == attempt
+                    and (candidate.get("generation_metadata") or {}).get("tier") == tier
+                ),
+                None,
+            )
+            resumable_candidate = bool(
+                existing
+                and existing.get("decision") == "ERROR"
+                and not existing.get("error")
+                and existing.get("raw_object_path")
+            )
+            if existing and not resumable_candidate:
+                continue
+            cand_id = str(existing.get("id")) if existing else str(uuid.uuid4())
+            cand_row: dict[str, Any] = existing or {
                 "id": cand_id,
                 "canonical_version_id": version_id,
                 "pet_id": pid,
@@ -552,9 +652,17 @@ async def build_canonical(
                 "raw_object_path": None,
                 "cutout_bucket": None,
                 "cutout_object_path": None,
-                "prompt_version": canonical_prompt.CANONICAL_PROMPT_VERSION,
+                "prompt_version": (
+                    canonical_prompt.CANONICAL_COMPACT_PROMPT_VERSION
+                    if prompt_variant == "compact"
+                    else canonical_prompt.CANONICAL_PROMPT_VERSION
+                ),
                 "input_reference_ids": input_ids,
-                "generation_metadata": {"tier": tier},
+                "generation_metadata": {
+                    "tier": tier,
+                    "prompt_variant": prompt_variant,
+                    "prompt_chars": len(provider_prompt),
+                },
                 "qa_result": {},
                 "decision": "ERROR",
                 "selected": False,
@@ -568,36 +676,53 @@ async def build_canonical(
                     pid, version_row["version"], provider.name, attempt,
                 )
                 result = provider.generate(
-                    provider_refs, prompt, dict(canonical_prompt.CANONICAL_OUTPUT_SPEC),
+                    provider_refs, provider_prompt, dict(canonical_prompt.CANONICAL_OUTPUT_SPEC),
                     {"pet_id": pid, "canonical_version_id": version_id, "attempt": attempt},
                 )
             except CanonicalProviderError as e:
                 cand_row["error"] = f"{e.code}: {e.message}"[:500]
-                await _insert(_candidates_table(), _MOCK_CANDIDATES, cand_row)
-                candidates.append(cand_row)
+                if existing:
+                    await _update(
+                        _candidates_table(), _MOCK_CANDIDATES, cand_id,
+                        {"error": cand_row["error"]},
+                    )
+                else:
+                    await _insert(_candidates_table(), _MOCK_CANDIDATES, cand_row)
+                    candidates.append(cand_row)
+                if e.code == "PROVIDER_CONTRACT":
+                    # 우리 요청이 계약을 어겼다 — 같은 요청 반복도, 폴백도 없다.
+                    contract_violation = True
+                    logger.error("정본 프로바이더 계약 위반 (%s): %s", provider.name, e.message)
+                    return
                 logger.warning("정본 후보 생성 실패 (%s attempt=%d): %s", provider.name, attempt, e.message)
                 continue
 
             cand_row["model"] = result.model
             cand_row["model_version"] = result.model_version
             cand_row["external_job_id"] = result.external_job_id
-            cand_row["generation_metadata"] = {"tier": tier, "usage": result.usage}
+            cand_row["generation_metadata"] = {
+                **cand_row["generation_metadata"],  # tier/prompt_variant/prompt_chars 보존
+                "usage": result.usage,
+            }
 
             # raw 저장 — QA 이전. 과금된 증거는 무조건 남는다.
-            raw_path = f"{uid}/{cid}/canonical/v{version_row['version']}/{provider.name}_a{attempt}_raw.png"
-            try:
-                await supabase_assets.upload_asset_to_storage(raw_path, result.image_bytes, "image/png")
-                cand_row["raw_bucket"] = supabase_assets.BUCKET
-                cand_row["raw_object_path"] = raw_path
-            except Exception:
-                cand_row["error"] = "RAW_STORE_FAILED"
+            raw_path = cand_row.get("raw_object_path") or (
+                f"{uid}/{cid}/canonical/v{version_row['version']}/{provider.name}_a{attempt}_raw.png"
+            )
+            if not cand_row.get("raw_object_path"):
+                try:
+                    await supabase_assets.upload_asset_to_storage(raw_path, result.image_bytes, "image/png")
+                    cand_row["raw_bucket"] = supabase_assets.BUCKET
+                    cand_row["raw_object_path"] = raw_path
+                except Exception:
+                    cand_row["error"] = "RAW_STORE_FAILED"
+                    await _insert(_candidates_table(), _MOCK_CANDIDATES, cand_row)
+                    candidates.append(cand_row)
+                    logger.exception("정본 raw 저장 실패 (%s attempt=%d)", provider.name, attempt)
+                    continue
+
                 await _insert(_candidates_table(), _MOCK_CANDIDATES, cand_row)
                 candidates.append(cand_row)
-                logger.exception("정본 raw 저장 실패 (%s attempt=%d)", provider.name, attempt)
-                continue
-
-            await _insert(_candidates_table(), _MOCK_CANDIDATES, cand_row)
-            candidates.append(cand_row)
 
             # 누끼 (기존 파이프라인 재사용) — 실패해도 후보는 남는다.
             cutout_rgba = None
@@ -638,7 +763,8 @@ async def build_canonical(
                 passes += 1
 
     await run_provider(resolved_providers[0], policy["max_primary"], "primary")
-    if passes == 0 and len(resolved_providers) > 1:
+    # 계약 위반은 QA 실패가 아니라 우리 쪽 버그다 — 그것만으로 폴백을 태우지 않는다.
+    if passes == 0 and len(resolved_providers) > 1 and not contract_violation:
         await run_provider(resolved_providers[1], policy["max_fallback"], "fallback")
 
     # ── 결정론적 랭킹 → 선택 ─────────────────────────────────────────────
@@ -687,7 +813,11 @@ async def build_canonical(
         selection_reason = "no PASS candidate — human review required"
     else:
         status = STATUS_FAILED
-        selection_reason = "no usable candidate"
+        selection_reason = (
+            "provider contract violation — 어댑터/프롬프트 설정 수정 필요 (QA 실패 아님)"
+            if contract_violation and not ranked
+            else "no usable candidate"
+        )
 
     qa_summary = {
         "candidate_count": len(candidates),

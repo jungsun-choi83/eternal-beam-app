@@ -12,6 +12,8 @@ import { afterEach, test } from "node:test";
 import {
   ORIGINAL_REFERENCE_MAX_BYTES,
   decodeDataUrl,
+  Phase1IntakeError,
+  persistPhase1Intake,
   persistOriginalReference,
 } from "./original-reference.ts";
 
@@ -157,4 +159,81 @@ test("persistOriginalReference: recorded=false 를 정직하게 전달한다", a
   });
   assert.ok(result);
   assert.equal(result.recorded, false);
+});
+
+test("persistPhase1Intake: auth, stable ids, and optional cutout use one contract", async () => {
+  const { calls } = mockFetch(() =>
+    okResponse({
+      user_id: "alice@test",
+      content_id: "stable",
+      pet_id: "pet_stable",
+      reference_id: "original-1",
+      object_path: "alice/stable/references/original.jpg",
+      version: 1,
+      reference_recorded: true,
+      deduplicated: true,
+      cutout_recorded: true,
+      cutout_reference_id: "cutout-1",
+      cutout_object_path: "alice/stable/references/cutout.png",
+      intake_ready: true,
+    }),
+  );
+  const cutout = new File([new Uint8Array([1, 2, 3])], "cutout.png", {
+    type: "image/png",
+  });
+
+  const result = await persistPhase1Intake({
+    userId: "alice@test",
+    contentId: "stable",
+    dataUrl: JPEG_DATA_URL,
+    accessToken: "jwt",
+    cutoutFile: cutout,
+  });
+
+  assert.equal(result.intakeReady, true);
+  assert.equal(result.petId, "pet_stable");
+  assert.equal(result.cutoutReferenceId, "cutout-1");
+  assert.equal((calls[0].init?.headers as Record<string, string>).Authorization, "Bearer jwt");
+  const form = calls[0].init?.body as FormData;
+  assert.equal(form.get("phase1_intake"), "true");
+  assert.equal(form.get("content_id"), "stable");
+  assert.equal(form.get("cutout_file"), cutout);
+});
+
+test("persistPhase1Intake: failures are observable and retryable", async () => {
+  mockFetch(() =>
+    new Response(
+      JSON.stringify({
+        detail: { code: "PHASE1_CUTOUT_PERSIST_FAILED", message: "retry me" },
+      }),
+      { status: 502, headers: { "Content-Type": "application/json" } },
+    ),
+  );
+  await assert.rejects(
+    persistPhase1Intake({
+      userId: "alice@test",
+      contentId: "stable",
+      dataUrl: JPEG_DATA_URL,
+      accessToken: "jwt",
+    }),
+    (error: unknown) =>
+      error instanceof Phase1IntakeError &&
+      error.status === 502 &&
+      error.code === "PHASE1_CUTOUT_PERSIST_FAILED",
+  );
+});
+
+test("persistPhase1Intake: unauthenticated writes never start", async () => {
+  const { calls } = mockFetch(() => okResponse({}));
+  await assert.rejects(
+    persistPhase1Intake({
+      userId: "alice@test",
+      contentId: "stable",
+      dataUrl: JPEG_DATA_URL,
+      accessToken: "",
+    }),
+    (error: unknown) =>
+      error instanceof Phase1IntakeError && error.code === "UNAUTHENTICATED",
+  );
+  assert.equal(calls.length, 0);
 });

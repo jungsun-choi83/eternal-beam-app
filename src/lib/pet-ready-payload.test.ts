@@ -54,3 +54,57 @@ test('URL 앞뒤 공백은 잘라서 보낸다', () => {
   assert.equal(body.content_id, 'c1')
   assert.equal(body.packed_url, 'https://x/p_packed.mp4')
 })
+
+// ── Device D1 — Phase 7 BREATHING 전송 본문 ─────────────────────────────────
+
+const PHASE7 = {
+  contentId: 'c1',
+  petId: 'pet_c1',
+  motionId: 'BREATHING',
+  packedUrl: 'https://s/u/breathing_packed.mp4?token=fresh',
+  deliveryFormat: 'packed_alpha',
+} as const
+
+test('Phase 7: 검증 통과 본문 — 신원·모션·명시 포맷·구형 호환 키가 전부 실린다', async () => {
+  const { buildPhase7PetReadyBody } = await import('./pet-ready-payload.ts')
+  const r = buildPhase7PetReadyBody({ ...PHASE7 })
+  assert.ok(r.ok)
+  assert.equal(r.body.content_id, 'c1')
+  assert.equal(r.body.pet_id, 'pet_c1')
+  assert.equal(r.body.motion_id, 'BREATHING')
+  assert.equal(r.body.delivery_format, 'packed_alpha')
+  assert.equal(r.body.packed_url, PHASE7.packedUrl)
+  // 구형 S23 빌드 호환 — idle_url/video_url 에도 같은 URL.
+  assert.equal(r.body.idle_url, PHASE7.packedUrl)
+  // 테마는 이 본문에 절대 없다 — /demo/play 와 분리된 메시지다.
+  assert.ok(!('theme_id' in r.body))
+})
+
+test('Phase 7: pet/content 신원이 어긋나면 거절 (Phase 7B 결정론 규칙)', async () => {
+  const { buildPhase7PetReadyBody } = await import('./pet-ready-payload.ts')
+  for (const petId of ['pet_other', 'c1', '', 'pet_']) {
+    const r = buildPhase7PetReadyBody({ ...PHASE7, petId })
+    assert.ok(!r.ok && r.reason === 'identity_mismatch', `petId=${petId}`)
+  }
+})
+
+test('Phase 7: D1 은 BREATHING 만 — 다른 모션은 거절', async () => {
+  const { buildPhase7PetReadyBody } = await import('./pet-ready-payload.ts')
+  for (const motionId of ['BLINKING', 'COME_CLOSER', 'TAIL_WAGGING', 'RUN']) {
+    const r = buildPhase7PetReadyBody({ ...PHASE7, motionId })
+    assert.ok(!r.ok && r.reason === 'unsupported_motion', motionId)
+  }
+})
+
+test('Phase 7: URL 없음 → 거절 (구형 키만 남는 전송 방지)', async () => {
+  const { buildPhase7PetReadyBody } = await import('./pet-ready-payload.ts')
+  const r = buildPhase7PetReadyBody({ ...PHASE7, packedUrl: '  ' })
+  assert.ok(!r.ok && r.reason === 'missing_url')
+})
+
+test('Phase 7: 포맷 미상(null) 이면 delivery_format 키를 만들지 않는다 — 수신측 파일명 폴백', async () => {
+  const { buildPhase7PetReadyBody } = await import('./pet-ready-payload.ts')
+  const r = buildPhase7PetReadyBody({ ...PHASE7, deliveryFormat: null })
+  assert.ok(r.ok)
+  assert.ok(!('delivery_format' in r.body))
+})

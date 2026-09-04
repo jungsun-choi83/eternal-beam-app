@@ -62,6 +62,9 @@ class OwnedAsset:
     ledger_id: Optional[str] = None
     source: str = SOURCE_PURCHASE
     source_job_id: Optional[str] = None
+    #: Phase 7H — 새 생성 시스템 계보 (run/version/candidate/publication/delivery).
+    #: Phase 6 이 정본이고, 이 값은 조인 열쇠 모음이다. 레거시 자산은 빈 dict.
+    lineage: dict[str, Any] = field(default_factory=dict)
     created_at: datetime = field(default_factory=datetime.utcnow)
     revoked_at: Optional[datetime] = None
 
@@ -70,6 +73,15 @@ class OwnedAsset:
         return self.revoked_at is None
 
     def as_row(self) -> dict[str, Any]:
+        row = self._base_row()
+        # 배포 순서 내성: lineage 컬럼(마이그레이션 20261022) 이전 DB 에서 레거시
+        # 경로(빈 lineage)가 깨지지 않도록, 값이 있을 때만 싣는다. 프리미엄 이행은
+        # 어차피 같은 마이그레이션을 요구한다.
+        if self.lineage:
+            row["lineage"] = self.lineage
+        return row
+
+    def _base_row(self) -> dict[str, Any]:
         return {
             "asset_id": self.asset_id,
             "user_id": self.user_id,
@@ -212,6 +224,7 @@ def _from_row(row: dict[str, Any]) -> OwnedAsset:
         ledger_id=(str(row["ledger_id"]) if row.get("ledger_id") else None),
         source=str(row.get("source") or SOURCE_PURCHASE),
         source_job_id=(row.get("source_job_id") or None),
+        lineage=dict(row.get("lineage") or {}),
         created_at=(
             datetime.fromisoformat(str(created).replace("Z", "+00:00"))
             if created

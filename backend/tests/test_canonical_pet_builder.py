@@ -16,6 +16,7 @@ from backend.routers import canonical_v1
 from backend.services import canonical_image_providers as providers_mod
 from backend.services import canonical_pet_service as svc
 from backend.services import canonical_qa
+from backend.services import durable_provider_jobs
 from backend.services import pet_identity_service as ids
 from backend.services import pet_reference_service as refs
 from backend.services import pet_reference_set_service as sets
@@ -147,6 +148,36 @@ def _build(h: Harness, providers, **kw):
 GOOD = make_pet_cutout_png  # 시드 누끼와 같은 코트 → 신원 시그니처 일치
 
 
+def test_durable_builder_resumes_one_building_version(uploads, monkeypatch):
+    h = _seed_three_ref_pet(monkeypatch)
+    install_vlm_qa(monkeypatch, VLM_QA_OK)
+    monkeypatch.setenv("CANONICAL_MAX_PRIMARY", "1")
+    monkeypatch.setenv("CANONICAL_STOP_AFTER_PASSES", "1")
+
+    class YieldOnce(FakeProvider):
+        durable_execution = True
+
+        def generate(self, references, prompt, output_spec, metadata):
+            self.calls += 1
+            if self.calls == 1:
+                raise durable_provider_jobs.ProviderWorkPending("operation-1", "PENDING")
+            return CanonicalImageResult(
+                image_bytes=GOOD(), provider=self.name, model=self.model_name(),
+                external_job_id="job-1",
+            )
+
+    provider = YieldOnce("runway")
+    with pytest.raises(durable_provider_jobs.ProviderWorkPending):
+        _build(h, [provider])
+    rows = _run(svc._version_rows(PET))
+    assert len(rows) == 1 and rows[0]["status"] == svc.STATUS_BUILDING
+
+    completed = _build(h, [provider])
+    assert completed.status == svc.STATUS_COMPLETE
+    assert len(_run(svc._version_rows(PET))) == 1
+    assert len(completed.candidates) == 1
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 입력 요건 / 프로바이더 구성
 # ══════════════════════════════════════════════════════════════════════════
@@ -200,8 +231,8 @@ def test_primary_success_with_three_complementary_references(uploads, monkeypatc
     assert roles == ["PRIMARY_FACE", "PRIMARY_FULL_BODY", "PRIMARY_3Q"]
     assert len(v.input_reference_ids) == 3
     assert fallback.calls == 0  # PRIMARY 가 통과하면 FALLBACK 은 호출되지 않는다
-    # 조기 중단: stop_after_passes 기본 2 → 후보 2개로 끝난다.
-    assert primary.calls == 2
+    # 점진적 조기 중단: stop_after_passes 기본 1 — 첫 PASS 에서 즉시 멈춘다.
+    assert primary.calls == 1
     sel = next(c for c in v.candidates if c.selected)
     assert sel.provider == "runway" and sel.decision == "PASS"
     assert sel.qa_result["identity_similarity"] is not None

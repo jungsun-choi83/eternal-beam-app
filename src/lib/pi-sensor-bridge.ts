@@ -280,6 +280,37 @@ export async function triggerPetReadyOnDevice(
   return postPetReadyToPi(base, payload)
 }
 
+/**
+ * 미리 조립·검증된 /demo/pet-ready 본문을 그대로 전송한다 (Device D1).
+ *
+ * Phase 7 경로는 본문 조립이 검증과 붙어 있어(buildPhase7PetReadyBody)
+ * 여기서는 발견 + POST 만 담당한다. 레거시 triggerPetReadyOnDevice 와 같은
+ * 발견 순서를 쓴다 — 경로가 갈라지면 한쪽만 Pi 를 못 찾는 상태가 생긴다.
+ */
+export async function postPetReadyBodyToDevice(
+  body: Record<string, string>,
+): Promise<boolean> {
+  if (!body.content_id?.trim()) return false
+  const send = async (base: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`${base}/demo/pet-ready`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (res.ok) rememberPiBase(base)
+      return res.ok
+    } catch {
+      return false
+    }
+  }
+  const quick = readUrlPiHost() ?? readStoredPiBase()
+  if (quick && (await probePiBase(quick))) return send(quick)
+  const base = (await discoverPiHttpBaseCached()) ?? resolvePiHttpBase()
+  if (!base) return false
+  return send(base)
+}
+
 async function postPetReadyToPi(
   base: string,
   payload: PetReadyRequest,

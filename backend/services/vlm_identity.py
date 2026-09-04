@@ -608,7 +608,7 @@ def qa_action_keyframe(
 # 모션 비디오 QA (Phase 6) — 샘플 프레임 시퀀스에 대한 확인
 # ══════════════════════════════════════════════════════════════════════════
 
-VLM_MOTION_QA_VERSION = "vlm-motion-qa-v1"
+VLM_MOTION_QA_VERSION = "vlm-motion-qa-v2"
 
 MOTION_QA_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -657,6 +657,10 @@ _MOTION_QA_PROMPT_TEMPLATE = (
     "- anatomy_plausible_all_frames: correct limbs, no melting/merging/extra parts "
     "in any frame?\n"
     "- requested_motion_occurs: does the requested motion visibly happen?\n"
+    "  For MICRO BREATHING, compare the chronological sequence for a coherent "
+    "chest/ribcage expansion-contraction or upper-torso rise-fall cycle while "
+    "the paws and framing remain stable. Do not infer breathing from a single "
+    "still image; answer unknown when the sequence itself is insufficient.\n"
     "- unintended_large_motion: any large movement beyond what was requested?\n"
     "- duplicated_pet / scene_cut / major_flicker / camera_stable / "
     "background_neutral: temporal and composition quality.\n"
@@ -685,7 +689,11 @@ def qa_motion_video(
         return None
 
     content: list[dict[str, Any]] = []
-    for data, mime in frame_images[:6]:
+    # v1 truncated to six frames. That aliases a roughly two-cycle/5-second
+    # BREATHING clip and can omit both intermediate phases and the true last
+    # frame. Nine v2 samples fit within the provider's image-input contract.
+    supplied_frames = list(frame_images[:12])
+    for data, mime in supplied_frames:
         if data:
             content.append(
                 {
@@ -718,8 +726,8 @@ def qa_motion_video(
         {
             "type": "text",
             "text": _MOTION_QA_PROMPT_TEMPLATE.format(
-                n=min(len(frame_images), 6),
-                fractions=list(sample_fractions),
+                n=len(supplied_frames),
+                fractions=list(sample_fractions[: len(supplied_frames)]),
                 motion_description=motion_description,
                 motion_class=motion_class,
                 target_note=target_note,

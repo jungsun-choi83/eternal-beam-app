@@ -280,6 +280,13 @@ test('preview/devicePlay 가 무조건 신뢰하는 옛 가드를 쓰지 않는�
     assert.doesNotMatch(
       src, /if \(!pipeline \|\| pipeline\.come_closer_video_url\) return/,
       `${f}: 캐시를 무조건 신뢰하는 옛 가드가 남아 있다`)
-    assert.match(src, /isComeCloserCacheValid\(/, `${f}: 출처 검증을 하지 않는다`)
+    // Phase 7I.1: 출처 검증은 인증 발견(READY 비교) + 교차 펫 캐시 무효화로 바뀌었다.
+    // 서버 READY 가 정본이고, 캐시는 다른 펫 것일 때만 지운다.
+    assert.match(
+      src, /readyAssets\?\.COME_CLOSER/,
+      `${f}: 인증 발견 계약(readyAssets)을 읽지 않는다`)
+    assert.match(
+      src, /come_closer_pet_id !== petId/,
+      `${f}: 교차 펫 캐시를 무효화하지 않는다`)
   }
 })

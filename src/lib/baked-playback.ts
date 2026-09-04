@@ -114,3 +114,59 @@ export function shouldApplySubjectTransform(
 ): boolean {
   return !isBackgroundBaked(asset);
 }
+
+/**
+ * ── 전달 포맷 (Phase 7F) ────────────────────────────────────────────────────
+ *
+ * background_baked 불리언은 두 세대(baked/blackkey)만 구분한다. Phase 6 파생
+ * 자산(packed_alpha vstack)이 셋째 세대로 들어오면서, 새 자산의 렌더 모드는
+ * 휴리스틱(파일명/크로마 측정)이 아니라 **명시된 값**으로 정한다 — 휴리스틱
+ * 오판은 영상을 반토막 내거나(가짜 packed) 회색 사각형을 남긴다(놓친 packed).
+ *
+ * 레거시 자산에는 delivery_format 이 없다. 그때는 기존 규칙 그대로다:
+ * baked → raw, 아니면 blackkey (재생기 내부의 packed 자동감지는 계속 동작한다).
+ */
+export type PlaybackDeliveryFormat = "baked" | "packed_alpha" | "blackkey";
+
+export interface DeliveryAssetLike extends BakedAssetLike {
+  /** 서버/파이프라인이 실어 주는 명시 포맷. 없으면 레거시. */
+  delivery_format?: string | null;
+  deliveryFormat?: string | null;
+}
+
+export function resolveDeliveryFormat(
+  asset: DeliveryAssetLike | null | undefined
+): PlaybackDeliveryFormat {
+  // baked 가 항상 이긴다 — 배경이 픽셀에 들어간 자산을 투명 합성하면
+  // 배경이 두 번 적용된다. 포맷 선언과 충돌하면 보수적인 쪽(baked)을 믿는다.
+  if (isBackgroundBaked(asset)) return "baked";
+  const raw = (asset?.delivery_format ?? asset?.deliveryFormat ?? "")
+    .toString()
+    .trim()
+    .toLowerCase();
+  if (raw === "packed_alpha") return "packed_alpha";
+  return "blackkey";
+}
+
+/**
+ * 이벤트 소스 **하나**의 렌더 모드 (Phase 7I.1).
+ *
+ * BREATH 의 모드를 물려받지 않는다 — 모션마다 세대가 다를 수 있다
+ * (새 시스템 packed COME_CLOSER + 레거시 blackkey BLINKING 같은 혼합).
+ * 명시 포맷이 1순위이고, 없으면 파일명 규칙(`_packed.mp4`)이 packed 를,
+ * 그 밖에는 레거시 기본(blackkey)이 맞는다.
+ */
+export type EventRenderMode = "packed" | "blackkey" | "raw";
+
+export function eventRenderMode(
+  format: string | null | undefined,
+  src: string | null | undefined
+): EventRenderMode {
+  const declared = (format ?? "").toString().trim().toLowerCase();
+  if (declared === "packed_alpha") return "packed";
+  if (declared === "baked") return "raw";
+  if (declared === "blackkey") return "blackkey";
+  const path = (src ?? "").split("?")[0].split("#")[0].toLowerCase();
+  if (path.endsWith("_packed.mp4")) return "packed";
+  return "blackkey";
+}

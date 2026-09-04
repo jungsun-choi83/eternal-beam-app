@@ -35,10 +35,23 @@ from typing import Any, Optional
 from ..scenarios.pet_scenarios import IDLE_EVENTS, PET_ACTIONS
 from .action_keyframe_spec import BREATHING_HOME_STATE, KEYFRAME_ROLES
 
-# v2: PET_HEAD 에 allow_generated_hand 추가 (Phase 6 — 영상 모델이 손을 등장시켜도
-# 되는지를 스펙이 명시한다. 키프레임에는 여전히 손을 요구하지 않는다).
-MOTION_SPEC_VERSION = "motion-spec-v2"
-PHASE6_CONTRACT_VERSION = "phase6-contract-v1"
+# v2: PET_HEAD 에 allow_generated_hand 추가.
+# v3 (Phase 6.6): WALK / ROLL_OVER / SIT_DOWN 모션 추가 (기존 어디에도 없던
+#     모션만 — 병행 명명 없음), 모션별 선호 카메라 뷰/이동 방향 메타 추가,
+#     모션 레퍼런스 해석이 라이브러리 리졸버(motion_reference_service)로 위임됨.
+# v4: BREATHING 서술 강화 — 라이브 v5 (Runway seedance2_5) 가 신원/안정성은
+#     통과했지만 호흡이 거의 보이지 않았다. 가슴/흉곽 팽창-수축, 상체의 미세한
+#     오르내림, 클립당 약 2회 호흡 주기를 명시한다 (다른 모션 서술은 불변).
+# v5: BREATHING 서술 재교정 — 라이브 v1/v2 실측에서 v4 의 "clearly visible" +
+#     "상체 오르내림"이 국소 흉곽 운동 대신 **전신 줌/스케일 펄스와 프레이밍
+#     드리프트**를 유발했다 (VLM 소견이 두 클립 모두에서 zoom/framing drift 를
+#     기록). 운동을 가슴/흉곽/옆구리로 국소화하고, 주기를 클립 길이 독립적으로
+#     (2~3초당 1회) 명시하며, 전신 펄스·줌·상하 요동·이동을 명시적으로 금지한다.
+#     (다른 모션 서술은 불변 — BREATHING 한 항목만 바뀐다.)
+MOTION_SPEC_VERSION = "motion-spec-v5"
+# v2 (Phase 6.6): pet_motion_profile 추가 + motion_reference 가 라이브러리에서
+# 해석된 실제 자산/버전/호환성/출처를 담는다 (미해석 시 기존 v1 형태 + 경고 유지).
+PHASE6_CONTRACT_VERSION = "phase6-contract-v2"
 
 CLASS_MICRO = "MICRO"
 CLASS_TRANSITION = "TRANSITION"
@@ -73,7 +86,7 @@ class MotionSpec:
     target_keyframe_role: Optional[str] = None
     requires_target_keyframe: bool = False
     motion_reference_id: Optional[str] = None
-    #: none | preferred | required — 라이브러리는 아직 없다 (메타데이터만).
+    #: none | preferred | required.
     motion_reference_policy: str = REF_NONE
     preferred_video_strategy: str = STRATEGY_I2V
     fallback_video_strategy: Optional[str] = None
@@ -81,6 +94,9 @@ class MotionSpec:
     loopable: bool = False
     interruptible: bool = True
     video_compat: dict[str, Any] = field(default_factory=dict)
+    #: 레퍼런스 매칭용 선호 카메라 뷰/이동 방향 (Phase 6.6). None = 무관.
+    preferred_camera_view: Optional[str] = None
+    preferred_travel_direction: Optional[str] = None
 
 
 def _micro(motion_id: str, desc: str, role: str, *, loopable: bool = False,
@@ -97,7 +113,20 @@ def _micro(motion_id: str, desc: str, role: str, *, loopable: bool = False,
 MOTIONS: dict[str, MotionSpec] = {
     # ── MICRO — 기존 런타임 모션 id 그대로 ──────────────────────────────
     BREATHING_HOME_STATE: _micro(
-        BREATHING_HOME_STATE, "가만히 앉거나 선 채 잔잔히 숨쉬기 (홈 상태 루프)",
+        BREATHING_HOME_STATE,
+        # 홈 상태 루프 — 서술은 프롬프트와 VLM QA(requested_motion_occurs) 양쪽이
+        # 소비한다. 두 극단을 모두 피한다: "잔잔히"만으로는 정지화면(라이브 v5),
+        # "clearly visible + 상체 오르내림"은 전신 줌 펄스(라이브 v1/v2 실측).
+        # 가시성 하한("gently but perceptibly", 2~3초당 1회)은 유지하되 운동을
+        # 흉곽으로 국소화하고 전신 스케일/프레이밍 변화를 명시적으로 금지한다.
+        "calm natural resting breathing. The chest wall and ribcage gently but "
+        "perceptibly expand during each inhale and relax during each exhale, in a "
+        "slow natural rhythm of about one full breath every 2 to 3 seconds. The "
+        "breathing motion is visible only at the chest, ribcage and flank — only "
+        "that local body contour changes. The pet's overall size, outline, "
+        "position and framing stay exactly constant: no whole-body pulsing, no "
+        "zooming or scaling, no vertical bobbing of the head or torso, no swaying, "
+        "no translation. Head, ears, legs, paws and tail stay still",
         "NEUTRAL_IDLE", loopable=True, duration=(4.0, 6.0),
     ),
     "BLINKING": _micro("BLINKING", "자연스러운 눈 깜빡임 1~2회", "NEUTRAL_IDLE"),
@@ -152,6 +181,8 @@ MOTIONS: dict[str, MotionSpec] = {
         fallback_video_strategy=STRATEGY_I2V,
         duration_range_sec=(3.0, 6.0),
         video_compat={"returns_to_start_pose": False, "motion_scale": "locomotion"},
+        preferred_camera_view="FRONT",
+        preferred_travel_direction="TOWARD_CAMERA",
     ),
     "RUN": MotionSpec(
         motion_id="RUN", motion_class=CLASS_LOCOMOTION,
@@ -162,6 +193,38 @@ MOTIONS: dict[str, MotionSpec] = {
         fallback_video_strategy=STRATEGY_I2V,
         duration_range_sec=(3.0, 6.0),
         video_compat={"returns_to_start_pose": False, "motion_scale": "locomotion"},
+    ),
+    "WALK": MotionSpec(
+        motion_id="WALK", motion_class=CLASS_LOCOMOTION,
+        description="자연스러운 걸음걸이 (미래 모션)",
+        start_keyframe_role="NEUTRAL_IDLE",
+        motion_reference_id="WALK_REF", motion_reference_policy=REF_PREFERRED,
+        preferred_video_strategy=STRATEGY_I2V_MOTION_REF,
+        fallback_video_strategy=STRATEGY_I2V,
+        duration_range_sec=(3.0, 6.0),
+        video_compat={"returns_to_start_pose": False, "motion_scale": "locomotion"},
+    ),
+    "ROLL_OVER": MotionSpec(
+        motion_id="ROLL_OVER", motion_class=CLASS_TRANSITION,
+        description="엎드린 채 한 바퀴 구르고 다시 엎드리기 (미래 모션)",
+        start_keyframe_role="LIE", target_keyframe_role="LIE",
+        # 같은 포즈로 돌아오므로 목표 프레임 필수는 아니다. 텍스트 생성 신뢰도가
+        # 벤치마크에서 낮게 나오면 정책을 required 로 올린다 (증거 기반, 요구 12).
+        requires_target_keyframe=False,
+        motion_reference_id="ROLL_OVER_REF", motion_reference_policy=REF_PREFERRED,
+        preferred_video_strategy=STRATEGY_I2V_MOTION_REF,
+        fallback_video_strategy=STRATEGY_I2V,
+        duration_range_sec=(3.0, 6.0),
+        video_compat={"returns_to_start_pose": True, "motion_scale": "body"},
+    ),
+    "SIT_DOWN": MotionSpec(
+        motion_id="SIT_DOWN", motion_class=CLASS_TRANSITION,
+        description="선 자세에서 앉기 (미래 모션 — NEUTRAL_IDLE 포즈군 내 전이)",
+        start_keyframe_role="NEUTRAL_IDLE", target_keyframe_role="NEUTRAL_IDLE",
+        requires_target_keyframe=False,
+        preferred_video_strategy=STRATEGY_I2V,
+        duration_range_sec=(2.0, 4.0),
+        video_compat={"returns_to_start_pose": False, "motion_scale": "body"},
     ),
     # ── INTERACTION — v1 은 사람 손을 키프레임에 요구하지 않는다 ─────────
     "PET_HEAD": MotionSpec(
@@ -301,7 +364,14 @@ async def _approved_keyframe(user_id: str, pet_id: str, role: str):
 
 
 async def resolve_video_generation_spec(
-    *, user_id: str, pet_id: str, motion_id: str
+    *,
+    user_id: str,
+    pet_id: str,
+    motion_id: str,
+    morphology_overrides: Optional[dict[str, str]] = None,
+    desired_view: Optional[str] = None,
+    direction: Optional[str] = None,
+    speed: Optional[str] = None,
 ) -> dict[str, Any]:
     """
     Phase 6 의 정본 입력. 실패는 명시적이다:
@@ -309,6 +379,8 @@ async def resolve_video_generation_spec(
       * 승인된 시작 키프레임 없음 → 409 KEYFRAME_REQUIRED (어느 역할인지 함께)
       * 필수 목표 키프레임 없음  → 409 TARGET_KEYFRAME_REQUIRED
       * 선호 모션 레퍼런스 없음  → 실패가 아니라 경고 + 폴백 전략
+      * 필수 모션 레퍼런스 없음  → 409 MOTION_REFERENCE_REQUIRED
+    Phase 6.6: 레퍼런스는 종+형태 프로필로 라이브러리에서 해석된다. 종 교차 없음.
     """
     spec = get_motion(motion_id)
     if not spec:
@@ -338,29 +410,60 @@ async def resolve_video_generation_spec(
                 status=409,
             )
 
+    # ── 펫 모션/형태 프로필 (Phase 6.6) — 신원이 아니라 구조 속성만 ─────────
+    from . import motion_reference_service, pet_identity_service
+
+    identity_profile = None
+    try:
+        identity_profile = await pet_identity_service.get_profile(
+            user_id=user_id, pet_id=pet_id
+        )
+    except pet_identity_service.PetIdentityError:
+        pass  # 프로필 조회 실패 → 프로필 UNKNOWN → 레퍼런스 미해석 (LEVEL_4)
+    pet_motion_profile = motion_reference_service.derive_motion_profile(
+        identity_profile, overrides=morphology_overrides
+    )
+
     strategy = spec.preferred_video_strategy
     motion_reference = None
     if spec.motion_reference_policy != REF_NONE:
-        # 모션 레퍼런스 라이브러리는 아직 없다 — 메타데이터와 폴백만.
-        motion_reference = {
-            "id": spec.motion_reference_id,
-            "policy": spec.motion_reference_policy,
-            "asset": None,
-        }
-        if spec.motion_reference_policy == REF_REQUIRED:
-            raise MotionSpecError(
-                "MOTION_REFERENCE_REQUIRED",
-                f"{spec.motion_id} 은 모션 레퍼런스가 필수지만 라이브러리가 없습니다.",
-                status=409,
-            )
-        if spec.fallback_video_strategy:
-            warnings.append(
-                f"motion_reference {spec.motion_reference_id} unavailable — "
-                f"falling back to {spec.fallback_video_strategy}"
-            )
-            strategy = spec.fallback_video_strategy
+        resolved = await motion_reference_service.resolve_motion_reference(
+            profile=pet_motion_profile,
+            motion_id=spec.motion_id,
+            pet_id=pet_id,
+            desired_view=(desired_view or spec.preferred_camera_view),
+            direction=(direction or spec.preferred_travel_direction),
+            speed=speed,
+        )
+        if resolved:
+            motion_reference = {
+                "id": resolved["reference_key"],
+                "policy": spec.motion_reference_policy,
+                **resolved,
+            }
+        else:
+            # 미해석 — v1 형태 유지 (id = 스펙의 레거시 라벨, asset 없음).
+            motion_reference = {
+                "id": spec.motion_reference_id,
+                "policy": spec.motion_reference_policy,
+                "asset": None,
+                "resolution": "unresolved",
+            }
+            if spec.motion_reference_policy == REF_REQUIRED:
+                raise MotionSpecError(
+                    "MOTION_REFERENCE_REQUIRED",
+                    f"{spec.motion_id} 은 모션 레퍼런스가 필수지만 호환 레퍼런스가 없습니다.",
+                    status=409,
+                )
+            if spec.fallback_video_strategy:
+                warnings.append(
+                    f"motion_reference {spec.motion_reference_id} unavailable — "
+                    f"falling back to {spec.fallback_video_strategy}"
+                )
+                strategy = spec.fallback_video_strategy
 
     return {
+        "pet_motion_profile": pet_motion_profile,
         "contract_version": PHASE6_CONTRACT_VERSION,
         "motion_spec_version": MOTION_SPEC_VERSION,
         "motion_id": spec.motion_id,

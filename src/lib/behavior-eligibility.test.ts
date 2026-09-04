@@ -35,6 +35,9 @@ function assets(over: Partial<PremiumAssets> = {}): PremiumAssets {
   return {
     petId: 'pet1',
     ready: allReady(),
+    readyAssets: Object.fromEntries(
+      ALL.map((i) => [i, { url: url(i), deliveryFormat: null }])
+    ),
     generating: [],
     missing: [],
     idleEvents: IDLE,
@@ -60,6 +63,35 @@ test('EXPIRED → 전부 부적격 (READY·ON 이어도)', () => {
   for (const id of ALL) {
     assert.equal(isBehaviorEligible(id, a), false, `만료됐는데 ${id} 가 살아 있다`)
   }
+})
+
+// ── 크레딧 모드 (Phase 7I.2) — 게이트가 꺼져 있으면 entitled 는 재생을 막지 않는다 ──
+
+test('크레딧 모드: entitled=false 여도 READY+ON 이면 적격 — 소유는 영구다', () => {
+  // 크레딧 모드에서 entitled 는 참고값이고 구독 이력 없는 모두에게 false 다.
+  // 이것으로 막으면 크레딧을 내고 만든 자산이 영영 재생되지 않는다.
+  const a = assets({
+    subscriptionRequired: false,
+    entitled: false,
+    subscriptionStatus: null,
+  })
+  for (const id of ALL) {
+    assert.equal(isBehaviorEligible(id, a), true, `크레딧 모드에서 ${id} 가 막혔다`)
+  }
+})
+
+test('크레딧 모드에서도 READY/선호 조건은 그대로다', () => {
+  const base = { subscriptionRequired: false, entitled: false } as const
+  const missing = assets({ ...base, ready: {} })
+  assert.equal(isBehaviorEligible('BLINKING', missing), false, 'MISSING 인데 적격이다')
+  const off = assets({ ...base, preferences: { BLINKING: false } })
+  assert.equal(isBehaviorEligible('BLINKING', off), false, 'OFF 인데 적격이다')
+})
+
+test('구서버(subscriptionRequired 필드 없음 → 기본 true)는 보수적으로 구독 게이트를 유지한다', () => {
+  // premium-assets.ts 파싱 기본값이 true 다 — 이 조합이 그 계약의 거울이다.
+  const a = assets({ subscriptionRequired: true, entitled: false })
+  assert.equal(isBehaviorEligible('BLINKING', a), false)
 })
 
 test('MISSING → 부적격', () => {

@@ -642,9 +642,12 @@ async def get_profile(
 def _default_fetch_bytes(ref: Any) -> Optional[bytes]:
     """스토리지에서 레퍼런스 바이트를 내려받는다 — 서명이 곧 존재 확인이다."""
     try:
-        from .asset_url_refresh import StorageObject, sign_object
+        from .asset_url_refresh import StorageObject, default_bucket, sign_object
 
-        url = sign_object(StorageObject(bucket=ref.bucket, path=ref.object_path))
+        # bucket 미기록 레퍼런스(과거 행/파생 payload)는 기본 버킷으로 서명한다.
+        url = sign_object(
+            StorageObject(bucket=(getattr(ref, "bucket", "") or default_bucket()), path=ref.object_path)
+        )
         if not url:
             return None
         import httpx

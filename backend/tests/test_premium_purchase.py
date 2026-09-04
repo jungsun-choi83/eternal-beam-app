@@ -30,6 +30,8 @@ IMG = "https://example.test/cutout.png"
 def _isolated(monkeypatch: pytest.MonkeyPatch):
     """DB 없이 인메모리 원장/지갑으로 돈다. 매 테스트마다 초기화."""
     monkeypatch.setenv("HYBRID_USE_SUPABASE", "0")
+    # Phase 7H: 이 파일은 **레거시 이행 계약**을 검증한다 — 명시 회귀 스위치.
+    monkeypatch.setenv("PREMIUM_FULFILLMENT", "legacy")
     monkeypatch.setenv("PET_HYBRID_SEED", "0")
     # 이 파일은 **크레딧 과금 계약**을 고정한다. Phase 2 에서 프리미엄 생성의
     # 기본 인가는 구독으로 넘어갔지만(PREMIUM_REQUIRES_SUBSCRIPTION 기본 1),
@@ -477,6 +479,8 @@ async def test_test_only_products_charge_the_declared_credits_under_mock(
 
     monkeypatch.setenv("PAYMENT_MOCK", "1")
     monkeypatch.setenv("HYBRID_USE_SUPABASE", "0")
+    # Phase 7H: 이 파일은 **레거시 이행 계약**을 검증한다 — 명시 회귀 스위치.
+    monkeypatch.setenv("PREMIUM_FULFILLMENT", "legacy")
     for i, pid in enumerate(sorted(TEST_ONLY_PRODUCT_IDS)):
         r = await verify_and_charge(
             user_id="topup_user",

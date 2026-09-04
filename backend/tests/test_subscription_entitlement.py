@@ -44,6 +44,8 @@ COME_CLOSER = premium_purchase.action_kind("COME_CLOSER")
 def _isolated(monkeypatch: pytest.MonkeyPatch):
     """DB 없이 인메모리 구독/지갑/원장으로 돈다."""
     monkeypatch.setenv("HYBRID_USE_SUPABASE", "0")
+    # Phase 7H: 이 파일은 **레거시 이행 계약**을 검증한다 — 명시 회귀 스위치.
+    monkeypatch.setenv("PREMIUM_FULFILLMENT", "legacy")
     monkeypatch.setenv("PET_HYBRID_SEED", "0")
     monkeypatch.setenv("SUBSCRIPTION_MOCK", "1")
     monkeypatch.delenv("PREMIUM_REQUIRES_SUBSCRIPTION", raising=False)  # 기본=켜짐

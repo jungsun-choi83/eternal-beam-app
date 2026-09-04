@@ -18,16 +18,21 @@ import { useIdleEventAssets } from "@/components/memorial/use-idle-event-assets"
 import { MembershipCard } from "@/components/memorial/membership-card";
 import { BehaviorLibrary } from "@/components/memorial/behavior-library";
 import { ShakerShareCard } from "@/components/memorial/shaker-share-card";
-import { PremiumAssetsProvider } from "@/components/memorial/premium-assets-context";
+import {
+  PremiumAssetsProvider,
+  usePremiumAssetsContext,
+} from "@/components/memorial/premium-assets-context";
 import { useBehaviorEligibility } from "@/components/memorial/use-behavior-eligibility";
 import { useIdleEventScheduler } from "@/components/memorial/use-idle-event-scheduler";
 import { hasRealIdleVideo } from "@/lib/pending-generation";
 import { subjectTransform } from "@/lib/pet-grounding";
 import {
   playbackFrameClass,
+  resolveDeliveryFormat,
   shouldApplySubjectTransform,
   shouldRenderThemeBackdrop,
 } from "@/lib/baked-playback";
+import { hydrateStoredPipeline } from "@/lib/breathing-hydration";
 import { resolveIdleDisplaySource } from "@/lib/device-host-flags";
 import {
   formatPlaybackSourceReport,
@@ -47,16 +52,7 @@ import {
 import { resetThemeBackgroundSyncCache, scheduleThemeBackgroundSync } from "@/lib/device-theme-sync";
 import { resolveIdleVideoUrl } from "@/app/services/videoProcessingApi";
 import { resolveSelectedThemeId } from "@/lib/theme-selection-store";
-import {
-  isComeCloserCacheValid,
-  mergeComeCloserIntoPipeline,
-} from "@/lib/come-closer-asset";
-import {
-  lookupComeCloserAsset,
-  pollComeCloserUntilReady,
-  type ComeCloserState,
-} from "@/lib/come-closer-autogen";
-import { getEternalBeamUserId } from "@/lib/eternal-beam-user";
+import { mergeComeCloserIntoPipeline } from "@/lib/come-closer-asset";
 import { getEternalBeamPetId } from "@/lib/pet-identity";
 import { recognizeTap, type TapPoint } from "@/lib/double-tap";
 
@@ -141,6 +137,16 @@ function MemorialDevicePlayScreenInner({
     } catch {
       setPipeline(null);
     }
+    // ── 발행 BREATHING 하이드레이션 (Phase 7F) ────────────────────────────
+    // 서버 발행 포인터(pets.breathing_*)가 있으면 새 서명 URL + 명시 포맷으로
+    // 파이프라인을 갱신한다. 실패/미발행이면 null — 위에서 읽은 값 그대로다.
+    let cancelled = false;
+    void hydrateStoredPipeline().then((hydrated) => {
+      if (!cancelled && hydrated) setPipeline(hydrated as StoredPipeline);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [cutoutImage]);
 
   // ── COME_CLOSER (프리미엄 1회 액션) ─────────────────────────────────────────
@@ -150,59 +156,36 @@ function MemorialDevicePlayScreenInner({
   const lastTapRef = useRef<TapPoint | null>(null);
   const tapStartRef = useRef<{ x: number; y: number } | null>(null);
 
+  // ── Phase 7I.1: 발견원이 인증 컨텍스트 하나다 ─────────────────────────────
+  // 예전에는 무과금 개발 엔드포인트(lookupComeCloserAsset, DEV 게이트)를 직접
+  // 조회/폴링했다 — 프로덕션에서는 발견이 아예 되지 않았다. 이제 아이들 4종과
+  // **같은 인증 READY 계약**(PremiumAssetsProvider → GET /premium/assets)을 읽는다.
+  // URL 은 서버가 호출 시점에 재서명한 값이고, 생성 중이면 Provider 가 폴링한다.
+  const { assets: premiumAssets } = usePremiumAssetsContext();
   useEffect(() => {
     if (!pipeline) return;
     const petId = getEternalBeamPetId(pipeline.content_id);
-    if (isComeCloserCacheValid(pipeline, petId)) return;
-    let cancelled = false;
-    // 테마 독립 — placeId 를 넘기지 않고, 의존성에도 테마가 없다.
-    const params = { userId: getEternalBeamUserId(), petId, pipeline };
-    const onState = (st: ComeCloserState) => {
-      if (import.meta.env.DEV) console.info("[COME_CLOSER/devicePlay] state =", st);
-    };
-
-    void (async () => {
-      const r = await lookupComeCloserAsset({ ...params, onState });
-      if (cancelled) return;
-
-      if (r.url) {
-        if (r.url !== pipeline.come_closer_video_url || pipeline.come_closer_pet_id !== petId) {
-          setPipeline(mergeComeCloserIntoPipeline(pipeline, r.url, petId));
-        }
-        return;
+    const readyUrl = premiumAssets?.readyAssets?.COME_CLOSER?.url ?? null;
+    if (readyUrl) {
+      if (
+        readyUrl !== pipeline.come_closer_video_url ||
+        pipeline.come_closer_pet_id !== petId
+      ) {
+        setPipeline(mergeComeCloserIntoPipeline(pipeline, readyUrl, petId));
       }
-
-      if (pipeline.come_closer_video_url) {
-        setPipeline(mergeComeCloserIntoPipeline(pipeline, null, null)); // 다른 펫 캐시 제거
-        return; // 파이프라인이 바뀌어 이 effect 가 다시 돈다 — 폴링은 그 회차에서 시작한다
-      }
-
-      // ⚠️ 여기가 빠져 있어서 COME_CLOSER 가 no-source 로 굳었다.
-      //
-      // 이 화면은 ensure 를 **한 번** 부르고 끝이었다. 그런데 사용자가 조정 화면에서
-      // 넘어온 직후에는 COME_CLOSER 가 아직 queued/generating 인 경우가 흔하고, 그때
-      // r.url 은 null 이다. 그러면 come_closer_video_url 이 영영 채워지지 않아
-      // mountableEvents 가 COME_CLOSER 를 빼고, 더블탭은 decideTrigger 에서
-      // hasSource=false → "no-source" 로 거절된다. 자산이 나중에 승격돼도 이 화면은
-      // 다시 물어보지 않으므로 새로고침 없이는 절대 재생되지 않았다.
-      //
-      // queued 도 폴링으로 해결된다 — 서버가 종료 이벤트마다 큐를 전진시키고
-      // (premium_generation.advance_generation_queue) COME_CLOSER 는 GENERATION_ORDER
-      // 1순위라, 슬롯이 비면 제출된다. 그래서 이 화면은 재제출하지 않고 기다리기만 한다.
-      if (r.state !== "generating") return;
-      const url = await pollComeCloserUntilReady({
-        ...params,
-        onState,
-        isCancelled: () => cancelled,
-      });
-      if (cancelled || !url) return;
-      setPipeline(mergeComeCloserIntoPipeline(pipeline, url, petId));
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [pipeline]);
+      return;
+    }
+    // READY 가 아닌데 **다른 펫**의 캐시가 남아 있으면 지운다 (교차 재생 방지).
+    // 같은 펫의 캐시는 남긴다 — 서버 발견이 잠시 비어도(로딩/일시 장애) 이미
+    // 재생 가능한 레거시 자산을 죽이지 않는다.
+    if (
+      pipeline.come_closer_video_url &&
+      pipeline.come_closer_pet_id &&
+      pipeline.come_closer_pet_id !== petId
+    ) {
+      setPipeline(mergeComeCloserIntoPipeline(pipeline, null, null));
+    }
+  }, [pipeline, premiumAssets]);
 
   // ── 아이들 이벤트 4종 (BLINKING / EAR_TWITCHING / HEAD_TILTING / TAIL_WAGGING) ──
   //
@@ -225,10 +208,29 @@ function MemorialDevicePlayScreenInner({
   const bakedAsset = {
     backgroundBaked: hasIdle && pipeline?.background_baked === true,
   };
-  const { urls: idleEventUrls, availableIds: availableIdleEventIds } = useIdleEventAssets({
+  // 명시 전달 포맷 (Phase 7F). hasIdle 게이트 이유는 bakedAsset 과 같다 —
+  // 데모 폴백 mp4 는 packed 가 아니므로 명시 선언을 물려받으면 안 된다.
+  const breathingDeliveryFormat =
+    hasIdle && resolveDeliveryFormat(pipeline) === "packed_alpha"
+      ? "packed_alpha"
+      : null;
+  const {
+    urls: idleEventUrls,
+    formats: idleEventFormats,
+    availableIds: availableIdleEventIds,
+  } = useIdleEventAssets({
     pipeline,
     enabled: hasIdle,
   });
+  // 이벤트별 전달 포맷 (Phase 7I.1) — COME_CLOSER 도 같은 발견 계약에서 온다.
+  // BREATH 의 포맷에서 파생하지 않는다: 모션마다 세대(packed/레거시)가 다르다.
+  const eventDeliveryFormats = useMemo(
+    () => ({
+      ...idleEventFormats,
+      COME_CLOSER: premiumAssets?.readyAssets?.COME_CLOSER?.deliveryFormat ?? null,
+    }),
+    [idleEventFormats, premiumAssets]
+  );
 
   // ── 런타임 적격성 ─────────────────────────────────────────────────────────
   // 구독 entitled ∩ 자산 READY ∩ 선호 ON. 스케줄러·플레이어·런타임은 한 줄도
@@ -406,6 +408,7 @@ function MemorialDevicePlayScreenInner({
                 cutoutUrl={cutoutDisplay}
                 comeCloserVideoUrl={comeCloserSource}
                 idleEventSources={eligibleIdleEventSources}
+                eventDeliveryFormats={eventDeliveryFormats}
                 actionTriggerRef={comeCloserTriggerRef}
                 onActionStateChange={onPlaybackStateChange}
                 backgroundBaked
@@ -431,6 +434,7 @@ function MemorialDevicePlayScreenInner({
                 // 적격한 것만 넘긴다 — 소스가 없으면 런타임이 자기 규칙(no-source)으로
                 // 거절하므로, 수동 트리거가 남아 있어도 OFF 는 재생되지 않는다.
                 idleEventSources={eligibleIdleEventSources}
+                eventDeliveryFormats={eventDeliveryFormats}
                 actionTriggerRef={comeCloserTriggerRef}
                 // 스케줄러가 "지금 뭔가 재생 중인가"를 아는 유일한 신호다.
                 // 이 prop 없이 스케줄러만 붙이면 COME_CLOSER 재생 중에도 발화해서
@@ -439,6 +443,9 @@ function MemorialDevicePlayScreenInner({
                 onFeetMarginChange={setFeetMargin}
                 // 이 분기는 정의상 레거시다 — 기본값에 기대지 않고 적는다.
                 backgroundBaked={false}
+                // packed_alpha 는 명시로 선택한다 — 휴리스틱이 놓치면 회색
+                // 매트 절반이 그대로 보인다 (Phase 7F).
+                deliveryFormat={breathingDeliveryFormat}
                 className={playbackFrameClass(bakedAsset)}
                 style={{
                   filter: `drop-shadow(0 16px 32px ${theme.accent}66)`,

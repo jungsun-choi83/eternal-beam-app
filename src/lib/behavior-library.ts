@@ -151,7 +151,13 @@ export function isBehaviorEligible(
   assets: PremiumAssets | null
 ): boolean {
   if (!assets) return false;
-  if (!assets.entitled) return false;                    // 만료 → 즉시 제외
+  // 구독 게이트는 **게이트가 켜져 있을 때만** 적용된다 (Phase 7I.2).
+  //
+  // 크레딧 모드(subscription_required=false)에서 entitled 는 참고값이고 구독
+  // 이력이 없는 모두에게 false 다 — 그것으로 재생을 막으면 크레딧을 내고 만든
+  // 자산이 영영 재생되지 않는다. 소유는 영구이고, 크레딧 모드의 재생 자격은
+  // READY(=소유) 그 자체다. 구독 모드의 "만료 → 즉시 제외"는 그대로 유지된다.
+  if (assets.subscriptionRequired && !assets.entitled) return false;
   if (behaviorState(actionId, assets) !== "ready") return false; // MISSING/GENERATING 제외
   return preferenceOf(actionId, assets);                 // OFF 제외
 }

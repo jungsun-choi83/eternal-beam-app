@@ -129,8 +129,10 @@ def test_wrong_aspect_output_downgrades_candidate_to_fail(storage, monkeypatch):
     calls = {"n": 0}
 
     def mixed_conformance(video_bytes, output_spec):
+        # 클래스 인지 상한(MICRO 기본 2)과 무관하게 "seedance 는 전부 규격 위반,
+        # kling 은 준수" 를 유지한다 — 호출 횟수가 아니라 상한을 기준으로 센다.
         calls["n"] += 1
-        if calls["n"] <= 3:
+        if calls["n"] <= mv.candidate_policy("MICRO")["max_primary"]:
             return landscape_conformance(video_bytes, output_spec)
         return qa_mod.verify_output_conformance(
             video_bytes, output_spec,

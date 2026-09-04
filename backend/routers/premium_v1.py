@@ -26,8 +26,10 @@ from pydantic import BaseModel
 
 from ..auth import AuthedUser, require_user
 from ..scenarios.pet_scenarios import IDLE_EVENTS, PET_ACTIONS, THEME_INDEPENDENT_PLACE_ID
+from ..services import asset_url_refresh
 from ..services import behavior_preferences
 from ..services import generated_motions_service as motions_svc
+from ..services import motion_publication_service
 from ..services import premium_entitlement
 from ..services import premium_purchase
 from ..services import generation_credits
@@ -74,11 +76,24 @@ class PurchaseResponse(BaseModel):
     place_id: str = THEME_INDEPENDENT_PLACE_ID
 
 
+class ReadyAssetOut(BaseModel):
+    """READY 자산 하나의 재생 해석 (Phase 7I.1)."""
+
+    #: **호출 시점에 새로 서명한** URL. 저장하지 말고 그대로 재생에 쓴다.
+    url: str
+    #: 명시 전달 포맷. 'packed_alpha' = 새 시스템의 vstack 파생물(packed 렌더러
+    #: 필수). None = 레거시 — 브라우저의 기존 규칙(blackkey/휴리스틱)이 맞다.
+    delivery_format: str | None = None
+
+
 class AssetsResponse(BaseModel):
     pet_id: str
     place_id: str = THEME_INDEPENDENT_PLACE_ID
     #: 액션 id → URL (재생 가능한 것만)
     ready: dict[str, str] = {}
+    #: 액션 id → {새 서명 URL, 전달 포맷} (Phase 7I.1). ready 와 같은 키 집합이며
+    #: URL 은 항상 이번 요청에서 재서명된 값이다 — ready 는 구클라이언트 호환용.
+    ready_assets: dict[str, ReadyAssetOut] = {}
     generating: list[str] = []
     missing: list[str] = []
     #: 레지스트리 그대로 — 프론트가 개수를 하드코딩하지 않게.
@@ -177,9 +192,28 @@ async def get_premium_assets(
     except product_catalog.CatalogUnavailableError:
         logger.warning("자산 조회 중 카탈로그 확인 실패 — 발견은 계속한다 (user=%s)", user.user_id)
 
+    # ── READY 자산 해석 (Phase 7I.1) ─────────────────────────────────────────
+    # 포인터의 저장 URL 은 만료된다(7일 서명). 발견 응답은 **호출 시점에** 다시
+    # 서명한다 — Shaker 와 같은 규칙이다. 인식 못 하는 URL(외부 CDN/mock)은
+    # 그대로 통과시킨다(재서명 불가가 재생 차단이 되면 안 된다). 전달 포맷은
+    # 포장 규칙(`_packed.mp4`)/후보 선언에서 읽는다 — BREATHING 발행과 같은 판정.
+    ready_assets: dict[str, ReadyAssetOut] = {}
+    fresh_ready: dict[str, str] = {}
+    for action, stored_url in state.ready.items():
+        obj = asset_url_refresh.parse_storage_object(stored_url)
+        fresh = (asset_url_refresh.sign_object(obj) if obj else None) or stored_url
+        fresh_ready[action] = fresh
+        ready_assets[action] = ReadyAssetOut(
+            url=fresh,
+            delivery_format=motion_publication_service.delivery_format_for(
+                None, obj.path if obj else stored_url
+            ),
+        )
+
     return AssetsResponse(
         pet_id=pid,
-        ready=state.ready,
+        ready=fresh_ready,
+        ready_assets=ready_assets,
         generating=sorted(state.active),
         missing=sorted(state.missing),
         idle_events=list(IDLE_EVENTS),

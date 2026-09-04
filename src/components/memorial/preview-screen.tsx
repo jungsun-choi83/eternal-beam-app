@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { motion } from "framer-motion";
 import { ArrowLeft, RotateCcw, Film } from "lucide-react";
 import {
@@ -20,6 +20,7 @@ import { usePetGrounding } from "@/components/memorial/use-pet-grounding";
 import { subjectTransform } from "@/lib/pet-grounding";
 import {
   playbackFrameClass,
+  resolveDeliveryFormat,
   shouldApplySubjectTransform,
   shouldRenderThemeBackdrop,
 } from "@/lib/baked-playback";
@@ -42,21 +43,30 @@ import {
 } from "@/lib/pet-runtime-events";
 import { useIdleEventScheduler } from "@/components/memorial/use-idle-event-scheduler";
 import { useIdleEventAssets } from "@/components/memorial/use-idle-event-assets";
-import { PremiumAssetsProvider } from "@/components/memorial/premium-assets-context";
+import {
+  PremiumAssetsProvider,
+  usePremiumAssetsContext,
+} from "@/components/memorial/premium-assets-context";
 import { useBehaviorEligibility } from "@/components/memorial/use-behavior-eligibility";
 import { getEternalBeamUserId } from "@/lib/eternal-beam-user";
 import { ensurePetRegistered } from "@/lib/pet-registry-api";
+import {
+  phase7GenerationEnabled,
+  phase7PipelinePatch,
+  runPhase7Generation,
+} from "@/lib/phase7-generation-flow";
 import { getEternalBeamPetId } from "@/lib/pet-identity";
 import { onAuthStateChange } from "@/lib/supabase-auth";
-import {
-  isComeCloserCacheValid,
-  mergeComeCloserIntoPipeline,
-} from "@/lib/come-closer-asset";
-import {
-  lookupComeCloserAsset,
-  pollComeCloserUntilReady,
-  type ComeCloserState,
-} from "@/lib/come-closer-autogen";
+import { mergeComeCloserIntoPipeline } from "@/lib/come-closer-asset";
+
+/**
+ * COME_CLOSER 발견 상태 (Phase 7I.3).
+ *
+ * 예전에는 dev-autogen(come-closer-autogen)의 상태 유니온을 빌려 썼다 — 그쪽의
+ * "unavailable"(dev 트리거 꺼짐) 같은 값은 인증 발견 계약에는 존재하지 않는다.
+ * 이제 이 화면의 상태는 발견 응답에서만 나온다: 없음 / 생성 중 / READY.
+ */
+type ComeCloserDiscoveryState = "idle" | "generating" | "ready";
 import { recognizeTap, type TapPoint } from "@/lib/double-tap";
 import { getEffectiveBgVideo } from "@/lib/custom-background-store";
 import {
@@ -246,6 +256,11 @@ function PreviewScreenInner({
   const bakedAsset = {
     backgroundBaked: hasIdle && pipeline?.background_baked === true,
   };
+  // 명시 전달 포맷 (Phase 7F) — 게이트 이유는 bakedAsset 과 같다.
+  const breathingDeliveryFormat =
+    hasIdle && resolveDeliveryFormat(pipeline) === "packed_alpha"
+      ? "packed_alpha"
+      : null;
   const idleVideoUrl = hasIdle
     ? resolveIdleVideoUrl(pipeline?.idle_video_url, cutoutDisplay)
     : "";
@@ -264,6 +279,11 @@ function PreviewScreenInner({
   // 대기하고, Supabase 세션이 돌아오는 즉시 같은 canonical petId 로 재시도한다.
   useEffect(() => {
     if (!hasIdle || !pipeline?.content_id || !pipeline.idle_video_url) return;
+    // ── Phase 7G: 새 실행 산출물은 클라이언트 등록을 하지 않는다 ────────────
+    // pets 포인터의 저자는 서버 발행(Phase 7A) 하나다. 여기서 register 를 쏘면
+    // (a) REVIEW 개발 재생이 진짜 발행처럼 pets 에 박히고 (b) 발행된 packed
+    // 포인터를 클라이언트 값으로 덮어써 새 생성 상태가 사라진다.
+    if (pipeline.generation_source === "phase7-run") return;
 
     const registration = {
       petId: getEternalBeamPetId(pipeline.content_id) ?? `pet_${pipeline.content_id}`,
@@ -293,7 +313,7 @@ function PreviewScreenInner({
       disposed = true;
       unsubscribe();
     };
-  }, [hasIdle, pipeline?.content_id, pipeline?.idle_video_url]);
+  }, [hasIdle, pipeline?.content_id, pipeline?.idle_video_url, pipeline?.generation_source]);
 
   // 승격된 COME_CLOSER 자산을 확보한다. 없으면 **이 펫·이 테마로 1회만** 생성한다.
   //
@@ -302,10 +322,12 @@ function PreviewScreenInner({
   // 키로 새로 만든다: (user_id, pet_id, place_id, COME_CLOSER).
   //
   // 중복 제출은 서버가 최종적으로 막는다 — 여기 가드는 왕복을 줄일 뿐이다.
-  const [comeCloserState, setComeCloserState] = useState<ComeCloserState>("idle");
+  const [comeCloserState, setComeCloserState] = useState<ComeCloserDiscoveryState>("idle");
   // 제스처 핸들러는 useCallback 으로 고정돼 있어 state 를 직접 읽으면 낡은 값을 본다.
-  const comeCloserStateRef = useRef<ComeCloserState>("idle");
+  const comeCloserStateRef = useRef<ComeCloserDiscoveryState>("idle");
   comeCloserStateRef.current = comeCloserState;
+  // Phase 7I.1 — 발견원. Provider 는 이 화면의 바깥 컴포넌트가 이미 세운다.
+  const { assets: premiumAssetsForDiscovery } = usePremiumAssetsContext();
 
   useEffect(() => {
     if (!pipeline) return;
@@ -321,61 +343,38 @@ function PreviewScreenInner({
     // 최초 착수는 handleConfirm 이 명시적으로 한다(이 effect 는 그 뒤 재방문 시
     // 이미 있는 자산을 집어 오는 역할).
     if (!hasIdle) return;
+    // ── Phase 7I.1: 발견원이 인증 컨텍스트 하나다 ───────────────────────────
+    // 예전에는 무과금 개발 엔드포인트(lookupComeCloserAsset, DEV 게이트)를 직접
+    // 조회/폴링했다 — 프로덕션에서는 발견이 아예 되지 않았다. 이제 아이들 4종과
+    // **같은 인증 READY 계약**(PremiumAssetsProvider → GET /premium/assets)을
+    // 읽는다. 생성 중이면 Provider 가 폴링하고, READY 가 되는 순간 여기로 온다.
+    // 이 effect 는 여전히 **조회만 한다** — 새 생성은 purchasePremium 뿐이다.
     const petId = getEternalBeamPetId(pipeline.content_id);
-    // 캐시는 **같은 펫의 것일 때만** 신뢰한다. 아니면 조회해서 갱신한다 —
-    // 조회는 GET 한 번이고, canonical 이 있으면 프로바이더는 불리지 않는다.
-    if (isComeCloserCacheValid(pipeline, petId)) return;
-    // placeId 를 넘기지 않는다 — COME_CLOSER 는 테마 독립이라 테마를 바꿔도
-    // 같은 자산을 그대로 쓴다(재조회·재생성 없음).
-    const params = { userId: getEternalBeamUserId(), petId, pipeline };
-    let cancelled = false;
-    const onState = (st: ComeCloserState) => {
-      if (cancelled) return;
-      setComeCloserState(st);
-      if (import.meta.env.DEV) console.info("[COME_CLOSER] state =", st, petId);
-    };
-
-    /**
-     * 발견 루프 — **조회만 한다.**
-     *
-     * 예전에는 여기서 ensureComeCloser() 로 생성을 제출하고, queued 면 재제출까지
-     * 했다. 무과금 개발 엔드포인트에서는 편의였지만, 확정된 사업 모델에서
-     * COME_CLOSER 는 1 크레딧짜리 구매다 — 화면을 열었다는 이유로 결제가 일어나면
-     * 안 된다.
-     *
-     * 이제 이미 승격됐거나 이미 진행 중인 것만 집어 온다. 없으면 없는 채로 둔다:
-     * 소스가 없으면 더블탭이 no-source 로 거절되고 BREATHING 이 유지된다.
-     * 새 생성은 purchasePremium(actionKind("COME_CLOSER")) 만 시작한다.
-     */
-    const acquire = async () => {
-      const r = await lookupComeCloserAsset({ ...params, onState });
-      if (cancelled) return;
-
-      if (r.url) {
-        if (r.url !== pipeline.come_closer_video_url || pipeline.come_closer_pet_id !== petId) {
-          setPipeline(mergeComeCloserIntoPipeline(pipeline, r.url, petId));
-        }
-        return;
+    const readyUrl = premiumAssetsForDiscovery?.readyAssets?.COME_CLOSER?.url ?? null;
+    const generating = Boolean(
+      premiumAssetsForDiscovery?.generating.includes("COME_CLOSER")
+    );
+    setComeCloserState(readyUrl ? "ready" : generating ? "generating" : "idle");
+    if (readyUrl) {
+      if (
+        readyUrl !== pipeline.come_closer_video_url ||
+        pipeline.come_closer_pet_id !== petId
+      ) {
+        setPipeline(mergeComeCloserIntoPipeline(pipeline, readyUrl, petId));
       }
-      // 이 펫의 자산이 없다 = 남아 있는 캐시는 다른 펫 것이다. 즉시 비운다.
-      if (pipeline.come_closer_video_url) {
-        setPipeline(mergeComeCloserIntoPipeline(pipeline, null, null));
-        return;
-      }
-      // 이미 진행 중인 작업이 있으면 끝날 때까지 지켜본다(제출은 하지 않는다).
-      if (r.state !== "generating") return;
-      const url = await pollComeCloserUntilReady({
-        ...params, onState, isCancelled: () => cancelled,
-      });
-      if (!cancelled && url) setPipeline(mergeComeCloserIntoPipeline(pipeline, url, petId));
-    };
-    void acquire();
-
-    return () => {
-      cancelled = true;
-    };
+      return;
+    }
+    // READY 가 아닌데 **다른 펫**의 캐시가 남아 있으면 지운다 (교차 재생 방지).
+    // 같은 펫의 캐시는 남긴다 — 발견이 잠시 비어도 레거시 자산 재생을 죽이지 않는다.
+    if (
+      pipeline.come_closer_video_url &&
+      pipeline.come_closer_pet_id &&
+      pipeline.come_closer_pet_id !== petId
+    ) {
+      setPipeline(mergeComeCloserIntoPipeline(pipeline, null, null));
+    }
     // 의존성에 테마가 **없다** — 테마 변경이 생성/조회를 유발해선 안 된다.
-  }, [pipeline, hasIdle]);
+  }, [pipeline, hasIdle, premiumAssetsForDiscovery]);
 
   // ── 아이들 이벤트 자산 (4종) — **개발 빌드 전용** ─────────────────────────
   // 스윕 구현은 use-idle-event-assets 로 빠졌다. memorial-device-play-screen 이
@@ -384,10 +383,23 @@ function PreviewScreenInner({
   //
   // enabled 는 **실제 BREATH 자산**으로만 판정한다(hasRealIdleVideo) — 데모 폴백
   // mp4 를 근거로 켜면 확인 전에 유료 생성이 나가고 이음매 전제도 깨진다.
-  const { urls: idleEventUrls, availableIds: availableIdleEventIds } = useIdleEventAssets({
+  const {
+    urls: idleEventUrls,
+    formats: idleEventFormats,
+    availableIds: availableIdleEventIds,
+  } = useIdleEventAssets({
     pipeline,
     enabled: hasIdle,
   });
+  // 이벤트별 전달 포맷 (Phase 7I.1) — devicePlay 와 같은 배선.
+  const eventDeliveryFormats = useMemo(
+    () => ({
+      ...idleEventFormats,
+      COME_CLOSER:
+        premiumAssetsForDiscovery?.readyAssets?.COME_CLOSER?.deliveryFormat ?? null,
+    }),
+    [idleEventFormats, premiumAssetsForDiscovery]
+  );
 
   // ── 런타임 적격성 (재생 화면과 **같은 규칙**) ──────────────────────────────
   // 구독 entitled ∩ 자산 READY ∩ 선호 ON. 스케줄러·플레이어·런타임은 그대로 두고
@@ -460,6 +472,59 @@ function PreviewScreenInner({
     generatingRef.current = true;
     setGenError(null);
     setGenerating(true);
+
+    // ═══ Phase 7G — 새 생성 시스템 (기본 경로) ═══════════════════════════
+    // 확인은 이제 generation-run 하나를 만들고 폴링한다. Phase 2–6·QA·포장은
+    // 전부 서버 워커가 수행한다. 테마는 생성에 실리지 않는다 — 장면 굽기도
+    // 없다. 아래 레거시 본문은 보존되지만(명시적 회귀 스위치 전용) 새 펫
+    // 흐름에서는 **절대 실행되지 않고**, 실패해도 그쪽으로 떨어지지 않는다.
+    if (phase7GenerationEnabled()) {
+      try {
+        const meta = getPendingCutoutMeta();
+        if (!meta) throw new Error(p.generateMissingCutout);
+        const petId =
+          pipeline?.phase1_intake?.pet_id ?? getEternalBeamPetId(meta.contentId);
+        if (!petId) throw new Error(p.generateMissingCutout);
+
+        const outcome = await runPhase7Generation({
+          petId,
+          contentId: meta.contentId,
+        });
+        const next: StoredPipeline = {
+          content_id: meta.contentId,
+          cutout_display_url: pipeline?.cutout_display_url || meta.displayUrl,
+          dog_only_nobg_url: pipeline?.dog_only_nobg_url || meta.displayUrl,
+          action_video_url: pipeline?.action_video_url || "",
+          come_closer_video_url: pipeline?.come_closer_video_url ?? null,
+          phase1_intake: pipeline?.phase1_intake,
+          scene_id: pipeline?.scene_id ?? null,
+          ...phase7PipelinePatch(outcome),
+        };
+        try {
+          sessionStorage.setItem(ETERNAL_BEAM_PIPELINE_KEY, JSON.stringify(next));
+          localStorage.setItem("eternal_beam_content_id", next.content_id);
+          localStorage.setItem("eternal_beam_current_content_id", next.content_id);
+          // hologram_video_id 는 기기(S23) 송출용 레거시 키다 — packed vstack 을
+          // 그대로 보내면 기기에서 이중 화면이 되므로 새 경로는 채우지 않는다.
+        } catch {
+          /* ignore quota */
+        }
+        setPipeline(next);
+        // 기기 pet-ready push 도 같은 이유로 하지 않는다 — 기기의 packed 지원은
+        // Phase 7I(런타임/디바이스 확장)의 명시 작업이다.
+        onComplete();
+      } catch (e) {
+        const message =
+          e instanceof Error && e.message ? e.message : String(e);
+        console.warn("[preview] Phase 7 generation failed — 레거시 폴백 없음", e);
+        setGenError(message);
+      } finally {
+        generatingRef.current = false;
+        setGenerating(false);
+      }
+      return;
+    }
+    // ═══ 레거시 경로 (VITE_LEGACY_GENERATION=1 전용) ═════════════════════
     try {
       const meta = getPendingCutoutMeta();
       const cutFile = await rehydrateCutoutFile();
@@ -769,9 +834,8 @@ function PreviewScreenInner({
                 : `[COME_CLOSER] 더블탭 인식했지만 액션 없음 (state=${comeCloserStateRef.current}). ` +
                   (comeCloserStateRef.current === "generating"
                     ? "생성 중이다 — 완료되면 자동으로 재생 가능해진다."
-                    : comeCloserStateRef.current === "unavailable"
-                      ? "생성 경로가 꺼져 있다(ENABLE_DEV_PREMIUM_TRIGGER)."
-                      : "BREATH 영상이 없거나(정적 누끼) 자산이 아직 없다."),
+                    : "BREATH 영상이 없거나(정적 누끼) 자산이 아직 없다. " +
+                      "생성은 Behavior Library 의 구매로만 시작된다."),
             );
           }
           // 더블탭 ∩ 구독 ∩ READY ∩ ON — 자발적 경로와 같은 규칙.
@@ -957,6 +1021,7 @@ function PreviewScreenInner({
                     : null
                 }
                 idleEventSources={eligibleIdleEventSources}
+                eventDeliveryFormats={eventDeliveryFormats}
                 actionTriggerRef={comeCloserTriggerRef}
                 onActionStateChange={onPlaybackStateChange}
                 backgroundBaked
@@ -1012,11 +1077,14 @@ function PreviewScreenInner({
                     }
                     // 적격한 것만 넘긴다 — 소스가 없으면 런타임이 no-source 로 거절한다.
                     idleEventSources={eligibleIdleEventSources}
+                eventDeliveryFormats={eventDeliveryFormats}
                     actionTriggerRef={comeCloserTriggerRef}
                     // 스케줄러가 "지금 뭔가 재생 중인가"를 아는 유일한 신호다.
                     onActionStateChange={onPlaybackStateChange}
                     // 이 분기는 정의상 레거시다 — 기본값에 기대지 않고 적는다.
                     backgroundBaked={false}
+                    // packed_alpha 는 명시로 선택한다 (Phase 7F).
+                    deliveryFormat={breathingDeliveryFormat}
                     className={playbackFrameClass(bakedAsset)}
                     style={{
                       filter: `drop-shadow(0 16px 32px ${currentTheme.accent}66)`,

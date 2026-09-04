@@ -114,3 +114,63 @@ def build_canonical_prompt(
         )
     parts.extend(_confident_traits(visual_identity or {}))
     return "\n".join(parts)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 컴팩트 프롬프트 (Phase 6.5 라이브 검증 결과) — Runway promptText ≤ 1000자
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 라이브 검증에서 확인된 실제 계약: Runway gen4_image 의 promptText 최대 1000자.
+# 전체 내부 프롬프트를 자르는(truncate) 대신, 짧은 전용 변형을 쓴다:
+# 신원의 정본은 어차피 레퍼런스 이미지다 — 프롬프트에는 고신뢰 제약만 싣는다.
+# UNKNOWN 특성은 여기서도 문장이 되지 않는다.
+
+CANONICAL_COMPACT_PROMPT_VERSION = "canonical-prompt-compact-v1"
+
+_COMPACT_BASE = (
+    "Photorealistic canonical reference image of the exact same pet shown in the "
+    "supplied reference photos. Preserve its exact identity: facial proportions, "
+    "coat colors, markings, ear shape, body proportions, paws and tail — do not "
+    "invent features the references do not show. Full body visible, neutral "
+    "natural standing or sitting pose, front three-quarter angle, camera at the "
+    "pet's eye level, natural anatomy, neutral expression. Plain solid neutral "
+    "light-gray background, even lighting. No accessories, no other animals, "
+    "no human, no objects, no text, no stylization."
+)
+
+
+def _compact_trait_lines(visual_identity: dict[str, Any]) -> list[str]:
+    """고신뢰 특성만, 짧은 형태로. 실측 코트 색 + VLM 확인된 종/귀 모양."""
+    lines: list[str] = []
+    coat = (visual_identity or {}).get("coat") or {}
+    if isinstance(coat, dict) and coat.get("status") == "measured":
+        names = [
+            str(c.get("name")).replace("_", " ")
+            for c in (coat.get("dominant_colors") or [])
+            if isinstance(c, dict) and _known(c.get("name"))
+        ]
+        if names:
+            lines.append(f"Coat colors: {', '.join(names)}.")
+    traits = ((visual_identity or {}).get("semantic_traits") or {}).get("traits") or {}
+    if isinstance(traits, dict):
+        if _known(traits.get("species")):
+            lines.append(f"The pet is a {traits['species']}.")
+        ears = traits.get("ears") or {}
+        if isinstance(ears, dict) and _known(ears.get("shape")):
+            lines.append(f"{str(ears['shape']).replace('_', ' ').capitalize()} ears.")
+    return lines
+
+
+def build_compact_canonical_prompt(
+    *, visual_identity: dict[str, Any], max_chars: int = 1000
+) -> str:
+    """
+    프로바이더 문자 상한에 맞는 전용 프롬프트. 특성 줄은 상한에 맞을 때까지
+    뒤에서부터 통째로 떨어뜨린다 — 문장 중간 절단은 없다.
+    """
+    lines = _compact_trait_lines(visual_identity or {})
+    while True:
+        prompt = " ".join([_COMPACT_BASE] + lines)
+        if len(prompt) <= max_chars or not lines:
+            return prompt
+        lines.pop()

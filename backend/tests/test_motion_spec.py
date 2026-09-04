@@ -213,9 +213,13 @@ def test_review_keyframe_is_not_silently_used(storage, monkeypatch):
 def test_locomotion_falls_back_with_warning(storage, monkeypatch):
     _prepare_keyframes(monkeypatch, storage)
     spec = _resolve("COME_CLOSER")
-    assert spec["motion_reference"] == {"id": "DOG_APPROACH", "policy": "preferred", "asset": None}
-    assert spec["video_strategy"] == ms.STRATEGY_I2V  # 라이브러리 없음 → 폴백
+    # 라이브러리 미해석 시 v1 형태 유지 (Phase 6.6: resolution 표시 추가).
+    mr = spec["motion_reference"]
+    assert mr["id"] == "DOG_APPROACH" and mr["policy"] == "preferred" and mr["asset"] is None
+    assert mr["resolution"] == "unresolved"
+    assert spec["video_strategy"] == ms.STRATEGY_I2V  # 호환 레퍼런스 없음 → 폴백
     assert any("DOG_APPROACH" in w for w in spec["warnings"])
+    assert spec["pet_motion_profile"]["profile_version"]  # Phase 6.6 프로필 동봉
 
 
 def test_unknown_motion_rejected(storage, monkeypatch):

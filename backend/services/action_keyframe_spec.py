@@ -187,3 +187,37 @@ def build_keyframe_prompt(spec: KeyframeRole, visual_identity: dict[str, Any]) -
         )
     parts.extend(confident_trait_lines(visual_identity or {}))
     return "\n".join(parts)
+
+
+# ── 컴팩트 키프레임 프롬프트 (Runway promptText ≤ 1000자 — 라이브 검증 계약) ──
+KEYFRAME_COMPACT_PROMPT_VERSION = "keyframe-prompt-compact-v1"
+
+_COMPACT_PROMPT_BASE = (
+    "The first supplied image is the canonical reference of a specific pet; any "
+    "additional images are real photos of the same pet. Create a photorealistic "
+    "still of the EXACT SAME pet — a pose change only, not a new interpretation. "
+    "Preserve face, coat colors, markings, ear shape, body proportions, paws and "
+    "tail exactly as supplied; invent nothing. Natural anatomy. Plain solid "
+    "neutral light-gray background, even lighting. No objects, no scenery, no "
+    "other animals, no human, no text, no stylization."
+)
+
+
+def build_compact_keyframe_prompt(
+    spec: KeyframeRole, visual_identity: dict[str, Any], *, max_chars: int = 1000
+) -> str:
+    """짧은 전용 변형 — 신원은 이미지가 정본이고, 포즈 절만 필수다."""
+    from .canonical_prompt import _compact_trait_lines
+
+    pose = f"Requested pose: {spec.required_pose}."
+    vis = (
+        "Clearly visible: " + ", ".join(v.replace("_", " ") for v in spec.required_visibility) + "."
+        if spec.required_visibility
+        else ""
+    )
+    lines = [x for x in (vis,) if x] + _compact_trait_lines(visual_identity or {})
+    while True:
+        prompt = " ".join([_COMPACT_PROMPT_BASE, pose] + lines)
+        if len(prompt) <= max_chars or not lines:
+            return prompt
+        lines.pop()

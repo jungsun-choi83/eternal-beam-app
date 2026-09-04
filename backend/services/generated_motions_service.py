@@ -585,6 +585,46 @@ async def mark_job_rejected(external_id: str, validation: dict) -> None:
     ).eq("luma_generation_id", external_id).execute()
 
 
+async def record_pointer(
+  *,
+  user_id: str,
+  pet_id: str,
+  place_id: str,
+  action_id: str,
+  video_url: str,
+) -> GeneratedMotion:
+  """
+  현재 재생 포인터 upsert (Phase 7H) — 레거시 작업 행과 **무관한** 쓰기.
+
+  새 생성 시스템(Phase 1–7)의 이행 확정이 쓴다. 정본은 pet_motion_versions/
+  candidates 이고, 이 표는 기존 재생/디바이스/Shaker 가 읽는 투영일 뿐이다.
+  unique(user,pet,place,action) 이 "펫당 현재 하나"를 보장한다.
+  """
+  now = datetime.utcnow()
+  motion = GeneratedMotion(
+    user_id=user_id,
+    pet_id=pet_id,
+    place_id=place_id,
+    action_id=action_id,
+    video_url=video_url,
+    created_at=now,
+  )
+  _MOCK_MOTIONS[_motion_key(user_id, pet_id, place_id, action_id)] = motion
+  if _use_db() and _supabase():
+    _supabase().table(_motions_table()).upsert(
+      {
+        "user_id": user_id,
+        "pet_id": pet_id,
+        "place_id": place_id,
+        "action_id": action_id,
+        "video_url": video_url,
+        "created_at": now.isoformat(),
+      },
+      on_conflict="user_id,pet_id,place_id,action_id",
+    ).execute()
+  return motion
+
+
 async def _record_promoted_motion(
   job: MotionJobRow, place_id: str, stored_url: str
 ) -> GeneratedMotion:

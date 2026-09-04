@@ -138,13 +138,17 @@ test('preview 와 devicePlay 가 같은 신원 함수를 쓴다', async () => {
   ]) {
     const src = await fs.readFile(f, 'utf8')
     assert.match(src, /getEternalBeamPetId\(/, `${f} 가 공용 신원 함수를 쓰지 않는다`)
-    assert.match(src, /getEternalBeamUserId\(\)/, `${f} 가 공용 user_id 를 쓰지 않는다`)
     assert.doesNotMatch(
       src,
       /localStorage\.getItem\("eternal_beam_pet_id"\)/,
       `${f} 가 pet_id 를 직접 읽는다 — 파생 규칙이 갈라진다`
     )
   }
+  // Phase 7I.1: devicePlay 의 프리미엄 발견은 인증 토큰이 신원이다 — 로컬
+  // user_id 를 서버로 보내는 경로가 없어야 한다. preview 는 레거시 생성 경로
+  // (명시 회귀 스위치)에서만 공용 user_id 를 계속 쓴다.
+  const preview = await fs.readFile('src/components/memorial/preview-screen.tsx', 'utf8')
+  assert.match(preview, /getEternalBeamUserId\(\)/, 'preview 가 공용 user_id 를 쓰지 않는다')
 })
 
 test('권위 있는 쓰기는 모두 결속 함수를 거친다', async () => {

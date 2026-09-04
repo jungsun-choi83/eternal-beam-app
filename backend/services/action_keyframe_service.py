@@ -200,7 +200,9 @@ class KeyframeCandidate:
     decision: str
     model: Optional[str] = None
     external_job_id: Optional[str] = None
+    raw_bucket: Optional[str] = None
     raw_object_path: Optional[str] = None
+    cutout_bucket: Optional[str] = None
     cutout_object_path: Optional[str] = None
     input_canonical_candidate_id: Optional[str] = None
     input_reference_ids: list[str] = field(default_factory=list)
@@ -240,9 +242,11 @@ def _to_candidate(row: dict[str, Any]) -> KeyframeCandidate:
         keyframe_id=str(row.get("keyframe_id")),
         provider=str(row.get("provider") or ""),
         model=(row.get("model") or None),
-        attempt=int(row.get("attempt") or 1),
+        attempt=int(row["attempt"]) if row.get("attempt") is not None else 1,
         external_job_id=(row.get("external_job_id") or None),
+        raw_bucket=(row.get("raw_bucket") or None),
         raw_object_path=(row.get("raw_object_path") or None),
+        cutout_bucket=(row.get("cutout_bucket") or None),
         cutout_object_path=(row.get("cutout_object_path") or None),
         input_canonical_candidate_id=(
             str(row["input_canonical_candidate_id"]) if row.get("input_canonical_candidate_id") else None
@@ -519,42 +523,126 @@ async def build_keyframe(
     policy = canonical_pet_service.candidate_policy()
 
     rows = await _keyframe_rows(pid, spec.role)
-    kf_row: dict[str, Any] = {
-        "id": str(uuid.uuid4()),
-        "pet_id": pid,
-        "user_id": uid,
-        "canonical_version_id": canonical.id,
-        "canonical_version": canonical.version,
-        "keyframe_role": spec.role,
-        "version": (max((int(r.get("version") or 0) for r in rows), default=0)) + 1,
-        "status": STATUS_BUILDING,
-        "selected_candidate_id": None,
-        "selection_reason": None,
-        "prompt": prompt,
-        "prompt_version": action_keyframe_spec.KEYFRAME_PROMPT_VERSION,
-        "spec": action_keyframe_spec.role_spec_snapshot(spec),
-        "qa_summary": {},
-        "analyzer_versions": versions_stamp,
-        "created_at": _now_iso(),
-        "completed_at": None,
-    }
-    if not await canonical_pet_service._insert(_keyframes_table(), _MOCK_KEYFRAMES, kf_row):
-        raise ActionKeyframeError(
-            "KEYFRAMES_UNAVAILABLE", "키프레임 버전을 기록하지 못했습니다.", status=503
-        )
-    keyframe_id = kf_row["id"]
+    durable_execution = any(getattr(provider, "durable_execution", False) for provider in resolved_providers)
+    resumable = rows[-1] if rows else None
+    if not (
+        durable_execution
+        and resumable
+        and resumable.get("status") == STATUS_BUILDING
+        and str(resumable.get("canonical_version_id") or "") == str(canonical.id or "")
+        and resumable.get("canonical_version") == canonical.version
+        and resumable.get("prompt_version") == action_keyframe_spec.KEYFRAME_PROMPT_VERSION
+        and (resumable.get("analyzer_versions") or {}) == versions_stamp
+    ):
+        resumable = None
+
+    if resumable:
+        kf_row = resumable
+    else:
+        kf_row = {
+            "id": str(uuid.uuid4()),
+            "pet_id": pid,
+            "user_id": uid,
+            "canonical_version_id": canonical.id,
+            "canonical_version": canonical.version,
+            "keyframe_role": spec.role,
+            "version": (max((int(r.get("version") or 0) for r in rows), default=0)) + 1,
+            "status": STATUS_BUILDING,
+            "selected_candidate_id": None,
+            "selection_reason": None,
+            "prompt": prompt,
+            "prompt_version": action_keyframe_spec.KEYFRAME_PROMPT_VERSION,
+            "spec": action_keyframe_spec.role_spec_snapshot(spec),
+            "qa_summary": {},
+            "analyzer_versions": versions_stamp,
+            "created_at": _now_iso(),
+            "completed_at": None,
+        }
+        if not await canonical_pet_service._insert(_keyframes_table(), _MOCK_KEYFRAMES, kf_row):
+            raise ActionKeyframeError(
+                "KEYFRAMES_UNAVAILABLE", "키프레임 버전을 기록하지 못했습니다.", status=503
+            )
+    keyframe_id = str(kf_row["id"])
     input_ids = [f"canonical:{anchor.id}"] + secondary_ids
 
-    candidates: list[dict[str, Any]] = []
-    passes = 0
+    candidates = await _candidate_rows(keyframe_id) if resumable else []
+    passes = sum(1 for candidate in candidates if candidate.get("decision") == "PASS")
+    contract_violation = any(
+        bool((candidate.get("generation_metadata") or {}).get("contract_violation"))
+        for candidate in candidates
+    )
+
+    def _prompt_for(provider: Any) -> tuple[Optional[str], str]:
+        limit = getattr(provider, "max_prompt_chars", None)
+        if not limit or len(prompt) <= limit:
+            return prompt, "full"
+        compact = action_keyframe_spec.build_compact_keyframe_prompt(
+            spec, (profile.visual_identity if profile else {}), max_chars=limit
+        )
+        if len(compact) <= limit:
+            return compact, "compact"
+        return None, f"compact prompt {len(compact)} chars still exceeds {provider.name} limit {limit}"
 
     async def run_provider(provider: Any, max_candidates: int, tier: str) -> None:
-        nonlocal passes
+        nonlocal passes, contract_violation
+
+        provider_prompt, prompt_variant = _prompt_for(provider)
+        if provider_prompt is None:
+            existing_contract = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.get("provider") == provider.name
+                    and int(candidate.get("attempt") or 0) == 0
+                ),
+                None,
+            )
+            if existing_contract:
+                contract_violation = True
+                return
+            contract_violation = True
+            row = {
+                "id": str(uuid.uuid4()), "keyframe_id": keyframe_id, "pet_id": pid,
+                "user_id": uid, "keyframe_role": spec.role, "provider": provider.name,
+                "model": provider.model_name(), "model_version": None, "attempt": 0,
+                "external_job_id": None, "raw_bucket": None, "raw_object_path": None,
+                "cutout_bucket": None, "cutout_object_path": None,
+                "prompt_version": action_keyframe_spec.KEYFRAME_COMPACT_PROMPT_VERSION,
+                "input_canonical_candidate_id": anchor.id,
+                "input_reference_ids": input_ids,
+                "generation_metadata": {"tier": tier, "contract_violation": True},
+                "qa_result": {}, "decision": "ERROR", "selected": False,
+                "error": f"PROVIDER_CONTRACT: {prompt_variant}"[:500],
+                "created_at": _now_iso(),
+            }
+            await canonical_pet_service._insert(_candidates_table(), _MOCK_CANDIDATES, row)
+            candidates.append(row)
+            logger.error("키프레임 프로바이더 계약 위반 (%s): %s", provider.name, prompt_variant)
+            return
+
         for attempt in range(1, max_candidates + 1):
             if passes >= policy["stop_after_passes"]:
                 return
-            cand_id = str(uuid.uuid4())
-            cand_row: dict[str, Any] = {
+            existing = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if candidate.get("provider") == provider.name
+                    and int(candidate.get("attempt") or 0) == attempt
+                    and (candidate.get("generation_metadata") or {}).get("tier") == tier
+                ),
+                None,
+            )
+            resumable_candidate = bool(
+                existing
+                and existing.get("decision") == "ERROR"
+                and not existing.get("error")
+                and existing.get("raw_object_path")
+            )
+            if existing and not resumable_candidate:
+                continue
+            cand_id = str(existing.get("id")) if existing else str(uuid.uuid4())
+            cand_row: dict[str, Any] = existing or {
                 "id": cand_id,
                 "keyframe_id": keyframe_id,
                 "pet_id": pid,
@@ -569,10 +657,18 @@ async def build_keyframe(
                 "raw_object_path": None,
                 "cutout_bucket": None,
                 "cutout_object_path": None,
-                "prompt_version": action_keyframe_spec.KEYFRAME_PROMPT_VERSION,
+                "prompt_version": (
+                    action_keyframe_spec.KEYFRAME_COMPACT_PROMPT_VERSION
+                    if prompt_variant == "compact"
+                    else action_keyframe_spec.KEYFRAME_PROMPT_VERSION
+                ),
                 "input_canonical_candidate_id": anchor.id,
                 "input_reference_ids": input_ids,
-                "generation_metadata": {"tier": tier},
+                "generation_metadata": {
+                    "tier": tier,
+                    "prompt_variant": prompt_variant,
+                    "prompt_chars": len(provider_prompt),
+                },
                 "qa_result": {},
                 "decision": "ERROR",
                 "selected": False,
@@ -585,36 +681,50 @@ async def build_keyframe(
                     pid, spec.role, kf_row["version"], provider.name, attempt,
                 )
                 result = provider.generate(
-                    provider_refs, prompt,
+                    provider_refs, provider_prompt,
                     {**action_keyframe_spec.role_spec_snapshot(spec), "ratio": "1024:1024", "size": "1024x1024"},
                     {"pet_id": pid, "keyframe_id": keyframe_id, "attempt": attempt},
                 )
             except CanonicalProviderError as e:
                 cand_row["error"] = f"{e.code}: {e.message}"[:500]
-                await canonical_pet_service._insert(_candidates_table(), _MOCK_CANDIDATES, cand_row)
-                candidates.append(cand_row)
+                if existing:
+                    await canonical_pet_service._update(
+                        _candidates_table(), _MOCK_CANDIDATES, cand_id,
+                        {"error": cand_row["error"]},
+                    )
+                else:
+                    await canonical_pet_service._insert(_candidates_table(), _MOCK_CANDIDATES, cand_row)
+                    candidates.append(cand_row)
+                if e.code == "PROVIDER_CONTRACT":
+                    contract_violation = True
+                    logger.error("키프레임 프로바이더 계약 위반 (%s): %s", provider.name, e.message)
+                    return
                 continue
 
             cand_row["model"] = result.model
             cand_row["external_job_id"] = result.external_job_id
-            cand_row["generation_metadata"] = {"tier": tier, "usage": result.usage}
+            cand_row["generation_metadata"] = {
+                **cand_row["generation_metadata"],  # tier/prompt_variant/prompt_chars 보존
+                "usage": result.usage,
+            }
 
-            raw_path = (
+            raw_path = cand_row.get("raw_object_path") or (
                 f"{uid}/{cid}/keyframes/{spec.role.lower()}/v{kf_row['version']}/"
                 f"{provider.name}_a{attempt}_raw.png"
             )
-            try:
-                await supabase_assets.upload_asset_to_storage(raw_path, result.image_bytes, "image/png")
-                cand_row["raw_bucket"] = supabase_assets.BUCKET
-                cand_row["raw_object_path"] = raw_path
-            except Exception:
-                cand_row["error"] = "RAW_STORE_FAILED"
+            if not cand_row.get("raw_object_path"):
+                try:
+                    await supabase_assets.upload_asset_to_storage(raw_path, result.image_bytes, "image/png")
+                    cand_row["raw_bucket"] = supabase_assets.BUCKET
+                    cand_row["raw_object_path"] = raw_path
+                except Exception:
+                    cand_row["error"] = "RAW_STORE_FAILED"
+                    await canonical_pet_service._insert(_candidates_table(), _MOCK_CANDIDATES, cand_row)
+                    candidates.append(cand_row)
+                    continue
+
                 await canonical_pet_service._insert(_candidates_table(), _MOCK_CANDIDATES, cand_row)
                 candidates.append(cand_row)
-                continue
-
-            await canonical_pet_service._insert(_candidates_table(), _MOCK_CANDIDATES, cand_row)
-            candidates.append(cand_row)
 
             cutout_rgba = None
             cut_bytes = cutout(result.image_bytes)
@@ -660,7 +770,8 @@ async def build_keyframe(
                 passes += 1
 
     await run_provider(resolved_providers[0], policy["max_primary"], "primary")
-    if passes == 0 and len(resolved_providers) > 1:
+    # 계약 위반은 QA 실패가 아니다 — 그것만으로 폴백을 태우지 않는다.
+    if passes == 0 and len(resolved_providers) > 1 and not contract_violation:
         await run_provider(resolved_providers[1], policy["max_fallback"], "fallback")
 
     ranked = _rank_candidates(candidates)

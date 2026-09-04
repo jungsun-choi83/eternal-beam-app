@@ -259,6 +259,17 @@ from .routers import motion_videos_v1  # noqa: E402
 
 app.include_router(motion_videos_v1.router, prefix="/api", tags=["pet-motions"])
 
+# 모션 레퍼런스 라이브러리 (Phase 6.6). 종/형태 기반 매칭 — 내부/디버그 용도.
+from .routers import motion_references_v1  # noqa: E402
+
+app.include_router(motion_references_v1.router, prefix="/api", tags=["motion-references"])
+
+# Phase 7C durable orchestration. The browser creates/queries one run; this
+# server-owned coordinator invokes Phase 2–7A without exposing phase fan-out.
+from .routers import generation_runs_v1  # noqa: E402
+
+app.include_router(generation_runs_v1.router, prefix="/api", tags=["pet-generation-runs"])
+
 # Optional heavy pipeline endpoints (Luma/generate). Disable by default on lightweight deployments.
 _enable_generate = os.getenv("ENABLE_GENERATE_API", "0").strip().lower() in ("1", "true", "yes")
 if _enable_generate:

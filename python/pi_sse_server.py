@@ -44,6 +44,15 @@ def build_pet_ready_base(body: dict[str, Any], content_id: str) -> dict[str, Any
     packed_url = str(body.get("packed_url") or "").strip()
     if packed_url:
         base["packed_url"] = packed_url
+    # ── Device D1 (Phase 7) — 추가 신원/포맷 필드 ─────────────────────────
+    # 전부 **추가** 필드이고 값이 있을 때만 실린다: 구형 브라우저/구형 S23 빌드
+    # 조합에서는 본문이 예전과 바이트 단위로 동일하다. Pi 는 그대로 통과만
+    # 시킨다 — QA 판정을 추측하거나 값을 바꾸지 않는다. delivery_format 은
+    # 명시적 전달 포맷이라 파일명 추정에 앞선다(추정은 수신측 폴백일 뿐).
+    for key in ("pet_id", "motion_id", "delivery_format"):
+        value = str(body.get(key) or "").strip()
+        if value:
+            base[key] = value
     return base
 
 
