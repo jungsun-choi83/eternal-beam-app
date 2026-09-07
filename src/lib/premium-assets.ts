@@ -30,17 +30,38 @@ export function actionKind(actionId: string): string {
   return `ACTION:${(actionId || "").trim().toUpperCase()}`;
 }
 
+export interface ReadyAsset {
+  /** 호출 시점에 새로 서명된 URL — 저장하지 말고 그대로 재생에 쓴다. */
+  url: string;
+  /**
+   * 명시 전달 포맷 (Phase 7I.1). "packed_alpha" = 새 시스템 vstack 파생물
+   * (packed 렌더러 필수). null = 레거시 — 기존 규칙(blackkey/휴리스틱)이 맞다.
+   */
+  deliveryFormat: string | null;
+}
+
 export interface PremiumAssets {
   petId: string;
   /** 액션 id → 재생 가능한 URL */
   ready: Record<string, string>;
+  /**
+   * 액션 id → {새 서명 URL, 전달 포맷} (Phase 7I.1). ready 와 같은 키 집합.
+   * 구서버(필드 없음)와 붙으면 ready 에서 파생되고 포맷은 null(레거시)이다.
+   */
+  readyAssets: Record<string, ReadyAsset>;
   generating: string[];
   missing: string[];
   /** 서버 레지스트리 그대로 — 프론트가 개수를 하드코딩하지 않게. */
   idleEvents: string[];
   actionEvents: string[];
-  idleBundleCredits: number;
-  actionEventCredits: number;
+  /**
+   * 상품 키 → 크레딧 가격. **상품마다 다르다** (백엔드 digital_products).
+   *
+   * 예전에는 idleBundleCredits / actionEventCredits 두 스칼라였다. 그 모양 자체가
+   * "카테고리가 가격을 정한다"는 전제를 담고 있어서, 아이들 이벤트 넷에 서로 다른
+   * 값을 매길 방법이 없었다. 가격의 권위는 이제 서버 카탈로그 하나뿐이다.
+   */
+  prices: Record<string, number>;
   /**
    * 프리미엄 **생성**이 허용되는가 (구독 active 또는 해지 유예 기간).
    *
@@ -120,6 +141,39 @@ async function readError(res: Response): Promise<PremiumApiError> {
  * **읽기 전용이다.** 자산이 없다고 해서 이 호출이 생성을 시작하지 않는다 —
  * 그러려면 purchasePremium() 으로 명시적 의사가 있어야 한다.
  */
+/**
+ * ready_assets 파싱 — 구서버(필드 없음)에서는 ready 로 파생한다.
+ *
+ * **순수 함수**다: 어느 쪽으로 오든 호출부는 readyAssets 하나만 보면 되고,
+ * 레거시 파생 항목의 포맷은 null(기존 규칙)이다.
+ */
+export function parseReadyAssets(
+  raw: unknown,
+  ready: Record<string, string>
+): Record<string, ReadyAsset> {
+  const out: Record<string, ReadyAsset> = {};
+  if (raw && typeof raw === "object") {
+    for (const [id, entry] of Object.entries(raw as Record<string, unknown>)) {
+      const e = entry as { url?: unknown; delivery_format?: unknown };
+      const url = typeof e?.url === "string" ? e.url.trim() : "";
+      if (!url) continue;
+      out[id] = {
+        url,
+        deliveryFormat:
+          typeof e.delivery_format === "string" && e.delivery_format
+            ? e.delivery_format
+            : null,
+      };
+    }
+  }
+  for (const [id, url] of Object.entries(ready)) {
+    if (!out[id] && typeof url === "string" && url) {
+      out[id] = { url, deliveryFormat: null };
+    }
+  }
+  return out;
+}
+
 export async function discoverPremiumAssets(params: {
   petId: string;
   accessToken: string;
@@ -134,15 +188,16 @@ export async function discoverPremiumAssets(params: {
   });
   if (!res.ok) throw await readError(res);
   const b = (await res.json()) as Record<string, unknown>;
+  const ready = (b.ready as Record<string, string>) ?? {};
   return {
     petId: String(b.pet_id ?? params.petId),
-    ready: (b.ready as Record<string, string>) ?? {},
+    ready,
+    readyAssets: parseReadyAssets(b.ready_assets, ready),
     generating: (b.generating as string[]) ?? [],
     missing: (b.missing as string[]) ?? [],
     idleEvents: (b.idle_events as string[]) ?? [],
     actionEvents: (b.action_events as string[]) ?? [],
-    idleBundleCredits: Number(b.idle_bundle_credits ?? 1),
-    actionEventCredits: Number(b.action_event_credits ?? 1),
+    prices: (b.prices as Record<string, number>) ?? {},
     entitled: Boolean(b.entitled),
     preferences: (b.preferences as Record<string, boolean>) ?? {},
     subscriptionStatus:
@@ -162,11 +217,14 @@ export async function discoverPremiumAssets(params: {
  *
  * 멱등성은 서버가 쥔다(구매 원장의 부분 unique 인덱스). 두 번 눌러도, 탭이
  * 두 개여도, 새로고침해도 두 번 과금되지 않는다 — creditsCharged 로 확인할 수 있다.
+ *
+ * 계약은 kind + pet_id 뿐이다 (Phase 7H). 생성 입력(원본·누끼)은 서버가 pet_id 의
+ * Phase 1 intake 기록에서 읽는다 — 브라우저의 data: URL 을 보낼 이유도, 원격 URL 로
+ * 변환할 이유도 없다.
  */
 export async function purchasePremium(params: {
   kind: string;
   petId: string;
-  petImageUrl?: string | null;
   accessToken: string;
   signal?: AbortSignal;
 }): Promise<PurchaseOutcome> {
@@ -179,7 +237,6 @@ export async function purchasePremium(params: {
     body: JSON.stringify({
       kind: params.kind,
       pet_id: params.petId,
-      pet_image_url: params.petImageUrl ?? undefined,
     }),
     signal: params.signal,
   });

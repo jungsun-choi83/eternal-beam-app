@@ -1,5 +1,5 @@
 """
-유료 테마 스토어 (Phase 11) — 소유권 · 결제 · 분리.
+유료 테마 스토어 — 소유권 · 크레딧 결제 · 분리.
 
 핵심 계약:
   * 무료 테마는 결제 없이 언제나 쓸 수 있다.
@@ -9,6 +9,19 @@
   * 남이 산 테마는 내 것이 아니다.
   * 테마를 사거나 바꿔도 BREATHING/프리미엄 행동이 다시 만들어지지 않는다.
   * **가격을 발명하지 않는다** — 설정이 없으면 팔리지 않는다.
+
+── 화폐가 바뀌었다 (Phase 11) ───────────────────────────────────────────────
+예전에 이 파일은 `POST /themes/purchase` (저장된 카드로 KRW 즉시 청구)를 두드렸다.
+그 경로는 은퇴했고, 테마를 사는 유일한 방법은 **Beam Credit** 이다:
+
+    POST /api/v1/themes/purchase-with-credits
+
+계약 자체는 그대로다 — 멱등성, 사용자 간 격리, 구독과의 분리, 생성 금지는
+화폐와 무관하게 지켜져야 한다. 그래서 테스트를 지우지 않고 **경로만 옮겼다.**
+
+차감·원장·소유권의 원자성은 서비스/SQL 층에서 본다
+(test_theme_credit_purchase.py · test_theme_credit_purchase_sql.py).
+여기서 보는 것은 **HTTP 표면과 카탈로그**다.
 """
 
 from __future__ import annotations
@@ -20,7 +33,13 @@ import pytest
 from fastapi import FastAPI
 
 from backend.routers import theme_store_v1
-from backend.services import theme_catalog, theme_entitlement, theme_purchase, toss_billing
+from backend.services import (
+    credit_ledger,
+    product_catalog,
+    theme_catalog,
+    theme_entitlement,
+    wallet_service,
+)
 
 from .conftest import ASGITestClient
 
@@ -29,20 +48,30 @@ OTHER = "other@example.com"
 PAID = "aurora"
 FREE = "fresh_forest"
 
+#: Aurora 의 크레딧 가격. 마이그레이션 20261003000000 과 같은 값이다.
+CREDITS = 5
+
 
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("HYBRID_USE_SUPABASE", "0")
     monkeypatch.setenv("PET_HYBRID_SEED", "0")
     monkeypatch.setenv("ALLOW_INSECURE_TEST_AUTH", "1")
-    monkeypatch.setenv("TOSS_MOCK", "1")
+    monkeypatch.setenv("STARTER_CREDITS", "0")
     monkeypatch.delenv("THEME_PAID_KEYS", raising=False)
     monkeypatch.delenv("THEME_ENTITLEMENT_TTL_DAYS", raising=False)
     for k in theme_catalog.ALL_THEME_KEYS:
         monkeypatch.delenv(f"THEME_PRICE_{k.upper()}_KRW", raising=False)
     theme_entitlement.__reset_for_tests()
+    wallet_service._MOCK_WALLETS.clear()
+    product_catalog.__reset_for_tests()
+    product_catalog.set_price_for_tests(
+        product_catalog.theme_key(PAID), CREDITS, product_catalog.TYPE_THEME
+    )
     yield
     theme_entitlement.__reset_for_tests()
+    wallet_service._MOCK_WALLETS.clear()
+    product_catalog.__reset_for_tests()
 
 
 @pytest.fixture
@@ -55,30 +84,27 @@ def client() -> ASGITestClient:
 @pytest.fixture
 def priced(monkeypatch: pytest.MonkeyPatch) -> int:
     """
-    PM 이 가격을 정한 상태를 흉내 낸다.
+    레거시 KRW 가격이 설정된 상태 — **카탈로그 표시용이다.**
 
-    ⚠️ 이 숫자는 **테스트 픽스처이지 제품 가격이 아니다.** 실제 가격은 설정으로만
-    들어오며 코드에는 어떤 기본값도 없다.
+    ⚠️ 이 숫자로는 이제 아무것도 살 수 없다(주문을 만드는 경로가 없다). 카탈로그가
+    여전히 price_krw 를 실어 보내므로 그 필드의 계약만 확인한다.
     """
     monkeypatch.setenv(f"THEME_PRICE_{PAID.upper()}_KRW", "4900")
     return 4900
 
 
 @pytest.fixture
-def card(monkeypatch: pytest.MonkeyPatch):
-    """등록된 결제 수단. **구독 상태가 아니다** — 카드일 뿐이다."""
-    from backend.services import billing_store
-
-    class FakeSub:
-        billing_key = "bk_test"
-        customer_key = "ck_test"
-        # 일부러 만료 상태로 둔다 — 구독이 죽어 있어도 테마는 살 수 있어야 한다.
-        status = "expired"
-
-    async def _get(_uid, _provider):
-        return FakeSub()
-
-    monkeypatch.setattr(billing_store, "get_subscription", _get)
+def funded() -> int:
+    """구매자와 제3자 모두에게 넉넉한 잔액. **구독이 아니다** — 지갑일 뿐이다."""
+    for user in (BUYER, OTHER):
+        _sync(
+            wallet_service.add_credits,
+            user,
+            20,
+            reason=credit_ledger.REASON_CREDIT_PACK_TOPUP,
+            idempotency_key=f"fund:{user}",
+        )
+    return 20
 
 
 def _sync(afn, *args, **kwargs):
@@ -95,9 +121,16 @@ def _catalog(client: ASGITestClient, user: str = BUYER) -> dict[str, dict]:
     return {t["theme_key"]: t for t in r.json()["themes"]}
 
 
+def _balance(user: str = BUYER) -> int:
+    w = _sync(wallet_service.get_wallet, user, create_if_missing=True)
+    return w.current_credits if w else 0
+
+
 def _buy(client: ASGITestClient, theme: str = PAID, user: str = BUYER):
     return client.post(
-        "/api/v1/themes/purchase", json={"theme_key": theme}, headers=_auth(user)
+        "/api/v1/themes/purchase-with-credits",
+        json={"theme_key": theme},
+        headers=_auth(user),
     )
 
 
@@ -120,11 +153,12 @@ def test_all_default_free_themes_are_owned(client: ASGITestClient):
         assert cat[key]["owned"] is True, key
 
 
-def test_free_theme_cannot_be_purchased(client: ASGITestClient, card):
+def test_free_theme_cannot_be_purchased(client: ASGITestClient, funded):
     """무료 테마에 결제를 만들지 않는다 — 만들면 그게 곧 오과금이다."""
     r = _buy(client, FREE)
     assert r.status_code == 409
     assert r.json()["detail"]["code"] == "THEME_IS_FREE"
+    assert _balance() == funded
 
 
 # ── 미보유 유료 테마 ─────────────────────────────────────────────────────────
@@ -136,51 +170,47 @@ def test_unowned_paid_theme_shows_as_not_owned(client: ASGITestClient, priced):
     assert row["owned"] is False
     assert row["purchasable"] is True
     assert row["price_krw"] == priced
+    assert row["credit_price"] == CREDITS
 
 
-def test_paid_theme_without_price_is_not_purchasable(client: ASGITestClient, card):
+def test_the_catalog_answers_balance_and_price_in_one_call(
+    client: ASGITestClient, funded
+):
     """
-    **가격을 발명하지 않는다.** 설정이 없으면 팔리지 않는다.
+    화면이 "잔액 20 / 가격 5" 를 그리는 데 조회가 두 번 필요하면 그 사이에
+    잔액이 바뀔 수 있고, 사용자는 자기가 못 살 것을 [Buy] 로 본다.
+    """
+    r = client.get("/api/v1/themes/catalog", headers=_auth(BUYER))
+    body = r.json()
+    assert body["credit_balance"] == funded
+    assert {t["theme_key"]: t["credit_price"] for t in body["themes"]}[PAID] == CREDITS
+
+
+def test_a_theme_without_a_credit_price_is_not_sold(client: ASGITestClient, funded):
+    """
+    **가격을 발명하지 않는다.** 카탈로그에 값이 없으면 팔리지 않는다.
 
     0 으로 떨어뜨리면 "무료로 팔린다" — 가격 미설정이 전량 무료 배포가 된다.
+    null 과 0 은 다르다: null 은 판매 불가, 0 은 명시적 무료다.
     """
-    row = _catalog(client)[PAID]
-    assert row["price_krw"] is None
-    assert row["purchasable"] is False
+    product_catalog._mock_catalog().pop(product_catalog.theme_key(PAID), None)
+
+    assert _catalog(client)[PAID]["credit_price"] is None
 
     r = _buy(client)
     assert r.status_code == 409
-    assert r.json()["detail"]["code"] == "THEME_PRICE_NOT_SET"
-
-
-def test_saved_card_path_falls_back_instead_of_blocking(client: ASGITestClient, priced):
-    """
-    카드가 없으면 /purchase 는 **안내**를 준다 — "살 수 없다"가 아니다.
-
-    ⚠️ 계약이 바뀐 자리다. 예전에는 PAYMENT_METHOD_REQUIRED 로 막았고, 그래서
-    테마를 사려면 먼저 멤버십 체크아웃으로 카드를 등록해야 했다. 그건 일회성
-    구매라는 성격과 어긋나고 구독 흐름을 전제로 만든다. 이제 이 코드는
-    "결제창 경로로 가라"는 신호이며, 실제 구매는 /checkout → /confirm 으로 된다
-    (test_theme_standalone_payment.py).
-    """
-    r = _buy(client)
-    assert r.status_code == 409
-    assert r.json()["detail"]["code"] == "PAYMENT_METHOD_UNAVAILABLE"
-
-    # 카드 없이도 체크아웃은 열린다 — 이것이 바뀐 계약의 핵심이다.
-    co = client.post(
-        "/api/v1/themes/checkout", json={"theme_key": PAID}, headers=_auth(BUYER)
-    )
-    assert co.status_code == 200, co.text
-    assert co.json()["amount"] == priced
+    assert r.json()["detail"]["code"] == "THEME_PRODUCT_NOT_SOLD"
+    assert _balance() == funded
 
 
 def test_purchase_requires_auth(client: ASGITestClient):
-    assert client.post("/api/v1/themes/purchase", json={"theme_key": PAID}).status_code == 401
+    assert client.post(
+        "/api/v1/themes/purchase-with-credits", json={"theme_key": PAID}
+    ).status_code == 401
     assert client.get("/api/v1/themes/catalog").status_code == 401
 
 
-def test_unknown_theme_is_rejected(client: ASGITestClient, card):
+def test_unknown_theme_is_rejected(client: ASGITestClient, funded):
     r = _buy(client, "not_a_theme")
     assert r.status_code == 404
     assert r.json()["detail"]["code"] == "THEME_UNKNOWN"
@@ -189,30 +219,27 @@ def test_unknown_theme_is_rejected(client: ASGITestClient, card):
 # ── 구매 성공 ────────────────────────────────────────────────────────────────
 
 
-def test_successful_purchase_grants_ownership(client: ASGITestClient, priced, card):
-    """**핵심 흐름**: NOT OWNED [Buy] → 결제 → OWNED [Use]."""
+def test_successful_purchase_grants_ownership(client: ASGITestClient, funded):
+    """**핵심 흐름**: NOT OWNED [5 크레딧] → 차감 → OWNED [Use]."""
     assert _catalog(client)[PAID]["owned"] is False
 
     r = _buy(client)
     assert r.status_code == 200, r.text
     b = r.json()
     assert b["status"] == "owned"
-    assert b["charged"] == priced
+    assert b["charged"] == CREDITS
     assert b["already_owned"] is False
+    assert b["credits_remaining"] == funded - CREDITS
+    assert b["currency"] == "CREDIT"
     assert b["order_id"]
 
     row = _catalog(client)[PAID]
     assert row["owned"] is True
     assert row["purchasable"] is False   # 이미 샀으므로 [Buy] 가 사라진다
+    assert _balance() == funded - CREDITS
 
 
-def test_ownership_is_permanent_by_default(client: ASGITestClient, priced, card):
-    """
-    기본은 영구다 (expires_at=null).
-
-    ⚠️ 기간제 여부는 PM 미결. 목표 UX 가 "OWNED" 이므로 영구가 기본이고,
-    기간제가 새로운 발명이다.
-    """
+def test_ownership_is_permanent(client: ASGITestClient, funded):
     _buy(client)
     ents = _sync(theme_entitlement.list_entitlements, BUYER)
     assert len(ents) == 1
@@ -220,16 +247,22 @@ def test_ownership_is_permanent_by_default(client: ASGITestClient, priced, card)
     assert ents[0].active is True
 
 
-def test_ttl_is_configurable_for_pm(client: ASGITestClient, priced, card, monkeypatch):
-    """PM 이 기간제를 정하면 설정만 채우면 된다 — 스키마는 준비돼 있다."""
+def test_the_krw_ttl_setting_cannot_expire_a_credit_purchase(
+    client: ASGITestClient, funded, monkeypatch
+):
+    """
+    **Phase 10 종료 조건의 테마 쪽 면.**
+
+    THEME_ENTITLEMENT_TTL_DAYS 는 레거시 KRW 부여 경로(_grant)의 설정이다.
+    크레딧으로 산 테마는 영구다 — 이 설정이 켜져 있어도 만료되지 않는다.
+    섞이면 "크레딧을 썼는데 30일 뒤에 사라졌다"가 된다.
+    """
     monkeypatch.setenv("THEME_ENTITLEMENT_TTL_DAYS", "30")
     _buy(client)
-    ents = _sync(theme_entitlement.list_entitlements, BUYER)
-    assert ents[0].expires_at is not None
-    assert ents[0].active is True
+    assert _sync(theme_entitlement.list_entitlements, BUYER)[0].expires_at is None
 
 
-def test_expired_entitlement_is_not_owned(client: ASGITestClient, priced, card):
+def test_expired_entitlement_is_not_owned(client: ASGITestClient, funded):
     """만료된 소유권은 쓸 수 없다 — 해석할 수 없는 값도 만료로 본다(fail closed)."""
     _buy(client)
     key = theme_entitlement._key(BUYER, PAID)
@@ -240,37 +273,33 @@ def test_expired_entitlement_is_not_owned(client: ASGITestClient, priced, card):
     assert _catalog(client)[PAID]["owned"] is False
 
 
-def test_failed_payment_grants_nothing(client: ASGITestClient, card, monkeypatch):
+def test_insufficient_credits_grants_nothing(client: ASGITestClient):
     """
-    결제가 실패하면 소유권이 생기지 않는다.
+    잔액이 모자라면 소유권이 생기지 않는다.
 
-    toss_billing 목업은 amount<=0 을 실패 신호로 쓴다 — 여기서는 charge 를 직접
-    실패로 갈아 끼워 "실패는 예외가 아니라 결과" 규약을 그대로 태운다.
+    ⚠️ 예전 KRW 판(카드 거절)의 자리다. 실패 신호가 결제사에서 지갑으로 옮겨
+    갔을 뿐, 지켜야 할 것은 같다 — **실패는 소유권을 만들지 않는다.**
     """
-    monkeypatch.setenv(f"THEME_PRICE_{PAID.upper()}_KRW", "4900")
-
-    async def _fail(**kw):
-        return toss_billing.ChargeResult(
-            ok=False, payment_key=None, order_id=kw["order_id"], amount=kw["amount"],
-            raw={}, failure_code="CARD_DECLINED", failure_message="카드 거절",
-        )
-
-    monkeypatch.setattr(toss_billing, "charge", _fail)
+    _sync(
+        wallet_service.add_credits, BUYER, CREDITS - 1,
+        reason=credit_ledger.REASON_CREDIT_PACK_TOPUP, idempotency_key="short",
+    )
 
     r = _buy(client)
     assert r.status_code == 402
-    assert r.json()["detail"]["code"] == "THEME_PAYMENT_FAILED"
+    assert r.json()["detail"]["code"] == "INSUFFICIENT_CREDITS"
     assert _sync(theme_entitlement.list_entitlements, BUYER) == []
     assert _catalog(client)[PAID]["owned"] is False
+    assert _balance() == CREDITS - 1   # 한 크레딧도 사라지지 않았다
 
 
 # ── 멱등성 · 중복 결제 ───────────────────────────────────────────────────────
 
 
-def test_duplicate_purchase_does_not_charge_twice(client: ASGITestClient, priced, card):
+def test_duplicate_purchase_does_not_charge_twice(client: ASGITestClient, funded):
     """**핵심 회귀**: 두 번 눌러도 두 번 청구되지 않는다."""
     first = _buy(client).json()
-    assert first["charged"] == priced
+    assert first["charged"] == CREDITS
     assert first["already_owned"] is False
 
     for _ in range(3):
@@ -279,43 +308,50 @@ def test_duplicate_purchase_does_not_charge_twice(client: ASGITestClient, priced
         assert again["already_owned"] is True
         assert again["status"] == "owned"
 
-    # 소유권 행은 하나뿐이다.
+    assert _balance() == funded - CREDITS          # 딱 한 번만 빠졌다
     assert len(_sync(theme_entitlement.list_entitlements, BUYER)) == 1
 
 
-def test_duplicate_purchase_never_reaches_the_payment_provider(
-    client: ASGITestClient, priced, card, monkeypatch
+def test_duplicate_purchase_never_touches_the_wallet_again(
+    client: ASGITestClient, funded, monkeypatch
 ):
     """
-    이미 보유면 프로바이더를 **호출조차 하지 않는다.**
+    이미 보유면 지갑을 **건드리지도 않는다.**
 
-    "청구는 했지만 금액이 0" 이 아니라 "청구 자체가 없다"여야 한다 — 결제사
-    호출은 그 자체로 비용이고 실패 가능성이다.
+    "차감은 했지만 금액이 0" 이 아니라 "차감 시도 자체가 없다"여야 한다 —
+    차감 시도는 그 자체로 원장 한 줄이고 실패 가능성이다.
     """
     _buy(client)
 
-    calls: list[str] = []
-    real_charge = toss_billing.charge
+    async def _forbidden(*_a, **_k):
+        raise AssertionError("이미 보유한 테마에 차감을 시도했다")
 
-    async def _tracked(**kw):
-        calls.append(kw["order_id"])
-        return await real_charge(**kw)
+    monkeypatch.setattr(wallet_service, "deduct_credits", _forbidden)
 
-    monkeypatch.setattr(toss_billing, "charge", _tracked)
-
-    assert _buy(client).json()["charged"] == 0
-    assert calls == []
+    again = _buy(client)
+    assert again.status_code == 200, again.text
+    assert again.json()["charged"] == 0
 
 
-def test_each_purchase_uses_a_fresh_order_id(client: ASGITestClient, priced, card):
-    """order_id 가 멱등성의 축이다 — 구매마다 새로 만들어져야 한다."""
-    a = _buy(client, "aurora").json()["order_id"]
-    theme_entitlement.__reset_for_tests()
-    b = _buy(client, "aurora").json()["order_id"]
-    assert a and b and a != b
+def test_the_order_id_is_stable_because_it_is_the_idempotency_axis(
+    client: ASGITestClient, funded
+):
+    """
+    ⚠️ 계약이 뒤집힌 자리다. KRW 판에서는 구매마다 **새** order_id 를 만들었다
+    (결제사가 주문 재사용을 거절하므로). 크레딧 판에서 order_id 는 멱등 키
+    자체이고, 따라서 **같은 (사용자, 테마) 면 항상 같아야 한다.**
+    변하면 더블탭이 두 번 청구된다.
+    """
+    a = _buy(client).json()["order_id"]
+    b = _buy(client).json()["order_id"]
+    assert a == b
+    assert a == credit_ledger.theme_purchase_key(BUYER, PAID)
+
+    # 사람이 다르면 키도 다르다 — 아니면 남의 구매가 내 것을 멱등 처리한다.
+    assert _buy(client, user=OTHER).json()["order_id"] != a
 
 
-def test_order_lookup_finds_the_granting_purchase(client: ASGITestClient, priced, card):
+def test_order_lookup_finds_the_granting_purchase(client: ASGITestClient, funded):
     order_id = _buy(client).json()["order_id"]
     found = _sync(theme_entitlement.find_by_order, order_id)
     assert found is not None
@@ -326,7 +362,7 @@ def test_order_lookup_finds_the_granting_purchase(client: ASGITestClient, priced
 # ── 사용자 간 격리 ───────────────────────────────────────────────────────────
 
 
-def test_ownership_does_not_leak_across_users(client: ASGITestClient, priced, card):
+def test_ownership_does_not_leak_across_users(client: ASGITestClient, funded):
     """**핵심 회귀**: 남이 산 테마는 내 것이 아니다."""
     assert _buy(client, PAID, user=BUYER).status_code == 200
 
@@ -335,12 +371,13 @@ def test_ownership_does_not_leak_across_users(client: ASGITestClient, priced, ca
     assert _catalog(client, OTHER)[PAID]["purchasable"] is True
 
     assert _sync(theme_entitlement.list_entitlements, OTHER) == []
+    assert _balance(OTHER) == funded     # 남의 구매가 내 지갑을 건드리지 않았다
 
 
-def test_two_users_buy_independently(client: ASGITestClient, priced, card):
+def test_two_users_buy_independently(client: ASGITestClient, funded):
     _buy(client, PAID, user=BUYER)
     second = _buy(client, PAID, user=OTHER).json()
-    assert second["charged"] == priced       # 남이 샀다고 공짜가 되지 않는다
+    assert second["charged"] == CREDITS       # 남이 샀다고 공짜가 되지 않는다
     assert second["already_owned"] is False
     assert _catalog(client, OTHER)[PAID]["owned"] is True
 
@@ -349,13 +386,13 @@ def test_two_users_buy_independently(client: ASGITestClient, priced, card):
 
 
 def test_theme_purchase_never_reads_subscription_entitlement(
-    client: ASGITestClient, priced, card, monkeypatch
+    client: ASGITestClient, funded, monkeypatch
 ):
     """
     **핵심 회귀**: 테마 구매가 구독 자격을 조회하지 않는다.
 
-    조회하지 않으면 섞일 수도 없다. billing_store 에서 읽는 것은 **카드**이지
-    구독 상태가 아니다 (card 픽스처의 status 는 일부러 expired 다).
+    조회하지 않으면 섞일 수도 없다 — "회원이면 공짜"도, "비회원이면 못 산다"도
+    한 줄로 생길 수 없다.
     """
     from backend.services import premium_entitlement
 
@@ -369,7 +406,7 @@ def test_theme_purchase_never_reads_subscription_entitlement(
 
 
 def test_theme_purchase_does_not_change_subscription_state(
-    client: ASGITestClient, priced, card
+    client: ASGITestClient, funded
 ):
     """테마를 사도 구독 저장소는 한 글자도 바뀌지 않는다."""
     from backend.services import subscription_store_service as sub_store
@@ -383,17 +420,9 @@ def test_subscription_does_not_grant_themes(client: ASGITestClient, priced):
     """
     반대 방향: 활성 구독이 있어도 유료 테마가 공짜로 생기지 않는다.
 
-    멤버십 할인/무료 제공은 **PM 미결**이며 구현하지 않았다 — 구현하면 두 축이
-    커플링되고, 그건 요구사항이 금지한 것이다.
+    멤버십은 **크레딧을 지급할 뿐** 소유권을 주지 않는다 (Phase 10). 그 크레딧으로
+    사면 그때 소유가 생기고, 해지해도 그 소유는 남는다.
     """
-    from backend.services import premium_entitlement
-
-    async def _member(_uid):
-        return premium_entitlement.EntitlementState(
-            entitled=True, status="active", enforced=True
-        )
-
-    # 회원이어도 카탈로그의 소유 상태는 그대로다.
     assert _catalog(client)[PAID]["owned"] is False
     assert _sync(theme_entitlement.owned_theme_keys, BUYER) == set()
 
@@ -403,6 +432,18 @@ def test_theme_modules_are_independent_of_subscription_and_generation():
     구조로 고정한다 — 테마 모듈이 구독·생성 모듈을 **import 하지 않는다.**
 
     AST 로 보는 이유는 함수 안에서 하는 지연 import 까지 잡기 위해서다.
+
+    ── wallet_service 는 이제 허용된다 (Phase 4) ────────────────────────────
+    예전에는 금지 목록에 있었다. 그때 테마는 KRW 전용이었고 "테마 구매가 크레딧을
+    건드리지 않는다"가 지켜야 할 계약이었기 때문이다.
+
+    Phase 4 에서 그 계약이 **의도적으로 바뀌었다**: 테마는 Beam Credit 으로 팔린다
+    (Aurora = 5 크레딧). 지갑을 건드리는 것이 이제 이 모듈의 일이다.
+
+    나머지 셋은 그대로 금지다 — 그 축들은 여전히 독립이어야 한다:
+        구독   테마를 사도 구독 상태는 한 글자도 바뀌지 않는다
+        생성   테마를 사도 BREATHING·프리미엄 행동이 다시 만들어지지 않는다
+        프리미엄 구매 원장  테마 소유권은 premium_purchases 와 무관하다
     """
     import ast
 
@@ -413,7 +454,6 @@ def test_theme_modules_are_independent_of_subscription_and_generation():
         "premium_generation",
         "generation_queue",
         "credit_generation_service",
-        "wallet_service",
         "premium_purchase",
         "luma_service",
         "wan_service",
@@ -444,12 +484,16 @@ def test_theme_modules_are_independent_of_subscription_and_generation():
 
 
 def test_buying_or_changing_theme_never_generates(
-    client: ASGITestClient, priced, card, monkeypatch
+    client: ASGITestClient, funded, monkeypatch
 ):
     """
     **핵심 회귀**: 테마를 사거나 바꿔도 BREATHING/프리미엄 행동이 다시 만들어지지 않는다.
 
     생성 진입점을 전부 폭탄으로 갈아 끼우고 스토어 경로를 두드린다.
+
+    ⚠️ wallet_service.deduct_credits 는 목록에서 빠졌다 — 이제 테마 구매가 그것을
+    **부르는 것이 정상**이다(Phase 4). 지갑은 생성 진입점이 아니다. 지갑을 건드리는
+    것과 영상을 만드는 것은 다른 일이고, 여기서 잡으려는 것은 후자다.
     """
     from backend.services import (
         credit_generation_service,
@@ -457,7 +501,6 @@ def test_buying_or_changing_theme_never_generates(
         premium_generation,
         premium_purchase,
         video_generation,
-        wallet_service,
     )
 
     fired: list[str] = []
@@ -476,7 +519,6 @@ def test_buying_or_changing_theme_never_generates(
         (generation_queue, "advance_generation_queue"),
         (credit_generation_service, "generate_with_credit"),
         (video_generation, "submit_generation"),
-        (wallet_service, "deduct_credits"),
     ):
         if hasattr(mod, attr):
             monkeypatch.setattr(mod, attr, _explode(f"{mod.__name__}.{attr}"))
@@ -484,9 +526,28 @@ def test_buying_or_changing_theme_never_generates(
     _catalog(client)
     _buy(client)
     _catalog(client)
-    _buy(client)          # 멱등 경로
-    _buy(client, "sunset")  # 가격 미설정 → 거절 경로
+    _buy(client)               # 멱등 경로
+    _buy(client, "sunset")     # 가격 미설정 → 거절 경로
     assert fired == []
+
+
+# ── 은퇴한 KRW 경로는 돌아오지 않는다 (Phase 11) ────────────────────────────
+
+
+@pytest.mark.parametrize("path", ["purchase", "checkout"])
+def test_the_krw_purchase_endpoints_are_gone(client: ASGITestClient, path: str):
+    """
+    새 KRW 주문을 만들던 두 경로는 삭제됐다.
+
+    404 를 확인하는 이유: 라우터에서만 떼어 내고 서비스 함수를 남겨 두면
+    "임시로 하나만 열자"가 한 줄로 가능하다. 이 테스트가 그 한 줄을 깨뜨린다.
+    ✅ 구매는 크레딧으로만 한다. **POST /confirm 은 살아 있다**(드레인) —
+    test_theme_legacy_retired.py 참고.
+    """
+    r = client.post(
+        f"/api/v1/themes/{path}", json={"theme_key": PAID}, headers=_auth(BUYER)
+    )
+    assert r.status_code == 404
 
 
 # ── 카탈로그 설정 ────────────────────────────────────────────────────────────

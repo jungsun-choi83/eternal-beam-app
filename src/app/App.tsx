@@ -1,4 +1,5 @@
 import { ThemePurchaseReturnScreen } from '@/components/memorial/theme-purchase-return-screen'
+import { CreditPurchaseReturnScreen } from '@/components/memorial/credit-purchase-return-screen'
 import { SoulTraceImportScreen } from '@/components/memorial/soul-trace-import-screen'
 import { ShakerScreen } from '@/components/memorial/shaker-screen'
 import { isShakerEntry } from '@/lib/shaker-entry'
@@ -7,7 +8,7 @@ import { OpsOrdersScreen } from '@/components/memorial/ops/ops-orders-screen'
 import { OpsPartnersScreen } from '@/components/memorial/ops/ops-partners-screen'
 import { OpsShakerScreen } from '@/components/memorial/ops/ops-shaker-screen'
 import { currentOpsRoute } from '@/lib/ops-nav'
-import { orderReturnEntry, themeReturnEntry } from '@/lib/app-entry'
+import { creditsReturnEntry, orderReturnEntry, themeReturnEntry } from '@/lib/app-entry'
 import { isSoulTraceImportEntry, peekSoulTraceHandoffState } from '@/lib/soul-trace-handoff'
 import { EternalBeamApp } from './EternalBeamApp'
 
@@ -38,6 +39,9 @@ export default function App() {
   // effect 가 전부 붙고, 그 사이에 1회용 토큰이 든 URL 이 살아 있게 된다.
   if (isSoulTraceImportEntry(window.location.pathname)) return <SoulTraceImportScreen />
   if (themeReturnEntry()) return <ThemePurchaseReturnScreen />
+  // 크레딧 팩 결제 복귀. 확인이 끝나면 **고르던 배경으로** 돌려보낸다 —
+  // 사용자는 그 배경을 사려다 크레딧이 모자라서 여기까지 왔다.
+  if (creditsReturnEntry()) return <CreditPurchaseReturnScreen />
   // Ops 워크스페이스 — 한 곳에서 경로를 판정한다(lib/ops-nav.ts).
   // 예전에는 화면마다 별도 진입 헬퍼가 있었고 `/ops` 와 `/ops/search` 가 같은
   // 화면으로 접혀 스태프에게 두 개념처럼 보였다.

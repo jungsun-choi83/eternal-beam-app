@@ -12,14 +12,14 @@ import {
   getMemorialTheme,
   ORIGINAL_PHOTO_THEME_KEY,
   premiumMemorialThemes,
-  isPremiumTheme,
   type MemorialTheme,
 } from "@/components/memorial/themes";
 import { ThemeBackgroundVideo } from "@/components/memorial/theme-background-video";
 import { getEffectiveBgVideo } from "@/lib/custom-background-store";
 import { resetThemeBackgroundSyncCache } from "@/lib/device-theme-sync";
 import { useThemeOwnership } from "@/components/memorial/use-theme-ownership";
-import { formatPriceKrw, themeRow, type ThemeOffer } from "@/lib/theme-ownership";
+import { formatCredits, themeRow, type ThemeOffer } from "@/lib/theme-ownership";
+import { CreditPackSheet } from "@/components/memorial/credit-pack-sheet";
 import { CutoutStage } from "@/components/memorial/cutout-stage";
 import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
 
@@ -35,13 +35,10 @@ interface ThemeSelectionScreenProps {
   originalPhoto?: string | null;
   selectedTheme: number | null;
   language?: string;
-  /** QR·?pi= 연결 — 무료 배경 CTA를 기기 재생으로 */
-  deviceLinked?: boolean;
   onSelectTheme: (themeId: number) => void;
   /** requiresGeneration 테마(예: custom_photo_bg) 카드를 탭했을 때 */
   onSelectCustomBackground?: (theme: MemorialTheme) => void;
   onContinue: (themeId: number) => void;
-  onSkip: () => void;
   onBack: () => void;
 }
 
@@ -113,7 +110,8 @@ function ThemeOwnershipBadge({
   offers: Map<string, ThemeOffer>;
 }) {
   const row = themeRow(theme, offers);
-  const price = formatPriceKrw(row.priceKrw);
+  // 배지도 **크레딧**을 보여 준다 — CTA 와 다른 통화를 쓰면 무엇을 내는지 헷갈린다.
+  const price = formatCredits(row.creditPrice);
 
   const [label, color] =
     row.state === "free"
@@ -121,7 +119,7 @@ function ThemeOwnershipBadge({
       : row.state === "owned"
         ? ["OWNED", "#a8e6a3"]
         : row.state === "not-owned"
-          ? [price ?? "BUY", "#f5d77a"]
+          ? [price ? `${price} 크레딧` : "BUY", "#f5d77a"]
           : ["준비 중", "#9a9a9a"];
 
   return (
@@ -246,17 +244,16 @@ const ThemeCarousel = memo(function ThemeCarousel({
               <ThemeThumb theme={theme} loadImage={loadImage} originalPhoto={originalPhoto} />
               <div className={`absolute inset-0 bg-gradient-to-b ${theme.gradient} opacity-40 pointer-events-none`} />
               {theme.requiresGeneration ? (
-                <div className="absolute top-2 left-2 w-5 h-5 rounded-full bg-white/15 border border-white/30 flex items-center justify-center">
+                <div className={`absolute left-2 w-5 h-5 rounded-full bg-white/15 border border-white/30 flex items-center justify-center ${selected ? "top-9" : "top-2"}`}>
                   <Flower2 className="w-3 h-3 text-[#f5d77a]" strokeWidth={2} />
                 </div>
               ) : null}
               {selected ? (
-                <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-[#c9a227] flex items-center justify-center">
+                <div className="absolute top-2 left-2 w-5 h-5 rounded-full bg-[#c9a227] flex items-center justify-center">
                   <Check className="w-3 h-3 text-[#0a0a0a]" strokeWidth={3} />
                 </div>
-              ) : (
-                <ThemeOwnershipBadge theme={theme} offers={offers} />
-              )}
+              ) : null}
+              <ThemeOwnershipBadge theme={theme} offers={offers} />
               <div className="absolute bottom-2 left-0 right-0 text-center px-1">
                 <span className="text-[10px] text-[#F1E5D1] tracking-wide">{themeLabel(theme)}</span>
               </div>
@@ -273,11 +270,9 @@ export function ThemeSelectionScreen({
   originalPhoto = null,
   selectedTheme,
   language = "ko",
-  deviceLinked = false,
   onSelectTheme,
   onSelectCustomBackground,
   onContinue,
-  onSkip,
   onBack,
 }: ThemeSelectionScreenProps) {
   const tc = memorialT(language).theme;
@@ -293,6 +288,8 @@ export function ThemeSelectionScreen({
    *  아래 useEffect 가 **이미 파싱하고 있던** 객체에서 그대로 꺼낸다. */
   const [idleBaked, setIdleBaked] = useState(false);
   const [highlightTheme, setHighlightTheme] = useState<number | null>(selectedTheme);
+  /** 크레딧이 모자랄 때 여는 팩 시트. 사용자가 눌러야만 열린다. */
+  const [showPacks, setShowPacks] = useState(false);
 
   const isInteractionTarget = useCallback(
     (id: "free" | "premium") => () => interactionCarouselRef.current === id,
@@ -343,26 +340,8 @@ export function ThemeSelectionScreen({
     (theme: MemorialTheme, source: "free" | "premium") => {
       interactionCarouselRef.current = source;
       setHighlightTheme(theme.id);
-      if (theme.requiresGeneration) {
-        onSelectCustomBackground?.(theme);
-        return;
-      }
-      // 미보유 유료 테마 → 선택 대신 구매. 무료·보유 테마의 선택 경로는
-      // 예전 그대로다(localStorage + onSelectTheme + 기기 동기화).
-      const row = themeRow(theme, ownership.offers);
-      if (!row.usable) {
-        if (row.action === "buy") void ownership.buy(theme.themeKey);
-        return;
-      }
-      try {
-        localStorage.setItem("eternal_beam_theme_key", theme.themeKey);
-        localStorage.setItem("eternal_beam_theme_id", String(theme.id));
-      } catch {
-        /* ignore */
-      }
-      onSelectTheme(theme.id);
     },
-    [onSelectCustomBackground, onSelectTheme, ownership]
+    []
   );
 
   const snapSelectTheme = useCallback(
@@ -372,19 +351,9 @@ export function ThemeSelectionScreen({
       const theme = (source === "free" ? freeMemorialThemes : premiumMemorialThemes).find(
         (t) => t.id === themeId
       );
-      if (!theme || theme.requiresGeneration) return;
-      // 스냅(스크롤 정지)으로도 미보유 유료 테마가 선택되면 안 된다.
-      // 여기서는 결제를 열지 않는다 — 사용자가 누른 것이 아니기 때문이다.
-      if (!themeRow(theme, ownership.offers).usable) return;
-      try {
-        localStorage.setItem("eternal_beam_theme_key", theme.themeKey);
-        localStorage.setItem("eternal_beam_theme_id", String(theme.id));
-      } catch {
-        /* ignore */
-      }
-      onSelectTheme(themeId);
+      if (!theme) return;
     },
-    [onSelectTheme, ownership.offers]
+    []
   );
 
   const activeTheme = highlightTheme ?? selectedTheme;
@@ -398,6 +367,80 @@ export function ThemeSelectionScreen({
    * 들어가고, 고객은 결제 뒤에야 알게 된다.
    */
   const originalMissing = Boolean(previewIsOriginal && !originalPhoto);
+  const activeRow = previewTheme ? themeRow(previewTheme, ownership.offers) : null;
+  const activePrice = formatCredits(activeRow?.creditPrice ?? null);
+  /**
+   * 지금 이 테마를 사기에 **몇 크레딧이 모자라는가.** 살 수 있으면 null.
+   *
+   * 잔액을 못 받았으면(null) 판정하지 않는다 — 모르는 것을 "부족"으로 읽으면
+   * 살 수 있는 사용자에게 충전을 강요하게 된다.
+   */
+  const shortfall =
+    activeRow?.action === "buy" &&
+    activeRow.creditPrice != null &&
+    ownership.balance != null &&
+    activeRow.creditPrice > ownership.balance
+      ? activeRow.creditPrice - ownership.balance
+      : null;
+  const needsCustomBackground = Boolean(
+    previewTheme?.requiresGeneration && !previewBgVideo
+  );
+  const waitingForCatalog = Boolean(
+    previewTheme?.premium && ownership.loading && activeRow?.state === "unknown"
+  );
+  const primaryDisabled =
+    !previewTheme ||
+    originalMissing ||
+    waitingForCatalog ||
+    ownership.buying != null ||
+    activeRow?.action === "none";
+
+  const commitTheme = useCallback(
+    (theme: MemorialTheme) => {
+      try {
+        localStorage.setItem("eternal_beam_theme_key", theme.themeKey);
+        localStorage.setItem("eternal_beam_theme_id", String(theme.id));
+      } catch {
+        /* ignore */
+      }
+      onSelectTheme(theme.id);
+    },
+    [onSelectTheme]
+  );
+
+  const handlePrimaryAction = useCallback(async () => {
+    if (!previewTheme || originalMissing || !activeRow) return;
+
+    if (activeRow.action === "buy") {
+      // 크레딧이 모자라면 **구매를 시도하지 않는다.** 402 를 받아 오류 문구를
+      // 띄우는 대신, 부족하다는 사실을 미리 알고 충전으로 안내한다 — 사용자가
+      // 실패를 겪을 이유가 없다.
+      if (shortfall != null) {
+        setShowPacks(true);
+        return;
+      }
+      await ownership.buy(previewTheme.themeKey);
+      return;
+    }
+    if (!activeRow.usable) return;
+
+    commitTheme(previewTheme);
+    if (needsCustomBackground) {
+      onSelectCustomBackground?.(previewTheme);
+      return;
+    }
+    onContinue(previewTheme.id);
+  }, [
+    activeRow,
+    commitTheme,
+    needsCustomBackground,
+    onContinue,
+    onSelectCustomBackground,
+    originalMissing,
+    ownership,
+    previewTheme,
+    shortfall,
+  ]);
   // 커스텀 배경은 getEffectiveBgVideo 가 저장된 사용자 배경을 돌려준다. 아직
   // 만들지 않았다면 카드 아트(플레이스홀더)가 나오고, 실제 거절은 다음 화면의
   // 장면 준비에서 일어난다.
@@ -526,26 +569,60 @@ export function ThemeSelectionScreen({
       </div>
 
       <div className="theme-selection-footer shrink-0 px-5 pt-3 space-y-2 relative z-20">
+        {ownership.error ? (
+          <p role="alert" className="text-center text-xs text-red-300">
+            {ownership.error === "UNAUTHENTICATED"
+              ? tc.signInToBuy
+              : ownership.error === "INSUFFICIENT_CREDITS"
+                ? tc.insufficientCredits
+                : tc.purchaseFailed}
+          </p>
+        ) : null}
+        {/* 잔액 · 가격을 CTA 바로 위에 둔다 — "잔액 12 / 가격 5" 를 보고 누르는
+            것이 이 화면의 결정이다. 살 수 있는 테마일 때만 보여 준다. */}
+        {ownership.balance != null && activeRow?.action === "buy" && activePrice ? (
+          <p className="text-center text-[11px] text-[#9a9a9a]">
+            {tc.balanceLabel(ownership.balance)}
+            {shortfall != null ? (
+              <span className="ml-2 text-[#f5d77a]">{tc.needMoreCredits(shortfall)}</span>
+            ) : null}
+          </p>
+        ) : null}
         <button
           type="button"
-          onClick={() => activeTheme && !originalMissing && onContinue(activeTheme)}
-          disabled={!activeTheme || originalMissing}
+          onClick={() => void handlePrimaryAction()}
+          disabled={primaryDisabled}
           className="cta-gold w-full py-3.5 rounded-2xl font-medium text-[15px] disabled:opacity-45 disabled:cursor-not-allowed"
         >
           {originalMissing
             ? tc.originalMissingCta
-            : activeTheme
-            ? isPremiumTheme(activeTheme)
-              ? tc.continuePremium
-              : deviceLinked
-                ? tc.continueDevicePlay
-                : tc.continueFree
-            : tc.selectFirst}
-        </button>
-        <button type="button" onClick={onSkip} className="w-full py-2.5 text-sm text-[#888]">
-          {tc.skip}
+            : !previewTheme
+              ? tc.selectFirst
+              : ownership.buying === previewTheme.themeKey
+                ? tc.buying
+                : waitingForCatalog
+                  ? tc.loadingPrice
+                  : activeRow?.action === "buy"
+                    ? shortfall != null
+                      ? tc.getCreditsCta
+                      : tc.buyFor(activePrice ?? "")
+                    : activeRow?.action === "none"
+                      ? tc.comingSoon
+                      : needsCustomBackground
+                        ? tc.createCustomBackground
+                        : tc.continueFree}
         </button>
       </div>
+
+      {showPacks && previewTheme ? (
+        <CreditPackSheet
+          balance={ownership.balance}
+          needed={activeRow?.creditPrice ?? null}
+          // 충전 뒤 **이 배경으로** 돌아온다. 홈이 아니다.
+          returnThemeKey={previewTheme.themeKey}
+          onClose={() => setShowPacks(false)}
+        />
+      ) : null}
     </div>
   );
 }

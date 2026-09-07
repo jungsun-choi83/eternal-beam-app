@@ -26,6 +26,7 @@ from ..scenarios.pet_scenarios import (
     THEME_INDEPENDENT_PLACE_KEY,
 )
 from . import generated_motions_service as motions_svc
+from .owned_assets import product_key_for_action as owned_assets_product_key
 from . import generation_queue
 from .credit_keyframe import KeyframePreparationError, prepare_black_plate_keyframe
 from .generation_safety import log_submission_receipt
@@ -114,9 +115,16 @@ async def submit_premium_action(
     pet_image_url: str,
     keyframe_url: str | None = None,
     api_base: str,
+    reservation_ledger_id: str | None = None,
+    credits_reserved: int = 0,
 ) -> SubmitResult:
     """
-    테마 독립 액션 1건을 프로바이더에 제출한다. 크레딧 차감 없음.
+    테마 독립 액션 1건을 프로바이더에 제출한다.
+
+    ── 예약 없이는 유료 제출을 하지 않는다 (Phase 7) ────────────────────────
+    credits_reserved > 0 인데 reservation_ledger_id 가 없으면 **여기서 멈춘다.**
+    호출부의 실수로 과금 없이 유료 생성이 도는 것을 막는 마지막 지점이다.
+    (스키마의 credit_sessions_paid_has_reservation 이 그 다음 방어선이다.)
 
     **큐 판정은 하지 않는다** — 호출부(라우터 또는 advance_generation_queue)가
     이미 admit 을 결정했다고 본다. 여기서 또 판정하면 판정 지점이 둘로 갈라진다.
@@ -124,9 +132,17 @@ async def submit_premium_action(
     action = (action_id or "").upper()
     place_key = THEME_INDEPENDENT_PLACE_KEY
 
-    # credits_charged=0 — 과금 대상이 아니다. partial/failed 로 끝나도 환불액이 0.
+    if credits_reserved and not reservation_ledger_id:
+        raise PremiumSubmitError(
+            "예약 없이 유료 생성을 제출할 수 없습니다.", stage="reservation"
+        )
+
+    # credits_charged 는 **예약된 크레딧**이다. 0 이면 무료 생성이고, 그때는
+    # 예약도 없다 — 세션 스키마의 CHECK 가 그 짝을 강제한다.
     session_id = await motions_svc.create_credit_session(
-        user_id, pet_id, place_key, pet_image_url, 0
+        user_id, pet_id, place_key, pet_image_url, credits_reserved,
+        reservation_ledger_id=reservation_ledger_id,
+        product_key=owned_assets_product_key(action),
     )
 
     kf = (keyframe_url or "").strip()

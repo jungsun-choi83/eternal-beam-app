@@ -75,25 +75,25 @@ test('표 출력에 세 판정이 그대로 드러난다', () => {
 
 // ── COME_CLOSER 소스 배선 회귀 가드 ──────────────────────────────────────────
 
-test('memorial 은 승격 전이면 폴링한다 — 한 번 묻고 포기하면 no-source 로 굳는다', () => {
-  // 조정 화면에서 넘어온 직후에는 COME_CLOSER 가 queued/generating 인 경우가 흔하고
-  // 그때 ensure 는 url=null 을 준다. 폴링이 없으면 come_closer_video_url 이 영영
-  // 비어 있어 decideTrigger 가 hasSource=false → "no-source" 로 거절한다.
+test('memorial 은 승격 전이면 계속 지켜본다 — 한 번 묻고 포기하면 no-source 로 굳는다', () => {
+  // Phase 7I.1: 폴링 주체가 화면에서 PremiumAssetsProvider 로 옮겨 갔다.
+  // Provider 는 generating 이 남아 있는 동안 15초 주기로 재조회하고, READY 가
+  // 되는 순간 컨텍스트가 갱신돼 아래 effect 가 다시 돈다. 화면은 컨텍스트를
+  // 구독하기만 하면 된다 — 자체 폴링 루프(pollComeCloserUntilReady)는 금지다:
+  // 사본이 갈라지면 한쪽만 dev 엔드포인트(프로덕션에서 죽는 경로)를 본다.
   const code = strip(MEMORIAL)
-  assert.match(code, /pollComeCloserUntilReady\(/, 'devicePlay 가 폴링하지 않는다')
-  // 유료 모델로 넘어오면서 대상이 좁아졌다: 이 화면은 **이미 진행 중인** 작업만
-  // 지켜본다. queued(=아직 제출 안 됨)를 폴링해도 만들어 줄 작업이 없고, 여기서
-  // 제출하면 그게 곧 동의 없는 결제다 — 제출은 purchasePremium() 만 한다.
-  assert.match(code, /r\.state !== "generating"/, 'generating 이 폴링 대상이 아니다')
-  assert.match(code, /isCancelled: \(\) => cancelled/, '언마운트 후에도 폴링이 계속된다')
+  assert.match(code, /usePremiumAssetsContext\(\)/, 'devicePlay 가 발견 컨텍스트를 구독하지 않는다')
+  assert.match(code, /premiumAssets\?\.readyAssets\?\.COME_CLOSER/, 'READY 계약을 읽지 않는다')
+  assert.doesNotMatch(code, /pollComeCloserUntilReady\(/, '화면 자체 폴링(dev 경로)이 남아 있다')
+  assert.doesNotMatch(code, /lookupComeCloserAsset\(/, 'dev 조회가 남아 있다')
 })
 
-test('폴링이 찾은 URL 은 파이프라인에 병합된다 — 안 하면 플레이어가 못 본다', () => {
+test('발견된 URL 은 파이프라인에 병합된다 — 안 하면 플레이어가 못 본다', () => {
   const code = strip(MEMORIAL)
-  const i = code.indexOf('pollComeCloserUntilReady(')
+  const i = code.indexOf('readyAssets?.COME_CLOSER')
   assert.ok(i > 0)
-  const after = code.slice(i, i + 400)
-  assert.match(after, /mergeComeCloserIntoPipeline\(pipeline, url, petId\)/)
+  const after = code.slice(i, i + 600)
+  assert.match(after, /mergeComeCloserIntoPipeline\(pipeline, readyUrl, petId\)/)
 })
 
 test('idleEventSources 가 COME_CLOSER 소스를 덮지 않는다 — 전개 순서가 계약이다', () => {

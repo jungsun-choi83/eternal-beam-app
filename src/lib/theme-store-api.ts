@@ -4,11 +4,14 @@
  * 서버 계약: backend/routers/theme_store_v1.py
  *
  * ⚠️ 이 모듈에는 **구독이 없다.** 테마 소유권은 다른 축이고, 응답에도 구독
- * 상태가 실리지 않는다. 크레딧도 없다 — 테마는 일회성 결제다.
+ * 상태가 실리지 않는다. 멤버십은 크레딧을 지급할 뿐 소유권을 주지 않는다.
  *
- * 경로가 둘이다. 저장된 카드는 **선택**이다:
- *   1) checkout → 결제창 → confirm   구독한 적 없는 사용자도 쓸 수 있다 (기본)
- *   2) purchase                       카드가 이미 있으면 즉시 (단축키)
+ * ── KRW 직접 구매는 은퇴했다 (Phase 11) ────────────────────────────────────
+ * 테마는 **Beam Credit** 으로만 산다(purchaseThemeWithCredits). 새 KRW 주문을
+ * 만들던 startThemeCheckout / openThemePaymentWindow / purchaseTheme 은 삭제됐다.
+ *
+ * confirmThemePayment 는 남는다 — 배포 시점에 결제창에 머물러 있던 고객의 승인을
+ * 받아 줄 곳이 필요하다. 새 주문이 생기지 않으므로 곧 쓸 일이 없어진다.
  */
 
 import type { ThemeOffer } from "./theme-ownership.ts";
@@ -24,10 +27,8 @@ function apiBase(): string {
 
 export type ThemeStoreErrorCode =
   | "UNAUTHENTICATED"
-  /** 유료 테마인데 가격이 아직 설정되지 않았다 (PM 미정). */
+  /** 레거시 KRW 가격 미설정. 드레인 경로에서만 나올 수 있다. */
   | "THEME_PRICE_NOT_SET"
-  /** 저장된 카드가 없다. **오류가 아니라 안내** — 결제창 경로로 가라는 신호다. */
-  | "PAYMENT_METHOD_UNAVAILABLE"
   | "THEME_ALREADY_OWNED"
   | "THEME_ORDER_NOT_FOUND"
   | "THEME_ORDER_NOT_PENDING"
@@ -35,6 +36,11 @@ export type ThemeStoreErrorCode =
   | "THEME_IS_FREE"
   | "THEME_UNKNOWN"
   | "THEME_PAYMENT_FAILED"
+  /** 크레딧 부족 — 화면은 "크레딧 받기"로 안내한다. */
+  | "INSUFFICIENT_CREDITS"
+  /** 크레딧으로 팔지 않는 테마 (가격 미설정). **무료가 아니다.** */
+  | "THEME_PRODUCT_NOT_SOLD"
+  | "THEME_PURCHASE_UNAVAILABLE"
   | "THEME_ENTITLEMENTS_UNAVAILABLE"
   | "UNKNOWN";
 
@@ -72,15 +78,23 @@ export function parseThemeOffer(row: Record<string, unknown>): ThemeOffer {
     free: Boolean(row.free),
     owned: Boolean(row.owned),
     priceKrw: row.price_krw == null ? null : Number(row.price_krw),
+    // null 을 0 으로 접지 않는다 — 미설정은 무료가 아니라 판매 불가다.
+    creditPrice: row.credit_price == null ? null : Number(row.credit_price),
     purchasable: Boolean(row.purchasable),
   };
 }
 
-/** 카탈로그 + 내 보유 상태. **읽기 전용 — 결제도 생성도 없다.** */
+export interface ThemeCatalog {
+  offers: ThemeOffer[];
+  /** 지금 잔액. 조회하지 못했으면 null — 0 과 구분한다. */
+  creditBalance: number | null;
+}
+
+/** 카탈로그 + 내 보유 상태 + 잔액. **읽기 전용 — 결제도 생성도 없다.** */
 export async function fetchThemeCatalog(params: {
   accessToken: string;
   signal?: AbortSignal;
-}): Promise<ThemeOffer[]> {
+}): Promise<ThemeCatalog> {
   const res = await fetch(`${apiBase()}/api/v1/themes/catalog`, {
     method: "GET",
     cache: "no-store",
@@ -90,31 +104,33 @@ export async function fetchThemeCatalog(params: {
   if (!res.ok) throw await readError(res);
   const b = (await res.json()) as Record<string, unknown>;
   const rows = Array.isArray(b.themes) ? b.themes : [];
-  return rows
-    .map((r) => parseThemeOffer(r as Record<string, unknown>))
-    .filter((o) => o.themeKey);
-}
-
-export interface ThemePurchaseOutcome {
-  themeKey: string;
-  /** **이번 호출이 실제로 청구한 금액.** 멱등 호출이면 0. */
-  charged: number;
-  alreadyOwned: boolean;
-  orderId: string | null;
+  return {
+    offers: rows
+      .map((r) => parseThemeOffer(r as Record<string, unknown>))
+      .filter((o) => o.themeKey),
+    creditBalance: b.credit_balance == null ? null : Number(b.credit_balance),
+  };
 }
 
 /**
- * 유료 테마 구매. **사용자 조작에서만 부른다** — effect / 마운트 / 폴링에서
- * 부르면 화면을 열었다는 이유로 결제가 일어난다.
+ * **Beam Credit 으로 테마를 산다.**
  *
- * 멱등성은 서버가 쥔다(order_id + 소유권 PK). 두 번 눌러도 charged=0 이다.
+ *     Aurora → 5 크레딧 → 소유권 (영구)
+ *
+ * 서버에서 차감·원장·소유권이 **한 트랜잭션**으로 일어난다. 부분 성공이 없으므로
+ * 이 호출이 성공하면 셋 다 됐고, 실패하면 셋 다 안 됐다.
+ *
+ * 결제창이 없다 — 페이지가 이동하지 않고 응답이 바로 돌아온다. 그래서 Toss 경로가
+ * 필요로 하던 왕복 상태 저장(theme-purchase-return-state)이 이 경로에는 없다.
+ *
+ * 멱등성은 서버가 쥔다((사용자, 테마) 키). 두 번 눌러도 charged=0 이다.
  */
-export async function purchaseTheme(params: {
+export async function purchaseThemeWithCredits(params: {
   themeKey: string;
   accessToken: string;
   signal?: AbortSignal;
 }): Promise<ThemePurchaseOutcome> {
-  const res = await fetch(`${apiBase()}/api/v1/themes/purchase`, {
+  const res = await fetch(`${apiBase()}/api/v1/themes/purchase-with-credits`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -130,54 +146,33 @@ export async function purchaseTheme(params: {
     charged: Number(b.charged ?? 0),
     alreadyOwned: Boolean(b.already_owned),
     orderId: b.order_id == null ? null : String(b.order_id),
+    creditsRemaining: b.credits_remaining == null ? null : Number(b.credits_remaining),
   };
 }
 
-// ── 일회성 결제 (구독·카드 등록 없이) ────────────────────────────────────────
-//
-//   1) POST /themes/checkout  → orderId / amount / clientKey (공개 키)
-//   2) Toss SDK requestPayment → 결제창 → successUrl 로 리다이렉트
-//   3) POST /themes/confirm    → 서버 검증 → 소유권
-//
-// ⚠️ 금액은 **서버가 확정한 주문 금액**이 기준이다. 아래 값들은 결제창을 띄우고
-//    돌아온 뒤 대조하는 용도이며, 승인 기준이 아니다.
-
-export interface ThemeCheckout {
-  orderId: string;
+export interface ThemePurchaseOutcome {
   themeKey: string;
-  amount: number;
-  orderName: string;
-  currency: string;
-  /** Toss 결제창용 **공개** 키. 시크릿은 백엔드를 떠나지 않는다. */
-  clientKey: string;
+  /** **이번 호출이 실제로 청구한 금액/크레딧.** 멱등 호출이면 0. */
+  charged: number;
+  alreadyOwned: boolean;
+  orderId: string | null;
+  /** 크레딧 구매에서만 채워진다 — 화면이 재조회 없이 "잔액 7" 을 그린다. */
+  creditsRemaining?: number | null;
 }
 
-/** 결제창에 필요한 값 발급. **아직 아무 돈도 움직이지 않는다.** */
-export async function startThemeCheckout(params: {
-  themeKey: string;
-  accessToken: string;
-  signal?: AbortSignal;
-}): Promise<ThemeCheckout> {
-  const res = await fetch(`${apiBase()}/api/v1/themes/checkout`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${params.accessToken}`,
-    },
-    body: JSON.stringify({ theme_key: params.themeKey }),
-    signal: params.signal,
-  });
-  if (!res.ok) throw await readError(res);
-  const b = (await res.json()) as Record<string, unknown>;
-  return {
-    orderId: String(b.order_id ?? ""),
-    themeKey: String(b.theme_key ?? params.themeKey),
-    amount: Number(b.amount ?? 0),
-    orderName: String(b.order_name ?? ""),
-    currency: String(b.currency ?? "KRW"),
-    clientKey: String(b.client_key ?? ""),
-  };
-}
+// ── 레거시 KRW 결제의 **드레인 창구** (Phase 11) ─────────────────────────────
+//
+// 주문을 만드는 1단계는 삭제됐다. 남은 것은 마지막 단계뿐이다:
+//
+//   (배포 전에 열려 있던 결제창) → successUrl 로 리다이렉트
+//   → POST /themes/confirm → 서버 검증 → 소유권
+//
+// 배포하는 순간 결제창을 띄워 둔 고객이 [승인] 을 누르면 **돈은 나간다.** 받아 줄
+// 곳이 없으면 결제만 되고 테마는 못 받는다. 새 주문이 생기지 않으므로 미결 주문은
+// 시간이 지나면 0 이 되고, 그때 이 함수도 사라진다.
+//
+// ⚠️ 금액은 **서버가 확정한 주문 금액**이 기준이다. 아래 amount 는 결제창에서
+//    돌아온 값을 대조하는 용도이며, 승인 기준이 아니다.
 
 /**
  * 결제창 승인 후 서버 확인. **여기서 소유권이 생긴다.**
@@ -214,32 +209,6 @@ export async function confirmThemePayment(params: {
   };
 }
 
-/** Toss 결제 SDK. 번들에 넣지 않고 결제 시작 시점에만 불러온다. */
-const TOSS_SDK_URL = "https://js.tosspayments.com/v1/payment";
-
-async function loadTossSdk(clientKey: string): Promise<{
-  requestPayment: (method: string, opts: Record<string, unknown>) => Promise<void>;
-}> {
-  const w = window as unknown as {
-    TossPayments?: (key: string) => { requestPayment: never };
-  };
-  if (!w.TossPayments) {
-    await new Promise<void>((resolve, reject) => {
-      const el = document.createElement("script");
-      el.src = TOSS_SDK_URL;
-      el.onload = () => resolve();
-      el.onerror = () => reject(new ThemeStoreError("UNKNOWN", "결제 모듈을 불러오지 못했습니다.", 0));
-      document.head.appendChild(el);
-    });
-  }
-  if (!w.TossPayments) {
-    throw new ThemeStoreError("UNKNOWN", "결제 모듈을 불러오지 못했습니다.", 0);
-  }
-  return w.TossPayments(clientKey) as unknown as {
-    requestPayment: (method: string, opts: Record<string, unknown>) => Promise<void>;
-  };
-}
-
 /** 결제 후 돌아올 경로. app-entry.ts 의 themeReturnEntry() 와 짝이다. */
 export function themeReturnUrls(origin?: string): { successUrl: string; failUrl: string } {
   const base = (origin || (typeof window !== "undefined" ? window.location.origin : "")).replace(
@@ -249,23 +218,3 @@ export function themeReturnUrls(origin?: string): { successUrl: string; failUrl:
   return { successUrl: `${base}/themes/success`, failUrl: `${base}/themes/fail` };
 }
 
-/**
- * 결제창 열기 — **페이지가 이동한다.** 이 함수 뒤의 코드는 실행되지 않는다.
- *
- * 카드 등록(requestBillingAuth)이 아니라 일회성 결제(requestPayment)다.
- * 그래서 구독한 적 없는 사용자도 쓸 수 있고, 카드가 저장되지도 않는다.
- */
-export async function openThemePaymentWindow(checkout: ThemeCheckout): Promise<void> {
-  if (!checkout.clientKey) {
-    throw new ThemeStoreError("UNKNOWN", "결제 설정이 준비되지 않았습니다.", 0);
-  }
-  const toss = await loadTossSdk(checkout.clientKey);
-  const { successUrl, failUrl } = themeReturnUrls();
-  await toss.requestPayment("카드", {
-    amount: checkout.amount,
-    orderId: checkout.orderId,
-    orderName: checkout.orderName,
-    successUrl,
-    failUrl,
-  });
-}

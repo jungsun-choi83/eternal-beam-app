@@ -217,19 +217,21 @@ export function HomeScreen({
             <span className="block text-xs mt-0.5 opacity-70 font-normal">{texts.tryForestHint}</span>
           </motion.button>
         ) : null}
-        <motion.button
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.6 }}
-          onClick={onSaveToNFC}
-          className="cta-gold w-full py-4 font-semibold text-base relative overflow-hidden"
-          whileHover={{ scale: 1.015, boxShadow: "0 14px 34px rgba(201, 162, 39, 0.34)" }}
-          whileTap={{ scale: 0.98 }}
-        >
-          {/* Top shine */}
-          <div className="absolute top-0 left-8 right-8 h-px bg-gradient-to-r from-transparent via-white/40 to-transparent" />
-          <span className="text-[#0a0a0a] font-medium tracking-wide">{texts.saveToMemory}</span>
-        </motion.button>
+        {cutoutImage ? (
+          <motion.button
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.6 }}
+            onClick={onSaveToNFC}
+            className="cta-gold w-full py-4 font-semibold text-base relative overflow-hidden"
+            whileHover={{ scale: 1.015, boxShadow: "0 14px 34px rgba(201, 162, 39, 0.34)" }}
+            whileTap={{ scale: 0.98 }}
+          >
+            {/* Top shine */}
+            <div className="absolute top-0 left-8 right-8 h-px bg-gradient-to-r from-transparent via-white/40 to-transparent" />
+            <span className="text-[#0a0a0a] font-medium tracking-wide">{texts.saveToMemory}</span>
+          </motion.button>
+        ) : null}
       </div>
     </div>
   );

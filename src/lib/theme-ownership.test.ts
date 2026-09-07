@@ -35,7 +35,7 @@ function offer(over: Partial<ThemeOffer> = {}): ThemeOffer {
     themeKey: "aurora",
     free: false,
     owned: false,
-    priceKrw: 4900,
+    priceKrw: 4900, creditPrice: 5,
     purchasable: true,
     ...over,
   };
@@ -43,7 +43,7 @@ function offer(over: Partial<ThemeOffer> = {}): ThemeOffer {
 
 describe("무료 테마", () => {
   it("FREE · [Use] · 언제나 쓸 수 있다", () => {
-    const row = themeRow(FREE_THEME, offers(offer({ themeKey: "fresh_forest", free: true, owned: true, priceKrw: 0, purchasable: false })));
+    const row = themeRow(FREE_THEME, offers(offer({ themeKey: "fresh_forest", free: true, owned: true, priceKrw: 0, creditPrice: 5, purchasable: false })));
     assert.equal(row.state, "free");
     assert.equal(row.action, "use");
     assert.equal(row.usable, true);
@@ -68,7 +68,7 @@ describe("유료 · 미보유", () => {
 
   it("가격이 없으면 살 수 없다 — coming-soon", () => {
     // PM 이 가격을 정하지 않은 상태. [Buy] 를 보여 주면 눌러도 409 가 난다.
-    const row = themeRow(PAID_THEME, offers(offer({ priceKrw: null, purchasable: false })));
+    const row = themeRow(PAID_THEME, offers(offer({ priceKrw: null, creditPrice: null, purchasable: false })));
     assert.equal(row.state, "coming-soon");
     assert.equal(row.action, "none");
     assert.equal(row.usable, false);
@@ -157,16 +157,19 @@ describe("가격 표시", () => {
 describe("응답 파싱", () => {
   it("snake_case → camelCase", () => {
     const o = parseThemeOffer({
-      theme_key: "aurora", free: false, owned: true, price_krw: 4900, purchasable: false,
+      theme_key: "aurora", free: false, owned: true, price_krw: 4900,
+      credit_price: 5, purchasable: false,
     });
     assert.deepEqual(o, {
-      themeKey: "aurora", free: false, owned: true, priceKrw: 4900, purchasable: false,
+      themeKey: "aurora", free: false, owned: true, priceKrw: 4900, creditPrice: 5, purchasable: false,
     });
   });
 
-  it("price_krw 가 null 이면 null 이다 (0 으로 떨어뜨리지 않는다)", () => {
+  it("가격이 null 이면 null 이다 (0 으로 떨어뜨리지 않는다)", () => {
     // 0 으로 만들면 "무료"로 보인다 — 가격 미설정이 무료 배포가 된다.
-    assert.equal(parseThemeOffer({ theme_key: "aurora", price_krw: null }).priceKrw, null);
+    const o = parseThemeOffer({ theme_key: "aurora", price_krw: null, credit_price: null });
+    assert.equal(o.priceKrw, null);
+    assert.equal(o.creditPrice, null, "크레딧 가격 미설정이 0(무료)으로 읽혔다");
   });
 
   it("빈 key 는 색인에서 걸러진다 — 찾을 수 없는 항목을 들고 다니지 않는다", () => {

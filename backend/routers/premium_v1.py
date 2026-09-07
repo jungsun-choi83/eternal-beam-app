@@ -26,10 +26,14 @@ from pydantic import BaseModel
 
 from ..auth import AuthedUser, require_user
 from ..scenarios.pet_scenarios import IDLE_EVENTS, PET_ACTIONS, THEME_INDEPENDENT_PLACE_ID
+from ..services import asset_url_refresh
 from ..services import behavior_preferences
 from ..services import generated_motions_service as motions_svc
+from ..services import motion_publication_service
 from ..services import premium_entitlement
 from ..services import premium_purchase
+from ..services import generation_credits
+from ..services import product_catalog
 from ..services.credit_keyframe import is_remote_asset_url
 
 logger = logging.getLogger(__name__)
@@ -49,8 +53,9 @@ class PurchaseRequest(BaseModel):
     #: "IDLE_BUNDLE" 또는 "ACTION:COME_CLOSER" (액션 id 만 줘도 된다)
     kind: str
     pet_id: str
-    #: 누락분 생성을 위해 필요. 전부 READY 면 없어도 된다.
-    pet_image_url: str | None = None
+    # Phase 7H — pet_image_url 은 계약에서 제거됐다. 생성 입력(원본·누끼·정본)은
+    # 서버가 pet_id 의 Phase 1 intake/reference 기록에서 읽는다. 구클라이언트가
+    # 보내는 값은 무시된다(pydantic extra 기본값) — 검증도 사용도 하지 않는다.
 
 
 class PurchaseResponse(BaseModel):
@@ -72,18 +77,39 @@ class PurchaseResponse(BaseModel):
     place_id: str = THEME_INDEPENDENT_PLACE_ID
 
 
+class ReadyAssetOut(BaseModel):
+    """READY 자산 하나의 재생 해석 (Phase 7I.1)."""
+
+    #: **호출 시점에 새로 서명한** URL. 저장하지 말고 그대로 재생에 쓴다.
+    url: str
+    #: 명시 전달 포맷. 'packed_alpha' = 새 시스템의 vstack 파생물(packed 렌더러
+    #: 필수). None = 레거시 — 브라우저의 기존 규칙(blackkey/휴리스틱)이 맞다.
+    delivery_format: str | None = None
+
+
 class AssetsResponse(BaseModel):
     pet_id: str
     place_id: str = THEME_INDEPENDENT_PLACE_ID
     #: 액션 id → URL (재생 가능한 것만)
     ready: dict[str, str] = {}
+    #: 액션 id → {새 서명 URL, 전달 포맷} (Phase 7I.1). ready 와 같은 키 집합이며
+    #: URL 은 항상 이번 요청에서 재서명된 값이다 — ready 는 구클라이언트 호환용.
+    ready_assets: dict[str, ReadyAssetOut] = {}
     generating: list[str] = []
     missing: list[str] = []
     #: 레지스트리 그대로 — 프론트가 개수를 하드코딩하지 않게.
     idle_events: list[str] = []
     action_events: list[str] = []
-    idle_bundle_credits: int = premium_purchase.IDLE_BUNDLE_CREDITS
-    action_event_credits: int = premium_purchase.ACTION_EVENT_CREDITS
+    #: 상품 키 → 크레딧 가격. **상품마다 다를 수 있다** (Phase 3).
+    #:
+    #: 예전에는 idle_bundle_credits / action_event_credits 두 스칼라였고, 그 값은
+    #: 환경변수에서 **import 시점에** 읽혀 응답 모델의 기본값으로 박혔다. 그래서
+    #: (a) 아이들 이벤트 넷이 반드시 같은 값이어야 했고,
+    #: (b) 가격을 바꾸려면 재배포해야 했으며,
+    #: (c) 프로세스가 뜬 뒤 값을 바꿔도 응답은 옛 값을 계속 실어 보냈다.
+    #:
+    #: 이제 요청마다 카탈로그에서 읽는다. 화면은 이 map 을 그대로 보여 주면 된다.
+    prices: dict[str, int] = {}
     #: 행동 id → ON/OFF. **등록된 프리미엄 행동 전체**가 들어온다(기본 켬).
     #: ⚠️ READY 와 무관한 별개 상태다 — 아직 만들지 않은 행동에도 값이 있다.
     #: ⚠️ 아직 재생에 연결되지 않았다 (Phase 5 는 저장까지).
@@ -155,13 +181,45 @@ async def get_premium_assets(
     except behavior_preferences.PreferenceError as e:
         raise HTTPException(status_code=e.status, detail={"code": e.code, "message": e.message}) from e
 
+    # 가격은 **요청 시점의 카탈로그**에서 읽는다. 카탈로그가 잠깐 죽어도 발견은
+    # 계속돼야 하므로(위 구독 조회와 같은 이유 — ready 목록은 재생에 쓰이고 재생은
+    # 가격과 무관하다) 빈 map 으로 떨어진다. 실제 과금은 POST /purchase 가 자기
+    # 자리에서 fail-closed 로 다시 판정한다.
+    prices: dict[str, int] = {}
+    try:
+        for p in await product_catalog.list_products():
+            if p.product_type in (product_catalog.TYPE_IDLE, product_catalog.TYPE_ACTION):
+                prices[p.product_key] = p.credit_price
+    except product_catalog.CatalogUnavailableError:
+        logger.warning("자산 조회 중 카탈로그 확인 실패 — 발견은 계속한다 (user=%s)", user.user_id)
+
+    # ── READY 자산 해석 (Phase 7I.1) ─────────────────────────────────────────
+    # 포인터의 저장 URL 은 만료된다(7일 서명). 발견 응답은 **호출 시점에** 다시
+    # 서명한다 — Shaker 와 같은 규칙이다. 인식 못 하는 URL(외부 CDN/mock)은
+    # 그대로 통과시킨다(재서명 불가가 재생 차단이 되면 안 된다). 전달 포맷은
+    # 포장 규칙(`_packed.mp4`)/후보 선언에서 읽는다 — BREATHING 발행과 같은 판정.
+    ready_assets: dict[str, ReadyAssetOut] = {}
+    fresh_ready: dict[str, str] = {}
+    for action, stored_url in state.ready.items():
+        obj = asset_url_refresh.parse_storage_object(stored_url)
+        fresh = (asset_url_refresh.sign_object(obj) if obj else None) or stored_url
+        fresh_ready[action] = fresh
+        ready_assets[action] = ReadyAssetOut(
+            url=fresh,
+            delivery_format=motion_publication_service.delivery_format_for(
+                None, obj.path if obj else stored_url
+            ),
+        )
+
     return AssetsResponse(
         pet_id=pid,
-        ready=state.ready,
+        ready=fresh_ready,
+        ready_assets=ready_assets,
         generating=sorted(state.active),
         missing=sorted(state.missing),
         idle_events=list(IDLE_EVENTS),
         action_events=list(PET_ACTIONS),
+        prices=prices,
         preferences=prefs,
         entitled=ent.entitled,
         subscription_status=ent.status,
@@ -239,24 +297,17 @@ async def purchase_premium(
         raise _as_http(e) from e
 
     pid = motions_svc.default_pet_id(user.user_id, body.pet_id)
-    image_url = (body.pet_image_url or "").strip() or None
-
-    # data: URL 은 백엔드가 가져올 수 없다. 세션을 만들기 전에 거른다.
-    if image_url and not is_remote_asset_url(image_url):
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": "PET_IMAGE_URL_NOT_REMOTE",
-                "message": "pet_image_url 은 http(s) URL 이어야 합니다.",
-            },
-        )
 
     try:
+        # Phase 7H — 이행은 pet_id 기반 생성 실행(PREMIUM_PRODUCT)이다. 이미지는
+        # 요청에서 받지 않는다: Phase 1 intake 준비 검증은 실행 쪽이 fail-closed 로
+        # 수행한다. (레거시 pet_image_url 원격 검증은 여기서 제거됐다 — 새 계약은
+        # kind + pet_id 뿐이다.)
         result = await premium_purchase.purchase(
             user_id=user.user_id,
             pet_id=pid,
             kind=kind,
-            pet_image_url=image_url,
+            pet_image_url=None,
             api_base=_public_api_base(request),
         )
     except premium_purchase.PurchaseError as e:
@@ -278,4 +329,95 @@ async def purchase_premium(
         submitted=result.submitted,
         already_owned=result.already_owned,
         pet_id=pid,
+    )
+
+
+# ── 공용 생성 구매 (Phase 8) ─────────────────────────────────────────────────
+
+
+class GeneratePurchaseRequest(BaseModel):
+    pet_id: str
+    #: IDLE_EVENTS 또는 PET_ACTIONS 의 canonical id (BLINKING / COME_CLOSER …)
+    action_id: str
+    #: **한 번의 사용자 조작**을 가리키는 키. 재시도·새로고침은 같은 값을,
+    #: 새로 만들기는 새 값을 보낸다. 이것이 "다시 만들면 다시 낸다"를 가능하게 한다.
+    idempotency_key: str
+    pet_image_url: str | None = None
+
+
+class GeneratePurchaseResponse(BaseModel):
+    action_id: str
+    product_key: str
+    #: **이번 호출이 실제로 잡은 크레딧.** 재시도면 0.
+    credits_charged: int
+    credits_remaining: int
+    submitted: bool
+    #: 이번 생성 **전** 기준으로 이미 갖고 있던 버전 수. 게이트가 아니라 표시용.
+    owned_versions: int
+
+
+@router.post("/generate", response_model=GeneratePurchaseResponse)
+async def post_generate_with_credits(
+    request: Request,
+    body: GeneratePurchaseRequest,
+    user: AuthedUser = Depends(require_user),
+):
+    """
+    **아이들·액션 공용** 크레딧 생성 (Phase 8).
+
+        Paw Wave → 4 예약 → 생성 → 검증 → 확정 → Paw Wave #1 영구 소유
+        또 Paw Wave → 또 4  → …            → Paw Wave #2 영구 소유
+
+    테마 구매(/v1/themes/purchase-with-credits)와 **같은 지갑·같은 원장·같은
+    카탈로그·같은 멱등 모델**을 쓴다. 다른 것은 가격과 사유뿐이고 둘 다 데이터다.
+
+    이미 갖고 있어도 막지 않는다 — 소유 개수는 표시용이지 게이트가 아니다.
+    """
+    pid = motions_svc.default_pet_id(user.user_id, body.pet_id)
+    try:
+        await premium_purchase.assert_pet_owned(user.user_id, pid)
+    except premium_purchase.PurchaseError as e:
+        raise _as_http(e) from e
+
+    image_url = (body.pet_image_url or "").strip() or None
+    if image_url and not is_remote_asset_url(image_url):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "PET_IMAGE_URL_NOT_REMOTE",
+                "message": "pet_image_url 은 http(s) URL 이어야 합니다.",
+            },
+        )
+    if not image_url:
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "PET_IMAGE_REQUIRED", "message": "pet_image_url 이 필요합니다."},
+        )
+
+    try:
+        out = await generation_credits.purchase_generation(
+            user_id=user.user_id,
+            pet_id=pid,
+            action_id=body.action_id,
+            idempotency_key=body.idempotency_key,
+            pet_image_url=image_url,
+            api_base=_public_api_base(request),
+        )
+    except generation_credits.GenerationCreditError as e:
+        raise HTTPException(
+            status_code=e.status, detail={"code": e.code, "message": e.message}
+        ) from e
+
+    if out.credits_charged:
+        logger.warning(
+            "생성 구매 — user=%s pet=%s product=%s credits=%s 잔액=%s",
+            user.user_id, pid, out.product_key, out.credits_charged, out.credits_remaining,
+        )
+    return GeneratePurchaseResponse(
+        action_id=out.action_id,
+        product_key=out.product_key,
+        credits_charged=out.credits_charged,
+        credits_remaining=out.credits_remaining,
+        submitted=out.submitted,
+        owned_versions=out.owned_versions,
     )

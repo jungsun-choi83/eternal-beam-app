@@ -237,8 +237,8 @@ test("원본이 없으면 검은 판이 아니라 오류가 보이고 계속 진
   const src = read(THEMES);
   assert.match(src, /const originalMissing = Boolean\(previewIsOriginal && !originalPhoto\)/);
   assert.match(src, /role="alert"/);
-  assert.match(src, /disabled=\{!activeTheme \|\| originalMissing\}/);
-  assert.match(src, /activeTheme && !originalMissing && onContinue\(activeTheme\)/);
+  assert.match(src, /const primaryDisabled =[\s\S]*originalMissing/);
+  assert.match(src, /if \(!previewTheme \|\| originalMissing \|\| !activeRow\) return/);
 });
 
 test("미리보기 화면도 같은 규칙을 쓴다 — 검은 배경으로 생성하지 않는다", () => {
