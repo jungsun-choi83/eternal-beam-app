@@ -12,22 +12,10 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 _root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-# cwd와 무관하게 프로젝트 루트 .env를 먼저 읽음 (npm run video-api 시 cwd=루트)
-load_dotenv(os.path.join(_root, ".env"))
-for _p in (
-    os.path.join(_root, "env.local"),
-    os.path.join(_root, ".env.local"),
-):
-    if os.path.isfile(_p):
-        load_dotenv(_p, override=True)
-# 폴더 .env.local 안의 env.local (사용자가 폴더로 만든 경우)
-_env_in_folder = os.path.join(_root, ".env.local", "env.local")
-if os.path.isfile(_env_in_folder):
-    load_dotenv(_env_in_folder, override=True)
 
 
 def _merge_dotenv_nonempty(path: str) -> None:
-    """빈 값은 기존 환경 변수를 덮어쓰지 않음 (빈 SUPABASE_URL= 로 인한 getaddrinfo 방지)."""
+    """빈 값은 기존 환경 변수를 덮어쓰지 않음 (빈 SUPABASE_URL= / SOUL_TRACE_SERVICE_TOKEN= 방지)."""
     if not os.path.isfile(path):
         return
     try:
@@ -43,6 +31,19 @@ def _merge_dotenv_nonempty(path: str) -> None:
             continue
         os.environ[key] = s
 
+
+# cwd와 무관하게 프로젝트 루트 .env를 먼저 읽음 (npm run video-api 시 cwd=루트).
+# override/merge 로 읽는다 — 셸에 빈 SOUL_TRACE_SERVICE_TOKEN= 이 있으면
+# 기본 load_dotenv 는 덮어쓰지 않아 파트너 생성이 503 으로 죽는다.
+_merge_dotenv_nonempty(os.path.join(_root, ".env"))
+# .env.local 은 비어 있지 않은 값만 덮어쓴다
+# (예전: SOUL_TRACE_SERVICE_TOKEN= 빈 줄이 .env 의 실토큰을 덮어씀).
+for _p in (
+    os.path.join(_root, "env.local"),
+    os.path.join(_root, ".env.local"),
+    os.path.join(_root, ".env.local", "env.local"),
+):
+    _merge_dotenv_nonempty(_p)
 
 # backend/env.local — AnySign 등으로 루트 .env를 못 쓸 때. 빈 줄은 루트 값 유지.
 _backend_dir = os.path.dirname(os.path.abspath(__file__))
@@ -86,6 +87,18 @@ async def lifespan(app: FastAPI):
         log_audit()
     except Exception:  # noqa: BLE001 — 감사 실패가 부팅을 막아선 안 된다
         logging.getLogger(__name__).exception("프로덕션 설정 감사 실패")
+
+    # 파트너/편지 S2S — 토큰 값 자체는 로그에 남기지 않는다.
+    try:
+        from .services.soul_trace_import import _service_token, api_base
+
+        _tok = _service_token()
+        print(
+            f"Soul Trace S2S configured={bool(_tok)} token_len={len(_tok or '')} base={api_base()}",
+            flush=True,
+        )
+    except Exception:  # noqa: BLE001
+        logging.getLogger(__name__).exception("Soul Trace S2S 설정 점검 실패")
 
     if os.getenv("PET_HYBRID_SEED", "1").strip().lower() in ("1", "true", "yes"):
         from .services.wallet_service import seed_dummy_wallets

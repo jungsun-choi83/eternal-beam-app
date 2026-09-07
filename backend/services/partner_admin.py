@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 #: Soul Trace 가 이미 쓰는 갈래. **새 개념이 아니다** (lib/letter-mode.ts).
 TRACKS = ("living", "memorial")
-PARTNER_TYPES = ("HOSPITAL", "FUNERAL")
+PARTNER_TYPES = ("HOSPITAL", "FUNERAL", "GROOMING", "PENSION")
 
 
 class PartnerAdminError(Exception):
@@ -176,7 +176,7 @@ async def create_partner(
     ptype = (partner_type or "").strip().upper()
     if ptype not in PARTNER_TYPES:
         raise PartnerAdminError(
-            "PARTNER_TYPE_INVALID", "파트너 유형은 HOSPITAL 또는 FUNERAL 입니다."
+            "PARTNER_TYPE_INVALID", "파트너 유형은 HOSPITAL, FUNERAL, GROOMING, PENSION 입니다."
         )
     # 0.15 를 15 로 적는 실수를 여기서도 막는다. Soul Trace 와 DB 가 다시 막지만,
     # 가장 가까운 곳에서 걸러야 운영자가 이유를 읽을 수 있다.

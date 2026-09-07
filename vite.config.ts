@@ -14,15 +14,16 @@ export default defineConfig({
     host: true,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8000',
+        // 8000 에 죽은 핸들이 남아 바인딩이 막힐 때가 있어 로컬은 8001 사용
+        target: 'http://127.0.0.1:8001',
         changeOrigin: true,
       },
       '/outputs': {
-        target: 'http://127.0.0.1:8000',
+        target: 'http://127.0.0.1:8001',
         changeOrigin: true,
       },
       '/output': {
-        target: 'http://127.0.0.1:8000',
+        target: 'http://127.0.0.1:8001',
         changeOrigin: true,
       },
     },

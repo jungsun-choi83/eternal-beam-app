@@ -62,6 +62,8 @@ const PRODUCT_LABEL: Record<string, string> = {
 const PARTNER_TYPE_LABEL: Record<string, string> = {
   HOSPITAL: "동물병원",
   FUNERAL: "장례식장",
+  GROOMING: "미용",
+  PENSION: "펜션",
 };
 const TRACK_LABEL: Record<string, string> = {
   living: "Living",

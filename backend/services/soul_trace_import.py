@@ -73,11 +73,69 @@ class SourceLetter:
     hero_image_url: Optional[str] = None
 
 
+def _project_root() -> str:
+    # backend/services/this.py → repo root
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def _merge_dotenv_nonempty(path: str) -> None:
+    """빈 값은 기존 환경 변수를 덮어쓰지 않음."""
+    if not os.path.isfile(path):
+        return
+    try:
+        from dotenv import dotenv_values
+    except ImportError:
+        from dotenv import load_dotenv
+
+        load_dotenv(path, override=True)
+        return
+    for key, val in dotenv_values(path).items():
+        if val is None:
+            continue
+        s = str(val).strip().strip('"').strip("'")
+        if s == "":
+            continue
+        os.environ[key] = s
+
+
+_env_load_attempted = False
+
+
+def _ensure_soul_trace_env() -> None:
+    """
+    uvicorn/워커가 셸의 빈 SOUL_TRACE_SERVICE_TOKEN= 을 들고 뜨거나,
+    main 의 dotenv 합류 전에 이 모듈만 import 된 경우에도 .env 실토큰을 복구한다.
+
+    빈 문자열로 이미 설정된 경우도 .env 실값으로 덮어쓴다.
+    """
+    global _env_load_attempted
+    current = (os.getenv(_SERVICE_TOKEN_ENV) or "").strip()
+    if current:
+        return
+    root = _project_root()
+    for name in (".env", "env.local", ".env.local"):
+        _merge_dotenv_nonempty(os.path.join(root, name))
+    backend = os.path.join(root, "backend")
+    for name in ("env.local", ".env.local", ".env"):
+        _merge_dotenv_nonempty(os.path.join(backend, name))
+    if not _env_load_attempted:
+        _env_load_attempted = True
+        loaded = (os.getenv(_SERVICE_TOKEN_ENV) or "").strip()
+        # print 로 남겨 uvicorn 콘솔에서 바로 보이게 한다 (logging 설정과 무관).
+        print(
+            f"Soul Trace S2S ensure: root={root} token_len={len(loaded)} "
+            f"env_exists={os.path.isfile(os.path.join(root, '.env'))}",
+            flush=True,
+        )
+
+
 def api_base() -> str:
+    _ensure_soul_trace_env()
     return (os.getenv(_API_BASE_ENV) or _DEFAULT_API_BASE).strip().rstrip("/")
 
 
 def _service_token() -> str:
+    _ensure_soul_trace_env()
     return (os.getenv(_SERVICE_TOKEN_ENV) or "").strip()
 
 
