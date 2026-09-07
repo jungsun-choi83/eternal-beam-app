@@ -66,9 +66,9 @@ def _spec_for(motion_id: str, **env):
 def test_test_profile_uses_480p_and_short_durations(monkeypatch):
     monkeypatch.setenv("PHASE6_GENERATION_PROFILE", "test")
 
-    blink, w = _spec_for("BLINKING")           # MICRO (3.0~6.0)
+    blink, w = _spec_for("BLINKING")           # MICRO — 고정 4.0s (motion-spec-v6)
     assert blink["resolution"] == "480p"
-    assert blink["duration_sec"] == 3
+    assert blink["duration_sec"] == 4
     assert blink["profile"] == "test"
     assert w == []
 
@@ -83,10 +83,15 @@ def test_test_profile_uses_480p_and_short_durations(monkeypatch):
 
 
 def test_profile_never_shortens_below_spec_minimum(monkeypatch):
-    """BREATHING 스펙 최소 4s < test 목표 3s → 최소 유지 + 보고 (강제 단축 없음)."""
+    """프로파일 목표 < 스펙 최소 → 최소 유지 + 보고 (강제 단축 없음).
+
+    v6 이후 등록된 모션 중엔 이 클램프에 걸리는 조합이 없다 (test MICRO 목표 4 =
+    스펙 고정 4). 가드 자체는 남는다 — 미래 스펙이 최소를 올리면 그대로 지켜야
+    하므로 합성 범위로 계약을 계속 못박는다.
+    """
     monkeypatch.setenv("PHASE6_GENERATION_PROFILE", "test")
-    breath, warnings = _spec_for("BREATHING")  # MICRO 이지만 (4.0~6.0)
-    assert breath["duration_sec"] == 4  # 3 이 아니라 스펙 최소
+    spec, warnings = mv.build_output_spec(duration_range=(5.0, 7.0), motion_class="MICRO")
+    assert spec["duration_sec"] == 5  # 목표 4 가 아니라 스펙 최소
     assert any("spec minimum preserved" in w for w in warnings)
 
 
@@ -103,15 +108,18 @@ def test_benchmark_profile_restores_720p_and_midpoints(monkeypatch):
     monkeypatch.setenv("PHASE6_GENERATION_PROFILE", "benchmark")
     breath, w = _spec_for("BREATHING")
     assert breath["resolution"] == "720p"
-    assert breath["duration_sec"] == 5  # (4+6)/2 — 기존 동작 그대로
+    assert breath["duration_sec"] == 4  # 고정 범위 (4,4)의 중앙값 = 4 (v6)
     assert w == []
+    # 중앙값 규칙 자체는 불변이다 — 범위가 있는 클래스에서 그대로 동작한다.
+    lie_down, _ = _spec_for("LIE_DOWN")  # TRANSITION (2.5~5.0)
+    assert lie_down["duration_sec"] == 4  # round(3.75)
 
 
 def test_default_and_production_match_current_behavior():
     # env 미설정(기본) = benchmark = 기존 동작. production 도 현재는 동일 값이다.
     default, _ = _spec_for("BREATHING")
     assert default["profile"] == "benchmark"
-    assert default["resolution"] == "720p" and default["duration_sec"] == 5
+    assert default["resolution"] == "720p" and default["duration_sec"] == 4
 
     import os
 
@@ -120,7 +128,7 @@ def test_default_and_production_match_current_behavior():
         prod, _ = _spec_for("BREATHING")
     finally:
         del os.environ["PHASE6_GENERATION_PROFILE"]
-    assert prod["resolution"] == "720p" and prod["duration_sec"] == 5
+    assert prod["resolution"] == "720p" and prod["duration_sec"] == 4
 
 
 def test_explicit_resolution_env_overrides_profile(monkeypatch):
@@ -151,15 +159,108 @@ def test_build_under_test_profile_sends_explicit_params(storage, monkeypatch):
     req = provider.requests[0]
     # 프로바이더가 스스로 해상도/길이를 고를 수 없다 — 요청에 명시된다.
     assert req.output_spec["resolution"] == "480p"
-    assert req.output_spec["duration_sec"] == 3
+    assert req.output_spec["duration_sec"] == 4  # MICRO 고정 4.0s (v6)
     assert req.output_spec["aspect_ratio"] == "9:16"
     assert req.output_spec["audio"] is False
     assert v.output_spec["profile"] == "test"  # 버전 행에 프로파일이 박제된다
 
 
-def test_breathing_build_reports_minimum_preservation(storage, monkeypatch):
+def test_breathing_build_uses_fixed_micro_duration(storage, monkeypatch):
+    """v6: test 목표 4 = 스펙 고정 4 — 클램프도 경고도 없이 정확히 4s 다."""
     h, _ = _prepare_pipeline(monkeypatch, storage)
     monkeypatch.setenv("PHASE6_GENERATION_PROFILE", "test")
     v = _build_motion(h, "BREATHING", [FakeVideoProvider("seedance", [GOOD()])])
-    assert v.output_spec["duration_sec"] == 4  # 스펙 최소 유지
-    assert any("spec minimum preserved" in w for w in v.warnings)
+    assert v.output_spec["duration_sec"] == 4
+    assert not any("spec minimum preserved" in w for w in v.warnings)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# MICRO 고정 4.0s (motion-spec-v6) — 3초 Seedance 요청은 만들어질 수 없다
+# ══════════════════════════════════════════════════════════════════════════
+
+#: 상용/런타임 MICRO 5종 — 요구사항이 명시한 대상. 레지스트리의 나머지 MICRO
+#: (LOOK_UP/HAPPY/LIE_IDLE/SLEEP_BREATH)도 같은 정책이며 아래 전수 검사가 덮는다.
+_RUNTIME_MICRO = ("BREATHING", "BLINKING", "EAR_TWITCHING", "HEAD_TILTING", "TAIL_WAGGING")
+
+
+def test_runtime_micro_motions_are_micro_class():
+    for mid in _RUNTIME_MICRO:
+        assert ms.MOTIONS[mid].motion_class == ms.CLASS_MICRO
+
+
+@pytest.mark.parametrize("profile", ["test", "benchmark", "production"])
+def test_all_micro_motions_request_exactly_4s_in_every_profile(monkeypatch, profile):
+    monkeypatch.setenv("PHASE6_GENERATION_PROFILE", profile)
+    micro = [m for m in ms.MOTIONS.values() if m.motion_class == ms.CLASS_MICRO]
+    assert {m.motion_id for m in micro} >= set(_RUNTIME_MICRO)
+    for spec in micro:
+        assert spec.duration_range_sec == (4.0, 4.0), spec.motion_id
+        out, warnings = mv.build_output_spec(
+            duration_range=spec.duration_range_sec, motion_class=spec.motion_class
+        )
+        assert out["duration_sec"] == 4, f"{spec.motion_id} ({profile})"
+        assert warnings == [], f"{spec.motion_id} ({profile})"
+
+
+def test_other_classes_are_unchanged_by_micro_policy():
+    """MICRO 만 고정이다 — 다른 클래스의 스펙 범위는 v5 값 그대로다."""
+    assert ms.MOTIONS["LIE_DOWN"].duration_range_sec == (2.5, 5.0)     # TRANSITION
+    assert ms.MOTIONS["STAND_UP"].duration_range_sec == (2.0, 4.0)     # TRANSITION
+    assert ms.MOTIONS["COME_CLOSER"].duration_range_sec == (3.0, 6.0)  # LOCOMOTION
+    assert ms.MOTIONS["PET_HEAD"].duration_range_sec == (3.0, 5.0)     # INTERACTION
+
+
+@pytest.mark.parametrize("profile", ["test", "benchmark", "production"])
+def test_micro_output_spec_passes_seedance_preflight_on_both_transports(monkeypatch, profile):
+    """실제 Seedance 어댑터의 계약 검증(build_payload, HTTP 이전)을 통과한다.
+
+    TAIL_WAGGING 라이브 실패(run ebbc11f5)의 역: MICRO 출력 사양이 Runway 의
+    4..30s / fal 의 ≥4s 하한을 위반하는 조합은 이제 존재하지 않는다.
+    """
+    from backend.services.video_motion_providers import (
+        FalSeedanceProvider,
+        MotionVideoRequest,
+        RunwaySeedanceProvider,
+    )
+
+    monkeypatch.setenv("PHASE6_GENERATION_PROFILE", profile)
+    runway, fal = RunwaySeedanceProvider(), FalSeedanceProvider()
+    for spec in ms.MOTIONS.values():
+        if spec.motion_class != ms.CLASS_MICRO:
+            continue
+        out, _ = mv.build_output_spec(
+            duration_range=spec.duration_range_sec, motion_class=spec.motion_class
+        )
+        req = MotionVideoRequest(
+            prompt="x", start_image_url="https://cdn.test/start.png",
+            start_image_bytes=None, output_spec=out,
+        )
+        assert runway.build_payload(req)["duration"] == 4, spec.motion_id
+        assert fal.build_payload(req)["duration"] == "4", spec.motion_id
+
+
+def test_three_second_seedance_request_is_still_refused_preflight():
+    """가드 회귀 방지: 3s 사양이 어떻게든 만들어지면 HTTP 이전에 거절된다."""
+    from backend.services.video_motion_providers import (
+        MotionVideoRequest,
+        RunwaySeedanceProvider,
+        VideoProviderError,
+    )
+
+    req = MotionVideoRequest(
+        prompt="x", start_image_url="https://cdn.test/start.png",
+        start_image_bytes=None,
+        output_spec={"duration_sec": 3, "aspect_ratio": "9:16", "resolution": "480p"},
+    )
+    with pytest.raises(VideoProviderError) as e:
+        RunwaySeedanceProvider().build_payload(req)
+    assert e.value.code == "PROVIDER_CONTRACT"
+
+
+def test_tail_wagging_build_sends_4s_to_seedance(storage, monkeypatch):
+    """라이브 실패를 그대로 뒤집은 통합 검증 — TAIL_WAGGING 제출 사양이 4s 다."""
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+    monkeypatch.setenv("PHASE6_GENERATION_PROFILE", "test")
+    provider = FakeVideoProvider("seedance", [GOOD()])
+    _build_motion(h, "TAIL_WAGGING", [provider])
+    assert provider.requests[0].output_spec["duration_sec"] == 4

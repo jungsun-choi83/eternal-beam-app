@@ -42,7 +42,18 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-BREATHING_TEMPORAL_QA_VERSION = "breathing-temporal-qa-v1"
+# v2 (2026-09-06, 16클립 보정): 스케일은 **보조 증거**다 — 유일한 게이트가 아니다.
+#   * 상한 1% → 2% (실측: 자연스러운 흉곽 국소 클립 1.16% 가 REVIEW 에 갇혔고,
+#     진짜 전신 펄스는 전부 ≥3.3% 이거나 드리프트 >2% 로 따로 잡힌다)
+#   * 새 신호: scale 시계열의 진동(osc, 추세 제거 후 p2p) vs 추세(trend) —
+#     단조 수축/침하(trend 지배)는 호흡이 아니라 프레이밍 드리프트다
+#   * 가시성 바닥 osc ≥ 0.3% — 동결·준정지 클립(0.18%)이 "스케일이 작다"는
+#     이유만으로 breathing_detected 를 받지 못한다 (실측 분리: 0.18% vs 0.40%+)
+#   * 리듬은 주기성 **또는** 시간 변조 — 완벽한 주기를 요구하지 않는다
+#     (자연 클립 K: periodic 0.24, modulation 0.47)
+#   * 중대역(구 1% 초과)은 머리/흉곽 국소성 상한을 1.0 으로 조인다 — 균일
+#     전신 펄스가 중대역으로 통과할 잔여 위험의 완화 (관측 양성 전부 ≤0.83)
+BREATHING_TEMPORAL_QA_VERSION = "breathing-temporal-qa-v2"
 
 #: 분석 해상도(가로). 호흡 신호는 저주파 대비 변화라 다운스케일에 강하고,
 #: 정합·NCC 비용은 해상도 제곱에 비례한다.
@@ -263,11 +274,20 @@ def analyze_frames(
     keyframe_rgb: np.ndarray,
 ) -> dict[str, Any]:
     thresholds = {
-        "scale_pulse_max": _f("BREATHING_QA_SCALE_PULSE_MAX", 0.010),
+        # 상한/바닥의 근거는 버전 주석의 16클립 보정표다.
+        "scale_pulse_max": _f("BREATHING_QA_SCALE_PULSE_MAX", 0.020),
+        "scale_strict": _f("BREATHING_QA_SCALE_STRICT", 0.010),
         "drift_max_frac": _f("BREATHING_QA_DRIFT_MAX_FRAC", 0.020),
+        "sag_trend_max": _f("BREATHING_QA_SAG_TREND_MAX", 0.010),
+        "visible_osc_min": _f("BREATHING_QA_VISIBLE_OSC_MIN", 0.003),
         "torso_snr_min": _f("BREATHING_QA_TORSO_SNR_MIN", 1.6),
         "periodic_min": _f("BREATHING_QA_PERIODIC_MIN", 0.25),
+        "modulation_strong": _f("BREATHING_QA_MODULATION_STRONG", 0.45),
         "head_ratio_max": _f("BREATHING_QA_HEAD_RATIO_MAX", 1.6),
+        # 중대역 국소성 상한 1.2 — 실측 양성 전부 ≤0.83, 전신 펄스 ≥1.81 의
+        # 사이값. 어깨 동반 호흡(상단 윤곽이 조금 움직인다)은 자르지 않되
+        # 균일 펄스의 머리 우세는 자른다.
+        "head_ratio_max_midband": _f("BREATHING_QA_HEAD_RATIO_MAX_MIDBAND", 1.2),
     }
     base: dict[str, Any] = {
         "version": BREATHING_TEMPORAL_QA_VERSION,
@@ -328,6 +348,14 @@ def analyze_frames(
     h0 = float(heights[0])
     scale_series = np.asarray([float(h or h0) / h0 for h in heights], dtype=np.float64)
     scale_range = float(scale_series.max() - scale_series.min())
+    # v2 — 진동 vs 추세 분해: 선형 추세를 제거한 잔차의 p2p 가 "숨의 진폭"이고,
+    # 추세 자체는 침하/수축(프레이밍 드리프트의 일종)이다. 단조 침하 클립은
+    # scale_range 만으로는 진짜 호흡과 구분되지 않는다 (실측 v6: -2.2% 침하).
+    t_idx = np.arange(scale_series.size)
+    trend_fit = np.polyval(np.polyfit(t_idx, scale_series, 1), t_idx)
+    scale_trend = float(abs(trend_fit[-1] - trend_fit[0]))
+    residual = scale_series - trend_fit
+    scale_oscillation = float(residual.max() - residual.min())
     drift_px = float(np.sqrt(np.asarray(frame_dx) ** 2 + np.asarray(frame_dy) ** 2).max())
     drift_frac = drift_px / max(1.0, pet_h)
 
@@ -387,6 +415,8 @@ def analyze_frames(
 
     metrics = {
         "scale_range": round(scale_range, 5),
+        "scale_oscillation": round(scale_oscillation, 5),
+        "scale_trend": round(scale_trend, 5),
         "translation_drift_px": round(drift_px, 3),
         "translation_drift_frac_of_pet": round(drift_frac, 5),
         "torso_motion_energy": round(torso_signal, 4),
@@ -399,35 +429,51 @@ def analyze_frames(
         "pet_height_px": pet_h,
     }
 
-    # ── 판정 ─────────────────────────────────────────────────────────────
-    if scale_range > thresholds["scale_pulse_max"] or drift_frac > thresholds["drift_max_frac"]:
+    # ── 판정 (v2) — 스케일은 보조 증거, 여러 신호의 합의로 판정한다 ───────
+    # 거부(전역 성분): 상한 초과 스케일 / 프레이밍 드리프트 / 단조 침하.
+    # 거부(신호 없음): 배경 수준 잔차, 또는 가시성 바닥 미달(동결 클립).
+    # 거부(비국소): 머리 우세 — 중대역(구 1% 초과)은 상한을 1.0 으로 조인다.
+    # 탐지: 가시적 진폭 + 리듬(주기성 **또는** 강한 시간 변조 — 완벽한 주기
+    # 를 요구하지 않는다. 자연 호흡은 불규칙하다).
+    midband = scale_range > thresholds["scale_strict"]
+    head_cap = (
+        thresholds["head_ratio_max_midband"] if midband else thresholds["head_ratio_max"]
+    )
+    rhythm_ok = (
+        periodic_score >= thresholds["periodic_min"]
+        or torso_modulation >= thresholds["modulation_strong"]
+    )
+    if scale_range > thresholds["scale_pulse_max"]:
         verdict = VERDICT_GLOBAL_PULSE
-        reason = (
-            f"scale_range {metrics['scale_range']} > {thresholds['scale_pulse_max']}"
-            if scale_range > thresholds["scale_pulse_max"]
-            else f"drift {metrics['translation_drift_frac_of_pet']} > {thresholds['drift_max_frac']}"
-        )
-    elif snr < thresholds["torso_snr_min"] or (
-        periodic_score < thresholds["periodic_min"]
-        and torso_modulation < _f("BREATHING_QA_MODULATION_MIN", 0.15)
-    ):
-        # 흉곽 잔차가 배경 노이즈와 구분되지 않거나, 배경보다 높더라도 시간
-        # 변조가 없다(일정한 노이즈 바닥) — 어느 쪽도 호흡이 아니다.
+        reason = f"scale_range {metrics['scale_range']} > {thresholds['scale_pulse_max']}"
+    elif drift_frac > thresholds["drift_max_frac"]:
+        verdict = VERDICT_GLOBAL_PULSE
+        reason = f"drift {metrics['translation_drift_frac_of_pet']} > {thresholds['drift_max_frac']}"
+    elif scale_trend > thresholds["sag_trend_max"] and scale_trend > scale_oscillation:
+        # 추세가 진동을 지배한다 = 들숨/날숨의 오르내림이 아니라 한 방향
+        # 수축/팽창(침하·설정 이동)이다.
+        verdict = VERDICT_GLOBAL_PULSE
+        reason = f"monotonic_scale_sag trend {metrics['scale_trend']} > osc {metrics['scale_oscillation']}"
+    elif snr < thresholds["torso_snr_min"]:
         verdict = VERDICT_NO_MOTION
-        reason = (
-            f"torso_snr {metrics['torso_snr']} < {thresholds['torso_snr_min']}"
-            if snr < thresholds["torso_snr_min"]
-            else f"flat_torso_energy modulation {metrics['torso_energy_modulation']}"
-        )
-    elif head_ratio > thresholds["head_ratio_max"]:
+        reason = f"torso_snr {metrics['torso_snr']} < {thresholds['torso_snr_min']}"
+    elif scale_oscillation < thresholds["visible_osc_min"]:
+        # 잔차가 배경보다 높아도 윤곽 진폭이 가시성 바닥 미달이면 "동결 + 미세
+        # 틱"이다 — 낮은 스케일이 보상이 되지 않는다 (v2 의 핵심 교정).
+        verdict = VERDICT_NO_MOTION
+        reason = f"amplitude_below_visible_floor osc {metrics['scale_oscillation']} < {thresholds['visible_osc_min']}"
+    elif head_ratio > head_cap:
         verdict = VERDICT_UNLOCALIZED
-        reason = f"head_to_torso {metrics['head_to_torso_ratio']} > {thresholds['head_ratio_max']}"
-    elif periodic_score >= thresholds["periodic_min"]:
+        reason = f"head_to_torso {metrics['head_to_torso_ratio']} > {head_cap}"
+    elif rhythm_ok:
         verdict = VERDICT_BREATHING
         reason = None
     else:
         verdict = VERDICT_INCONCLUSIVE
-        reason = f"periodic_score {metrics['periodic_score']} < {thresholds['periodic_min']}"
+        reason = (
+            f"periodic_score {metrics['periodic_score']} < {thresholds['periodic_min']} "
+            f"and modulation {metrics['torso_energy_modulation']} < {thresholds['modulation_strong']}"
+        )
 
     return {**base, "verdict": verdict, "reason": reason, "metrics": metrics}
 

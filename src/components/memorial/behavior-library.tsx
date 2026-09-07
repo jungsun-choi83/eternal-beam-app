@@ -13,7 +13,6 @@ import {
 
 interface BehaviorLibraryProps {
   petId: string | null;
-  petImageUrl?: string | null;
   enabled: boolean;
   language?: string;
 }
@@ -31,14 +30,12 @@ interface BehaviorLibraryProps {
  */
 export function BehaviorLibrary({
   petId,
-  petImageUrl,
   enabled,
   language = "ko",
 }: BehaviorLibraryProps) {
   const t = memorialT(language).behaviors;
   const { state, submitting, toggling, error, generate, toggle } = useBehaviorLibrary({
     petId,
-    petImageUrl,
     enabled,
   });
 

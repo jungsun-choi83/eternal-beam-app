@@ -855,3 +855,145 @@ def test_motion_evaluation_harness(storage, monkeypatch):
     summary = _run(canon.evaluation_summary(user_id=USER))
     assert summary["providers"]["seedance"]["count"] == 1
     assert summary["providers"]["seedance"]["mean_scores"]["motion_correctness"] == 8.0
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# LOCOMOTION 신원 (motion-video-qa-v4) — 펫 크롭 정규화 + 평균/일관성/VLM 판정
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 배경(COME_CLOSER 라이브 REVIEW, worst_frame 0.498): 전체 프레임 히스토그램은
+# 다가오기가 성공할수록 시작 키프레임과 멀어진다 — 모션의 성공이 신원 점수를
+# 낮추는 구조적 편향. v4 는 LOCOMOTION 의 신원 검사만 펫 크롭 정규화 시그니처와
+# 평균+인접 일관성+VLM same-pet 증거로 판정한다. 임계값과 다른 클래스는 불변.
+
+
+def _approach_frame(pet_h: int, *, swap_color: bool = False,
+                    h: int = 160, w: int = 96) -> np.ndarray:
+    """세로 그라디언트 중립 배경 + '펫'(위 60% 갈색 / 아래 40% 검정).
+
+    크기가 달라도 색 비율이 같아 정규화 시그니처는 안정적이고, 전체 프레임
+    히스토그램은 펫이 커질수록 시작 키프레임과 멀어진다 — 실측 편향의 재현.
+    swap_color 는 다른 개체(흰/빨강)를 그린다 — 정규화가 진짜 교체를 가리면
+    안 된다는 반증용.
+    """
+    frame = np.zeros((h, w, 3), dtype=np.uint8)
+    frame[:] = np.linspace(118, 140, h).astype(np.uint8)[:, None, None]
+    pet_w = min(w - 16, max(8, int(pet_h * 0.6)))
+    y0 = max(4, h - 10 - pet_h)
+    x0 = (w - pet_w) // 2
+    body = np.zeros((min(pet_h, h - y0 - 4), pet_w, 3), dtype=np.uint8)
+    top = int(body.shape[0] * 0.6)
+    body[:top] = (240, 240, 245) if swap_color else (140, 90, 45)
+    body[top:] = (200, 60, 60) if swap_color else (25, 20, 18)
+    frame[y0 : y0 + body.shape[0], x0 : x0 + pet_w] = body
+    return frame
+
+
+_LOCO_CONTRACT = {"motion_class": "LOCOMOTION", "video_compat": {}}
+_APPROACH_SIZES = (20, 30, 45, 65, 90, 120)
+
+
+def _eval_loco(frames, *, vlm=VLM_MV_OK, contract=_LOCO_CONTRACT):
+    return qa_mod.evaluate_motion_video(
+        frames=frames,
+        spec_contract=contract,
+        start_keyframe_rgb=_approach_frame(20),
+        target_keyframe_rgb=None,
+        vlm_qa=vlm,
+    )
+
+
+def test_qa_locomotion_close_approach_passes_with_normalized_identity():
+    r = _eval_loco([_approach_frame(s) for s in _APPROACH_SIZES])
+    assert r["identity_evaluation"]["mode"] == "pet_normalized"
+    assert r["identity_evaluation"]["rule"] == "locomotion_mean_consistency"
+    assert r["checks"]["identity_over_time"] == "PASS"
+    assert r["decision"] == "PASS"
+    assert r["qa_version"] == "motion-video-qa-v4"
+
+
+def test_qa_micro_identity_rule_is_unchanged_full_frame_worst():
+    """같은 다가오기 프레임을 MICRO 로 평가하면 예전 규칙 그대로다 — 그리고
+    전체 프레임 최악값이 실제로 무너진다(구조적 편향의 재현이자 비회귀 증명)."""
+    r = _eval_loco(
+        [_approach_frame(s) for s in _APPROACH_SIZES],
+        contract={"motion_class": "MICRO", "video_compat": {}},
+    )
+    assert r["identity_evaluation"]["mode"] == "full_frame"
+    assert r["identity_evaluation"]["rule"] == "worst_frame"
+    assert r["checks"]["identity_over_time"] in ("REVIEW", "FAIL")
+
+
+def test_qa_locomotion_identity_swap_is_not_masked_by_normalization():
+    # 마지막 두 프레임이 다른 개체다 — 평균은 살아도 크레이터 가드가 잡는다.
+    frames = [_approach_frame(s) for s in (20, 30, 45, 65)] + [
+        _approach_frame(90, swap_color=True),
+        _approach_frame(120, swap_color=True),
+    ]
+    r = _eval_loco(frames)
+    assert r["checks"]["identity_over_time"] != "PASS"
+    assert any("identity_crater_frame" in reason or "identity_mean" in reason
+               for reason in r["reasons"])
+
+    # 전부 다른 개체면 평균 자체가 무너진다 → FAIL (fail-closed 유지).
+    all_swapped = [_approach_frame(s, swap_color=True) for s in _APPROACH_SIZES]
+    r2 = _eval_loco(all_swapped)
+    assert r2["checks"]["identity_over_time"] == "FAIL"
+    assert r2["decision"] == "FAIL"
+
+
+def _fake_sig(bins: dict[int, float]):
+    from backend.services import pet_identity_service as ids
+
+    hist = [0.0] * 64
+    for idx, v in bins.items():
+        hist[idx] = v
+    return {"version": ids.SIGNATURE_VERSION, "hsv_hist": hist, "phash": "0" * 16}
+
+
+def _install_normalized_sigs(monkeypatch, start_sig, frame_sigs):
+    queue = [start_sig, *frame_sigs]
+    monkeypatch.setattr(qa_mod, "_pet_normalized_signature", lambda rgb: queue.pop(0))
+
+
+def test_qa_locomotion_borderline_needs_vlm_and_consistency(monkeypatch):
+    """경계 구간(0.20..0.55) 평균의 PASS 승격은 VLM same-pet + 인접 일관성이
+    **둘 다** 있어야 한다. 하나라도 빠지면 REVIEW — fail-closed."""
+    frames = [_good_frame()] * 5  # 시간 안정성은 실제 전체 프레임으로 PASS
+
+    start = _fake_sig({0: 1.0})
+    borderline = _fake_sig({0: 0.4, 1: 0.6})  # 시작 대비 0.4, 서로는 1.0
+
+    _install_normalized_sigs(monkeypatch, start, [borderline] * 5)
+    ok = _eval_loco(frames)
+    assert ok["identity_evaluation"]["mode"] == "pet_normalized"
+    assert ok["checks"]["identity_over_time"] == "PASS"
+    assert any("locomotion_identity_resolved" in reason for reason in ok["reasons"])
+
+    # VLM 확언 없음 → REVIEW.
+    _install_normalized_sigs(monkeypatch, start, [borderline] * 5)
+    no_vlm = _eval_loco(frames, vlm={**VLM_MV_OK, "same_pet_all_frames": "unknown"})
+    assert no_vlm["checks"]["identity_over_time"] == "REVIEW"
+
+    # 인접 일관성 없음(교대 시그니처, 서로 0.4) → VLM 이 yes 여도 REVIEW.
+    jitter_a = _fake_sig({0: 0.4, 2: 0.6})
+    jitter_b = _fake_sig({0: 0.4, 3: 0.6})
+    _install_normalized_sigs(monkeypatch, start, [jitter_a, jitter_b, jitter_a, jitter_b, jitter_a])
+    jitter = _eval_loco(frames)
+    assert jitter["checks"]["identity_over_time"] == "REVIEW"
+
+
+def test_qa_locomotion_falls_back_to_full_frame_when_unmeasurable(monkeypatch):
+    """정규화 불가(배경 모델 실패 등)면 전체 프레임 측정으로 폴백한다 — 측정이
+    없다고 검사가 사라지지 않는다."""
+    monkeypatch.setattr(qa_mod, "_pet_normalized_signature", lambda rgb: None)
+    g = _good_frame()
+    r = qa_mod.evaluate_motion_video(
+        frames=[g] * 5,
+        spec_contract=_LOCO_CONTRACT,
+        start_keyframe_rgb=g,
+        target_keyframe_rgb=None,
+        vlm_qa=VLM_MV_OK,
+    )
+    assert r["identity_evaluation"]["mode"] == "full_frame"
+    assert r["checks"]["identity_over_time"] == "PASS"  # 동일 프레임 — 평균 1.0

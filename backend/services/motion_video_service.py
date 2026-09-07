@@ -156,7 +156,10 @@ def candidate_policy(motion_class: Optional[str] = None) -> dict[str, int]:
 GENERATION_PROFILES: dict[str, dict[str, Any]] = {
     "test": {
         "resolution": "480p",
-        "duration_by_class": {"MICRO": 3, "INTERACTION": 4, "TRANSITION": 4, "LOCOMOTION": 4},
+        # MICRO 3 → 4 (motion-spec-v6): Runway seedance2_5 최소가 4s 라 3s 목표는
+        # 스펙 최소 클램프에 걸리거나(BREATHING) 계약 위반 제출이 됐다(TAIL_WAGGING
+        # 라이브 실측). 스펙도 MICRO 고정 4s 라 이제 목표와 스펙이 일치한다.
+        "duration_by_class": {"MICRO": 4, "INTERACTION": 4, "TRANSITION": 4, "LOCOMOTION": 4},
     },
     "benchmark": {"resolution": "720p", "duration_by_class": None},
     "production": {"resolution": "720p", "duration_by_class": None},

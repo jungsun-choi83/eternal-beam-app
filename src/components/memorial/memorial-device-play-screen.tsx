@@ -477,7 +477,6 @@ function MemorialDevicePlayScreenInner({
                   한 화면에서 이어져야 한다. */}
               <BehaviorLibrary
                 petId={pipeline ? getEternalBeamPetId(pipeline.content_id) : null}
-                petImageUrl={pipeline?.dog_only_nobg_url ?? null}
                 enabled={hasIdle}
                 language={language}
             />

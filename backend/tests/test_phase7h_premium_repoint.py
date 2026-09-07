@@ -600,6 +600,119 @@ def test_discovery_resigns_urls_and_reports_mixed_formats(storage, monkeypatch):
     assert body["ready"]["COME_CLOSER"] == closer["url"]
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# 11. 구매 계약 (Phase 7H 수정) — pet_image_url 은 활성 계약에서 제거됐다
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _purchase_client(monkeypatch):
+    from fastapi import FastAPI
+
+    from backend.routers import premium_v1
+
+    from .conftest import ASGITestClient
+
+    monkeypatch.setenv("ALLOW_INSECURE_TEST_AUTH", "1")
+    app = FastAPI()
+    app.include_router(premium_v1.router, prefix="/api")
+    return ASGITestClient(app)
+
+
+_AUTH = {"Authorization": f"Bearer test:{USER}"}
+
+
+def test_purchase_request_model_has_no_pet_image_url():
+    """계약이 새 시스템만 반영한다: kind + pet_id 뿐, 이미지 필드가 없다."""
+    from backend.routers import premium_v1
+
+    fields = set(premium_v1.PurchaseRequest.model_fields)
+    assert fields == {"kind", "pet_id"}
+
+
+@pytest.mark.parametrize(
+    "motion", ["BLINKING", "EAR_TWITCHING", "HEAD_TILTING", "TAIL_WAGGING", "COME_CLOSER"]
+)
+def test_purchase_with_only_pet_id_and_kind_creates_premium_run(storage, monkeypatch, motion):
+    """kind + pet_id 만으로 성공하고, PREMIUM_PRODUCT 실행이 올바른 키로 만들어진다.
+
+    레거시 premium_generation 이 불리면 하네스가 AssertionError 를 던지므로,
+    이 테스트의 성공 자체가 "레거시 무진입" 증명이다.
+    """
+    seed_intake()
+    _premium_harness(monkeypatch, motion, decision="PASS")
+    _run(_grant(2))
+    client = _purchase_client(monkeypatch)
+
+    before = client.get(f"/api/v1/pet/premium/assets?pet_id={PET}", headers=_AUTH).json()
+    assert motion in before["missing"]
+
+    r = client.post(
+        "/api/v1/pet/premium/purchase",
+        json={"kind": f"ACTION:{motion}", "pet_id": PET},
+        headers=_AUTH,
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["submitted"] == [motion]
+    assert body["status"] == "processing"
+    assert body["credits_charged"] == 1
+
+    assert len(runs._MOCK_RUNS) == 1
+    row = runs._MOCK_RUNS[0]
+    assert row["motion_id"] == motion
+    assert row["request_kind"] == "PREMIUM_PRODUCT"
+    assert row["product_key"] == owned_assets.product_key_for_action(motion)
+
+    # Behavior Library 발견: MISSING → GENERATING.
+    after = client.get(f"/api/v1/pet/premium/assets?pet_id={PET}", headers=_AUTH).json()
+    assert motion in after["generating"]
+    assert motion not in after["missing"]
+
+
+def test_stale_client_data_url_is_ignored_not_rejected(storage, monkeypatch):
+    """구클라이언트가 여전히 보내는 data: URL — 새 계약은 400 이 아니라 **무시**다.
+
+    (예전에는 PET_IMAGE_URL_NOT_REMOTE 400 으로 구매 자체가 막혔다. 생성 입력은
+    이제 서버가 pet_id 의 Phase 1 intake 에서 읽으므로 브라우저 이미지는 무관하다.)
+    """
+    seed_intake()
+    _premium_harness(monkeypatch, "BLINKING", decision="PASS")
+    _run(_grant(2))
+    client = _purchase_client(monkeypatch)
+
+    r = client.post(
+        "/api/v1/pet/premium/purchase",
+        json={
+            "kind": "ACTION:BLINKING",
+            "pet_id": PET,
+            "pet_image_url": "data:image/png;base64,iVBORw0KGgo=",
+        },
+        headers=_AUTH,
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["submitted"] == ["BLINKING"]
+    # 브라우저 이미지는 실행 어디에도 실리지 않는다.
+    assert all("data:" not in str(v) for v in runs._MOCK_RUNS[0].values())
+
+
+def test_purchase_without_phase1_intake_fails_closed(storage, monkeypatch):
+    """intake 미준비면 실행이 만들어지지 않고, 과금도 남지 않는다 (fail-closed)."""
+    # seed_intake() 를 부르지 않는다 — Phase 1 기록이 없는 펫.
+    _premium_harness(monkeypatch, "BLINKING", decision="PASS")
+    _run(_grant(2))
+    client = _purchase_client(monkeypatch)
+
+    r = client.post(
+        "/api/v1/pet/premium/purchase",
+        json={"kind": "ACTION:BLINKING", "pet_id": PET},
+        headers=_AUTH,
+    )
+    assert r.status_code == 502, r.text
+    assert r.json()["detail"]["code"] == "GENERATION_SUBMIT_FAILED"
+    assert runs._MOCK_RUNS == []
+    assert _run(_balance()) == 2  # 환불로 되돌아왔다
+
+
 @pytest.mark.parametrize("motion", ["EAR_TWITCHING", "HEAD_TILTING", "TAIL_WAGGING", "COME_CLOSER"])
 def test_other_commercial_motions_flow_through_same_adapter(storage, monkeypatch, motion):
     seed_intake()

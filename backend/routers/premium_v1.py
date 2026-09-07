@@ -53,8 +53,9 @@ class PurchaseRequest(BaseModel):
     #: "IDLE_BUNDLE" 또는 "ACTION:COME_CLOSER" (액션 id 만 줘도 된다)
     kind: str
     pet_id: str
-    #: 누락분 생성을 위해 필요. 전부 READY 면 없어도 된다.
-    pet_image_url: str | None = None
+    # Phase 7H — pet_image_url 은 계약에서 제거됐다. 생성 입력(원본·누끼·정본)은
+    # 서버가 pet_id 의 Phase 1 intake/reference 기록에서 읽는다. 구클라이언트가
+    # 보내는 값은 무시된다(pydantic extra 기본값) — 검증도 사용도 하지 않는다.
 
 
 class PurchaseResponse(BaseModel):
@@ -296,24 +297,17 @@ async def purchase_premium(
         raise _as_http(e) from e
 
     pid = motions_svc.default_pet_id(user.user_id, body.pet_id)
-    image_url = (body.pet_image_url or "").strip() or None
-
-    # data: URL 은 백엔드가 가져올 수 없다. 세션을 만들기 전에 거른다.
-    if image_url and not is_remote_asset_url(image_url):
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "code": "PET_IMAGE_URL_NOT_REMOTE",
-                "message": "pet_image_url 은 http(s) URL 이어야 합니다.",
-            },
-        )
 
     try:
+        # Phase 7H — 이행은 pet_id 기반 생성 실행(PREMIUM_PRODUCT)이다. 이미지는
+        # 요청에서 받지 않는다: Phase 1 intake 준비 검증은 실행 쪽이 fail-closed 로
+        # 수행한다. (레거시 pet_image_url 원격 검증은 여기서 제거됐다 — 새 계약은
+        # kind + pet_id 뿐이다.)
         result = await premium_purchase.purchase(
             user_id=user.user_id,
             pet_id=pid,
             kind=kind,
-            pet_image_url=image_url,
+            pet_image_url=None,
             api_base=_public_api_base(request),
         )
     except premium_purchase.PurchaseError as e:

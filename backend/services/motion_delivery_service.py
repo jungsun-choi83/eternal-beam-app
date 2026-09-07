@@ -58,7 +58,9 @@ from . import motion_video_service as motions
 logger = logging.getLogger(__name__)
 
 DELIVERY_PACKED_ALPHA = "packed_alpha"
-PACKAGING_VERSION = "motion-delivery-v1"
+# v2: 행별 배경 모델 — 실제 산출물의 벽→바닥 세로 그라디언트에서 바닥면이
+#     전경으로 남던 결함(라이브 v3 실측, 회색 바닥 슬래브) 수정.
+PACKAGING_VERSION = "motion-delivery-v2"
 BREATHING = "BREATHING"
 
 #: 포장 대상 모션 (Phase 7H 확장). BREATHING + 기존 상용 5종 — 전부 Phase 6 의
@@ -319,6 +321,26 @@ def _border_median_rgb(frame: np.ndarray) -> np.ndarray:
     return np.median(edges.astype(np.float32), axis=0)
 
 
+def _rowwise_background(frame: np.ndarray) -> np.ndarray:
+    """
+    행별 배경 모델 (H,3) — 좌우 테두리 열의 행별 중앙값 + 세로 이동평균 (v2).
+
+    단일 테두리 중앙값(v1)은 실제 Seedance 산출물에서 **바닥면을 통째로 전경으로
+    남겼다**: 배경이 균일한 한 색이 아니라 벽→바닥 세로 그라디언트이기 때문이다.
+    행별 모델은 그라디언트를 따라가므로 바닥은 키잉되고 접지 그림자만 반투명으로
+    남는다. 균일 배경에서는 v1 과 같은 값으로 수렴한다 (기존 테스트 불변).
+    """
+    f = frame.astype(np.float32)
+    edges = np.concatenate([f[:, :8, :], f[:, -8:, :]], axis=1)
+    bg_row = np.median(edges, axis=1)  # (H, 3)
+    k = 15  # 세로 스무딩 — 테두리를 스치는 그림자/노이즈 행의 오염 완화
+    pad = np.pad(bg_row, ((k // 2, k // 2), (0, 0)), mode="edge")
+    kernel = np.ones(k) / k
+    return np.stack(
+        [np.convolve(pad[:, c], kernel, mode="valid") for c in range(3)], axis=1
+    )
+
+
 def _box_blur3(a: np.ndarray) -> np.ndarray:
     """3×3 박스 블러 (순수 numpy) — 앨리어싱 완화용. 경계는 엣지 복제."""
     p = np.pad(a, 1, mode="edge")
@@ -340,9 +362,9 @@ def matte_bgmodel(frames: list[np.ndarray]) -> tuple[list[np.ndarray], dict[str,
     backgrounds: list[list[int]] = []
     for frame in frames:
         f = frame.astype(np.float32)
-        bg = _border_median_rgb(frame)
-        backgrounds.append([int(c) for c in bg])
-        dist = np.abs(f - bg[None, None, :]).max(axis=2)
+        bg = _rowwise_background(frame)  # v2 — 행별 모델 (그라디언트 배경 대응)
+        backgrounds.append([int(c) for c in bg.mean(axis=0)])
+        dist = np.abs(f - bg[:, None, :]).max(axis=2)
         alpha = np.clip((dist - lo) / max(1.0, hi - lo), 0.0, 1.0)
         alphas.append(_box_blur3(alpha).astype(np.float32))
     diag = {
@@ -444,9 +466,9 @@ def build_packed_frames(
     packed: list[np.ndarray] = []
     for frame, alpha in zip(frames, alphas):
         f = frame.astype(np.float32)
-        bg = _border_median_rgb(frame)
+        bg = _rowwise_background(frame)  # 매트와 같은 배경 모델로 오염 제거
         a3 = alpha[:, :, None]
-        premult = np.clip(f - (1.0 - a3) * bg[None, None, :], 0.0, 255.0).astype(np.uint8)
+        premult = np.clip(f - (1.0 - a3) * bg[:, None, :], 0.0, 255.0).astype(np.uint8)
         matte = np.clip(alpha * 255.0, 0.0, 255.0).astype(np.uint8)
         matte_rgb = np.repeat(matte[:, :, None], 3, axis=2)
         packed.append(np.vstack([premult, matte_rgb]))

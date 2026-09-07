@@ -217,11 +217,14 @@ export async function discoverPremiumAssets(params: {
  *
  * 멱등성은 서버가 쥔다(구매 원장의 부분 unique 인덱스). 두 번 눌러도, 탭이
  * 두 개여도, 새로고침해도 두 번 과금되지 않는다 — creditsCharged 로 확인할 수 있다.
+ *
+ * 계약은 kind + pet_id 뿐이다 (Phase 7H). 생성 입력(원본·누끼)은 서버가 pet_id 의
+ * Phase 1 intake 기록에서 읽는다 — 브라우저의 data: URL 을 보낼 이유도, 원격 URL 로
+ * 변환할 이유도 없다.
  */
 export async function purchasePremium(params: {
   kind: string;
   petId: string;
-  petImageUrl?: string | null;
   accessToken: string;
   signal?: AbortSignal;
 }): Promise<PurchaseOutcome> {
@@ -234,7 +237,6 @@ export async function purchasePremium(params: {
     body: JSON.stringify({
       kind: params.kind,
       pet_id: params.petId,
-      pet_image_url: params.petImageUrl ?? undefined,
     }),
     signal: params.signal,
   });

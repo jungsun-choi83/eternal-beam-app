@@ -48,7 +48,17 @@ from .action_keyframe_spec import BREATHING_HOME_STATE, KEYFRAME_ROLES
 #     기록). 운동을 가슴/흉곽/옆구리로 국소화하고, 주기를 클립 길이 독립적으로
 #     (2~3초당 1회) 명시하며, 전신 펄스·줌·상하 요동·이동을 명시적으로 금지한다.
 #     (다른 모션 서술은 불변 — BREATHING 한 항목만 바뀐다.)
-MOTION_SPEC_VERSION = "motion-spec-v5"
+# v6: MICRO 길이 고정 4.0s — Runway seedance2_5 의 최소 길이가 4s 라 3s 요청은
+#     계약 위반으로 제출 전에 거절된다(TAIL_WAGGING 라이브 실측, run ebbc11f5).
+#     개발 중 비용/지연 절감과 MICRO 타이밍 일관성을 겸해 당분간 범위가 아니라
+#     고정값으로 둔다. 서술/전략/다른 클래스 길이는 불변이다.
+# v7: BREATHING 서술을 긍정형으로 재작성 — v5 는 금지 명령 18개 vs 동작 서술
+#     1문장이라 모델이 두 극단으로 붕괴했다(전부 동결 + 준정지 틱 0.2%, 또는
+#     금지 무시 전신 펄스 3.9%; 16클립 실측). 자연 호흡의 목표 대역(흉곽 국소
+#     0.3~2%, 어깨 동반, 약간 불규칙한 리듬)을 **하라는 말**로 명시하고 금지는
+#     카메라/이동/균일 스케일 셋만 남긴다. breathing-temporal-qa-v2 보정과 한
+#     쌍이다. 다른 모션 서술은 불변.
+MOTION_SPEC_VERSION = "motion-spec-v7"
 # v2 (Phase 6.6): pet_motion_profile 추가 + motion_reference 가 라이브러리에서
 # 해석된 실제 자산/버전/호환성/출처를 담는다 (미해석 시 기존 v1 형태 + 경고 유지).
 PHASE6_CONTRACT_VERSION = "phase6-contract-v2"
@@ -99,12 +109,17 @@ class MotionSpec:
     preferred_travel_direction: Optional[str] = None
 
 
-def _micro(motion_id: str, desc: str, role: str, *, loopable: bool = False,
-           duration: tuple[float, float] = (3.0, 6.0)) -> MotionSpec:
+#: MICRO 는 클래스 전체가 **고정 4.0s** 다 (v6). 프로바이더 최소(Runway
+#: seedance2_5 = 4s)와 개발 비용/지연, 타이밍 일관성이 이유다. 모션별 duration
+#: 파라미터를 두지 않는 것이 정책이다 — 값이 하나뿐이어야 어긋날 수 없다.
+MICRO_DURATION_SEC = 4.0
+
+
+def _micro(motion_id: str, desc: str, role: str, *, loopable: bool = False) -> MotionSpec:
     return MotionSpec(
         motion_id=motion_id, motion_class=CLASS_MICRO, description=desc,
         start_keyframe_role=role, preferred_video_strategy=STRATEGY_I2V,
-        duration_range_sec=duration, loopable=loopable,
+        duration_range_sec=(MICRO_DURATION_SEC, MICRO_DURATION_SEC), loopable=loopable,
         # MICRO 는 시작 포즈로 되돌아온다 — 기존 seam-aligned 반환 계약과 일치.
         video_compat={"returns_to_start_pose": True, "motion_scale": "micro"},
     )
@@ -115,19 +130,20 @@ MOTIONS: dict[str, MotionSpec] = {
     BREATHING_HOME_STATE: _micro(
         BREATHING_HOME_STATE,
         # 홈 상태 루프 — 서술은 프롬프트와 VLM QA(requested_motion_occurs) 양쪽이
-        # 소비한다. 두 극단을 모두 피한다: "잔잔히"만으로는 정지화면(라이브 v5),
-        # "clearly visible + 상체 오르내림"은 전신 줌 펄스(라이브 v1/v2 실측).
-        # 가시성 하한("gently but perceptibly", 2~3초당 1회)은 유지하되 운동을
-        # 흉곽으로 국소화하고 전신 스케일/프레이밍 변화를 명시적으로 금지한다.
-        "calm natural resting breathing. The chest wall and ribcage gently but "
-        "perceptibly expand during each inhale and relax during each exhale, in a "
-        "slow natural rhythm of about one full breath every 2 to 3 seconds. The "
-        "breathing motion is visible only at the chest, ribcage and flank — only "
-        "that local body contour changes. The pet's overall size, outline, "
-        "position and framing stay exactly constant: no whole-body pulsing, no "
-        "zooming or scaling, no vertical bobbing of the head or torso, no swaying, "
-        "no translation. Head, ears, legs, paws and tail stay still",
-        "NEUTRAL_IDLE", loopable=True, duration=(4.0, 6.0),
+        # 소비한다. v7: 긍정형 서술. v5 의 동결 목록("stay exactly constant",
+        # "Head, ears ... stay still", 고정 2~3초 메트로놈)은 모델을 두 극단으로
+        # 붕괴시켰다 — 전부 동결 + 준정지 틱(가시성 미달), 또는 금지 무시 전신
+        # 펄스. 살아 있는 호흡의 실체(어깨 동반, 약간 불규칙한 리듬)를 허용으로
+        # 명시하고, 금지는 QA 가 실제로 거부하는 셋(카메라/이동/균일 스케일)만
+        # 남긴다.
+        "Calm, relaxed resting breathing. The chest, ribcage and flank visibly "
+        "expand and relax with a soft natural rhythm. A subtle shoulder rise and "
+        "very small natural head and neck response are allowed. Breathing depth "
+        "and timing may vary slightly rather than being perfectly mechanical. "
+        "The paws and seated body base remain planted. Do not move the camera or "
+        "change framing. Do not walk, translate, or slide the pet. Do not stretch "
+        "or uniformly scale the whole body",
+        "NEUTRAL_IDLE", loopable=True,
     ),
     "BLINKING": _micro("BLINKING", "자연스러운 눈 깜빡임 1~2회", "NEUTRAL_IDLE"),
     "EAR_TWITCHING": _micro("EAR_TWITCHING", "귀 움찔거림", "NEUTRAL_IDLE"),
@@ -137,7 +153,7 @@ MOTIONS: dict[str, MotionSpec] = {
     "LOOK_UP": _micro("LOOK_UP", "위를 올려다보고 되돌아오기", "LOOK_UP"),
     "HAPPY": _micro("HAPPY", "반가운 알림 반응 — 귀 쫑긋, 밝은 표정, 가벼운 몸짓", "HAPPY"),
     "LIE_IDLE": _micro("LIE_IDLE", "엎드린 채 잔잔히 쉬기", "LIE", loopable=True),
-    "SLEEP_BREATH": _micro("SLEEP_BREATH", "잠든 채 고른 숨쉬기", "SLEEP", loopable=True, duration=(4.0, 6.0)),
+    "SLEEP_BREATH": _micro("SLEEP_BREATH", "잠든 채 고른 숨쉬기", "SLEEP", loopable=True),
     # ── TRANSITION — 시작+목표 쌍 명시 ──────────────────────────────────
     "LIE_DOWN": MotionSpec(
         motion_id="LIE_DOWN", motion_class=CLASS_TRANSITION,
@@ -308,6 +324,12 @@ def _assert_registry_valid() -> None:
         if spec.requires_target_keyframe:
             assert spec.target_keyframe_role, spec.motion_id
         assert spec.motion_reference_policy in (REF_NONE, REF_PREFERRED, REF_REQUIRED)
+        if spec.motion_class == CLASS_MICRO:
+            # v6 정책: MICRO 는 클래스 전체가 고정 4.0s — 프로바이더 최소 미달
+            # 요청(3s → Runway 계약 위반)이 스펙 단계에서 다시 생길 수 없게 한다.
+            assert spec.duration_range_sec == (MICRO_DURATION_SEC, MICRO_DURATION_SEC), (
+                f"{spec.motion_id}: MICRO 길이는 고정 {MICRO_DURATION_SEC}s 다"
+            )
     # 트리거는 모션이 아니다 — id 충돌 금지. 트리거의 목적지는 유효한 모션이다.
     assert not (set(TRIGGERS) & set(MOTIONS)), "트리거 id 가 모션 id 와 겹친다"
     for target in TRIGGERS.values():

@@ -58,11 +58,30 @@ def _clip(kind: str) -> list[np.ndarray]:
         t = i / FPS
         phase = 2 * np.pi * t / 2.5  # 2.5초 주기 — 스펙의 2~3초/호흡
         if kind == "breathing":
-            frames.append(_frame(chest_dx=2.0 * max(0.0, np.sin(phase))))
+            # 가시적 호흡 (v2 보정 대역): 흉곽 측면 팽창 + 미세한 어깨 오르내림.
+            # 실측 양성 클립의 osc 0.4~1.1% 대역을 재현한다 — 2px 순수 측면(v1
+            # 시절 값)은 osc 0.11% 로 우리 자신의 가시성 바닥 아래였다.
+            frames.append(_frame(
+                chest_dx=3.0 * max(0.0, np.sin(phase)),
+                scale=1.0 + 0.004 * np.sin(phase),
+            ))
+        elif kind == "tick":
+            # 동결 + 준정지 틱 — 실측 "frozen" 클립(osc 0.18%)의 재현. v1 은
+            # 이런 클립을 breathing_detected 로 보상했다.
+            frames.append(_frame(chest_dx=1.0 * max(0.0, np.sin(phase))))
         elif kind == "static":
             frames.append(_frame())
         elif kind == "pulse":
             frames.append(_frame(scale=1.0 + 0.012 * np.sin(phase)))
+        elif kind == "sag":
+            # 단조 침하 — 실측 v6/v7 의 "숨이 아니라 쪼그라드는" 성분.
+            frames.append(_frame(scale=1.0 - 0.012 * (i / (N - 1))))
+        elif kind == "midband":
+            # 구 1% 임계 초과지만 흉곽 국소·리드미컬 — 실측 K 클립(1.16%) 재현.
+            frames.append(_frame(
+                chest_dx=4.0 * max(0.0, np.sin(phase)),
+                scale=1.0 + 0.0065 * np.sin(phase),
+            ))
         elif kind == "drift":
             frames.append(_frame(shift=0.35 * i))
         else:
@@ -81,7 +100,8 @@ def test_localized_periodic_breathing_is_detected():
     m = r["metrics"]
     assert m["torso_snr"] >= 1.6
     assert m["periodic_score"] >= 0.25
-    assert m["scale_range"] <= 0.010
+    assert m["scale_oscillation"] >= 0.003  # 가시성 바닥 위 — 보이는 호흡이다
+    assert m["scale_range"] <= 0.020
     # 주기 추정이 실제 주기(2.5s) 근처다.
     assert 1.5 <= (m["estimated_period_sec"] or 0) <= 3.5
 
@@ -91,10 +111,39 @@ def test_static_clip_is_no_motion():
     assert r["verdict"] == bt.VERDICT_NO_MOTION, r
 
 
+def test_frozen_near_invisible_tick_is_not_rewarded(  # v2 핵심 교정
+):
+    """스케일이 작다는 이유만으로 동결+미세 틱이 breathing_detected 를 받으면
+    안 된다 — 실측 frozen 클립(osc 0.18%)이 v1 에서 정확히 그렇게 통과했다."""
+    r = bt.analyze_frames(_clip("tick"), FPS, KEYFRAME)
+    assert r["verdict"] == bt.VERDICT_NO_MOTION, r
+    assert "amplitude_below_visible_floor" in (r.get("reason") or "")
+
+
 def test_whole_body_scale_pulse_is_rejected():
     r = bt.analyze_frames(_clip("pulse"), FPS, KEYFRAME)
     assert r["verdict"] == bt.VERDICT_GLOBAL_PULSE, r
-    assert r["metrics"]["scale_range"] > 0.010
+    assert r["metrics"]["scale_range"] > 0.020
+
+
+def test_monotonic_sag_is_rejected_as_framing_drift():
+    """단조 수축(침하)은 scale_range 가 상한 아래여도 호흡이 아니다 —
+    추세가 진동을 지배하면 global_pulse(sag) 다 (실측 v6 의 -2.2% 침하)."""
+    r = bt.analyze_frames(_clip("sag"), FPS, KEYFRAME)
+    assert r["verdict"] == bt.VERDICT_GLOBAL_PULSE, r
+    assert "monotonic_scale_sag" in (r.get("reason") or "")
+    assert r["metrics"]["scale_range"] <= 0.020  # 상한이 아니라 sag 규칙이 잡았다
+
+
+def test_midband_chest_localized_breathing_passes():
+    """구 1% 임계를 넘는 흉곽 국소·리드미컬 호흡이 이제 통과한다 — v2 보정의
+    목적 그 자체 (실측 K 클립 1.16%, 시각적으로 안정)."""
+    r = bt.analyze_frames(_clip("midband"), FPS, KEYFRAME)
+    assert r["verdict"] == bt.VERDICT_BREATHING, r
+    m = r["metrics"]
+    assert m["scale_range"] > 0.010  # 구 임계였다면 global_pulse 였을 대역
+    assert m["scale_range"] <= 0.020
+    assert m["head_to_torso_ratio"] <= 1.2  # 중대역의 조여진 국소성 상한
 
 
 def test_framing_drift_is_rejected():

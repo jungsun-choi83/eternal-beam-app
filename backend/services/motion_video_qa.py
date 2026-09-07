@@ -17,6 +17,12 @@ PASS 불가. FAIL 후보는 절대 승격되지 않는다 — fail-open 은 없�
 시그니처는 전체 프레임 기준이다(마스크 없음) — 배경이 잠긴 중립 배경 + 카메라
 고정이라는 Phase 6 생성 계약 위에서만 의미가 있다. 배경이 흔들리면 그것 자체가
 계약 위반이고 유사도가 떨어져 잡힌다.
+
+예외 (v4): LOCOMOTION 의 **신원 검사만** 펫 크롭 정규화 시그니처를 쓴다.
+전체 프레임 비교는 다가오기가 성공할수록(펫이 프레임을 채울수록) 히스토그램이
+시작 키프레임과 멀어지는 구조적 편향이 있다 — 모션의 성공이 신원 점수를
+떨어뜨린다(COME_CLOSER 라이브 REVIEW, worst_frame 0.498). 시간 안정성·루프
+복귀·TRANSITION 끝점 검사는 계속 전체 프레임이다.
 """
 
 from __future__ import annotations
@@ -34,7 +40,11 @@ logger = logging.getLogger(__name__)
 # v3: BREATHING 시간축 증거(breathing_temporal_qa) 통합 — vlm_motion=unknown 을
 #     결정론 증거로 해소할 수 있고, 전신 펄스/드리프트가 명시적 사유가 된다.
 #     VLM "no" 는 여전히 FAIL 이고 시간축 증거는 상반된 VLM 증거를 뒤집지 않는다.
-MOTION_VIDEO_QA_VERSION = "motion-video-qa-v3"
+# v4: LOCOMOTION 신원 검사 개편 — 펫 크롭 정규화 시그니처(배경 제외, 스케일
+#     불변) + 최악 프레임 대신 평균·인접 일관성·VLM same-pet 증거로 판정.
+#     임계값(PHASE6_QA_IDENTITY_*)은 전역과 동일하고, 다른 클래스의 신원 규칙과
+#     나머지 검사(시간 안정성/루프/끝점/VLM/합성)는 v3 그대로다.
+MOTION_VIDEO_QA_VERSION = "motion-video-qa-v4"
 FRAME_SAMPLING_VERSION = "frame-sampling-v2"
 
 #: 결정론적 샘플 지점. 마지막은 끝 구간을 순차 디코딩한 실제 마지막 프레임.
@@ -163,6 +173,65 @@ def _frame_signature(rgb: np.ndarray) -> Optional[dict[str, Any]]:
     return compute_reference_signature(rgba)
 
 
+#: 전경 판정 후 프레임 대비 전경 비율 허용 범위. 아래로 벗어나면 펫이 없거나
+#: 배경 모델이 전경을 삼켰고, 위로 벗어나면 배경 모델 자체가 실패했다(테두리가
+#: 펫으로 덮인 극단 클로즈업 등). 어느 쪽이든 측정 불가로 다룬다 — 추측 금지.
+_PET_FG_MIN_FRACTION = 0.01
+_PET_FG_MAX_FRACTION = 0.90
+
+
+def _pet_foreground_alpha(rgb: np.ndarray) -> Optional[np.ndarray]:
+    """
+    중립 배경 프레임의 전경(펫) 알파 추정 — 행별 테두리 배경 모델과의 색 거리.
+
+    행별 모델을 쓰는 이유는 포장(motion_delivery_service._rowwise_background)과
+    같은 실측이다: Seedance 배경은 균일한 한 색이 아니라 벽→바닥 세로
+    그라디언트라, 단일 배경색으로는 바닥이 통째로 전경으로 남는다. 판정용
+    거친 마스크면 충분하므로 매팅처럼 반투명을 다루지는 않는다.
+    """
+    try:
+        f = rgb.astype(np.float32)
+        h, w = f.shape[:2]
+        if h < 16 or w < 16:
+            return None
+        edges = np.concatenate([f[:, :8, :], f[:, -8:, :]], axis=1)
+        bg_row = np.median(edges, axis=1)  # (H, 3)
+        k = 15
+        pad = np.pad(bg_row, ((k // 2, k // 2), (0, 0)), mode="edge")
+        kernel = np.ones(k) / k
+        bg = np.stack(
+            [np.convolve(pad[:, c], kernel, mode="valid") for c in range(3)], axis=1
+        )
+        dist = np.sqrt(((f - bg[:, None, :]) ** 2).sum(axis=2))
+        mask = dist > _f("PHASE6_QA_PET_FG_DIST", 30.0)
+        frac = float(mask.mean())
+        if frac < _PET_FG_MIN_FRACTION or frac > _PET_FG_MAX_FRACTION:
+            return None
+        return mask.astype(np.uint8) * 255
+    except Exception:
+        return None
+
+
+def _pet_normalized_signature(rgb: Optional[np.ndarray]) -> Optional[dict[str, Any]]:
+    """
+    펫 크롭 정규화 시그니처 (v4, LOCOMOTION 신원 전용).
+
+    전경 알파를 실어 보내면 기존 시그니처 코드가 그대로 정규화를 수행한다:
+    HSV 히스토그램은 **마스크 픽셀만** 세고(배경 희석 제거), pHash 는 피사체
+    bbox 크롭을 32×32 로 리사이즈한다(스케일 제거). 펫이 작든 프레임을 채우든
+    같은 펫이면 비슷한 시그니처가 나온다. 측정 불가면 None — 호출자는 전체
+    프레임 방식으로 폴백한다(기존 동작 유지).
+    """
+    from .pet_identity_service import compute_reference_signature
+
+    if rgb is None:
+        return None
+    alpha = _pet_foreground_alpha(rgb)
+    if alpha is None:
+        return None
+    return compute_reference_signature(np.dstack([rgb, alpha]))
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 평가
 # ══════════════════════════════════════════════════════════════════════════
@@ -199,18 +268,42 @@ def evaluate_motion_video(
     sigs = [_frame_signature(f) if f is not None else None for f in (frames or [])]
     start_sig = _frame_signature(start_keyframe_rgb) if start_keyframe_rgb is not None else None
 
+    locomotion = str(spec_contract.get("motion_class")) == "LOCOMOTION"
+    identity_evaluation: dict[str, Any] = {
+        "mode": "full_frame",
+        "rule": ("locomotion_mean_consistency" if locomotion else "worst_frame"),
+    }
+
     if not valid or start_sig is None:
         checks["identity_over_time"] = "unknown"
         checks["temporal_stability"] = "unknown"
         reasons.append("frame_sampling_unavailable")
     else:
         # ── 신원 드리프트: 모든 샘플 프레임 vs 시작 키프레임 ─────────────
+        # v4 — LOCOMOTION 만 펫 크롭 정규화 시그니처로 비교한다. 전체 프레임
+        # 히스토그램은 다가오기가 성공할수록 시작 키프레임과 멀어지는 구조적
+        # 편향이 있다(모션의 성공이 신원 점수를 낮춘다). 정규화가 불가능하면
+        # (배경 모델 실패 등) 전체 프레임 방식으로 폴백한다. 다른 클래스와
+        # 나머지 검사(시간 안정성/루프/끝점)는 계속 전체 프레임 시그니처다.
+        id_sigs, id_start = sigs, start_sig
+        if locomotion:
+            norm_start = _pet_normalized_signature(start_keyframe_rgb)
+            norm_sigs = [
+                (_pet_normalized_signature(f) if f is not None else None)
+                for f in (frames or [])
+            ]
+            measurable = sum(1 for s in norm_sigs if s is not None)
+            identity_evaluation["normalized_frames"] = measurable
+            if norm_start is not None and measurable >= max(2, len(valid) // 2):
+                id_sigs, id_start = norm_sigs, norm_start
+                identity_evaluation["mode"] = "pet_normalized"
+
         sims = []
-        for s in sigs:
+        for s in id_sigs:
             if s is None:
                 frame_similarities.append(None)
                 continue
-            sim = signature_similarity(s, start_sig)
+            sim = signature_similarity(s, id_start)
             v = sim.get("hist_intersection") if sim.get("comparable") else None
             frame_similarities.append(v)
             if v is not None:
@@ -218,7 +311,50 @@ def evaluate_motion_video(
         if sims:
             identity_similarity = round(float(np.mean(sims)), 4)
             worst = min(sims)
-            if worst < id_fail:
+            if locomotion:
+                # 한 프레임의 최악값이 아니라 평균 + 인접 일관성 + VLM same-pet
+                # 증거로 판정한다. 임계값은 전역(PHASE6_QA_IDENTITY_*)과 동일 —
+                # 무엇에 적용하는지만 다르다. fail-closed 는 유지된다: 평균이
+                # FAIL 임계 아래면 FAIL, 크레이터 프레임은 최소 REVIEW, 경계
+                # 구간의 PASS 승격은 VLM 확언 + 일관성 증거가 **둘 다** 있을
+                # 때만이다.
+                id_adjacent = []
+                for a, b in zip(id_sigs, id_sigs[1:]):
+                    if a and b:
+                        sim = signature_similarity(a, b)
+                        if sim.get("comparable"):
+                            id_adjacent.append(sim["hist_intersection"])
+                adj_min = round(float(min(id_adjacent)), 4) if id_adjacent else None
+                vlm_same_pet = str((vlm_qa or {}).get("same_pet_all_frames") or "") == "yes"
+                mean_v = float(identity_similarity)
+                identity_evaluation.update(
+                    {
+                        "mean": identity_similarity,
+                        "worst": round(float(worst), 4),
+                        "adjacent_min": adj_min,
+                        "vlm_same_pet": vlm_same_pet,
+                    }
+                )
+                if mean_v < id_fail:
+                    checks["identity_over_time"] = FAIL
+                    reasons.append(f"identity_mean {round(mean_v, 3)} < {id_fail}")
+                elif worst < id_fail:
+                    # 평균은 살았지만 한 프레임이 FAIL 임계 아래로 꺼졌다 —
+                    # 순간 교체 신호일 수 있다. 자동 PASS 는 없다.
+                    checks["identity_over_time"] = REVIEW
+                    reasons.append(f"identity_crater_frame {round(worst, 3)} < {id_fail}")
+                elif mean_v >= id_pass:
+                    checks["identity_over_time"] = PASS
+                elif vlm_same_pet and adj_min is not None and adj_min >= adj_review:
+                    checks["identity_over_time"] = PASS
+                    reasons.append(
+                        f"locomotion_identity_resolved mean {round(mean_v, 3)} "
+                        f"+ adjacent_min {adj_min} + vlm_same_pet"
+                    )
+                else:
+                    checks["identity_over_time"] = REVIEW
+                    reasons.append(f"identity borderline mean {round(mean_v, 3)}")
+            elif worst < id_fail:
                 checks["identity_over_time"] = FAIL
                 reasons.append(f"identity_drift worst_frame {round(worst, 3)} < {id_fail}")
             elif worst >= id_pass:
@@ -404,6 +540,9 @@ def evaluate_motion_video(
         "sampling_version": FRAME_SAMPLING_VERSION,
         "sample_fractions": list(SAMPLE_FRACTIONS),
         "identity_similarity": identity_similarity,
+        # v4 — 신원 검사가 무엇을 어떻게 쟀는지 (mode: full_frame|pet_normalized).
+        # LOCOMOTION 이 아니면 rule=worst_frame 의 기존 판정 그대로다.
+        "identity_evaluation": identity_evaluation,
         "frame_similarities": frame_similarities,
         "loop_metrics": loop_metrics,
         "checks": checks,

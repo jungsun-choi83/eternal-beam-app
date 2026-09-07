@@ -1139,6 +1139,58 @@ async def start_generation_run(
     return run
 
 
+#: 더 기다릴 것이 없는 프로바이더 작업 상태. 이 둘이 아니면 — PREPARED /
+#: SUBMITTING / SUBMITTED / AMBIGUOUS — 외부 작업이 살아 있거나 복구 판정이
+#: 모호하다는 뜻이고, 그때 핀을 풀면 같은 생성에 두 번 과금될 수 있다.
+_TERMINAL_SUBMISSION_STATUSES = (durable_provider_jobs.COLLECTED, "FAILED")
+
+
+async def _stale_motion_pin(run: PetGenerationRun) -> bool:
+    """
+    FAILED 실행의 모션 핀이 **스펙 버전 격차 때문에** 재시도 불능인가.
+
+    배경: 실행은 durable resume 을 위해 motion_version_id 를 고정하고, _motion 의
+    lineage 검사는 고정된 버전의 motion_spec_version 이 실행과 다르면 하드하게
+    거절한다(RUN_LINEAGE_INVALID). 옳은 가드지만, 시도 사이에 모션 스펙이
+    올라가면(v5 → v6) 재시도가 매번 현재 스펙을 다시 해석해 실행에 쓰고, 고정된
+    옛 버전과 영원히 어긋난다 — 구독 모드 구매는 멱등 키가 고정이라 탈출구가
+    없었다(TAIL_WAGGING 라이브 실측, run ebbc11f5).
+
+    True 는 "핀만 풀면 같은 실행이 현재 스펙으로 다음 버전을 만든다"가 **증명될
+    때만**이다. 하나라도 애매하면 False — 기존 하드 가드가 그대로 판정한다:
+
+      * FAILED 가 아니면 손대지 않는다 (RECOVERY_REQUIRED 는 정의상 모호하다)
+      * 발행/이행이 이미 있으면 손대지 않는다
+      * 운영자 교체 요청이 걸려 있으면 그 흐름에 맡긴다
+      * 고정된 버전 행을 못 읽으면 (다른 종류의 손상) 손대지 않는다
+      * 스펙 버전이 현재와 같으면 스테일이 아니다 — 기존 재사용 경로가 맞다
+      * 종료되지 않은 프로바이더 작업이 하나라도 있으면 손대지 않는다
+    """
+    if run.status != STATUS_FAILED:
+        return False
+    if not run.motion_version_id or run.publication_id:
+        return False
+    if dict((run.provider_state or {}).get("_operator") or {}).get("replacement_request"):
+        return False
+    try:
+        motion = await motion_video_service.get_motion_version(
+            user_id=run.user_id,
+            pet_id=run.pet_id,
+            motion_id=run.motion_id,
+            version=run.motion_version,
+        )
+    except Exception:
+        return False
+    if not motion or str(motion.id) != str(run.motion_version_id):
+        return False
+    if str(motion.motion_spec_version or "") == motion_spec.MOTION_SPEC_VERSION:
+        return False
+    for job in durable_provider_jobs.list_for_run(run.id):
+        if str(job.get("submission_status") or "") not in _TERMINAL_SUBMISSION_STATUSES:
+            return False
+    return True
+
+
 async def retry_generation_run(*, user_id: str, run_id: str) -> PetGenerationRun:
     run = await get_generation_run(user_id=user_id, run_id=run_id)
     content_id = await _validate_intake(run.user_id, run.pet_id)
@@ -1152,19 +1204,31 @@ async def retry_generation_run(*, user_id: str, run_id: str) -> PetGenerationRun
         return run
     if run.status in (STATUS_QUEUED, STATUS_RUNNING, STATUS_WAITING_PROVIDER):
         return run
-    return await _update(
-        run.id,
-        {
-            "status": STATUS_QUEUED,
-            "last_error": None,
-            "retry_count": run.retry_count + 1,
-            "worker_id": None,
-            "execution_token": None,
-            "lease_expires_at": None,
-            "completed_at": None,
-            "next_attempt_at": None,
-        },
-    )
+    updates: dict[str, Any] = {
+        "status": STATUS_QUEUED,
+        "last_error": None,
+        "retry_count": run.retry_count + 1,
+        "worker_id": None,
+        "execution_token": None,
+        "lease_expires_at": None,
+        "completed_at": None,
+        "next_attempt_at": None,
+    }
+    if await _stale_motion_pin(run):
+        # 하류 모션 계보만 비운다 — 옛 버전/후보 행은 역사로 남고(삭제 없음),
+        # 신원/레퍼런스/canonical/키프레임 핀은 그대로라 상류는 재사용된다.
+        # 다음 시도는 MOTION_SPEC 에서 현재 스펙을 해석하고, _motion 이 (핀이
+        # 없으므로) 최신 버전 재사용 검사를 거쳐 현재 스펙으로 다음 버전을 만든다.
+        updates.update(
+            {
+                "motion_version_id": None,
+                "motion_version": None,
+                "selected_candidate_id": None,
+                "publication_id": None,
+                "current_stage": STAGE_MOTION_SPEC,
+            }
+        )
+    return await _update(run.id, updates)
 
 
 async def request_replacement_generation(
