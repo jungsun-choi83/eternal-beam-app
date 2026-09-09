@@ -9,16 +9,30 @@ import {
 } from "@/components/memorial/ai-processing-screen";
 import {
   freeMemorialThemes,
+  getMemorialTheme,
+  ORIGINAL_PHOTO_THEME_KEY,
   premiumMemorialThemes,
   isPremiumTheme,
   type MemorialTheme,
 } from "@/components/memorial/themes";
+import { ThemeBackgroundVideo } from "@/components/memorial/theme-background-video";
+import { getEffectiveBgVideo } from "@/lib/custom-background-store";
 import { resetThemeBackgroundSyncCache } from "@/lib/device-theme-sync";
+import { useThemeOwnership } from "@/components/memorial/use-theme-ownership";
+import { formatPriceKrw, themeRow, type ThemeOffer } from "@/lib/theme-ownership";
 import { CutoutStage } from "@/components/memorial/cutout-stage";
 import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
 
 interface ThemeSelectionScreenProps {
   cutoutImage: string | null;
+  /**
+   * "원본 사진 그대로" 에 쓸 **해결된 한 장.** 부모가 한 번 정해 내려 준다.
+   *
+   * 이 화면이 직접 localStorage 를 읽지 않는 이유: 방금 올린 사진은 React
+   * 상태에 있고 저장은 그보다 늦거나 실패할 수 있다. 각자 읽으면 카드와 큰
+   * 미리보기와 생성이 서로 다른 그림을 본다.
+   */
+  originalPhoto?: string | null;
   selectedTheme: number | null;
   language?: string;
   /** QR·?pi= 연결 — 무료 배경 CTA를 기기 재생으로 */
@@ -54,16 +68,28 @@ function findCenteredThemeId(
 const ThemeThumb = memo(function ThemeThumb({
   theme,
   loadImage,
+  originalPhoto,
 }: {
   theme: MemorialTheme;
   loadImage: boolean;
+  /** 원본 갈래 카드가 보여 줄 사진. 큰 미리보기·생성과 **같은 값**이다. */
+  originalPhoto?: string | null;
 }) {
   if (!loadImage) {
     return <div className="absolute inset-0 bg-[#141416]" aria-hidden />;
   }
+  // "원본 사진 그대로"의 썸네일은 **고객이 올린 사진 자체**다. 고정 에셋을 두면
+  // 다른 사진처럼 보이고, 고객은 자기 배경이 어떤 것인지 확인할 수 없다.
+  const src =
+    theme.themeKey === ORIGINAL_PHOTO_THEME_KEY
+      ? originalPhoto || theme.thumb
+      : theme.thumb;
+  if (!src) {
+    return <div className="absolute inset-0 bg-[#141416]" aria-hidden />;
+  }
   return (
     <img
-      src={theme.thumb}
+      src={src}
       alt=""
       loading="lazy"
       decoding="async"
@@ -71,6 +97,41 @@ const ThemeThumb = memo(function ThemeThumb({
     />
   );
 });
+
+/**
+ * 소유 상태 배지 — FREE / OWNED / 가격 / 준비 중.
+ *
+ * themes.ts 의 하드코딩된 `price`("$2.99")를 더 이상 쓰지 않는다. 그 값은 레거시
+ * PayPal 표시용이고, 실제 판매 여부·가격은 **서버 카탈로그**가 정한다.
+ * 두 곳이 다르면 눌러도 거절당하는 버튼이 생긴다.
+ */
+function ThemeOwnershipBadge({
+  theme,
+  offers,
+}: {
+  theme: MemorialTheme;
+  offers: Map<string, ThemeOffer>;
+}) {
+  const row = themeRow(theme, offers);
+  const price = formatPriceKrw(row.priceKrw);
+
+  const [label, color] =
+    row.state === "free"
+      ? ["FREE", "#a8e6a3"]
+      : row.state === "owned"
+        ? ["OWNED", "#a8e6a3"]
+        : row.state === "not-owned"
+          ? [price ?? "BUY", "#f5d77a"]
+          : ["준비 중", "#9a9a9a"];
+
+  return (
+    <div className="absolute top-2 right-2 rounded-full bg-black/50 px-1.5 py-0.5">
+      <span className="text-[8px] tracking-wide" style={{ color }}>
+        {label}
+      </span>
+    </div>
+  );
+}
 
 const ThemeCarousel = memo(function ThemeCarousel({
   themes,
@@ -82,9 +143,13 @@ const ThemeCarousel = memo(function ThemeCarousel({
   onInteractionStart,
   onSelect,
   onSnapTheme,
+  offers,
+  originalPhoto = null,
 }: {
   themes: MemorialTheme[];
   selectedTheme: number | null;
+  /** 서버 카탈로그. 비어 있으면 폴백 표시(유료는 잠김). */
+  offers: Map<string, ThemeOffer>;
   themeLabel: (th: MemorialTheme) => string;
   carouselRef: React.RefObject<HTMLDivElement | null>;
   carouselId: "free" | "premium";
@@ -92,6 +157,7 @@ const ThemeCarousel = memo(function ThemeCarousel({
   onInteractionStart: (id: "free" | "premium") => void;
   onSelect: (theme: MemorialTheme) => void;
   onSnapTheme: (themeId: number, source: "free" | "premium") => void;
+  originalPhoto?: string | null;
 }) {
   const [focusIndex, setFocusIndex] = useState(() =>
     Math.max(0, themes.findIndex((t) => t.id === selectedTheme))
@@ -163,7 +229,10 @@ const ThemeCarousel = memo(function ThemeCarousel({
       >
         {themes.map((theme, index) => {
           const selected = selectedTheme === theme.id;
-          const loadImage = Math.abs(index - focusIndex) <= 1;
+          // ±1 가상화는 그대로 두되, **선택된 카드는 거리와 무관하게 로드한다.**
+          // 멀리 있는 테마를 눌렀을 때 그 카드가 검은 채로 남으면, 고객은
+          // 자기가 무엇을 골랐는지 볼 수 없다.
+          const loadImage = Math.abs(index - focusIndex) <= 1 || selected;
           return (
             <button
               key={theme.id}
@@ -174,7 +243,7 @@ const ThemeCarousel = memo(function ThemeCarousel({
                 selected ? "border-[#c9a227] shadow-[0_0_0_1px_rgba(201,162,39,0.35)]" : "border-transparent"
               }`}
             >
-              <ThemeThumb theme={theme} loadImage={loadImage} />
+              <ThemeThumb theme={theme} loadImage={loadImage} originalPhoto={originalPhoto} />
               <div className={`absolute inset-0 bg-gradient-to-b ${theme.gradient} opacity-40 pointer-events-none`} />
               {theme.requiresGeneration ? (
                 <div className="absolute top-2 left-2 w-5 h-5 rounded-full bg-white/15 border border-white/30 flex items-center justify-center">
@@ -185,14 +254,8 @@ const ThemeCarousel = memo(function ThemeCarousel({
                 <div className="absolute top-2 right-2 w-5 h-5 rounded-full bg-[#c9a227] flex items-center justify-center">
                   <Check className="w-3 h-3 text-[#0a0a0a]" strokeWidth={3} />
                 </div>
-              ) : theme.premium ? (
-                <div className="absolute top-2 right-2 rounded-full bg-black/50 px-1.5 py-0.5">
-                  <span className="text-[8px] text-[#f5d77a] tracking-wide">{theme.price}</span>
-                </div>
               ) : (
-                <div className="absolute top-2 right-2 rounded-full bg-black/40 px-1.5 py-0.5">
-                  <span className="text-[8px] text-[#a8e6a3] tracking-wide">FREE</span>
-                </div>
+                <ThemeOwnershipBadge theme={theme} offers={offers} />
               )}
               <div className="absolute bottom-2 left-0 right-0 text-center px-1">
                 <span className="text-[10px] text-[#F1E5D1] tracking-wide">{themeLabel(theme)}</span>
@@ -207,6 +270,7 @@ const ThemeCarousel = memo(function ThemeCarousel({
 
 export function ThemeSelectionScreen({
   cutoutImage,
+  originalPhoto = null,
   selectedTheme,
   language = "ko",
   deviceLinked = false,
@@ -220,10 +284,14 @@ export function ThemeSelectionScreen({
   const themeLabel = (th: MemorialTheme) =>
     themeDisplayName(language === "ko" ? "ko" : "en", th);
   const freeCarouselRef = useRef<HTMLDivElement | null>(null);
+  const ownership = useThemeOwnership();
   const premiumCarouselRef = useRef<HTMLDivElement | null>(null);
   const interactionCarouselRef = useRef<"free" | "premium" | null>(null);
   const [pipelineCutout, setPipelineCutout] = useState<string | null>(null);
   const [idleVideoUrl, setIdleVideoUrl] = useState<string>("");
+  /** 이 화면이 트는 영상이 배경을 이미 담고 있는가 (Phase 25).
+   *  아래 useEffect 가 **이미 파싱하고 있던** 객체에서 그대로 꺼낸다. */
+  const [idleBaked, setIdleBaked] = useState(false);
   const [highlightTheme, setHighlightTheme] = useState<number | null>(selectedTheme);
 
   const isInteractionTarget = useCallback(
@@ -249,6 +317,7 @@ export function ThemeSelectionScreen({
       if (!raw) {
         setPipelineCutout(null);
         setIdleVideoUrl("");
+        setIdleBaked(false);
         return;
       }
       const pipeline = JSON.parse(raw) as StoredPipeline;
@@ -259,9 +328,14 @@ export function ThemeSelectionScreen({
         null;
       setPipelineCutout(cutout);
       setIdleVideoUrl(pipeline.idle_video_url || "");
+      // 영상이 있을 때만 의미가 있다 — 없으면 나가는 것은 정적 누끼다.
+      setIdleBaked(
+        Boolean(pipeline.idle_video_url) && pipeline.background_baked === true
+      );
     } catch {
       setPipelineCutout(null);
       setIdleVideoUrl("");
+      setIdleBaked(false);
     }
   }, [cutoutImage]);
 
@@ -273,6 +347,13 @@ export function ThemeSelectionScreen({
         onSelectCustomBackground?.(theme);
         return;
       }
+      // 미보유 유료 테마 → 선택 대신 구매. 무료·보유 테마의 선택 경로는
+      // 예전 그대로다(localStorage + onSelectTheme + 기기 동기화).
+      const row = themeRow(theme, ownership.offers);
+      if (!row.usable) {
+        if (row.action === "buy") void ownership.buy(theme.themeKey);
+        return;
+      }
       try {
         localStorage.setItem("eternal_beam_theme_key", theme.themeKey);
         localStorage.setItem("eternal_beam_theme_id", String(theme.id));
@@ -281,7 +362,7 @@ export function ThemeSelectionScreen({
       }
       onSelectTheme(theme.id);
     },
-    [onSelectCustomBackground, onSelectTheme]
+    [onSelectCustomBackground, onSelectTheme, ownership]
   );
 
   const snapSelectTheme = useCallback(
@@ -292,6 +373,9 @@ export function ThemeSelectionScreen({
         (t) => t.id === themeId
       );
       if (!theme || theme.requiresGeneration) return;
+      // 스냅(스크롤 정지)으로도 미보유 유료 테마가 선택되면 안 된다.
+      // 여기서는 결제를 열지 않는다 — 사용자가 누른 것이 아니기 때문이다.
+      if (!themeRow(theme, ownership.offers).usable) return;
       try {
         localStorage.setItem("eternal_beam_theme_key", theme.themeKey);
         localStorage.setItem("eternal_beam_theme_id", String(theme.id));
@@ -300,10 +384,23 @@ export function ThemeSelectionScreen({
       }
       onSelectTheme(themeId);
     },
-    [onSelectTheme]
+    [onSelectTheme, ownership.offers]
   );
 
   const activeTheme = highlightTheme ?? selectedTheme;
+  const previewTheme = activeTheme != null ? getMemorialTheme(activeTheme) : null;
+  const previewIsOriginal = previewTheme?.themeKey === ORIGINAL_PHOTO_THEME_KEY;
+  const previewBgVideo = getEffectiveBgVideo(previewTheme);
+  /**
+   * 원본을 골랐는데 보여 줄 사진이 없다.
+   *
+   * 검은 판을 보여 주고 넘어가게 두지 않는다 — 그 검은 판이 그대로 유료 생성에
+   * 들어가고, 고객은 결제 뒤에야 알게 된다.
+   */
+  const originalMissing = Boolean(previewIsOriginal && !originalPhoto);
+  // 커스텀 배경은 getEffectiveBgVideo 가 저장된 사용자 배경을 돌려준다. 아직
+  // 만들지 않았다면 카드 아트(플레이스홀더)가 나오고, 실제 거절은 다음 화면의
+  // 장면 준비에서 일어난다.
 
   return (
     <div className="theme-selection-screen flex h-full min-h-0 flex-col overflow-hidden bg-[#0a0a0a]">
@@ -329,17 +426,65 @@ export function ThemeSelectionScreen({
 
         <div className="px-5 py-2">
           <div className="theme-selection-screen__preview relative aspect-[4/3] mx-auto rounded-2xl overflow-hidden border border-white/10 bg-[#0a0a0c]">
-            <CutoutStage plain className="absolute inset-0">
-              <PetIdleDisplay
-                idleVideoUrl={idleVideoUrl}
-                cutoutUrl={cutoutImage || pipelineCutout}
-                // 테마 선택은 확인 전 단계 — 데모 mp4 폴백 없이 정적 누끼로 보여준다.
-                allowDemoFallback={false}
-                className="cutout-stage__subject"
-              />
-            </CutoutStage>
+            {/* ── 고른 배경을 **즉시** 보여 준다 ─────────────────────────────
+                예전에는 이 자리가 누끼만 그렸다("배경은 다음 단계에서"). 그래서
+                테마를 눌러도 화면이 바뀌지 않았고, 고객은 무엇을 고르는지 모르는
+                채 다음으로 넘어갔다. 다음 화면의 합성 규칙을 그대로 쓴다 —
+                여기서 본 그림과 미리보기에서 볼 그림이 같아야 한다. */}
+            {originalMissing ? (
+              <div
+                role="alert"
+                className="absolute inset-0 flex items-center justify-center px-6 text-center text-[13px] bg-amber-900/30 text-[#e8c97a]"
+              >
+                {tc.originalMissing}
+              </div>
+            ) : (
+              <>
+                {previewIsOriginal ? (
+                  // 원본 갈래에는 펫을 **얹지 않는다** — 사진에 이미 아이가 있다.
+                  <img
+                    src={originalPhoto ?? undefined}
+                    alt=""
+                    className="absolute inset-0 h-full w-full object-cover"
+                  />
+                ) : (
+                  <>
+                    {previewBgVideo ? (
+                      <ThemeBackgroundVideo
+                        key={`theme-sel-bg-${activeTheme}-${previewBgVideo}`}
+                        src={previewBgVideo}
+                        poster={previewTheme?.thumb}
+                      />
+                    ) : previewTheme?.thumb ? (
+                      <div
+                        className="absolute inset-0 bg-center bg-cover"
+                        style={{ backgroundImage: `url(${previewTheme.thumb})` }}
+                      />
+                    ) : null}
+                    {previewTheme ? (
+                      <div
+                        className={`absolute inset-0 bg-gradient-to-b ${previewTheme.gradient} opacity-25`}
+                      />
+                    ) : null}
+                    <CutoutStage plain className="absolute inset-0">
+                      <PetIdleDisplay
+                        idleVideoUrl={idleVideoUrl}
+                        cutoutUrl={cutoutImage || pipelineCutout}
+                        // 테마 선택은 확인 전 단계 — 데모 mp4 폴백 없이 정적 누끼로 보여준다.
+                        allowDemoFallback={false}
+                        // 저장된 파이프라인에 이미 들어 있던 값이다 (Phase 25).
+                        backgroundBaked={idleBaked}
+                        className="cutout-stage__subject"
+                      />
+                    </CutoutStage>
+                  </>
+                )}
+              </>
+            )}
           </div>
-          <p className="mt-2 text-center text-[10px] text-[#666]">{tc.previewNeutralHint}</p>
+          <p className="mt-2 text-center text-[10px] text-[#666]">
+            {previewIsOriginal ? tc.previewOriginalHint : tc.previewNeutralHint}
+          </p>
         </div>
 
         <div className="px-5 pb-3">
@@ -353,8 +498,10 @@ export function ThemeSelectionScreen({
             carouselId="free"
             isInteractionTarget={isInteractionTarget("free")}
             onInteractionStart={markInteraction}
+            offers={ownership.offers}
             onSelect={(theme) => selectTheme(theme, "free")}
             onSnapTheme={snapSelectTheme}
+            originalPhoto={originalPhoto}
           />
         </div>
 
@@ -369,8 +516,10 @@ export function ThemeSelectionScreen({
             carouselId="premium"
             isInteractionTarget={isInteractionTarget("premium")}
             onInteractionStart={markInteraction}
+            offers={ownership.offers}
             onSelect={(theme) => selectTheme(theme, "premium")}
             onSnapTheme={snapSelectTheme}
+            originalPhoto={originalPhoto}
           />
           <p className="mt-2 text-[10px] text-[#888]">{tc.swipeHint}</p>
         </div>
@@ -379,11 +528,13 @@ export function ThemeSelectionScreen({
       <div className="theme-selection-footer shrink-0 px-5 pt-3 space-y-2 relative z-20">
         <button
           type="button"
-          onClick={() => activeTheme && onContinue(activeTheme)}
-          disabled={!activeTheme}
+          onClick={() => activeTheme && !originalMissing && onContinue(activeTheme)}
+          disabled={!activeTheme || originalMissing}
           className="cta-gold w-full py-3.5 rounded-2xl font-medium text-[15px] disabled:opacity-45 disabled:cursor-not-allowed"
         >
-          {activeTheme
+          {originalMissing
+            ? tc.originalMissingCta
+            : activeTheme
             ? isPremiumTheme(activeTheme)
               ? tc.continuePremium
               : deviceLinked

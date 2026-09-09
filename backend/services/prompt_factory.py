@@ -16,9 +16,14 @@ def build_scenario_prompt(
     action_key: str,
     *,
     use_korean_motion: bool = False,
+    background_baked: bool = False,
 ) -> str:
     """
     최종 Luma 프롬프트 한 줄 (강아지만, 사람·목줄 금지).
+
+    background_baked=True 면 입력 키프레임이 **정본 장면**이다 — 보이드 요구를
+    배경 보존 요구로 바꾼다(luma_prompts.bake_scene_background). 행동별 분기가
+    아니라 최종 문장 한 곳에서 갈린다.
     """
     # 레거시 10곳 + 웹 전용(fresh_forest). 장소 설명은 모델에 넘기지 않으므로
     # 웹 전용 장소도 프롬프트 조립에 아무 문제가 없다.
@@ -40,4 +45,5 @@ def build_scenario_prompt(
         image_url,
         action_key,
         motion_ko_suffix=motion_ko,
+        background_baked=background_baked,
     )

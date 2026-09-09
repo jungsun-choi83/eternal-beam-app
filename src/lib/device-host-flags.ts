@@ -63,26 +63,36 @@ export type IdleDisplaySource =
   | { mode: "video"; src: string }
   | { mode: "cutout"; src: string };
 
-/** idle mp4 — API URL 우선; 데모 Goya 목업은 cutout 있어도 표시 (session 저장만 제외) */
+/** http(s) 절대 주소인가 — 확장자와 무관하게 "진짜 자산"인지 가리는 기준. */
+function looksLikeRemoteAsset(url: string): boolean {
+  return /^https?:\/\//i.test(url) || url.startsWith("blob:") || url.startsWith("/");
+}
+
+/**
+ * idle mp4 — **실제 생성 자산이 있으면 그것이 이긴다.**
+ *
+ * ── 데모가 진짜 자산을 가리던 경로 ──────────────────────────────────────────
+ * 예전에는 확장자(.mp4/.webm/.mov)로만 "영상인가"를 판정했다. 그런데 프로바이더와
+ * 스토리지가 돌려주는 주소는 늘 확장자로 끝나지 않는다(서명 URL, CDN 리라이트,
+ * 확장자 없는 오브젝트 키). 그러면 **방금 생성한 진짜 영상**이 isVideo=false 로
+ * 떨어지고, 그 아래 폴백이 Goya 데모를 돌려줬다 — 사용자는 자기 아이 대신 남의
+ * 강아지를 보게 된다.
+ *
+ * 배경이 구워진 뒤로는 이 오작동이 더 나쁘다: 데모 클립에는 고객이 승인한 배경도
+ * 없으므로 화면이 통째로 다른 장면이 된다.
+ *
+ * 그래서 판정을 뒤집는다 — **Goya 목업이 아닌 원격 자산이면 무조건 그것을 쓴다.**
+ * 데모는 자산이 아예 없을 때만 나온다.
+ */
 export function ensureIdleMp4Url(
   apiUrl: string | null | undefined,
   options?: { allowDemoFallback?: boolean; cutoutUrl?: string | null }
 ): string {
   const cutout = String(options?.cutoutUrl ?? "").trim();
   const u = String(apiUrl ?? "").trim();
-  if (u) {
-    const path = u.split("?")[0].split("#")[0].toLowerCase();
-    const isVideo =
-      path.endsWith(".mp4") ||
-      path.endsWith(".webm") ||
-      path.endsWith(".mov");
-    if (isVideo) {
-      if (cutout && isGoyaDemoIdleUrl(u)) {
-        /* 사용자 cutout + API가 Goya mock URL → 아래 데모 폴백으로 */
-      } else {
-        return u;
-      }
-    }
+  if (u && looksLikeRemoteAsset(u)) {
+    // 사용자 cutout 이 있는데 API 가 Goya 목업을 준 경우에만 폴백으로 내려간다.
+    if (!(cutout && isGoyaDemoIdleUrl(u))) return u;
   }
   const allowFallback = options?.allowDemoFallback ?? isIdleTestFallbackEnabled();
   if (allowFallback) return SAME_ORIGIN_IDLE_FALLBACK_URL;

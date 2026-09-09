@@ -11,6 +11,7 @@ import { PhotoUploadGuide } from "@/components/memorial/photo-upload-guide";
 import { CutoutStage } from "@/components/memorial/cutout-stage";
 import { MemorialIconButton, MemorialPrimaryButton } from "@/components/memorial/memorial-chrome";
 import { inferMediaKind } from "@/lib/media-file-kind";
+import type { MediaKind } from "@/lib/main-media-store";
 import { CUTOUT_WARMUP_MAX_MS } from "@/lib/cutout-speed-mode";
 import { warmupVideoApi } from "@/lib/video-api-warmup";
 import { traceImage } from "@/lib/image-trace"; // [IMAGE-TRACE]
@@ -18,7 +19,14 @@ import { traceImage } from "@/lib/image-trace"; // [IMAGE-TRACE]
 interface PhotoUploadScreenProps {
   uploadedImage: string | null;
   language?: string;
-  onImageUpload: (imageUrl: string) => void;
+  /**
+   * 고른 미디어를 부모에게 넘긴다.
+   *
+   * ⚠️ **kind 를 반드시 함께 넘긴다.** 이 화면은 File.type 을 본 유일한 지점이라
+   * 종류를 확실히 아는 곳도 여기뿐이다. URL 만 넘기면 부모가 문자열 모양으로
+   * 추측해야 하고, 그 추측이 틀리면 영상이 "원본 사진"으로 저장된다.
+   */
+  onImageUpload: (imageUrl: string, kind: MediaKind) => void;
   onContinue: () => void;
   onBack: () => void;
 }
@@ -59,25 +67,26 @@ export function PhotoUploadScreen({
       // (안드로이드 갤러리/구글포토가 원본 대신 저해상도 프록시를 주는 경우).
       void traceImage("file-selected (picker)", file, "original-upload", `kind=${kind}`);
 
+      // 저장은 **부모가 한 곳에서** 한다(commitMainMedia). 예전에는 이 화면이
+      // 미디어 종류만 적고 main_photo 는 적지 않았다 — 그래서 여기로 올린 사진은
+      // React 상태에만 있었고, 원본 배경을 읽는 화면들은 지난번 사진을 봤다.
       if (kind === "image") {
         setMediaType("image");
-        localStorage.setItem("eternal_beam_media_type", "image");
         void warmupVideoApi({ coldStart: true, maxWaitMs: CUTOUT_WARMUP_MAX_MS });
         const reader = new FileReader();
         reader.onload = () => {
           const result = reader.result as string;
           // [IMAGE-TRACE] FileReader 결과 = 앱 상태로 들어가는 값 (무손실이어야 함).
           void traceImage("state:uploadedImage", result, "original-upload");
-          onImageUpload(result);
+          onImageUpload(result, "image");
         };
         reader.readAsDataURL(file);
         return;
       }
 
       setMediaType("video");
-      localStorage.setItem("eternal_beam_media_type", "video");
       if (file.size > 100 * 1024 * 1024) return;
-      onImageUpload(URL.createObjectURL(file));
+      onImageUpload(URL.createObjectURL(file), "video");
     },
     [onImageUpload],
   );

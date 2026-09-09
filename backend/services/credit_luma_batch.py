@@ -71,9 +71,12 @@ async def _submit_one(
   action_id: str,
   callback_url: str,
   semaphore: asyncio.Semaphore,
+  background_baked: bool = False,
 ) -> dict[str, Any]:
   async with semaphore:
-    prompt = build_scenario_prompt(pet_image_url, place_key, action_id)
+    prompt = build_scenario_prompt(
+      pet_image_url, place_key, action_id, background_baked=background_baked
+    )
     try:
       # 액션별 프로바이더. 아무 설정도 없으면 luma — 기존 배포와 동일하다.
       provider = resolve_action_provider(action_id)
@@ -123,6 +126,7 @@ async def submit_place_motion_set(
   pet_image_url: str,
   webhook_base_url: str,
   max_concurrency: int = 3,
+  background_baked: bool = False,
 ) -> tuple[int, list[dict[str, Any]]]:
   """
   선택 장소에 대해 IDLE/TOUCH/VOICE/NFC 4건 Luma 제출.
@@ -144,6 +148,7 @@ async def submit_place_motion_set(
       action_id=action_id,
       callback_url=callback_url,
       semaphore=sem,
+      background_baked=background_baked,
     )
     for action_id in resolve_submit_actions()
   ]

@@ -13,21 +13,38 @@ interface ShippingAddressScreenProps {
   language?: string;
   onComplete: () => void;
   onBack: () => void;
+  /**
+   * 입력된 주소를 호출부로 넘긴다 (선택).
+   *
+   * 실물 주문은 이 값을 **서버 주문**에 실어야 한다 — localStorage 만으로는
+   * 인쇄·배송이 불가능하다. 넘기지 않는 기존 호출부(프리미엄 테마 배송 흐름)는
+   * 예전 그대로 localStorage 저장 + onComplete 만 동작한다.
+   */
+  onSubmitAddress?: (address: ShippingAddress) => void;
+  /** 제출 버튼 문구 재정의 (주문 흐름에서는 "주문 확인"). */
+  submitLabel?: string;
+  /** 초깃값 — 뒤로 갔다 오면 입력이 남아 있어야 한다. */
+  initialAddress?: ShippingAddress | null;
 }
 
 export function ShippingAddressScreen({
   language = "ko",
   onComplete,
   onBack,
+  onSubmitAddress,
+  submitLabel,
+  initialAddress,
 }: ShippingAddressScreenProps) {
   const s = memorialT(language).shipping;
-  const [form, setForm] = useState<ShippingAddress>({
-    recipientName: "",
-    phone: "",
-    postalCode: "",
-    addressLine1: "",
-    addressLine2: "",
-  });
+  const [form, setForm] = useState<ShippingAddress>(
+    initialAddress ?? {
+      recipientName: "",
+      phone: "",
+      postalCode: "",
+      addressLine1: "",
+      addressLine2: "",
+    }
+  );
   const [error, setError] = useState<string | null>(null);
 
   const update = (key: keyof ShippingAddress, value: string) => {
@@ -48,13 +65,16 @@ export function ShippingAddressScreen({
       setError(s.errorAddress);
       return;
     }
-    saveShippingAddress({
+    const address: ShippingAddress = {
       recipientName: form.recipientName.trim(),
       phone: form.phone.trim(),
       postalCode: form.postalCode.trim(),
       addressLine1: form.addressLine1.trim(),
       addressLine2: form.addressLine2?.trim() || undefined,
-    });
+    };
+    // 기존 동작 보존: 로컬 저장은 그대로 한다(다음 주문의 초깃값으로 쓰인다).
+    saveShippingAddress(address);
+    onSubmitAddress?.(address);
     onComplete();
   };
 

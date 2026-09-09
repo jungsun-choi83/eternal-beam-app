@@ -26,7 +26,9 @@ from pydantic import BaseModel
 
 from ..auth import AuthedUser, require_user
 from ..scenarios.pet_scenarios import IDLE_EVENTS, PET_ACTIONS, THEME_INDEPENDENT_PLACE_ID
+from ..services import behavior_preferences
 from ..services import generated_motions_service as motions_svc
+from ..services import premium_entitlement
 from ..services import premium_purchase
 from ..services.credit_keyframe import is_remote_asset_url
 
@@ -82,6 +84,17 @@ class AssetsResponse(BaseModel):
     action_events: list[str] = []
     idle_bundle_credits: int = premium_purchase.IDLE_BUNDLE_CREDITS
     action_event_credits: int = premium_purchase.ACTION_EVENT_CREDITS
+    #: 행동 id → ON/OFF. **등록된 프리미엄 행동 전체**가 들어온다(기본 켬).
+    #: ⚠️ READY 와 무관한 별개 상태다 — 아직 만들지 않은 행동에도 값이 있다.
+    #: ⚠️ 아직 재생에 연결되지 않았다 (Phase 5 는 저장까지).
+    preferences: dict[str, bool] = {}
+    #: 프리미엄 **생성**이 허용되는가 (구독 active 또는 해지 유예 기간).
+    #: ⚠️ 재생 권한이 아니다 — ready 의 자산은 false 여도 계속 재생된다.
+    entitled: bool = False
+    #: "active" | "canceled" | "expired" | null(구독 이력 없음)
+    subscription_status: str | None = None
+    #: 구독 게이트가 켜져 있는가. false 면 예전 크레딧 과금 경로다.
+    subscription_required: bool = True
 
 
 class IdentityResponse(BaseModel):
@@ -122,6 +135,26 @@ async def get_premium_assets(
 
     all_actions = tuple(IDLE_EVENTS) + tuple(PET_ACTIONS)
     state = await premium_purchase.asset_state(user.user_id, pid, all_actions)
+
+    # 구독 상태 조회가 실패해도 **발견은 계속돼야 한다.** 이 응답의 ready 목록은
+    # 재생에 쓰이고, 재생은 구독과 무관하다(만료돼도 READY 는 재생된다). 여기서
+    # 503 을 던지면 구독 조회 장애가 재생 화면을 통째로 죽인다. 생성 인가는
+    # POST /purchase 가 자기 자리에서 다시, fail-closed 로 판정한다.
+    try:
+        ent = await premium_entitlement.get_entitlement(user.user_id)
+    except premium_entitlement.EntitlementUnavailableError:
+        logger.warning("자산 조회 중 구독 상태 확인 실패 — 발견은 계속한다 (user=%s)", user.user_id)
+        ent = premium_entitlement.EntitlementState(
+            entitled=False, status=None, enforced=premium_entitlement.subscription_required()
+        )
+
+    # 선호는 구독과 무관하게 읽는다 — 만료된 사용자도 자기가 꺼 둔 설정을 볼 수
+    # 있어야 하고, 갱신하면 그대로 돌아와야 한다.
+    try:
+        prefs = await behavior_preferences.get_preferences(user.user_id, pid)
+    except behavior_preferences.PreferenceError as e:
+        raise HTTPException(status_code=e.status, detail={"code": e.code, "message": e.message}) from e
+
     return AssetsResponse(
         pet_id=pid,
         ready=state.ready,
@@ -129,7 +162,60 @@ async def get_premium_assets(
         missing=sorted(state.missing),
         idle_events=list(IDLE_EVENTS),
         action_events=list(PET_ACTIONS),
+        preferences=prefs,
+        entitled=ent.entitled,
+        subscription_status=ent.status,
+        subscription_required=ent.enforced,
     )
+
+
+class PreferenceRequest(BaseModel):
+    pet_id: str
+    #: PREMIUM_ACTIONS 의 canonical id (BLINKING / … / COME_CLOSER)
+    action_id: str
+    enabled: bool
+
+
+class PreferenceResponse(BaseModel):
+    pet_id: str
+    #: 갱신된 **전체** 선호 — 프론트가 응답 하나로 화면을 다시 그린다.
+    preferences: dict[str, bool] = {}
+
+
+@router.put("/preference", response_model=PreferenceResponse)
+async def set_behavior_preference(
+    body: PreferenceRequest,
+    user: AuthedUser = Depends(require_user),
+):
+    """
+    행동 하나의 ON/OFF 저장. **생성을 일으키지 않는다.**
+
+    인가 규칙이 /purchase 와 **의도적으로 다르다**:
+
+      소유권  필요하다 — 남의 펫 설정을 바꿀 수 없다.
+      구독    요구하지 않는다.
+
+    구독을 요구하지 않는 이유: 선호는 결제 대상이 아니라 사용자 데이터다. 만료를
+    이유로 쓰기를 막으면 "만료돼도 설정은 보존된다"는 계약이 사용자 입장에서
+    반쪽이 된다(볼 수는 있는데 고칠 수는 없다). 토글은 프로바이더 비용을 쓰지
+    않고 아직 재생에도 연결되지 않으므로, 막아서 지킬 것이 없다.
+    생성 컨트롤은 예전 그대로 구독이 필요하다 — 그쪽이 비용을 쓰는 경로다.
+    """
+    pid = motions_svc.default_pet_id(user.user_id, body.pet_id)
+    try:
+        await premium_purchase.assert_pet_owned(user.user_id, pid)
+    except premium_purchase.PurchaseError as e:
+        raise _as_http(e) from e
+
+    try:
+        prefs = await behavior_preferences.set_preference(
+            user_id=user.user_id, pet_id=pid,
+            action_id=body.action_id, enabled=body.enabled,
+        )
+    except behavior_preferences.PreferenceError as e:
+        raise HTTPException(status_code=e.status, detail={"code": e.code, "message": e.message}) from e
+
+    return PreferenceResponse(pet_id=pid, preferences=prefs)
 
 
 @router.post("/purchase", response_model=PurchaseResponse)

@@ -11,9 +11,10 @@
 from __future__ import annotations
 
 import os
+import time
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from backend.auth import verify_bearer_token
 from backend.routers import premium_v1
@@ -122,18 +123,84 @@ def test_valid_token_is_accepted(client: ASGITestClient):
 def test_missing_secret_fails_closed_not_open(monkeypatch: pytest.MonkeyPatch):
     """
     시크릿 누락이 '인증 없는 프로덕션' 이 되면 안 된다. 열지 말고 닫아야 한다.
+
+    ⚠️ 모델이 바뀌었다: 현재 Supabase 액세스 토큰은 ES256 이라 JWKS 로 검증하고
+    SUPABASE_JWT_SECRET 을 쓰지 않는다. 그래서 "시크릿이 없으면 무조건 503" 은
+    더 이상 옳지 않다 — 그 규칙이 실제로 ES256 토큰을 전부 막고 있었다.
+
+    변하지 않는 계약은 하나다: **검증할 수 없는 토큰은 절대 통과하지 않는다.**
     """
     monkeypatch.delenv("SUPABASE_JWT_SECRET", raising=False)
     app = FastAPI()
     app.include_router(premium_v1.router, prefix="/api")
     c = ASGITestClient(app)
+
+    # 아무 문자열 → JWT 조차 아니다. 401 로 닫힌다(열리지 않는다).
     r = c.get(
         "/api/v1/pet/premium/assets",
         params={"pet_id": PET},
         headers={"Authorization": "Bearer anything"},
     )
-    assert r.status_code == 503
-    assert r.json()["detail"]["code"] == "AUTH_NOT_CONFIGURED"
+    assert r.status_code == 401
+    assert r.json()["detail"]["code"] == "UNAUTHENTICATED"
+
+    # 진짜 HS256 토큰인데 검증할 시크릿이 없다 → 설정 문제이므로 503.
+    # 어느 쪽이든 **통과는 없다.**
+    r2 = c.get(
+        "/api/v1/pet/premium/assets",
+        params={"pet_id": PET},
+        headers={"Authorization": f"Bearer {_token('someone@example.com')}"},
+    )
+    assert r2.status_code == 503
+    assert r2.json()["detail"]["code"] == "AUTH_NOT_CONFIGURED"
+
+
+def test_es256_token_is_not_verified_with_the_hs256_secret(monkeypatch: pytest.MonkeyPatch):
+    """
+    **핵심 회귀**: ES256 토큰에 대칭 비밀을 들이대지 않는다.
+
+    예전에는 알고리즘을 우리가 정했고(HS256 고정), 그래서 Supabase 가 ES256 으로
+    옮긴 순간 모든 인증 요청이 InvalidAlgorithmError 로 401 이 됐다. 이제는
+    토큰 헤더가 경로를 정한다.
+    """
+    import jwt as pyjwt
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", SECRET)
+    monkeypatch.setenv("SUPABASE_URL", "https://someproject.supabase.co")
+
+    key = ec.generate_private_key(ec.SECP256R1())
+    token = pyjwt.encode(
+        {
+            "sub": "es256-user",
+            "aud": "authenticated",
+            "exp": int(time.time()) + 3600,
+            "iss": "https://someproject.supabase.co/auth/v1",
+        },
+        key,
+        algorithm="ES256",
+        headers={"kid": "not-in-our-jwks"},
+    )
+
+    # HS256 시크릿으로 조용히 통과시키지 않는다. JWKS 에 없는 kid 라 거절된다.
+    with pytest.raises(HTTPException) as e:
+        verify_bearer_token(token)
+    assert e.value.status_code == 401
+
+
+def test_alg_none_is_never_accepted(monkeypatch: pytest.MonkeyPatch):
+    """서명 없는 토큰(alg=none)은 어떤 설정에서도 통과하지 않는다."""
+    import jwt as pyjwt
+
+    monkeypatch.setenv("SUPABASE_JWT_SECRET", SECRET)
+    token = pyjwt.encode(
+        {"sub": "x", "aud": "authenticated", "exp": int(time.time()) + 3600},
+        None,
+        algorithm="none",
+    )
+    with pytest.raises(HTTPException) as e:
+        verify_bearer_token(token)
+    assert e.value.status_code == 401
 
 
 def test_body_user_id_cannot_override_the_token(client: ASGITestClient):

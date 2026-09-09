@@ -62,6 +62,16 @@ export interface StoredPipeline {
   action_video_url: string;
   /** COME_CLOSER (웹 전용 프리미엄 액션). 미생성 시 없음. */
   come_closer_video_url?: string | null;
+  /**
+   * 이 파이프라인의 영상들이 **배경을 이미 담고 있는가** (Phase 19).
+   *
+   * 없거나 false 면 레거시다 — 재생 쪽이 블랙키를 뽑고 테마 배경을 뒤에 깐다.
+   * true 면 그 처리를 **전부 건너뛴다**(baked-playback.ts). 배경을 두 번
+   * 적용하지 않기 위한 유일한 신호다.
+   */
+  background_baked?: boolean;
+  /** 이 영상들이 나온 정본 장면. 이후 행동 생성이 같은 장면을 재사용한다. */
+  scene_id?: string | null;
 }
 
 interface AIProcessingScreenProps {
@@ -581,6 +591,11 @@ export function AIProcessingScreen({
               cutoutUrl={cutoutPreview}
               // 생성 전 화면 — 데모 mp4 로 채우지 않는다(정적 누끼만).
               allowDemoFallback={false}
+              // **명시적으로** false 다 (Phase 25). 이 화면은 생성 이전 단계라
+              // idlePreviewUrl 이 채워지는 경로가 없고, 나가는 것은 언제나 정적
+              // 누끼다 — 구운 장면이 여기로 올 수 없다. 기본값에 기대지 않고
+              // 적어 두는 이유는, 빠뜨린 것과 그렇게 정한 것을 구분하기 위해서다.
+              backgroundBaked={false}
               className="ai-processing-screen__idle-pet w-full h-full object-contain"
             />
           </div>

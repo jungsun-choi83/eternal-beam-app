@@ -10,7 +10,7 @@
     "server": "node server/index.js",
     "server:dev": "node --watch server/index.js",
     "test:renderer": "node --test src/lib/packed-alpha-canvas.test.ts",
-    "video-api": "python -m uvicorn backend.main:app --reload --port 8000",
+    "video-api": "python -m uvicorn backend.main:app --reload --port 8001",
     "test:flow": "node --test src/lib/idle-generation-request.test.ts",
     "test": "node --test src/lib/*.test.ts"
   },

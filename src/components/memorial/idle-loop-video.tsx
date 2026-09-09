@@ -52,10 +52,26 @@ interface IdleLoopVideoProps {
   /** true(기본): packed alpha / Luma 블랙배경 제거 후 투명 합성 */
   transparentComposite?: boolean;
   /**
+   * 완성된 장면 영상을 세로 프레임에 넣을 때, 같은 영상을 흐린 cover 배경으로
+   * 한 장 더 깐다. 앞 영상은 contain 이라 잘리지 않고, 남는 영역만 이 배경이
+   * 채운다. 레거시 누끼/키잉 경로에는 사용하지 않는다.
+   */
+  blurredBackdrop?: boolean;
+  /**
    * 클립 하단의 빈 배경 비율을 1회 측정해 알려 준다(0~1).
    * 부모가 이 값만큼 피사체를 내려 실제 발이 테마 접지선에 닿게 한다.
    */
   onFeetMarginChange?: (bottomMargin: number) => void;
+  /**
+   * BREATH 의 **첫 프레임이 사용 가능해진 순간** 1회 알린다 (readyState>=2).
+   *
+   * 포스터(로딩 스틸)를 언제 걷을지 정하기 위한 신호다. onFeetMarginChange 로는
+   * 대신할 수 없다 — 그쪽은 packed 소스나 측정 실패 시 아예 발화하지 않아서,
+   * 그것에 기대면 포스터가 영영 걷히지 않는 화면이 생긴다.
+   *
+   * 선택 prop 이며 넘기지 않으면 아무 동작도 하지 않는다.
+   */
+  onFirstFrame?: () => void;
 }
 
 type RenderMode = "packed" | "blackkey" | "raw";
@@ -563,13 +579,16 @@ export function IdleLoopVideo({
   style,
   preload = "metadata",
   transparentComposite = true,
+  blurredBackdrop = false,
   onFeetMarginChange,
+  onFirstFrame,
 }: IdleLoopVideoProps) {
   const wrapRef = useRef<HTMLDivElement>(null);
   // videoRef 는 **현재 활성 소스**를 가리킨다. 렌더 루프와 모드 판정 코드는
   // 예전 그대로 videoRef 만 읽으면 되므로 아이들 로직이 전혀 바뀌지 않는다.
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const idleVideoRef = useRef<HTMLVideoElement>(null);
+  const backdropVideoRef = useRef<HTMLVideoElement>(null);
 
   // ── 런타임 이벤트 레지스트리 배선 ─────────────────────────────────────────
   // 소스가 붙은 **등록된** 이벤트만 <video> 를 갖는다. 액션이든 아이들 이벤트든
@@ -612,6 +631,10 @@ export function IdleLoopVideo({
   const feetMeasuredRef = useRef(false);
   const onFeetMarginChangeRef = useRef(onFeetMarginChange);
   onFeetMarginChangeRef.current = onFeetMarginChange;
+  const onFirstFrameRef = useRef(onFirstFrame);
+  onFirstFrameRef.current = onFirstFrame;
+  /** 첫 프레임 통지는 클립당 1회. src 가 바뀌면 아래 effect 가 되돌린다. */
+  const firstFrameNotifiedRef = useRef(false);
 
   const triggerRawFallback = useCallback(() => {
     if (packedSourceRef.current || isLikelyPackedAlphaSource(src)) {
@@ -1264,6 +1287,7 @@ export function IdleLoopVideo({
     packedSourceRef.current = isLikelyPackedAlphaSource(src);
     scratchRef.current = createPackedAlphaScratch();
     feetMeasuredRef.current = false;
+    firstFrameNotifiedRef.current = false;
     blackkeyScratchRef.current = null;
   }, [src, transparentComposite]);
 
@@ -1299,23 +1323,62 @@ export function IdleLoopVideo({
       });
     };
 
+    // 흐린 배경은 장식이지만 앞 영상과 같은 순간을 보여야 한다. 두 <video> 가
+    // 독립적으로 loop 하면 Safari 에서 조금씩 벌어질 수 있으므로, 앞 영상을
+    // 정본 시계로 삼아 재생/탐색/loop 때만 가볍게 맞춘다.
+    const syncBackdrop = () => {
+      if (!blurredBackdrop) return;
+      const backdrop = backdropVideoRef.current;
+      if (!backdrop) return;
+
+      backdrop.playbackRate = el.playbackRate;
+      if (
+        Number.isFinite(el.currentTime) &&
+        Number.isFinite(backdrop.currentTime) &&
+        Math.abs(backdrop.currentTime - el.currentTime) > 0.12
+      ) {
+        try {
+          backdrop.currentTime = el.currentTime;
+        } catch {
+          /* metadata 전에는 currentTime 설정이 거절될 수 있다 */
+        }
+      }
+      if (el.paused) {
+        backdrop.pause();
+      } else {
+        void backdrop.play().catch(() => {
+          /* muted 장식 영상 — autoplay 거절 시 다음 play/timeupdate 에 재시도 */
+        });
+      }
+    };
+
+    // 실제 클립 비율을 래퍼에 알린다. **모드 판정과 분리해 둔다** —
+    // 예전에는 이 코드가 detectMode 안, `if (!transparentComposite) return;`
+    // **뒤에** 있었다. 그래서 배경이 구워진 자산(키잉하지 않는 자산)은 비율이
+    // 영영 설정되지 않았고, .theme-preview-frame__pet 의 4/5 폴백에 걸려
+    // 16:9 장면이 세로 상자 안에서 레터박스로 찌그러졌다.
+    const applyAspect = () => {
+      const vw = el.videoWidth;
+      const vh = el.videoHeight;
+      const wrap = wrapRef.current;
+      if (!vw || !vh || !wrap) return;
+      // packed(vstack) 소스만 위아래 절반이 알파다. 그 외에는 프레임 전체가 그림이고,
+      // 키잉하지 않는 분기는 packed 일 수 없다.
+      const frameH = modeRef.current === "packed" ? Math.floor(vh / 2) : vh;
+      wrap.style.setProperty("--idle-aspect", `${vw} / ${frameH}`);
+    };
+
     const detectMode = () => {
       if (!transparentComposite) {
         modeRef.current = "raw";
+        applyAspect();
         return;
       }
       const packed = isPackedAlphaVideo(el, src);
       modeRef.current = packed ? "packed" : "blackkey";
       modeDetectedRef.current = true;
       packedSourceRef.current = packed || isLikelyPackedAlphaSource(src);
-
-      const vw = el.videoWidth;
-      const vh = el.videoHeight;
-      const wrap = wrapRef.current;
-      if (vw && vh && wrap) {
-        const frameH = modeRef.current === "packed" ? Math.floor(vh / 2) : vh;
-        wrap.style.setProperty("--idle-aspect", `${vw} / ${frameH}`);
-      }
+      applyAspect();
     };
 
     const onVideoError = () => {
@@ -1345,21 +1408,46 @@ export function IdleLoopVideo({
       onFeetMarginChangeRef.current?.(margin);
     };
 
+    // 첫 프레임 통지 — measureFeet 과 **별개**로 둔다. 측정은 packed 소스나
+    // cross-origin 제약에서 건너뛰지만, 첫 프레임은 그런 경우에도 도착한다.
+    const notifyFirstFrame = () => {
+      if (firstFrameNotifiedRef.current) return;
+      if (el.readyState < 2) return;
+      firstFrameNotifiedRef.current = true;
+      onFirstFrameRef.current?.();
+    };
+
     play();
     el.addEventListener("loadeddata", play);
     el.addEventListener("loadeddata", measureFeet);
+    el.addEventListener("loadeddata", notifyFirstFrame);
     el.addEventListener("loadedmetadata", detectMode);
     el.addEventListener("error", onVideoError);
+    el.addEventListener("play", syncBackdrop);
+    el.addEventListener("pause", syncBackdrop);
+    el.addEventListener("seeked", syncBackdrop);
+    el.addEventListener("ratechange", syncBackdrop);
+    el.addEventListener("timeupdate", syncBackdrop);
     if (el.readyState >= 1) detectMode();
-    if (el.readyState >= 2) measureFeet();
+    if (el.readyState >= 2) {
+      measureFeet();
+      notifyFirstFrame();
+      syncBackdrop();
+    }
 
     return () => {
       el.removeEventListener("loadeddata", play);
       el.removeEventListener("loadeddata", measureFeet);
+      el.removeEventListener("loadeddata", notifyFirstFrame);
       el.removeEventListener("loadedmetadata", detectMode);
       el.removeEventListener("error", onVideoError);
+      el.removeEventListener("play", syncBackdrop);
+      el.removeEventListener("pause", syncBackdrop);
+      el.removeEventListener("seeked", syncBackdrop);
+      el.removeEventListener("ratechange", syncBackdrop);
+      el.removeEventListener("timeupdate", syncBackdrop);
     };
-  }, [src, transparentComposite, triggerRawFallback, crossOrigin]);
+  }, [src, transparentComposite, blurredBackdrop, triggerRawFallback, crossOrigin]);
 
   useEffect(() => {
     if (!transparentComposite || useRawFallback) return;
@@ -1384,19 +1472,43 @@ export function IdleLoopVideo({
   const useCanvasComposite = transparentComposite && (!useRawFallback || isPackedSrc);
 
   if (!useCanvasComposite) {
+    // 래퍼가 **필요하다.** --idle-aspect 는 CSS 변수라 걸 요소가 있어야 하고,
+    // 예전에는 이 분기가 <video> 를 맨몸으로 돌려줘 wrapRef 가 null 이었다.
+    // 그 결과 이 경로(구운 자산 · raw 폴백)만 비율 폴백에 걸렸다.
+    // className 은 래퍼로 옮긴다 — 크기를 정하는 것은 상자이지 영상이 아니다.
     return (
-      <video
-        ref={idleVideoRef}
-        src={src}
-        className={className}
+      <div
+        ref={wrapRef}
+        className={`idle-loop-video ${blurredBackdrop ? "idle-loop-video--blurred-fill" : ""} ${className}`}
         style={style}
-        autoPlay
-        loop
-        muted
-        playsInline
-        preload={preload}
-        {...(crossOrigin ? { crossOrigin } : {})}
-      />
+      >
+        {blurredBackdrop && (
+          <video
+            ref={backdropVideoRef}
+            src={src}
+            className="idle-loop-video__backdrop"
+            autoPlay
+            loop
+            muted
+            playsInline
+            preload={preload}
+            tabIndex={-1}
+            {...(crossOrigin ? { crossOrigin } : {})}
+            aria-hidden
+          />
+        )}
+        <video
+          ref={idleVideoRef}
+          src={src}
+          className="idle-loop-video__raw"
+          autoPlay
+          loop
+          muted
+          playsInline
+          preload={preload}
+          {...(crossOrigin ? { crossOrigin } : {})}
+        />
+      </div>
     );
   }
 

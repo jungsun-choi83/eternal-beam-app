@@ -15,9 +15,19 @@ import { ThemeBackgroundVideo } from "@/components/memorial/theme-background-vid
 import { getMemorialTheme, DEFAULT_THEME_ID } from "@/components/memorial/themes";
 import { usePetGrounding } from "@/components/memorial/use-pet-grounding";
 import { useIdleEventAssets } from "@/components/memorial/use-idle-event-assets";
+import { MembershipCard } from "@/components/memorial/membership-card";
+import { BehaviorLibrary } from "@/components/memorial/behavior-library";
+import { ShakerShareCard } from "@/components/memorial/shaker-share-card";
+import { PremiumAssetsProvider } from "@/components/memorial/premium-assets-context";
+import { useBehaviorEligibility } from "@/components/memorial/use-behavior-eligibility";
 import { useIdleEventScheduler } from "@/components/memorial/use-idle-event-scheduler";
 import { hasRealIdleVideo } from "@/lib/pending-generation";
 import { subjectTransform } from "@/lib/pet-grounding";
+import {
+  playbackFrameClass,
+  shouldApplySubjectTransform,
+  shouldRenderThemeBackdrop,
+} from "@/lib/baked-playback";
 import { resolveIdleDisplaySource } from "@/lib/device-host-flags";
 import {
   formatPlaybackSourceReport,
@@ -42,7 +52,7 @@ import {
   mergeComeCloserIntoPipeline,
 } from "@/lib/come-closer-asset";
 import {
-  ensureComeCloser,
+  lookupComeCloserAsset,
   pollComeCloserUntilReady,
   type ComeCloserState,
 } from "@/lib/come-closer-autogen";
@@ -57,15 +67,55 @@ interface MemorialDevicePlayScreenProps {
   language?: string;
   onBack: () => void;
   onComplete: () => void;
+  /** 크레딧 충전 화면(설정 > 크레딧)으로 이동. */
+  onOpenMembership?: () => void;
+  /** 실물 기념품(편지·메모리 박스) 구매 화면으로 이동. */
+  onOpenKeepsakes?: () => void;
 }
 
-export function MemorialDevicePlayScreen({
+/**
+ * 저장된 파이프라인에서 pet_id 만 읽는다 (Provider 에 넘길 값).
+ *
+ * 본체가 들고 있는 pipeline state 를 쓸 수 없다 — Provider 는 본체보다 **바깥**에
+ * 있어야 컨텍스트가 본체까지 흐른다. content_id 는 세션 내내 바뀌지 않으므로
+ * 여기서 한 번 읽는 것으로 충분하다.
+ */
+function readPipelinePetId(): string | null {
+  try {
+    const raw = sessionStorage.getItem(ETERNAL_BEAM_PIPELINE_KEY);
+    if (!raw) return null;
+    const p = JSON.parse(raw) as StoredPipeline;
+    return p.content_id ? getEternalBeamPetId(p.content_id) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 런타임 적격성(구독 ∩ READY ∩ ON)과 멤버십 UI 가 **같은 자산 응답**을 쓰도록
+ * 화면 전체를 공유 Provider 로 감싼다.
+ *
+ * Provider 가 본체 바깥에 있어야 하는 이유: React 컨텍스트는 자식으로만 흐른다.
+ * 예전처럼 본체 안에서 카드만 감싸면 스케줄러 배선(본체 상단)이 적격성을 볼 수 없다.
+ */
+export function MemorialDevicePlayScreen(props: MemorialDevicePlayScreenProps) {
+  const [petId] = useState(() => readPipelinePetId());
+  return (
+    <PremiumAssetsProvider petId={petId} enabled={petId != null}>
+      <MemorialDevicePlayScreenInner {...props} />
+    </PremiumAssetsProvider>
+  );
+}
+
+function MemorialDevicePlayScreenInner({
   cutoutImage,
   selectedTheme,
   settings,
   language = "ko",
   onBack,
   onComplete,
+  onOpenMembership,
+  onOpenKeepsakes,
 }: MemorialDevicePlayScreenProps) {
   const d = memorialT(language).devicePlay;
   const themeId = resolveSelectedThemeId(selectedTheme);
@@ -112,7 +162,7 @@ export function MemorialDevicePlayScreen({
     };
 
     void (async () => {
-      const r = await ensureComeCloser({ ...params, onState });
+      const r = await lookupComeCloserAsset({ ...params, onState });
       if (cancelled) return;
 
       if (r.url) {
@@ -139,7 +189,7 @@ export function MemorialDevicePlayScreen({
       // queued 도 폴링으로 해결된다 — 서버가 종료 이벤트마다 큐를 전진시키고
       // (premium_generation.advance_generation_queue) COME_CLOSER 는 GENERATION_ORDER
       // 1순위라, 슬롯이 비면 제출된다. 그래서 이 화면은 재제출하지 않고 기다리기만 한다.
-      if (r.state !== "queued" && r.state !== "generating") return;
+      if (r.state !== "generating") return;
       const url = await pollComeCloserUntilReady({
         ...params,
         onState,
@@ -165,17 +215,44 @@ export function MemorialDevicePlayScreen({
   // 되지 못한다. 데모를 근거로 켜면 (1) BREATH 가 없는 펫에 유료 생성 4건이 나가고
   // (2) 이벤트의 seam-aligned 복귀가 다른 개의 휴지 자세에 맞춰져 이음매가 보인다.
   const hasIdle = hasRealIdleVideo(pipeline);
+  /**
+   * 이 자산이 배경을 이미 담고 있는가 (Phase 25).
+   *
+   * 게이트가 hasIdle 인 이유는 바로 위 주석과 같다 — petIdleSrc 는 데모 폴백
+   * mp4 일 수 있고, 데모에는 승인된 배경이 들어 있지 않다. 저장된 플래그만 보고
+   * 판단하면 데모를 틀면서 테마 배경을 지우게 된다.
+   */
+  const bakedAsset = {
+    backgroundBaked: hasIdle && pipeline?.background_baked === true,
+  };
   const { urls: idleEventUrls, availableIds: availableIdleEventIds } = useIdleEventAssets({
     pipeline,
     enabled: hasIdle,
   });
 
+  // ── 런타임 적격성 ─────────────────────────────────────────────────────────
+  // 구독 entitled ∩ 자산 READY ∩ 선호 ON. 스케줄러·플레이어·런타임은 한 줄도
+  // 바뀌지 않는다 — **입력만 좁힌다**. 만료되면 후보와 소스가 함께 비고,
+  // 스케줄러는 자기 규칙대로 조용히 멈춘다. BREATHING 은 이 판정 밖이라 계속 돈다.
+  const eligibility = useBehaviorEligibility();
+  const eligibleIdleEventIds = eligibility.filterIds(availableIdleEventIds);
+  const eligibleIdleEventSources = eligibility.filterSources(idleEventUrls);
+  const comeCloserSource = eligibility.comeCloserAllowed
+    ? (pipeline?.come_closer_video_url ?? null)
+    : null;
+
+  // 탭 핸들러는 deps 가 빈 useCallback 이다(제스처 판정이 재생성되면 탭 상태가
+  // 끊긴다). 적격성은 렌더마다 바뀔 수 있으므로 ref 로 읽는다 — 핸들러의 배선을
+  // 건드리지 않으면서 최신 값을 본다.
+  const comeCloserAllowedRef = useRef(eligibility.comeCloserAllowed);
+  comeCloserAllowedRef.current = eligibility.comeCloserAllowed;
+
   // 자산이 하나도 없으면 후보가 비어 아무 일도 일어나지 않는다 — BREATHING 유지.
   // 더블탭 COME_CLOSER 와 진입점을 공유하므로 우선순위·선점 판정은 decideTrigger 가
   // 단독으로 쥔다(COME_CLOSER 100/non-interruptible vs 아이들 10/interruptible).
   const { onPlaybackStateChange } = useIdleEventScheduler({
-    enabled: availableIdleEventIds.length > 0,
-    availableIds: availableIdleEventIds,
+    enabled: eligibleIdleEventIds.length > 0,
+    availableIds: eligibleIdleEventIds,
     triggerRef: comeCloserTriggerRef,
   });
 
@@ -195,7 +272,9 @@ export function MemorialDevicePlayScreen({
     );
     if (r.kind === "double") {
       lastTapRef.current = null;
-      comeCloserTriggerRef.current?.("COME_CLOSER");
+      // 더블탭 ∩ 구독 ∩ READY ∩ ON. 자발적 경로와 **같은 규칙**을 쓴다 —
+      // 갈라지면 만료된 사용자가 더블탭으로만 프리미엄을 계속 쓸 수 있다.
+      if (comeCloserAllowedRef.current) comeCloserTriggerRef.current?.("COME_CLOSER");
     } else if (r.kind === "first") {
       lastTapRef.current = r.tap;
     }
@@ -287,26 +366,53 @@ export function MemorialDevicePlayScreen({
         <motion.div
           initial={{ opacity: 0, scale: 0.96 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="theme-preview-frame relative w-full aspect-[3/4] max-h-[min(52vh,360px)]"
+          // shrink-0 이 **필수**다. 이 프레임의 내용물은 전부 absolute inset-0 이라
+          // 내재 높이가 0 이고, flex 자식은 기본이 flex-shrink:1 이다. 아래에 형제가
+          // 늘어나 컨테이너가 넘치는 순간 프레임이 0 까지 눌려, aspect-[3/4] 의 너비만
+          // 남은 납작한 가로 막대가 된다(잠금 카드를 추가하면서 실제로 그렇게 됐다).
+          className="theme-preview-frame relative w-full aspect-[3/4] max-h-[min(52vh,360px)] shrink-0"
           onPointerDown={handlePetPointerDown}
           onPointerUp={handlePetPointerUp}
           onPointerCancel={handlePetPointerUp}
         >
-          {bgVideo ? (
-            <ThemeBackgroundVideo
-              key={`live-bg-${theme.id}-${bgVideo}`}
-              src={bgVideo}
-              poster={theme.thumb}
-            />
-          ) : (
-            <div
-              className="absolute inset-0 bg-center bg-cover"
-              style={{ backgroundImage: `url(${theme.thumb})` }}
-            />
+          {/* 배경 레이어 — 구운 자산에는 깔지 않는다 (Phase 25). 판정은
+              baked-playback.ts 한 곳에서만 한다. */}
+          {shouldRenderThemeBackdrop(bakedAsset) && (
+            <>
+              {bgVideo ? (
+                <ThemeBackgroundVideo
+                  key={`live-bg-${theme.id}-${bgVideo}`}
+                  src={bgVideo}
+                  poster={theme.thumb}
+                />
+              ) : (
+                <div
+                  className="absolute inset-0 bg-center bg-cover"
+                  style={{ backgroundImage: `url(${theme.thumb})` }}
+                />
+              )}
+              <div className={`absolute inset-0 bg-gradient-to-b ${theme.gradient} opacity-25`} />
+            </>
           )}
-          <div className={`absolute inset-0 bg-gradient-to-b ${theme.gradient} opacity-25`} />
 
-          {cutoutDisplay ? (
+          {/* ── 구운 장면 — **프레임 전체** ────────────────────────────────
+              생성된 MP4 가 곧 완성된 그림이다. 누끼용 상자(62% 세로 슬롯)도
+              접지 변환도 드롭섀도도 걸지 않는다. cutoutDisplay 를 조건으로
+              걸지 않는 이유: 구운 자산은 누끼 없이도 그 자체로 완결이다. */}
+          {!shouldApplySubjectTransform(bakedAsset) ? (
+            <div className="absolute inset-0">
+              <PetIdleDisplay
+                idleVideoUrl={petIdleSrc}
+                cutoutUrl={cutoutDisplay}
+                comeCloserVideoUrl={comeCloserSource}
+                idleEventSources={eligibleIdleEventSources}
+                actionTriggerRef={comeCloserTriggerRef}
+                onActionStateChange={onPlaybackStateChange}
+                backgroundBaked
+                className={playbackFrameClass(bakedAsset)}
+              />
+            </div>
+          ) : cutoutDisplay ? (
             <div
               className="absolute inset-0 flex items-end justify-center preview-subject-layer"
               style={{
@@ -321,16 +427,19 @@ export function MemorialDevicePlayScreen({
               <PetIdleDisplay
                 idleVideoUrl={petIdleSrc}
                 cutoutUrl={cutoutDisplay}
-                comeCloserVideoUrl={pipeline?.come_closer_video_url ?? null}
-                // 아이들 이벤트 — DEV 빌드에서만 채워진다(useIdleEventAssets 가 게이트).
-                idleEventSources={idleEventUrls}
+                comeCloserVideoUrl={comeCloserSource}
+                // 적격한 것만 넘긴다 — 소스가 없으면 런타임이 자기 규칙(no-source)으로
+                // 거절하므로, 수동 트리거가 남아 있어도 OFF 는 재생되지 않는다.
+                idleEventSources={eligibleIdleEventSources}
                 actionTriggerRef={comeCloserTriggerRef}
                 // 스케줄러가 "지금 뭔가 재생 중인가"를 아는 유일한 신호다.
                 // 이 prop 없이 스케줄러만 붙이면 COME_CLOSER 재생 중에도 발화해서
                 // 거절 → 재예약 루프를 돈다(busyRef 가 영영 true 가 되지 않는다).
                 onActionStateChange={onPlaybackStateChange}
                 onFeetMarginChange={setFeetMargin}
-                className="theme-preview-frame__pet max-h-[62%] max-w-[92%]"
+                // 이 분기는 정의상 레거시다 — 기본값에 기대지 않고 적는다.
+                backgroundBaked={false}
+                className={playbackFrameClass(bakedAsset)}
                 style={{
                   filter: `drop-shadow(0 16px 32px ${theme.accent}66)`,
                 }}
@@ -339,10 +448,76 @@ export function MemorialDevicePlayScreen({
           ) : null}
         </motion.div>
 
+        {/* 프레임 **아래쪽만** 스크롤한다.
+            재생 영역은 위에서 shrink-0 으로 고정했으므로, 세로 공간이 모자랄 때
+            줄어드는 것은 이 영역이다. 예전에는 이 아래 형제들이 프레임을 눌러
+            납작하게 만들었다. */}
+        <div className="w-full flex-1 min-h-0 overflow-y-auto hide-scrollbar flex flex-col items-center">
+          {/* 멤버십 카드 — 재생 프레임 바로 아래, 상태 표시 위.
+              여기에 두는 이유: 멤버십이 바꾸는 것(자발적 움직임·더블탭)이 바로 위
+              프레임에서 일어나므로, 결과가 보이는 자리에서 사는 것이 가장 짧은 경로다.
+              새 화면을 만들지 않는다. */}
+          {/* 멤버십 카드·행동 라이브러리·런타임 적격성이 **같은 자산 응답**을
+              나눠 쓴다. Provider 는 화면 최상단에 한 번만 있다. */}
+          <div className="mt-4 flex flex-col items-center gap-3 w-full shrink-0">
+              <MembershipCard
+                enabled={hasIdle}
+                language={language}
+                onOpenMembership={onOpenMembership}
+              />
+              {/* 행동 라이브러리 — 활성 멤버에게만 그려진다(컴포넌트가 스스로 판단).
+                  멤버십 카드 바로 아래에 두는 이유: 가입 → 무엇을 만들지 고르기가
+                  한 화면에서 이어져야 한다. */}
+              <BehaviorLibrary
+                petId={pipeline ? getEternalBeamPetId(pipeline.content_id) : null}
+                petImageUrl={pipeline?.dog_only_nobg_url ?? null}
+                enabled={hasIdle}
+                language={language}
+            />
+              {/* QR 공유 — 행동 라이브러리 아래. "이 아이를 만든다 → 남에게 보여 준다"가
+                  같은 화면에서 이어진다. 새 화면을 만들지 않는다.
+                  펫을 복제하지 않는다: 이미 있는 content_id 에서 파생된 pet_id 와
+                  이미 생성된 BREATHING URL 을 **가리키기만** 한다. */}
+              {/* 기념품(실물) 진입. 카드 스택의 마지막 — 멤버십/행동/QR 다음에
+                  "이 아이를 손에 남긴다"가 온다. 여기서 주문을 만들지 않는다:
+                  화면을 열 뿐이고, 펫도 편지도 새로 만들어지지 않는다. */}
+              {onOpenKeepsakes && hasIdle && (
+                <button
+                  type="button"
+                  onClick={onOpenKeepsakes}
+                  className="w-full max-w-[320px] rounded-2xl border px-4 py-3.5 text-left backdrop-blur-sm"
+                  style={{
+                    background: "rgba(255,255,255,0.04)",
+                    borderColor: "rgba(255,255,255,0.12)",
+                  }}
+                >
+                  <p className="text-sm font-medium" style={{ color: "#F2F2F2" }}>
+                    기념품 만들기
+                  </p>
+                  <p className="mt-1 text-[12px] leading-relaxed" style={{ color: "#B8B8B8" }}>
+                    편지 ₩14,900 · 메모리 박스 ₩49,000
+                  </p>
+                  <p className="mt-1 text-[11px]" style={{ color: "#8a8a8a" }}>
+                    Soul Trace 편지와 QR 을 실물로 보내 드립니다.
+                  </p>
+                </button>
+              )}
+              <ShakerShareCard
+                petId={pipeline ? getEternalBeamPetId(pipeline.content_id) : null}
+                breathingUrl={hasRealIdleVideo(pipeline) ? (pipeline?.idle_video_url ?? null) : null}
+                posterCandidates={[
+                  pipeline?.dog_only_nobg_url,
+                  pipeline?.cutout_display_url,
+                ]}
+                enabled={hasIdle}
+                language={language}
+              />
+          </div>
+
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="mt-5 flex flex-col items-center gap-2 text-center max-w-[280px]"
+          className="mt-5 shrink-0 flex flex-col items-center gap-2 text-center max-w-[280px]"
         >
           <button
             type="button"
@@ -371,6 +546,7 @@ export function MemorialDevicePlayScreen({
           <p className="text-sm memorial-body">{statusHint ?? d.startingHint}</p>
           </button>
         </motion.div>
+        </div>
       </div>
 
       <div className="px-8 pb-10 shrink-0 relative z-10">

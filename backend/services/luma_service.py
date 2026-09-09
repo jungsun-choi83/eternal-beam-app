@@ -6,6 +6,7 @@ Luma AI Dream Machine API - Image-to-Video
 """
 
 import io
+import logging
 import os
 import asyncio
 import subprocess
@@ -13,6 +14,8 @@ import tempfile
 import uuid
 from pathlib import Path
 from typing import Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 LUMA_API_KEY = os.getenv("LUMA_API_KEY")
 LUMA_API_BASE = "https://api.lumalabs.ai/dream-machine/v1"
@@ -230,10 +233,25 @@ def build_minimal_idle_action_prompts() -> Tuple[str, str]:
     return idle, action
 
 
-def build_idle_action_prompts(image_bytes: bytes) -> Tuple[str, str]:
+def build_idle_action_prompts(
+    image_bytes: bytes, *, background_baked: bool = False
+) -> Tuple[str, str]:
     """
     Append solid background hint from luminance (black-tan dog -> white bg) for Luma quality.
+
+    background_baked=True 면 **단색 배경 힌트를 붙이지 않는다.** 입력이 정본 장면
+    (배경이 이미 합성된 그림)이기 때문이다 — "on a solid black background" 를
+    그대로 붙이면 프로바이더가 고객이 승인한 배경을 검정으로 덮는다.
+    대신 배경 보존 요구를 얹는다(luma_prompts.bake_scene_background).
     """
+    if background_baked:
+        from .luma_prompts import bake_scene_background
+
+        return (
+            bake_scene_background(LUMA_PROMPT_IDLE),
+            bake_scene_background(LUMA_PROMPT_ACTION),
+        )
+
     suffix = (
         " on a solid white background, photorealistic, cinematic lighting."
         if is_black_tan_dog(image_bytes)
@@ -313,10 +331,15 @@ async def create_generation_and_get_video_url(
     resolution: str = "720p",
     poll_interval: float = 5.0,
     poll_max_wait: float = float(os.getenv("LUMA_POLL_MAX_SEC", "1200")),
+    on_submit=None,
 ) -> str:
     """
     Luma I2V: create job, poll until complete, return hosted video URL (no local download).
     LUMA_MOCK=1이면 실제 Luma 대신 keyframe 기반 mock mp4(기본) 또는 MOCK_LUMA_VIDEO_URL.
+
+    on_submit(generation_id) 은 **제출 직후 폴링 전에** 불린다. 호출부가 유료 작업
+    id 를 즉시 기록해 두기 위한 훅이다 — 폴링 중에 요청이 끊겨도 그 id 로 결과를
+    되찾을 수 있어야 같은 그림에 두 번 과금하지 않는다.
     """
     if _mock_enabled():
         if _mock_use_keyframe_video():
@@ -334,6 +357,15 @@ async def create_generation_and_get_video_url(
         model=model,
         resolution=resolution,
     )
+    if on_submit is not None:
+        try:
+            r = on_submit(gen_id)
+            if hasattr(r, "__await__"):
+                await r
+        except Exception:
+            # 기록 실패가 이미 제출된 생성을 취소하지는 못한다. 로그만 남기고
+            # 진행한다 — 여기서 예외를 올리면 유료 작업이 고아가 된다.
+            logger.warning("on_submit 훅 실패 (gen=%s)", gen_id, exc_info=True)
     return await poll_until_complete(
         gen_id,
         poll_interval=poll_interval,

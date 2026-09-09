@@ -35,6 +35,7 @@ from typing import Any, Optional
 from ..scenarios.pet_scenarios import IDLE_EVENTS, PET_ACTIONS, PREMIUM_ACTIONS
 from . import generated_motions_service as motions_svc
 from . import generation_queue
+from . import premium_entitlement
 from . import premium_generation
 from .wallet_service import (
     InsufficientCreditsError,
@@ -104,20 +105,28 @@ def credits_for_kind(kind: str) -> int:
 
 def target_actions(kind: str) -> tuple[str, ...]:
     """
-    이 구매가 잠금 해제하는 액션 집합.
+    이 요청이 대상으로 삼는 액션 집합.
 
-    번들은 **레지스트리에서** 가져온다(IDLE_EVENTS). 하드코딩된 목록이나 개수 4를
-    쓰지 않으므로, 5번째 아이들 모션이 추가되면 같은 1 크레딧 번들에 자동 포함된다.
-    BREATHING 은 IDLE_EVENTS 에 없다 — 무료 기본 모션이라 번들 밖이다.
+    번들(KIND_IDLE_BUNDLE)은 **레지스트리에서** 가져온다(IDLE_EVENTS). 하드코딩된
+    목록이나 개수 4를 쓰지 않으므로, 5번째 아이들 모션이 추가되면 자동으로 들어온다.
+    BREATHING 은 IDLE_EVENTS 에 없다 — 무료 기본 모션이라 대상 밖이다.
+
+    ACTION:<ID> 는 **정확히 한 건**이다. Phase 4 에서 대상이 PET_ACTIONS 에서
+    PREMIUM_ACTIONS(= PET_ACTIONS + IDLE_EVENTS)로 넓어졌다: Behavior Library 가
+    아이들 모션을 **하나씩** 생성하기 때문이다. 예전에는 아이들 모션을 만들려면
+    번들뿐이었고, 그러면 BLINKING 하나를 눌러도 4종이 전부 제출돼 "선택한 것만
+    생성한다"는 규칙이 깨진다.
+
+    번들 경로는 그대로 남는다 — 지우면 레거시 크레딧 계약(rollback)이 깨진다.
     """
     if kind == KIND_IDLE_BUNDLE:
         return tuple(IDLE_EVENTS)
     if kind.startswith(ACTION_KIND_PREFIX):
         action = kind[len(ACTION_KIND_PREFIX) :].strip().upper()
-        if action not in PET_ACTIONS:
+        if action not in PREMIUM_ACTIONS:
             raise PurchaseError(
                 "ACTION_NOT_SUPPORTED",
-                f"{action} 는 구매 가능한 액션 이벤트가 아닙니다.",
+                f"{action} 는 생성 가능한 프리미엄 행동이 아닙니다.",
             )
         return (action,)
     raise PurchaseError("UNKNOWN_KIND", f"알 수 없는 구매 종류: {kind}")
@@ -133,8 +142,11 @@ def resolve_kind(raw: str | None) -> str:
     if k.startswith(ACTION_KIND_PREFIX):
         target_actions(k)  # 검증만 — 실패하면 예외
         return k
-    # 편의: 액션 id 를 그대로 준 경우 ACTION: 을 붙여 준다.
-    if k in PREMIUM_ACTIONS and k in PET_ACTIONS:
+    # 편의: 행동 id 를 그대로 준 경우 ACTION: 을 붙여 준다.
+    # PREMIUM_ACTIONS 전체가 대상이다 — Behavior Library 는 아이들 모션도 한 건씩
+    # 요청한다. 레거시 4종(IDLE/TOUCH/VOICE/NFC)은 PREMIUM_ACTIONS 에 없으므로
+    # 여기로 들어올 수 없다.
+    if k in PREMIUM_ACTIONS:
         return action_kind(k)
     raise PurchaseError("UNKNOWN_KIND", f"알 수 없는 구매 종류: {raw!r}")
 
@@ -344,23 +356,40 @@ async def purchase(
     api_base: str,
 ) -> PurchaseResult:
     """
-    구매 + 누락 자산 생성 착수.
+    구매/생성 요청 + 누락 자산 생성 착수.
 
-    순서가 계약이다. 과금은 **맨 마지막 관문**이고, 그 앞의 세 검사가 전부
-    "0 크레딧" 경로다:
+    순서가 계약이다:
 
-        1) 대상 전부 READY            → charged 0, 재생성 없음
-        2) 활성 구매가 이미 있음      → charged 0, 누락분만 생성 착수
-        3) 일부 진행 중               → charged 0(구매가 있으면), 중복 제출 없음
-        4) 그 외                      → 원장 선점 → 1 크레딧 차감 → 제출
+        0) 펫 소유권          → 남의 펫이면 403 (인가보다 먼저 — 남의 펫 존재를
+                                구독 상태로 추측하게 두지 않는다)
+        0') 구독 인가         → 구독 모드에서 권한이 없으면 402, **생성 없음**
+        1) 대상 전부 READY    → 재생성 없음 (구독이어도 무제한 재생성이 아니다)
+        2) 일부 진행 중       → 중복 제출 없음
+        3) 그 외              → 누락분만 제출
 
-    제출이 하나도 성사되지 않으면 즉시 환불하고 선점을 푼다 — 생성 작업 없이
-    크레딧만 잃는 경우가 없어야 한다.
+    과금은 **구독 모드에서 완전히 빠진다**. PREMIUM_REQUIRES_SUBSCRIPTION=0 일
+    때만 예전 크레딧 경로(원장 선점 → 차감 → 실패 시 환불)가 돈다.
     """
     actions = target_actions(kind)
     credits = credits_for_kind(kind)
 
     await assert_pet_owned(user_id, pet_id)
+
+    # 구독 인가. 소유권 **뒤에** 둔다 — 남의 펫 요청은 구독 유무와 무관하게
+    # 언제나 PET_NOT_OWNED 로 끝나야 한다(존재 여부가 새어 나가지 않게).
+    try:
+        entitlement = await premium_entitlement.get_entitlement(user_id)
+    except premium_entitlement.EntitlementUnavailableError as e:
+        raise PurchaseError("SUBSCRIPTION_CHECK_UNAVAILABLE", e.message, status=503) from e
+
+    if entitlement.blocks_generation:
+        # 이미 READY 인 자산은 그대로 남아 있고 계속 재생된다 — 여기서 막는 것은
+        # **새 생성뿐**이다. BREATHING 은 PREMIUM_ACTIONS 밖이라 애초에 무관하다.
+        raise PurchaseError(
+            "SUBSCRIPTION_REQUIRED",
+            "프리미엄 모션 생성에는 활성 구독이 필요합니다.",
+            status=402,
+        )
 
     state = await asset_state(user_id, pet_id, actions)
 
@@ -386,12 +415,23 @@ async def purchase(
         )
 
     # ② 이미 구매한 사용자인가. 있으면 절대 다시 과금하지 않는다.
-    existing = await find_active_purchase(user_id, pet_id, kind)
+    #
+    # 구독 모드에서는 이 블록 전체를 건너뛴다. 크레딧이 오가지 않으므로 구매 원장에
+    # 선점할 것도, 차감할 것도, 되돌릴 것도 없다. premium_purchases 테이블은
+    # **크레딧 시대의 기록 그대로 남겨 둔다** — 0원 행을 섞어 쓰면 같은 컬럼이 두
+    # 가지를 뜻하게 되고, 나중에 이 원장을 다른 용도로 쓸 때 구분할 수 없다.
+    #
+    # "이미 있는 것을 또 만들지 않는다"는 보장은 원장이 아니라 위의 asset_state()
+    # READY/GENERATING 검사가 이미 하고 있다 — 구독이 무제한 재생성이 아닌 이유다.
+    existing = None
     charged = 0
     remaining: Optional[int] = None
     purchase_id: Optional[str] = None
 
-    if existing is None:
+    if not entitlement.enforced:
+        existing = await find_active_purchase(user_id, pet_id, kind)
+
+    if not entitlement.enforced and existing is None:
         # ③ 원장 선점 — 여기서 동시 요청이 하나로 좁혀진다.
         purchase_id = await _claim_purchase(user_id, pet_id, kind, credits)
         if purchase_id is None:
@@ -421,6 +461,8 @@ async def purchase(
         submitted = await _submit_missing(
             user_id=user_id, pet_id=pet_id, missing=state.missing,
             pet_image_url=pet_image_url, api_base=api_base,
+            # ACTION:<ID> = 사용자가 고른 한 건. 번들은 예전 그대로 우선순위를 따른다.
+            explicit_pick=kind.startswith(ACTION_KIND_PREFIX),
         )
 
     # ⑤ 방금 과금했는데 작업이 하나도 안 생겼다면 되돌린다.
@@ -433,6 +475,16 @@ async def purchase(
         raise PurchaseError(
             "GENERATION_SUBMIT_FAILED",
             "생성을 제출하지 못해 크레딧을 환불했습니다.",
+            status=502,
+        )
+
+    # ⑤' 구독 모드: 되돌릴 과금은 없지만, 아무것도 제출되지 않았는데 "생성 중"으로
+    #     보고하면 안 된다. 그러면 프론트가 영원히 끝나지 않는 폴링에 들어가고
+    #     사용자는 만들어지지 않는 모션을 기다린다.
+    if entitlement.enforced and not submitted and not state.active:
+        raise PurchaseError(
+            "GENERATION_SUBMIT_FAILED",
+            "생성을 제출하지 못했습니다. 잠시 후 다시 시도해 주세요.",
             status=502,
         )
 
@@ -456,8 +508,16 @@ async def _submit_missing(
     missing: list[str],
     pet_image_url: str,
     api_base: str,
+    explicit_pick: bool = False,
 ) -> list[str]:
-    """큐가 허락하는 만큼 제출한다. 나머지는 서버 자동 전진에 맡긴다."""
+    """
+    큐가 허락하는 만큼 제출한다. 나머지는 서버 자동 전진에 맡긴다.
+
+    explicit_pick=True 는 **사용자가 이 행동 하나를 직접 골랐다**는 뜻이다
+    (Behavior Library 의 [생성]). 그때는 생성 우선순위를 강요하지 않는다 —
+    누른 것과 다른 행동이 만들어지거나, 앞선 우선순위가 준비될 때까지 거절되면
+    안 되기 때문이다. 동시 실행 상한은 그대로 적용된다.
+    """
     submitted: list[str] = []
     for action in sorted(missing, key=generation_queue.generation_rank):
         ready_actions = [
@@ -466,7 +526,10 @@ async def _submit_missing(
         ]
         active_actions = await motions_svc.list_active_action_ids_for_pet(user_id, pet_id)
         if not generation_queue.decide(
-            action_id=action, ready_actions=ready_actions, active_actions=active_actions
+            action_id=action,
+            ready_actions=ready_actions,
+            active_actions=active_actions,
+            respect_priority=not explicit_pick,
         ).allowed:
             continue  # 상한 — 자동 전진이 나중에 집어 간다
         try:
@@ -498,7 +561,14 @@ async def reconcile_after_terminal(user_id: str, pet_id: str, action_id: str) ->
     _mark_purchase_refunded 가 영향 행 수로 판정하므로 환불은 한 번뿐이다.
     """
     action = (action_id or "").upper()
-    kinds = [KIND_IDLE_BUNDLE] if action in IDLE_EVENTS else [action_kind(action)]
+    # 아이들 모션은 **두 경로**로 만들어질 수 있다: 레거시 번들 구매(크레딧 모드)와
+    # Behavior Library 의 단건 요청. 어느 쪽으로 과금됐는지 모르므로 둘 다 확인한다.
+    # (구독 모드에서는 원장 행 자체가 없어 둘 다 조용히 넘어간다.)
+    kinds = (
+        [KIND_IDLE_BUNDLE, action_kind(action)]
+        if action in IDLE_EVENTS
+        else [action_kind(action)]
+    )
 
     refunded_any = False
     for kind in kinds:

@@ -72,5 +72,5 @@ CREDIT_COST_PER_PLACE=4
 LUMA_CREDIT_CONCURRENCY=3
 HYBRID_USE_SUPABASE=1
 PET_HYBRID_SEED=1
-PUBLIC_API_BASE_URL=https://your-api.example.com
+PUBLIC_API_BASE_URL=https://eternal-beam-video-api.onrender.com
 ```

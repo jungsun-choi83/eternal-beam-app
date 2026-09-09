@@ -91,7 +91,52 @@ async function lookup(p: EnsureIdleEventParams): Promise<{ url: string | null; d
 }
 
 /**
+ * 아이들 이벤트 자산 **조회 전용**. 절대 생성하지 않고 절대 과금하지 않는다.
+ *
+ * 발견(discovery)과 구매(purchase)를 가르는 함수다. useIdleEventAssets 의 스윕이
+ * 이것만 쓰기 때문에, 화면을 열거나 폴링하는 것만으로는 결제가 일어날 수 없다.
+ * 새 생성은 lib/premium-assets.ts 의 purchasePremium() 이 사용자 조작에서만 한다.
+ *
+ * 반환하는 state 는 자산의 현재 모습이다:
+ *   ready       승격된 canonical 이 있다 → 재생 가능
+ *   generating  이 세션에서 제출된 작업이 진행 중이다
+ *   unavailable 경로가 꺼져 있다 (404)
+ *   idle        신원 없음
+ */
+export async function lookupIdleEventAsset(
+  params: Omit<EnsureIdleEventParams, "pipeline"> & { pipeline?: CutoutPipelineLike | null }
+): Promise<IdleEventAssetResult> {
+  const { userId, petId, eventId, onState } = params;
+  const emit = (s: IdleEventAssetState) => onState?.(s);
+
+  if (!userId?.trim()) {
+    emit("idle");
+    return { state: "idle", url: null };
+  }
+
+  emit("checking");
+  const found = await lookup({ userId, petId, eventId, pipeline: null });
+  if (found.url) {
+    emit("ready");
+    return { state: "ready", url: found.url };
+  }
+  if (found.disabled) {
+    emit("unavailable");
+    return { state: "unavailable", url: null };
+  }
+  // 이 세션에서 제출한 적이 있으면 아직 만들어지는 중이다. 아니면 그냥 없는 것이다.
+  // **어느 쪽이든 여기서 제출하지 않는다.**
+  const pending = attempted.has(idleEventKey(userId, petId, eventId));
+  emit(pending ? "generating" : "idle");
+  return { state: pending ? "generating" : "idle", url: null };
+}
+
+/**
  * 아이들 이벤트 자산을 확보한다. 없으면 정확히 1회 생성 제출.
+ *
+ * ⚠️ **무과금 개발 경로 전용이다** (/v1/pet/dev, ENABLE_DEV_PREMIUM_TRIGGER).
+ * 프로덕션 유료 생성은 lib/premium-assets.ts 의 purchasePremium() 을 쓴다 —
+ * 그쪽은 인증·소유권·1크레딧 과금·구매 원장 멱등성을 거친다.
  *
  * 서버가 멱등성의 최종 권위다(dev_premium 의 canonical/진행중 검사) — 여기 가드는
  * 불필요한 왕복을 줄일 뿐이다.

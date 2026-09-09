@@ -58,3 +58,15 @@ modal>=0.64.0
 # 자동 다운로드한다(로컬 RTX 4090 워커 머신에만 필요 — Render 등 경량 배포에는
 # 설치하지 않아도 됨. 이 기능도 로컬 GPU 워커에서만 돎).
 # simple-lama-inpainting>=0.1.2
+
+# QR Shaker (Phase 10) 판매자/운영 QR 생성 서비스.
+# 순수 파이썬·의존성 없음(76KB). QR 은 물리 제품에 인쇄되므로 직접 구현하지 않는다 —
+# Reed-Solomon/마스킹이 미묘하게 틀린 QR 은 테스트에서는 읽히고 현장에서 실패한다.
+segno>=1.6.0
+
+# 인쇄 생산 파이프라인 (Phase 13). A5 편지 PDF + 85×55mm 카드.
+# 한글은 reportlab 내장 CJK CID 폰트(HYSMyeongJo-Medium)로 렌더한다 —
+# 폰트 바이너리를 저장소에 넣지 않아도 된다.
+# ⚠️ CID 폰트는 **임베드되지 않는다**. 최종 인쇄 전 PRINT_LETTER_FONT_PATH 로
+#    라이선스된 한글 TTF 를 지정해 임베드할 것 (아래 .env.example 참고).
+reportlab>=4.0.0

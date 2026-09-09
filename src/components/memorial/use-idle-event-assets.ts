@@ -3,8 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import type { StoredPipeline } from "@/components/memorial/ai-processing-screen";
-import type { CutoutPipelineLike } from "@/lib/cutout-remote-asset";
-import { ensureIdleEventAsset } from "@/lib/idle-event-dev-trigger";
+import { lookupIdleEventAsset } from "@/lib/idle-event-dev-trigger";
 import { getEternalBeamPetId } from "@/lib/pet-identity";
 import { getEternalBeamUserId } from "@/lib/eternal-beam-user";
 import { registeredIdleEvents, type IdleEvent } from "@/lib/pet-runtime-events";
@@ -38,18 +37,24 @@ export interface IdleEventAssets {
 }
 
 /**
- * 아이들 이벤트 자산 확보 (조회 + 필요 시 1회 생성 제출) — **개발 빌드 전용**.
+ * 아이들 이벤트 자산 **발견(discovery)** — 조회 전용.
  *
- * preview-screen 안에 인라인으로 있던 스윕을 그대로 끌어낸 것이다. 두 화면
- * (preview / memorial-device-play)이 **같은 구현**을 써야 한다: 이 루프는 유료
- * 생성을 제출하므로 사본이 갈라지면 한쪽에서만 중복 지출이 난다.
+ * ⚠️ 이 훅은 **절대 새 유료 생성을 시작하지 않는다.**
  *
- * DEV 게이트를 훅 안에 두는 이유: 게이트가 화면마다 흩어지면 한 곳을 빠뜨렸을 때
- * 프로덕션에서 조용히 생성이 시작된다. 지금 백엔드 엔드포인트도
- * ENABLE_DEV_PREMIUM_TRIGGER 로 잠겨 있어(과금 0) 프로덕션 활성화는 별도의
- * 권한/과금 결정을 필요로 한다 — 그 결정이 나기 전까지 두 화면이 함께 잠겨 있어야 한다.
+ * 예전에는 여기서 자산이 없으면 곧바로 생성을 제출했다. 무과금 개발 엔드포인트에서는
+ * 편의였지만, 유료 모델에서는 **화면을 열었다는 이유로 결제가 일어나는** 것과 같다.
+ * 사업 규칙상 아이들 번들은 1 크레딧짜리 구매이고, 구매는 사용자의 명시적 의사가
+ * 있을 때만 일어나야 한다.
  *
- * 자발적 스케줄링은 여기 **없다**. 이 훅은 "무엇이 재생 가능한가"만 답하고,
+ * 지금 이 훅이 하는 일은 셋뿐이다:
+ *   * 승격된 자산을 조회한다 (GET)
+ *   * 이미 진행 중인 작업이 끝날 때까지 폴링한다 (GET)
+ *   * availableIds 를 노출한다 (스케줄러의 후보 목록)
+ *
+ * 새 생성은 lib/premium-assets.ts 의 purchasePremium() 으로만 일어난다 —
+ * 사용자 조작에서 호출되며, effect/마운트/폴링에서는 부르지 않는다.
+ *
+ * 자발적 스케줄링도 여기 없다. 이 훅은 "무엇이 재생 가능한가"만 답하고,
  * "언제 재생하는가"는 useIdleEventScheduler 가 정한다.
  */
 export function useIdleEventAssets({
@@ -81,17 +86,10 @@ export function useIdleEventAssets({
       for (const def of registeredIdleEvents()) {
         if (cancelled) return false;
         const eventId = def.id as IdleEvent;
-        const r = await ensureIdleEventAsset({
+        const r = await lookupIdleEventAsset({
           userId,
           petId,
           eventId,
-          // 전개(spread)로 넘기는 이유: CutoutPipelineLike 은
-          // `[k: string]: unknown` 인덱스 시그니처를 요구하는데, TS 는 interface
-          // (StoredPipeline)에는 암묵적 인덱스 시그니처를 주지 않아 그대로는
-          // 대입되지 않는다. 전개하면 익명 객체 타입이 되어 요구를 만족한다 —
-          // 캐스트 없이 타입이 맞는다. ensureIdleEventAsset 은 이 객체의 필드만
-          // 읽고 신원(identity)에 의존하지 않으므로 얕은 복사로 충분하다.
-          pipeline: { ...pipeline } satisfies CutoutPipelineLike,
           onState: (st) => console.info(`[${eventId}] asset state =`, st),
         });
         if (cancelled) return false;

@@ -77,6 +77,24 @@ class ASGITestClient:
     def post(self, url: str, **kwargs) -> httpx.Response:
         return self.request("POST", url, **kwargs)
 
+    def put(self, url: str, **kwargs) -> httpx.Response:
+        return self.request("PUT", url, **kwargs)
+
+
+def follow_shaker_asset(client: "ASGITestClient", url: str | None) -> str:
+    """
+    Shaker 재생 URL 의 **실제 대상**.
+
+    공개 응답은 기본적으로 `/api/v1/shaker/asset?...` 프록시 경로를 싣는다 —
+    스토리지 객체 경로에 고객 이메일이 들어 있어 그대로 노출할 수 없기 때문이다.
+    테스트는 302 Location 을 따라가 최종 URL 을 본다. 프록시를 끈 설정에서는
+    값이 이미 최종 URL 이므로 그대로 돌려준다.
+    """
+    v = (url or "").strip()
+    if not v.startswith("/api/v1/shaker/asset"):
+        return v
+    return client.get(v).headers.get("location", "")
+
 
 def make_rgb_image(width: int = 128, height: int = 96, color=(120, 90, 60)) -> Image.Image:
     return Image.new("RGB", (width, height), color)

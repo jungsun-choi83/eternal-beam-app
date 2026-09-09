@@ -17,7 +17,9 @@ WebhookEventType = Literal[
   "GRACE_PERIOD",
   "OTHER",
 ]
-StoreType = Literal["apple", "google", "mock"]
+#: 결제 제공자. billing_events.BillingProvider 와 같은 어휘를 쓴다 —
+#: 자격 코어는 이 값을 **기록용으로만** 쓰고 판정에는 쓰지 않는다.
+StoreType = Literal["apple", "google", "mock", "toss"]
 
 
 class UserSubscriptionRow(BaseModel):

@@ -69,18 +69,26 @@ def is_stale(row: dict[str, Any], *, now: Optional[datetime] = None, threshold_s
     return (now - ts) >= limit
 
 
-async def fetch_provider_outcome(job: MotionJobRow) -> GenerationOutcome:
+async def fetch_outcome_by_id(
+    external_id: str,
+    *,
+    provider: Optional[str] = None,
+    provider_model: Optional[str] = None,
+) -> GenerationOutcome:
     """
-    프로바이더에 현재 상태를 직접 물어 GenerationOutcome 으로 정규화한다.
-    웹훅 본문 대신 폴링 응답을 쓸 뿐, 산출물의 모양은 완전히 같다.
+    프로바이더 작업 id → 현재 상태. **폴링 구현은 여기 한 곳뿐이다.**
+
+    System A(장면 기반 생성)의 복구도 이 함수를 쓴다 — 폴링을 두 번 구현하면
+    한쪽만 프로바이더 응답 변화를 따라가고, 그 어긋남은 "완료된 유료 작업을
+    실패로 읽고 다시 제출"로 나타난다.
     """
-    external_id = job.luma_generation_id or ""
-    provider = job.provider or PROVIDER_LUMA
+    external_id = (external_id or "").strip()
+    provider = provider or PROVIDER_LUMA
 
     if is_wan_provider(provider):
         from . import wan_service
 
-        body = await wan_service.fetch_status(external_id, model=job.provider_model)
+        body = await wan_service.fetch_status(external_id, model=provider_model)
         status = str(body.get("status") or "").upper()
         if status == "COMPLETED" and body.get("video_url"):
             state = "completed"
@@ -106,6 +114,18 @@ async def fetch_provider_outcome(job: MotionJobRow) -> GenerationOutcome:
     return GenerationOutcome(
         provider=PROVIDER_LUMA, external_id=external_id, state=state,
         video_url=body.get("video_url"), error=body.get("error"),
+    )
+
+
+async def fetch_provider_outcome(job: MotionJobRow) -> GenerationOutcome:
+    """
+    프로바이더에 현재 상태를 직접 물어 GenerationOutcome 으로 정규화한다.
+    웹훅 본문 대신 폴링 응답을 쓸 뿐, 산출물의 모양은 완전히 같다.
+    """
+    return await fetch_outcome_by_id(
+        job.luma_generation_id or "",
+        provider=job.provider or PROVIDER_LUMA,
+        provider_model=job.provider_model,
     )
 
 

@@ -4,7 +4,7 @@ services:
   - type: web
     name: eternal-beam-video-api
     region: singapore
-    plan: free
+    plan: starter
     runtime: docker
     dockerfilePath: ./Dockerfile
     autoDeploy: true
@@ -28,6 +28,50 @@ services:
         value: "1"
       - key: SUBSCRIPTION_MOCK
         value: "1"
+      # ── 웹 정기결제 (Toss) ───────────────────────────────────────────────
+      # 값은 대시보드에서 넣는다(sync:false) — 시크릿을 저장소에 커밋하지 않는다.
+      - key: TOSS_CLIENT_KEY      # 공개 키 (test_ck_ / live_ck_)
+        sync: false
+      - key: TOSS_SECRET_KEY      # ⚠️ 백엔드 전용 (test_sk_ / live_sk_)
+        sync: false
+      - key: BILLING_CRON_SECRET  # 갱신 배치 인증. 미설정이면 renew-due 는 503
+        sync: false
+
+      # ── Soul Trace 핸드오프 (Phase 10.5) ──────────────────────────────────
+      # Soul Trace 는 **다른 Supabase 프로젝트**다. 교차 DB 조회를 하지 않고,
+      # 서로의 service-role 키도 공유하지 않는다. 공유 비밀은 이 토큰 하나뿐이며,
+      # 편지 본문은 이 자격 증명으로 **서버 대 서버**로만 이동한다.
+      - key: SOUL_TRACE_API_BASE
+        value: https://soultrace.eternalbeam.com
+      # ── 인쇄 생산 (Phase 13/14) ───────────────────────────────────────────
+      # 인쇄되는 QR 이 가리킬 **웹앱** 도메인. 미설정이면 인쇄용 QR 생성이
+      # 거절된다(fail closed) — API 도메인이나 localhost 를 찍은 카드가
+      # 인쇄되는 것보다 만들지 않는 편이 낫다.
+      - key: PUBLIC_WEB_BASE_URL
+        value: https://device.eternalbeam.com
+      # 한글 A5 편지 PDF에 **임베드**할 라이선스 TTF 경로.
+      # ⚠️ 폰트 파일은 저장소에 넣지 않는다(라이선스). 이미지에 함께 넣거나
+      #    디스크에 두고 경로만 지정한다. 미설정이면 내장 CID 폰트로 렌더되는데
+      #    그것은 **임베드되지 않아** 인쇄소에서 글자가 깨질 수 있다.
+      - key: PRINT_LETTER_FONT_PATH
+        sync: false
+      # 언어별 인쇄 폰트 — Soul Trace 최종 화면과 **같은 글꼴**로 찍기 위한 것.
+      #   ko: .font-ko        → "Noto Serif KR", "Nanum Myeongjo"
+      #   en: .font-display-en → "Marcellus"
+      # 원격 Google Fonts 를 쓰지 않는다. 자세한 규약은 backend/fonts/README.md.
+      # 미설정이면 내장 CID 로 떨어지고 **임베드되지 않는다**(인쇄소에서 대체될 수 있다).
+      - key: PRINT_LETTER_FONT_KO_PATH
+        sync: false
+      - key: PRINT_LETTER_FONT_KO_FALLBACK_PATH
+        sync: false
+      - key: PRINT_LETTER_FONT_EN_PATH
+        sync: false
+      # ⚠️ 백엔드 전용. 브라우저에 노출되면 Soul Trace 내부 API 가 열린다.
+      - key: SOUL_TRACE_SERVICE_TOKEN
+        sync: false
+      # 프로바이더 중립 생성 차단. 실 생성을 켜기 전까지 1 로 둔다.
+      - key: GENERATION_MOCK
+        value: "1"
       - key: LUMA_CREDIT_CONCURRENCY
         value: "3"
       - key: SUPABASE_STORAGE_BUCKET
@@ -36,6 +80,19 @@ services:
       # 진짜 생성으로 바꾸려면 LUMA_MOCK 삭제 + 아래 LUMA_API_KEY 채우기.
       - key: ENABLE_GENERATE_API
         value: "1"
+      # /api/generate-idle-variant 는 **닫아 둔다.**
+      #
+      # 이 경로는 아직 scene_generation_jobs 예약을 쓰지 않아 provider_job_id 를
+      # 남기지 않는다. 동기식이라 타임아웃·새로고침·502 재시도가 각각 새 유료
+      # 작업이 되고, 되찾을 방법이 없다 — /generate-pet-video 가 고치기 전에
+      # 갖고 있던 노출과 같다.
+      #
+      # ENABLE_GENERATE_API 로는 대신 끌 수 없다: 보호가 끝난 BREATHING
+      # (/generate-pet-video)이 같은 라우터에 있어 함께 꺼진다.
+      #
+      # 예약 + 복구 폴링이 붙으면 이 항목과 라우터의 가드를 함께 제거한다.
+      - key: ENABLE_IDLE_VARIANT_API
+        value: "0"
       - key: LUMA_MOCK
         value: "1"
       - key: MOCK_LUMA_USE_KEYFRAME
@@ -49,3 +106,25 @@ services:
         sync: false
       - key: LUMA_API_KEY
         sync: false
+
+# ── 월 정기결제 갱신 배치 ─────────────────────────────────────────────────────
+# 지금은 .github/workflows/billing-renewal.yml (무료) 이 담당한다.
+# Render 유료 플랜으로 올리면 아래 cron 서비스로 옮길 수 있다 — 서버 코드는
+# 그대로이고, 부르는 주체만 바뀐다.
+#
+#  - type: cron
+#    name: eternal-beam-billing-renewal
+#    region: singapore
+#    plan: starter                # cron 은 free 플랜에서 지원되지 않는다
+#    runtime: docker
+#    dockerfilePath: ./Dockerfile
+#    schedule: "0 18 * * *"       # 매일 03:00 KST
+#    dockerCommand: >-
+#      curl -sS --fail-with-body -X POST
+#      "$PUBLIC_API_BASE_URL/api/v1/billing/renew-due?limit=200"
+#      -H "X-Billing-Cron-Secret: $BILLING_CRON_SECRET"
+#    envVars:
+#      - key: PUBLIC_API_BASE_URL
+#        value: https://eternal-beam-video-api.onrender.com
+#      - key: BILLING_CRON_SECRET
+#        sync: false
