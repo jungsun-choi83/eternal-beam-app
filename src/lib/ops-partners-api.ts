@@ -24,7 +24,7 @@ function apiBase(): string {
 
 /** QR 이 고정하는 갈래. Soul Trace 의 LetterMode 와 **같은 낱말**이다. */
 export type PartnerTrack = "living" | "memorial";
-export type PartnerType = "HOSPITAL" | "FUNERAL";
+export type PartnerType = "HOSPITAL" | "FUNERAL" | "GROOMING" | "PENSION";
 
 export interface PartnerCodeRow {
   code: string;
