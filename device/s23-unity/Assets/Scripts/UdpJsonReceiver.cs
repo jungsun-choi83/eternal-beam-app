@@ -16,6 +16,7 @@ namespace EternalBeam.Device
         public int port = UdpJsonListener.DefaultPort;
 
         private UdpJsonListener _listener;
+        [SerializeField] private DeviceDebugOverlay debugOverlay;
 
         /// <summary>다음 마일스톤이 붙을 자리 — 파싱된 메시지의 메인 스레드 훅.</summary>
         public event Action<PetDeviceMessage> OnMessage;
@@ -26,6 +27,7 @@ namespace EternalBeam.Device
             {
                 _listener = new UdpJsonListener(port);
                 Debug.Log($"[eb-udp] listening on 0.0.0.0:{port}");
+                debugOverlay?.SetUdpReady();
             }
             catch (Exception e)
             {
@@ -42,6 +44,7 @@ namespace EternalBeam.Device
                 var msg = UdpJsonListener.Parse(raw);
                 Debug.Log(msg.Summary());
                 OnMessage?.Invoke(msg);
+                debugOverlay?.SetMessage(msg.Event, msg.MotionId, !string.IsNullOrEmpty(msg.PackedUrl) ? msg.PackedUrl : msg.VideoUrl);
             }
         }
 
