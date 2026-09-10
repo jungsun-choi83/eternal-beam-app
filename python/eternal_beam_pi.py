@@ -60,8 +60,11 @@ NFC_FALLBACK_THEME = os.getenv("NFC_FALLBACK_THEME", "forest").strip()
 NFC_POLL_SEC = float(_HW.get("nfc", "poll_sec", default=0.15))
 NFC_DEBOUNCE_SEC = float(_HW.get("nfc", "debounce_sec", default=1.5))
 ACTION_RESET_SEC = float(os.getenv("ACTION_RESET_SEC", "10"))
-# approach/touch 시 S23 액션 목업 — run=달려오기 (PetVFX approach 호환 + action_id=RUN)
-ACTION_MOCK = os.getenv("ACTION_MOCK", "run").strip().lower()
+# 레거시 PetVFX 데모 목업 — run 이면 touch 를 approach 로 바꾸고 action_id=RUN 을
+# 붙인다. 기본 off (M5-lite): 목업이 켜져 있으면 touch 가 approach 로 뭉개져
+# 실제 센서 매핑(touch→PET_HEAD, approach→COME_CLOSER)이 웹/기기 어디서도
+# 성립하지 않는다. 구 데모가 필요할 때만 ACTION_MOCK=run 으로 명시 복귀.
+ACTION_MOCK = os.getenv("ACTION_MOCK", "off").strip().lower()
 
 # 상태 LED(선택) — hardware_config.yaml 의 gpio.lines.status_led.enabled: true 로 켤 때만 동작.
 # gpiod/하드웨어가 없으면 open_line() 이 None 을 반환하므로 미조립 상태에서도 그대로 동작한다.
@@ -71,7 +74,7 @@ if _status_led is not None:
 
 
 def _pet_sensor_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    """터치/접근 → PetVFX 달려오기 목업 (ACTION_MOCK=run, 기본)."""
+    """터치/접근 → PetVFX 달려오기 목업 (ACTION_MOCK=run 일 때만, 기본 off)."""
     event = str(payload.get("event", "")).strip().lower()
     if ACTION_MOCK == "off":
         return payload

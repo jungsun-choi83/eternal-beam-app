@@ -20,8 +20,6 @@ namespace EternalBeam.Device
     /// </summary>
     public sealed class PetVideoScreen : MonoBehaviour
     {
-        private static readonly string[] PlayableEvents = { "nfc_match", "idle" };
-
         //: 투명 증명용 테스트 배경색 — 펫 영상 어디에도 없는 선명한 초록.
         private static readonly Color TestBackground = new Color(0.10f, 0.65f, 0.25f, 1f);
 
@@ -166,21 +164,37 @@ namespace EternalBeam.Device
             _quad = quadGo.transform;
         }
 
+        /// <summary>
+        /// M5-lite — motion_id 별 자산 저장소 (Phase 1). 수신 데이터그램은 전부
+        /// 여기 먼저 저장되고, 홈(BREATHING)만 루프 재생으로 이어진다.
+        /// </summary>
+        public MotionLibrary Library { get; } = new MotionLibrary();
+
+        private MotionPlaybackController _controller;
+
+        /// <summary>
+        /// M5-lite Phase 2 — 센서 트리거 재생 판정 (순수 상태 기계). 셸(이
+        /// 클래스)은 데이터그램·플레이어 이벤트를 넣고 Command 만 실행한다.
+        /// </summary>
+        public MotionPlaybackController Controller =>
+            _controller ??= new MotionPlaybackController(Library);
+
         public void HandleMessage(PetDeviceMessage msg)
         {
-            if (msg == null || !msg.Valid) return;
-            if (Array.IndexOf(PlayableEvents, msg.Event) < 0) return;
-            if (string.IsNullOrEmpty(msg.VideoUrl)) return;
-
-            // packed 판정 — 명시 delivery_format 우선, 파일명은 폴백 (Phase 7I 규칙).
-            string url = string.IsNullOrEmpty(msg.PackedUrl) ? msg.VideoUrl : msg.PackedUrl;
-            bool packed = msg.DeliveryFormat == "packed_alpha"
-                          || (string.IsNullOrEmpty(msg.DeliveryFormat)
-                              && VideoLayer.IsPackedAlphaUrl(url));
-            SwitchTo(url, packed);
+            // 자산 저장·센서 매핑·재생 판정은 전부 컨트롤러가 쥔다 —
+            // touch→PET_HEAD, voice→LOOK_UP, approach→COME_CLOSER 1회 재생,
+            // 끝나면 저장된 BREATHING 복귀. 없는 모션은 무시(홈 유지).
+            Execute(Controller.OnMessage(msg));
         }
 
-        public void SwitchTo(string url, bool packed)
+        private void Execute(MotionPlaybackController.Command cmd)
+        {
+            if (!string.IsNullOrEmpty(cmd.Reason)) Debug.Log($"[eb-video] {cmd.Reason}");
+            if (cmd.Kind != MotionPlaybackController.CommandKind.Play) return;
+            SwitchTo(cmd.Asset.Url, cmd.Asset.Packed, cmd.Loop);
+        }
+
+        public void SwitchTo(string url, bool packed, bool loop = true)
         {
             // 같은 URL 은 재생 중이든 준비 중이든 무시한다 — /demo/pet-ready 1회는
             // nfc_match + idle 두 데이터그램(동일 본문)이라, prepare 진행 중 재진입이
@@ -200,9 +214,11 @@ namespace EternalBeam.Device
             LastState = "preparing";
             LoopCount = 0;
             _player.Stop();
+            // 상호작용은 1회 재생 — loopPointReached 가 복귀 신호가 된다 (Phase 2).
+            _player.isLooping = loop;
             _player.source = VideoSource.Url;
             _player.url = url;
-            Debug.Log($"[eb-video] prepare ({(packed ? "packed_alpha" : "plain")}): {Trim(url)}");
+            Debug.Log($"[eb-video] prepare ({(packed ? "packed_alpha" : "plain")}, {(loop ? "loop" : "once")}): {Trim(url)}");
             _player.Prepare();
         }
 
@@ -314,14 +330,23 @@ namespace EternalBeam.Device
 
         private void OnLoop(VideoPlayer vp)
         {
-            LoopCount++;
-            if (LoopCount == 1) Debug.Log("[eb-video] loop point reached — looping OK");
+            // 홈 루프는 기존 그대로 이어 돈다 (isLooping=true 가 처리).
+            if (Controller.IsHome)
+            {
+                LoopCount++;
+                if (LoopCount == 1) Debug.Log("[eb-video] loop point reached — looping OK");
+                return;
+            }
+            // 상호작용 1회 재생 종료 → 저장된 홈(BREATHING) 복귀.
+            Execute(Controller.OnClipEnded());
         }
 
         private void OnError(VideoPlayer vp, string message)
         {
             LastState = "error: " + message;
             Debug.LogError($"[eb-video] error: {message}");
+            // 상호작용 재생 실패(만료 URL 등) → 홈 복귀 페일세이프.
+            Execute(Controller.OnPlaybackError());
         }
 
         private static string Trim(string url)
