@@ -34,7 +34,9 @@ VOICE_RMS = float(os.getenv("VOICE_RMS_THRESHOLD", _HW.get("voice", "rms_thresho
 VOICE_HOLD_MS = int(os.getenv("VOICE_HOLD_MS", _HW.get("voice", "hold_ms", default=350)))
 VOICE_COOLDOWN = float(os.getenv("VOICE_COOLDOWN_SEC", "4"))
 ACTION_RESET_SEC = float(os.getenv("ACTION_RESET_SEC", "10"))
-ACTION_MOCK = os.getenv("ACTION_MOCK", "run").strip().lower()
+# 기본 off (M5-lite) — run 목업은 touch 를 approach/RUN 으로 뭉개 실제 센서
+# 매핑(touch→PET_HEAD)을 깨뜨린다. 구 PetVFX 데모만 ACTION_MOCK=run 으로 복귀.
+ACTION_MOCK = os.getenv("ACTION_MOCK", "off").strip().lower()
 VOICE_DELAY_SEC = float(os.getenv("VOICE_DELAY_SEC", "5"))
 PI_SSE_PORT = int(os.getenv("PI_SSE_PORT", str(_HW.get("network", "sse_port", default=8787))))
 NO_TOF = os.getenv("NO_TOF", "").strip().lower() in ("1", "true", "yes")
@@ -59,9 +61,6 @@ def _pet_sensor_payload(payload: dict) -> dict:
     if ACTION_MOCK == "run" and event == "approach":
         return {**payload, "event": "approach", "action_id": "RUN", "mock": True}
     return payload
-
-
-    return 20 < mm < 2000 and mm != 8191
 
 
 def _broadcast_sse(payload: dict) -> None:
@@ -227,9 +226,7 @@ def main() -> None:
     threading.Thread(target=run_nfc, args=(nfc_map,), daemon=True).start()
 
     def send_unity(payload: dict) -> None:
-        """PetVFX APK는 approach/voice 만 수신 — touch → approach."""
-        if str(payload.get("event", "")).lower() == "touch":
-            payload = {**payload, "event": "approach"}
+        """센서/음성 → Unity :5005. touch→approach 목업은 _pet_sensor_payload 가 ACTION_MOCK 로만 게이트."""
         send_udp(payload)
 
     sensor = None
@@ -239,7 +236,7 @@ def main() -> None:
 
             sensor = _init_vl53l0x()
             print(
-                f"[VL53L0X] OK touch {TOUCH_MIN_MM}~{TOUCH_MAX_MM}mm → approach",
+                f"[VL53L0X] OK touch {TOUCH_MIN_MM}~{TOUCH_MAX_MM}mm → Unity touch",
                 flush=True,
             )
             threading.Thread(

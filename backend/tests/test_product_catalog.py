@@ -171,10 +171,21 @@ def test_mock_seed_matches_the_migration_seed():
     목업과 SQL 이 갈라지면 그 차이는 **프로덕션에서만** 드러난다 — 이 저장소가
     Phase 8 에서 이미 겪은 일이다(0크레딧 갱신이 목업에서는 통과, SQL 에서는 실패).
     """
-    sql = MIGRATION.read_text(encoding="utf-8")
-    block = sql.split("values", 1)[1].split("on conflict", 1)[0]
-    rows = re.findall(r"\('([^']+)',\s*'([A-Z_]+)',\s*(\d+),", block)
-    in_sql = {key: (kind, int(price)) for key, kind, price in rows}
+    # 시드는 두 마이그레이션에 나뉘어 있다: 20261002 원본 + 20261023(action:PET_HEAD).
+    # 다른 마이그레이션의 상품 추가(테마 등)는 목업 시드의 범위 밖이다 — 목업은
+    # 프리미엄 모션/번들 계약 검증용 최소 집합이라는 기존 전제를 유지한다.
+    in_sql: dict[str, tuple[str, int]] = {}
+    for path in (
+        MIGRATION,
+        MIGRATION.parent / "20261023000000_pet_head_premium.sql",
+        MIGRATION.parent / "20261024000000_look_up_premium.sql",
+        MIGRATION.parent / "20261025000000_pose_transitions_premium.sql",
+    ):
+        text = path.read_text(encoding="utf-8")
+        for chunk in re.split(r"insert into public\.digital_products", text)[1:]:
+            block = chunk.split("values", 1)[1].split("on conflict", 1)[0]
+            for key, kind, price in re.findall(r"\('([^']+)',\s*'([A-Z_]+)',\s*(\d+),", block):
+                in_sql.setdefault(key, (kind, int(price)))
 
     in_py = {
         key: (kind, price) for key, kind, price, _name in product_catalog._SEED

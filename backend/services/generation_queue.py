@@ -31,9 +31,19 @@ from ..scenarios.pet_scenarios import PREMIUM_ACTIONS
 GENERATION_ORDER: tuple[str, ...] = (
     "COME_CLOSER",
     "BLINKING",
+    # PET_HEAD (TOUCH 반응) — 액션이지만 COME_CLOSER/BLINKING 보다 뒤인 이유:
+    # 더블탭·자발 깜빡임은 화면에 들어오자마자 마주치는 자산이고, 터치 반응은
+    # 사용자가 만지는 순간에만 없음이 드러난다. Behavior Library 의 단건 구매
+    # (explicit_pick)는 이 순서를 무시하므로 실사용 영향은 자동 전진 순서뿐이다.
+    "PET_HEAD",
     "EAR_TWITCHING",
     "HEAD_TILTING",
     "TAIL_WAGGING",
+    # LOOK_UP (VOICE 반응) — 맨 뒤: 화면 진입 즉시 마주치는 자산이 아니다.
+    "LOOK_UP",
+    # 자세 전이 세트 — 전이(LIE_DOWN) → 누운 홈(LIE_IDLE) → 복귀(STAND_UP) 순.
+    # 셋이 모두 READY 여야 자세 전환이 의미가 있으므로 생성도 이 순서다.
+    "LIE_DOWN", "LIE_IDLE", "STAND_UP",
 )
 
 #: 한 펫이 동시에 돌릴 수 있는 프로바이더 작업 수.

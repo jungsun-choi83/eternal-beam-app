@@ -132,6 +132,15 @@ async def submit_premium_action(
     action = (action_id or "").upper()
     place_key = THEME_INDEPENDENT_PLACE_KEY
 
+    if action not in LEGACY_CAPABLE_ACTIONS:
+        # 새 경로 전용 액션(PET_HEAD)이 레거시 제출에 들어왔다 — 프롬프트가
+        # 없어 prompt_factory 가 KeyError 로 죽기 전에 계약 오류로 명확히 멈춘다.
+        # 호출부(_submit_missing)는 이 오류를 잡고 fail-closed 환불로 잇는다.
+        raise PremiumSubmitError(
+            f"{action} 는 레거시 이행이 지원하지 않는 액션입니다 (새 경로 전용).",
+            stage="unsupported_action",
+        )
+
     if credits_reserved and not reservation_ledger_id:
         raise PremiumSubmitError(
             "예약 없이 유료 생성을 제출할 수 없습니다.", stage="reservation"
@@ -238,14 +247,24 @@ async def advance_generation_queue(
                 for m in await motions_svc.list_motions_for_pet(user_id, pet_id)
             ]
             active = await motions_svc.list_active_action_ids_for_pet(user_id, pet_id)
+            # 새 경로 전용 액션(PET_HEAD)은 레거시 큐에서 "이미 처리됨"으로
+            # 간주한다. pending 에 남겨 두면 (a) 후보로 뽑혀 unsupported_action
+            # 에서 break 되거나, (b) 영영 채울 수 없는 선순위가 되어 뒤 전체가
+            # waiting-for-higher-priority 로 막힌다 — 번들 전진 정지가 그 증상이다.
+            ready_for_queue = ready + [
+                a
+                for a in generation_queue.GENERATION_ORDER
+                if a not in LEGACY_CAPABLE_ACTIONS
+            ]
 
             nxt = next(
                 (
                     a
                     for a in generation_queue.GENERATION_ORDER
-                    if (allowed is None or a in allowed)
+                    if a in LEGACY_CAPABLE_ACTIONS
+                    and (allowed is None or a in allowed)
                     and generation_queue.decide(
-                        action_id=a, ready_actions=ready, active_actions=active
+                        action_id=a, ready_actions=ready_for_queue, active_actions=active
                     ).allowed
                 ),
                 None,
@@ -281,6 +300,21 @@ async def advance_generation_queue(
     return submitted
 
 
+#: 레거시 이행이 만들 수 있는 행동 — 블랙 플레이트 프롬프트(luma_prompts /
+#: prompt_factory)가 존재하는 것만. PET_HEAD(2026-09-08)는 **새 경로 전용**이다:
+#: 레거시 프롬프트를 새로 만들지 않는다(레거시는 7J 제거 대상). 여기서 걸러야
+#: 레거시 큐 자동 전진이 PET_HEAD 를 집어 prompt_factory KeyError 로 죽지 않는다.
+#: 새 경로 전용 액션 — 레거시 프롬프트가 없고 앞으로도 만들지 않는다(7J 제거 대상).
+_NEW_PATH_ONLY_ACTIONS = frozenset(
+    {"PET_HEAD", "LOOK_UP", "LIE_DOWN", "STAND_UP", "LIE_IDLE"}
+)
+
+LEGACY_CAPABLE_ACTIONS: tuple[str, ...] = tuple(
+    a for a in PREMIUM_ACTIONS if a not in _NEW_PATH_ONLY_ACTIONS
+)
+
+
 def is_queued_action(action_id: str | None) -> bool:
-    """큐가 관리하는 액션인가. 레거시 4종은 자기 파이프라인이 따로 있다."""
-    return (action_id or "").upper() in PREMIUM_ACTIONS
+    """레거시 큐가 관리하는 액션인가. 레거시 4종은 자기 파이프라인이 따로 있고,
+    새 경로 전용 액션(PET_HEAD)은 레거시 큐에 절대 들어오지 않는다."""
+    return (action_id or "").upper() in LEGACY_CAPABLE_ACTIONS

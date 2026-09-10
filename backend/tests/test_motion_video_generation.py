@@ -200,13 +200,63 @@ def test_durable_motion_resumes_one_building_version(storage, monkeypatch):
 
 def test_routing_by_motion_class(monkeypatch):
     assert [p.name for p in vp.routing_for_class("MICRO")] == ["seedance", "kling"]
-    assert [p.name for p in vp.routing_for_class("TRANSITION")] == ["kling"]
+    assert [p.name for p in vp.routing_for_class("TRANSITION")] == ["kling", "seedance"]
     assert [p.name for p in vp.routing_for_class("LOCOMOTION")] == ["seedance", "kling"]
     assert [p.name for p in vp.routing_for_class("INTERACTION")] == ["kling", "seedance"]
     monkeypatch.setenv("PHASE6_PROVIDER_MICRO", "kling")
     assert vp.routing_for_class("MICRO")[0].name == "kling"
     monkeypatch.setenv("VIDEO_GENERATION_MOCK", "1")
     assert [p.name for p in vp.routing_for_class("MICRO")] == ["mock"]
+
+
+def test_wan_is_env_only_test_adapter(monkeypatch):
+    """Wan(fal turbo)은 저비용 프롬프트 실험 전용 — 기본 라우팅에 절대 없고,
+    PHASE6_PROVIDER_<CLASS>=wan 명시로만 선택되며, durable 실행 경로에 못 들어온다."""
+    from backend.services import durable_provider_jobs
+
+    # 기본 라우팅 불변 — wan 은 어떤 클래스에도 없다.
+    for cls in ("MICRO", "TRANSITION", "LOCOMOTION", "INTERACTION"):
+        assert "wan" not in [p.name for p in vp.routing_for_class(cls)]
+
+    # 명시 오버라이드로만 온다 (트랜스포트는 fal 하나뿐).
+    monkeypatch.setenv("PHASE6_PROVIDER_MICRO", "wan")
+    monkeypatch.setenv("PHASE6_FALLBACK_MICRO", "")
+    routed = vp.routing_for_class("MICRO")
+    assert [p.name for p in routed] == ["wan"]
+    assert isinstance(routed[0], vp.FalWanProvider)
+
+    # 라이브 게이트는 실 프로바이더로 취급한다 — 허용 목록 없이는 막힌다.
+    monkeypatch.setenv("PHASE6_LIVE_MODE", "off")
+    allowed, reason = vp.live_generation_allowed("pet_x", routed)
+    assert not allowed and reason == "live_mode_off"
+
+    # durable(실행) 경로에는 절대 못 들어온다 — 벤치/스모크 전용이라는 계약.
+    assert durable_provider_jobs.durable_video_providers(
+        routed, run_id="r", user_id="u", pet_id="p"
+    ) == []
+
+
+def test_wan_payload_matches_live_proven_legacy_contract():
+    """페이로드는 wan_service.py 에서 라이브 검증된 스키마 그대로 —
+    {prompt, image_url, resolution, aspect_ratio} 뿐, duration/audio 키 없음
+    (turbo 변형은 노출하지 않는다). end frame 은 계약상 거부된다."""
+    provider = vp.FalWanProvider()
+    req = vp.MotionVideoRequest(
+        prompt="calm breathing",
+        start_image_url="https://cdn.test/start.png",
+        start_image_bytes=None,
+        output_spec={"resolution": "480p", "aspect_ratio": "9:16",
+                     "duration_sec": 4, "audio": False},
+    )
+    payload = provider.build_payload(req)
+    assert payload == {
+        "prompt": "calm breathing",
+        "image_url": "https://cdn.test/start.png",
+        "resolution": "480p",
+        "aspect_ratio": "9:16",
+    }
+    assert provider.supports_end_frame is False
+    assert provider.model_name() == "fal-ai/wan/v2.2-a14b/image-to-video/turbo"
 
 
 # ══════════════════════════════════════════════════════════════════════════

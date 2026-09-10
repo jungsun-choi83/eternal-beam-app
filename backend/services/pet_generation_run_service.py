@@ -675,7 +675,11 @@ async def _keyframe(run: PetGenerationRun, role: str):
 
 
 def _motion_matches(run: PetGenerationRun, motion: Any) -> bool:
-    start_keyframe = run.keyframes.get("NEUTRAL_IDLE") or {}
+    # 시작 키프레임 역할은 모션마다 다르다 (LIE_IDLE/STAND_UP 은 LIE) —
+    # NEUTRAL_IDLE 하드코딩은 BREATHING 전용 시절의 잔재였다.
+    spec = motion_spec.get_motion(run.motion_id)
+    start_role = spec.start_keyframe_role if spec else "NEUTRAL_IDLE"
+    start_keyframe = run.keyframes.get(start_role) or {}
     return bool(
         motion
         and motion.pet_id == run.pet_id
@@ -815,6 +819,31 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
             "selected_candidate_id": keyframe.selected_candidate_id,
             "canonical_version_id": keyframe.canonical_version_id,
         }
+        # ── 전이(TRANSITION) 목표 키프레임 (2026-09-08) ─────────────────────
+        # resolve_video_generation_spec 은 requires_target_keyframe 모션에서
+        # **승인된** 목표 키프레임을 요구한다. 예전 파이프라인은 시작 역할만
+        # 만들었으므로 LIE_DOWN 류는 MOTION_SPEC 에서 TARGET_KEYFRAME_REQUIRED
+        # 로 영원히 죽었다. 시작과 같은 규칙(COMPLETE + canonical 일치)으로
+        # 목표 역할도 여기서 만든다.
+        if spec.requires_target_keyframe and spec.target_keyframe_role:
+            target_kf, run = await _keyframe(run, spec.target_keyframe_role)
+            _require_status(
+                target_kf.status, action_keyframe_service.STATUS_COMPLETE,
+                "KEYFRAME_NOT_COMPLETE", "Phase 5 목표 키프레임 QA PASS 결과가 없습니다.",
+            )
+            if (
+                str(target_kf.canonical_version_id or "") != str(run.canonical_version_id or "")
+                or target_kf.canonical_version != run.canonical_version
+            ):
+                raise PetGenerationRunError(
+                    "RUN_LINEAGE_INVALID", "목표 키프레임의 canonical 이 실행과 다릅니다.", status=409
+                )
+            keyframes[spec.target_keyframe_role] = {
+                "id": target_kf.id,
+                "version": target_kf.version,
+                "selected_candidate_id": target_kf.selected_candidate_id,
+                "canonical_version_id": target_kf.canonical_version_id,
+            }
         run = await _progress(
             run,
             {
@@ -1064,7 +1093,7 @@ def _validate_request(motion_id: str, request_kind: str, idempotency_key: str) -
         if motion not in premium_motion_finalization.PREMIUM_MOTIONS:
             raise PetGenerationRunError(
                 "UNSUPPORTED_MOTION",
-                "PREMIUM_PRODUCT 는 기존 상용 모션(아이들 4종 + COME_CLOSER)만 지원합니다.",
+                "PREMIUM_PRODUCT 는 상용 모션 레지스트리(PREMIUM_MOTIONS) 밖의 모션을 지원하지 않습니다.",
                 status=422,
             )
     else:

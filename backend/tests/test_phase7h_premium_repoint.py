@@ -193,6 +193,8 @@ def test_product_key_maps_to_physical_motion_id():
     assert fulfillment.motion_id_for_product("idle:HEAD_TILTING") == "HEAD_TILTING"
     assert fulfillment.motion_id_for_product("idle:TAIL_WAGGING") == "TAIL_WAGGING"
     assert fulfillment.motion_id_for_product("action:COME_CLOSER") == "COME_CLOSER"
+    assert fulfillment.motion_id_for_product("action:PET_HEAD") == "PET_HEAD"
+    assert fulfillment.motion_id_for_product("action:LOOK_UP") == "LOOK_UP"
     # 미판매 신모션은 매핑되지 않는다 — 카탈로그 결정 전까지 이행 불가.
     assert fulfillment.motion_id_for_product("idle:PET_HEAD") is None
     assert fulfillment.motion_id_for_product("action:RUN") is None
@@ -204,7 +206,8 @@ def test_product_key_maps_to_physical_motion_id():
 
 def test_unsellable_motions_are_rejected_by_run_validation(storage):
     seed_intake()
-    for motion in ("PET_HEAD", "LOOK_UP", "HAPPY", "RUN", "WALK"):
+    # PET_HEAD/LOOK_UP 은 2026-09-08 부로 판매 가능해졌다 — 거절 목록에서 빠진다.
+    for motion in ("HAPPY", "RUN", "WALK"):
         with pytest.raises(runs.PetGenerationRunError) as e:
             _run(
                 runs.start_generation_run(
@@ -516,7 +519,9 @@ def test_behavior_library_discovery_shows_legacy_keys_and_run_progress(
     body = response.json()
     # 레거시 카탈로그 키가 그대로 보인다 — 상품/가격 결정은 바뀌지 않았다.
     assert body["idle_events"] == ["BLINKING", "EAR_TWITCHING", "HEAD_TILTING", "TAIL_WAGGING"]
-    assert body["action_events"] == ["COME_CLOSER"]
+    assert body["action_events"] == [
+        "COME_CLOSER", "PET_HEAD", "LOOK_UP", "LIE_DOWN", "STAND_UP", "LIE_IDLE",
+    ]
     assert body["prices"]["idle:BLINKING"] == 1
     assert body["prices"]["action:COME_CLOSER"] == 1
     # 새 실행의 진행 상태가 기존 'generating' 계약으로 흘러나온다.
@@ -713,7 +718,11 @@ def test_purchase_without_phase1_intake_fails_closed(storage, monkeypatch):
     assert _run(_balance()) == 2  # 환불로 되돌아왔다
 
 
-@pytest.mark.parametrize("motion", ["EAR_TWITCHING", "HEAD_TILTING", "TAIL_WAGGING", "COME_CLOSER"])
+@pytest.mark.parametrize(
+    "motion",
+    ["EAR_TWITCHING", "HEAD_TILTING", "TAIL_WAGGING", "COME_CLOSER", "PET_HEAD", "LOOK_UP",
+     "LIE_DOWN", "STAND_UP", "LIE_IDLE"],
+)
 def test_other_commercial_motions_flow_through_same_adapter(storage, monkeypatch, motion):
     seed_intake()
     _premium_harness(monkeypatch, motion, decision="PASS")

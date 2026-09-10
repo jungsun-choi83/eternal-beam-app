@@ -415,6 +415,44 @@ export function subscribePiNfcEvents(
   }
 }
 
+/**
+ * 센서 이벤트를 **이름 그대로** 전달하는 구독 — 메모리얼 런타임용.
+ *
+ * subscribePiSensors(포레스트 데모)는 touch/approach/voice 를 하나의 콜백으로
+ * 뭉개는데, 런타임은 이벤트별로 다른 모션을 골라야 한다(touch→PET_HEAD,
+ * voice→LOOK_UP, approach→COME_CLOSER — lib/pet-runtime-events 의
+ * sensorEventToRuntimeEvent). NFC 는 여기서 다루지 않는다 — 테마 전환은
+ * 배경 경로(:9999)의 일이다.
+ */
+export function subscribePiRuntimeEvents(
+  onSensorEvent: (sensorEvent: string) => void,
+  onStatus?: (msg: string) => void,
+): () => void {
+  if (typeof EventSource === 'undefined') return () => {}
+
+  let es: EventSource | null = null
+  let cancelled = false
+
+  void discoverPiHttpBaseCached().then((base) => {
+    if (cancelled || !base) return
+    es = openPiEventSource(
+      base,
+      (payload) => {
+        const event = String(payload.event ?? '').toLowerCase()
+        if (event === 'touch' || event === 'approach' || event === 'voice') {
+          onSensorEvent(event)
+        }
+      },
+      onStatus,
+    )
+  })
+
+  return () => {
+    cancelled = true
+    es?.close()
+  }
+}
+
 export function subscribePiSensors(
   onPetAction: () => void,
   onStatus?: (msg: string) => void,

@@ -46,6 +46,8 @@ import {
 const TYPE_LABEL: Record<string, string> = {
   HOSPITAL: "동물병원",
   FUNERAL: "장례식장",
+  GROOMING: "미용",
+  PENSION: "펜션",
 };
 const TRACK_LABEL: Record<string, string> = {
   living: "Living · 곁에 있는 아이",
@@ -386,6 +388,8 @@ function Body({ token, onAuthError }: OpsChildProps) {
                 options={[
                   { value: "HOSPITAL", label: "동물병원" },
                   { value: "FUNERAL", label: "장례식장" },
+                  { value: "GROOMING", label: "미용" },
+                  { value: "PENSION", label: "펜션" },
                 ]}
               />
             </div>

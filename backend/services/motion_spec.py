@@ -52,13 +52,19 @@ from .action_keyframe_spec import BREATHING_HOME_STATE, KEYFRAME_ROLES
 #     계약 위반으로 제출 전에 거절된다(TAIL_WAGGING 라이브 실측, run ebbc11f5).
 #     개발 중 비용/지연 절감과 MICRO 타이밍 일관성을 겸해 당분간 범위가 아니라
 #     고정값으로 둔다. 서술/전략/다른 클래스 길이는 불변이다.
+# v8: PET_HEAD 서술 정리 — 엔지니어링 메모가 프롬프트로 새던 것을 제거하고
+#     긍정형 영어 장면 묘사로 교체 (wan 라이브 테스트에서 발견). 다른 모션 불변.
+# v9: LOOK_UP 상용화 — 시작 키프레임 LOOK_UP→NEUTRAL_IDLE(재사용, 전용 스틸
+#     불필요) + 긍정형 영어 서술. VOICE 트리거의 목적지. 다른 모션 불변.
+# v10: 자세 전이 3종(LIE_DOWN/STAND_UP/LIE_IDLE) 상용화 — 긍정형 영어 서술로
+#      교체 (v8/v9 스타일). 역할/전략/길이 불변. 다른 모션 불변.
 # v7: BREATHING 서술을 긍정형으로 재작성 — v5 는 금지 명령 18개 vs 동작 서술
 #     1문장이라 모델이 두 극단으로 붕괴했다(전부 동결 + 준정지 틱 0.2%, 또는
 #     금지 무시 전신 펄스 3.9%; 16클립 실측). 자연 호흡의 목표 대역(흉곽 국소
 #     0.3~2%, 어깨 동반, 약간 불규칙한 리듬)을 **하라는 말**로 명시하고 금지는
 #     카메라/이동/균일 스케일 셋만 남긴다. breathing-temporal-qa-v2 보정과 한
 #     쌍이다. 다른 모션 서술은 불변.
-MOTION_SPEC_VERSION = "motion-spec-v7"
+MOTION_SPEC_VERSION = "motion-spec-v10"
 # v2 (Phase 6.6): pet_motion_profile 추가 + motion_reference 가 라이브러리에서
 # 해석된 실제 자산/버전/호환성/출처를 담는다 (미해석 시 기존 v1 형태 + 경고 유지).
 PHASE6_CONTRACT_VERSION = "phase6-contract-v2"
@@ -150,14 +156,34 @@ MOTIONS: dict[str, MotionSpec] = {
     "HEAD_TILTING": _micro("HEAD_TILTING", "호기심 어린 고개 갸웃", "NEUTRAL_IDLE"),
     "TAIL_WAGGING": _micro("TAIL_WAGGING", "부드러운 꼬리 흔들기", "NEUTRAL_IDLE"),
     # ── MICRO — 새 모션 (기존 어디에도 없던 것만 새 id) ─────────────────
-    "LOOK_UP": _micro("LOOK_UP", "위를 올려다보고 되돌아오기", "LOOK_UP"),
+    # v9: 상용화하며 시작 키프레임을 NEUTRAL_IDLE 로 — 중립 자세에서 올려다보고
+    # 되돌아오는 모션이므로 전용 LOOK_UP 스틸이 필요 없다(키프레임 재사용 원칙,
+    # 추가 생성 비용 0). 서술은 PET_HEAD v8 과 같은 긍정형 영어 장면 묘사.
+    "LOOK_UP": _micro(
+        "LOOK_UP",
+        "The pet lifts its head and looks up attentively, as if hearing a "
+        "familiar voice from above. It holds the upward gaze for a moment with "
+        "a soft curious expression, then naturally lowers its head back to the "
+        "exact starting pose",
+        "NEUTRAL_IDLE",
+    ),
     "HAPPY": _micro("HAPPY", "반가운 알림 반응 — 귀 쫑긋, 밝은 표정, 가벼운 몸짓", "HAPPY"),
-    "LIE_IDLE": _micro("LIE_IDLE", "엎드린 채 잔잔히 쉬기", "LIE", loopable=True),
+    "LIE_IDLE": _micro(
+        "LIE_IDLE",
+        "The pet rests calmly lying on its belly, exactly as in the reference "
+        "image. Gentle relaxed breathing is the only visible movement — the "
+        "chest and flank softly rise and fall. The pet stays lying in place and "
+        "returns to the exact starting resting pose so the clip loops smoothly",
+        "LIE",
+        loopable=True,
+    ),
     "SLEEP_BREATH": _micro("SLEEP_BREATH", "잠든 채 고른 숨쉬기", "SLEEP", loopable=True),
     # ── TRANSITION — 시작+목표 쌍 명시 ──────────────────────────────────
     "LIE_DOWN": MotionSpec(
         motion_id="LIE_DOWN", motion_class=CLASS_TRANSITION,
-        description="선/앉은 자세에서 자연스럽게 엎드리기",
+        description="From its standing pose, the pet naturally bends its legs "
+        "and settles down to lie on its belly, ending calm and relaxed in the "
+        "lying pose shown in the second frame",
         start_keyframe_role="NEUTRAL_IDLE", target_keyframe_role="LIE",
         requires_target_keyframe=True, preferred_video_strategy=STRATEGY_START_END,
         duration_range_sec=(2.5, 5.0), loopable=False,
@@ -165,7 +191,9 @@ MOTIONS: dict[str, MotionSpec] = {
     ),
     "STAND_UP": MotionSpec(
         motion_id="STAND_UP", motion_class=CLASS_TRANSITION,
-        description="엎드린 자세에서 일어나기",
+        description="From lying on its belly, the pet pushes up with its front "
+        "legs and rises smoothly back to the standing pose shown in the second "
+        "frame, ending calm and balanced",
         start_keyframe_role="LIE", target_keyframe_role="NEUTRAL_IDLE",
         requires_target_keyframe=True, preferred_video_strategy=STRATEGY_START_END,
         duration_range_sec=(2.0, 4.0),
@@ -245,8 +273,14 @@ MOTIONS: dict[str, MotionSpec] = {
     # ── INTERACTION — v1 은 사람 손을 키프레임에 요구하지 않는다 ─────────
     "PET_HEAD": MotionSpec(
         motion_id="PET_HEAD", motion_class=CLASS_INTERACTION,
-        description="머리를 쓰다듬을 때의 반응 — interaction-ready 포즈에서 시작; "
-        "손의 등장 여부는 Phase 6 이 결정한다",
+        # v8: 엔지니어링 메모("손의 등장 여부는 Phase 6 이 결정한다")가 프로바이더
+        # 프롬프트로 그대로 새고 있었다 — wan 라이브 테스트에서 발견. 서술은
+        # 모델에게 보내는 긍정형 장면 묘사만 담는다. 손 허용/복귀 문장은
+        # INTERACTION 빌더(allow_generated_hand)가 덧붙이므로 일부 중복되지만
+        # 무해하다 (BREATHING 의 선례와 동일).
+        description="A gentle human hand may briefly enter the frame to pet the "
+        "pet's head. The pet responds naturally and contentedly, then returns to "
+        "the starting pose",
         start_keyframe_role="NEUTRAL_IDLE",
         preferred_video_strategy=STRATEGY_I2V,
         duration_range_sec=(3.0, 5.0),

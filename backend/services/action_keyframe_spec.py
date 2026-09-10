@@ -51,9 +51,13 @@ class KeyframeRole:
 
 
 #: 현재 런타임의 전 행동 — 전부 중립 대기 포즈에서 시작한다.
+#: 시작 포즈가 LIE 인 액션 — NEUTRAL_IDLE 이 아니라 LIE 역할이 담당한다.
+_LIE_START_ACTIONS: tuple[str, ...] = ("LIE_IDLE", "STAND_UP")
+
 _NEUTRAL_ACTIONS: tuple[str, ...] = (
     tuple(ACTION_ORDER)          # IDLE, TOUCH(=PET_HEAD_START), VOICE, NFC
-    + tuple(PET_ACTIONS)         # COME_CLOSER (시작 포즈)
+    # PET_ACTIONS 중 중립 시작만 — LIE 시작(LIE_IDLE/STAND_UP)은 아래 LIE 역할로.
+    + tuple(a for a in PET_ACTIONS if a not in _LIE_START_ACTIONS)
     + (BREATHING_HOME_STATE,)    # 웹 홈 상태
     + tuple(IDLE_EVENTS)         # BLINKING, EAR_TWITCHING, HEAD_TILTING, TAIL_WAGGING
     + tuple(IDLE_TEMPLATE_ORDER) # IDLE_BREATH … IDLE_LOOK_AROUND
@@ -82,7 +86,8 @@ KEYFRAME_ROLES: dict[str, KeyframeRole] = {
         body_motion_complexity="micro",
         preferred_canonical_source="raw",
         video_compat={"loopable_base": True, "motion_class": "idle"},
-        supported_action_ids=(),  # 미래 액션 — 존재하지 않는 id 를 지어내지 않는다
+        # 자세 전이 상용화 (2026-09-08): LIE 에서 **시작**하는 액션들.
+        supported_action_ids=_LIE_START_ACTIONS,
     ),
     "SLEEP": KeyframeRole(
         role="SLEEP",

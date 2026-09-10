@@ -60,7 +60,7 @@ def test_routing_names_unchanged_regardless_of_transport(monkeypatch):
              ("MICRO", "TRANSITION", "LOCOMOTION", "INTERACTION")}
     assert names == {
         "MICRO": ["seedance", "kling"],
-        "TRANSITION": ["kling"],
+        "TRANSITION": ["kling", "seedance"],
         "LOCOMOTION": ["seedance", "kling"],
         "INTERACTION": ["kling", "seedance"],
     }

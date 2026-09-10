@@ -23,6 +23,7 @@ import {
   type RuntimeEventId,
   type RuntimeEventSources,
   decideTrigger,
+  getRuntimeEvent,
   mountableEvents,
   returnProfileFor,
 } from "@/lib/pet-runtime-events";
@@ -44,6 +45,12 @@ interface IdleLoopVideoProps {
   eventSources?: RuntimeEventSources;
   /** 이벤트 재생이 시작/종료될 때 알림 (UI 힌트용). */
   onActionStateChange?: (playing: boolean) => void;
+  /**
+   * 현재 재생 중인 이벤트 id 통지 (null = 홈/BREATHING). LYING 런타임이
+   * 자세를 **플레이어의 진실에서** 파생하기 위한 신호다 — 체인 폴백 같은
+   * 예외에서도 외부 그림자 상태가 어긋나지 않는다.
+   */
+  onRuntimeEventChange?: (eventId: RuntimeEventId | null) => void;
   /** 트리거 핸들을 부모에게 넘긴다. trigger("COME_CLOSER") 처럼 쓴다. */
   actionTriggerRef?: React.MutableRefObject<PetRuntimeTrigger | null>;
   className?: string;
@@ -592,6 +599,7 @@ export function IdleLoopVideo({
   src,
   eventSources,
   onActionStateChange,
+  onRuntimeEventChange,
   actionTriggerRef,
   className = "",
   style,
@@ -650,6 +658,8 @@ export function IdleLoopVideo({
 
   const onActionStateChangeRef = useRef(onActionStateChange);
   onActionStateChangeRef.current = onActionStateChange;
+  const onRuntimeEventChangeRef = useRef(onRuntimeEventChange);
+  onRuntimeEventChangeRef.current = onRuntimeEventChange;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scratchRef = useRef(createPackedAlphaScratch());
   const blackkeyScratchRef = useRef<HTMLCanvasElement | null>(null);
@@ -776,6 +786,7 @@ export function IdleLoopVideo({
       /* autoplay policy */
     });
     if (wasPlaying) onActionStateChangeRef.current?.(false);
+    onRuntimeEventChangeRef.current?.(null);
   }, [clearReturnTimers, activeEvent, actionElFor]);
 
   /** 전환 완료 — BREATH 를 유일한 활성 소스로 되돌린다. */
@@ -791,6 +802,7 @@ export function IdleLoopVideo({
     }
     if (idle) videoRef.current = idle;
     if (wasPlaying) onActionStateChangeRef.current?.(false);
+    onRuntimeEventChangeRef.current?.(null);
   }, [clearReturnTimers, activeEvent, actionElFor]);
 
   /**
@@ -897,6 +909,7 @@ export function IdleLoopVideo({
       actionEl.currentTime = 0;
       videoRef.current = actionEl;
       onActionStateChangeRef.current?.(true);
+      onRuntimeEventChangeRef.current?.(def.id);
       void actionEl
         .play()
         .then(() => {
@@ -913,6 +926,31 @@ export function IdleLoopVideo({
         });
     },
     [startIdle, clearReturnTimers, actionElFor]
+  );
+
+  /**
+   * 전이 종료 → 체인 대상(자세 전용 홈)으로 하드 컷 (2026-09-08).
+   *
+   * 전이는 목표 키프레임 포즈에서 끝나고 체인 대상은 같은 포즈에서 시작하므로
+   * 디졸브 없이 잇는 것이 가장 깨끗하다. 체인 대상 소스가 없으면(미소유/OFF)
+   * BREATH 복귀로 폴백한다 — 화면이 마지막 프레임에 얼어붙는 것보다 낫다.
+   */
+  const chainFrom = useCallback(
+    (def: RuntimeEventDef) => {
+      const chainId = def.chainTo;
+      const chainDef = chainId ? getRuntimeEvent(chainId) : null;
+      const chainEl = chainId ? actionElFor(chainId) : null;
+      if (chainDef && chainEl?.src) {
+        if (import.meta.env.DEV) console.info(`[${def.id}] → ${chainDef.id} 체인`);
+        startEvent(chainDef, def);
+        return;
+      }
+      if (import.meta.env.DEV) {
+        console.warn(`[${def.id}] 체인 대상(${chainId}) 소스 없음 → BREATH 복귀`);
+      }
+      beginReturn();
+    },
+    [startEvent, beginReturn, actionElFor]
   );
 
   const trigger = useCallback<PetRuntimeTrigger>(
@@ -1050,7 +1088,12 @@ export function IdleLoopVideo({
     const cleanups: Array<() => void> = [];
     for (const [id, actionEl] of entries) {
       const onEnded = () => {
-        if (isPlaying(id)) beginReturn();
+        if (!isPlaying(id)) return;
+        const def = playbackRef.current.phase === "EVENT_PLAYING"
+          ? playbackRef.current.event : null;
+        if (def?.loopUntilPreempted) return; // loop 속성이 처리한다 — 복귀 없음
+        if (def?.chainTo) chainFrom(def);
+        else beginReturn();
       };
       const onFailure = () => {
         if (isPlaying(id)) startIdle();
@@ -1090,7 +1133,7 @@ export function IdleLoopVideo({
       for (const c of cleanups) c();
       cancelStallTimer();
     };
-  }, [eventsKey, startIdle, beginReturn]);
+  }, [eventsKey, startIdle, beginReturn, chainFrom]);
 
   // 언마운트 시 타이머 정리.
   useEffect(() => clearReturnTimers, [clearReturnTimers]);
@@ -1144,13 +1187,16 @@ export function IdleLoopVideo({
     if (
       action &&
       state.phase === "EVENT_PLAYING" &&
+      // 자세 전용 홈(loopUntilPreempted)은 끝이 없다 — loop 속성이 이어 돌린다.
+      !state.event.loopUntilPreempted &&
       videoRef.current === action &&
       !action.paused &&
       Number.isFinite(action.duration) &&
       action.duration > 0 &&
       action.duration - action.currentTime <= ACTION_TAIL_EPSILON_S
     ) {
-      beginReturn();
+      if (state.event.chainTo) chainFrom(state.event);
+      else beginReturn();
     }
 
     // ── 이번 프레임에 그릴 레이어 결정 ────────────────────────────────────────
@@ -1335,7 +1381,7 @@ export function IdleLoopVideo({
     }
 
     rafRef.current = requestAnimationFrame(renderFrame);
-  }, [transparentComposite, triggerRawFallback, beginReturn, finishReturn, startEvent, eventModeFor]);
+  }, [transparentComposite, triggerRawFallback, beginReturn, finishReturn, startEvent, eventModeFor, chainFrom]);
 
   useEffect(() => {
     failCountRef.current = 0;
@@ -1619,6 +1665,7 @@ export function IdleLoopVideo({
             /* 명시적으로 자동재생 금지 — trigger(id) 로만 재생된다.
                preload 정책은 액션 정의가 쥔다 (새 액션 기본값은 "none"). */
             autoPlay={false}
+            loop={def.loopUntilPreempted === true}
             muted
             playsInline
             preload={def.preload}
