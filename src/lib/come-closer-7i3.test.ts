@@ -100,19 +100,33 @@ test("COME_CLOSER 포맷: packed 신자산 / 레거시 null / 명시 blackkey �
 
 // ── 4. 상호작용은 COME_CLOSER 만 쏜다 + 자동 회전 불포함 ─────────────────────
 
-test("더블탭 경로는 COME_CLOSER 리터럴만 트리거한다 (두 화면 동일)", () => {
+test("탭 경로는 등록된 액션 리터럴만 트리거한다 (더블탭=COME_CLOSER, 싱글탭=PET_HEAD)", () => {
   for (const [name, path] of [["preview", PREVIEW], ["memorial", MEMORIAL]] as const) {
     const src = read(path);
-    const fires = [...src.matchAll(/(?:fire\?\.|comeCloserTriggerRef\.current\?\.)\("([A-Z_]+)"\)/g)];
-    assert.ok(fires.length > 0, `${name}: 더블탭 트리거가 없다`);
-    for (const [, id] of fires) {
-      assert.equal(id, "COME_CLOSER", `${name}: 더블탭이 ${id} 를 쏜다`);
+    // memorial 은 LYING 런타임 컨트롤러 경유(dispatchUserAction), preview 는
+    // 직접 트리거 — 두 형태 모두 잡는다. 어느 쪽이든 리터럴 액션 id 만 허용.
+    const fires = [
+      ...src.matchAll(
+        /(?:fire\?\.|comeCloserTriggerRef\.current\?\.|lying\.dispatchUserAction)\("([A-Z_]+)"\)/g
+      ),
+    ].map(([, id]) => id);
+    assert.ok(fires.length > 0, `${name}: 탭 트리거가 없다`);
+    for (const id of fires) {
+      assert.ok(["COME_CLOSER", "PET_HEAD"].includes(id), `${name}: 탭이 ${id} 를 쏜다`);
     }
+    assert.ok(fires.includes("COME_CLOSER"), `${name}: 더블탭 COME_CLOSER 가 없다`);
     // 자격 게이트를 거친다 — 만료/OFF/미소유면 쏘지 않는다.
     assert.match(src, /comeCloserAllowedRef\.current/, `${name}: 자격 게이트가 없다`);
+    if (fires.includes("PET_HEAD")) {
+      // 싱글탭 PET_HEAD 는 자기 게이트 + 더블탭 창 만료 후에만 발화한다 —
+      // 즉시 발화하면 더블탭의 첫 탭마다 PET_HEAD 가 새치기한다.
+      assert.match(src, /petHeadAllowedRef\.current/, `${name}: PET_HEAD 자격 게이트가 없다`);
+      assert.match(src, /maxGapMs/, `${name}: 싱글탭이 더블탭 창을 기다리지 않는다`);
+    }
   }
   // 자동 아이들 회전에는 절대 없다.
   assert.ok(registeredIdleEvents().every((d) => d.id !== "COME_CLOSER"));
+  assert.ok(registeredIdleEvents().every((d) => d.id !== "PET_HEAD"));
 });
 
 // ── 5. dev-autogen / 레거시 조회 의존 제거 (활성 웹 경로) ────────────────────

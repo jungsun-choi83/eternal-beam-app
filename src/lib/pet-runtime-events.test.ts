@@ -15,8 +15,11 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
+  sensorEventToRuntimeEvent,
+  poseForCurrentEvent,
   IDLE_EVENT_IDS,
   IDLE_EVENT_PRIORITY,
   IDLE_HOME_STATE,
@@ -39,6 +42,11 @@ import {
 } from './pet-runtime-events.ts'
 
 const CC = 'COME_CLOSER'
+const PH = 'PET_HEAD'
+const LU = 'LOOK_UP'
+const LD = 'LIE_DOWN'
+const SU = 'STAND_UP'
+const LI = 'LIE_IDLE'
 const BLINK = 'BLINKING'
 const EAR = 'EAR_TWITCHING'
 const TILT = 'HEAD_TILTING'
@@ -55,7 +63,7 @@ test('1) COME_CLOSER 는 ACTION 으로 분류된다', () => {
   assert.ok(isPetAction(CC))
   assert.ok(!isIdleEvent(CC), 'COME_CLOSER 가 아이들 이벤트로 새면 안 된다')
   assert.equal(RUNTIME_EVENTS[CC]?.kind, 'ACTION')
-  assert.deepEqual([...PET_ACTION_IDS], [CC])
+  assert.deepEqual([...PET_ACTION_IDS], [CC, PH, LU, LD, SU, LI])
 })
 
 // ── 2) 아이들 이벤트는 분류되지만 아직 등록되지 않았다 ────────────────────────
@@ -76,8 +84,9 @@ test('8) 선언된 아이들 이벤트 4종이 모두 등록됐다 (Phase 4 완�
     assert.ok(isRegisteredRuntimeEvent(id), id)
     assert.equal(getRuntimeEvent(id)?.kind, 'IDLE_EVENT', id)
   }
-  // 등록표는 정확히 COME_CLOSER + 아이들 4종.
-  assert.deepEqual(Object.keys(RUNTIME_EVENTS).sort(), [CC, ...ALL_IDLE].sort())
+  // 등록표는 정확히 액션 2종(COME_CLOSER + PET_HEAD) + 아이들 4종.
+  assert.deepEqual(
+    Object.keys(RUNTIME_EVENTS).sort(), [CC, PH, LU, LD, SU, LI, ...ALL_IDLE].sort())
 })
 
 test('8b) 미선언 id 는 여전히 트리거되지 않는다 (오타·미래 이벤트)', () => {
@@ -202,12 +211,15 @@ test('6) registeredIdleEvents() 는 COME_CLOSER 를 절대 포함하지 않는�
   assert.ok(idle.every((e) => e.kind === 'IDLE_EVENT'))
   // Phase 2 — BLINKING + EAR_TWITCHING 이 등록돼 있다.
   assert.deepEqual(idle.map((e) => e.id).sort(), [...REGISTERED_IDLE].sort())
-  assert.deepEqual(registeredActions().map((e) => e.id), [CC])
+  assert.deepEqual(
+    registeredActions().map((e) => e.id).sort(), [CC, PH, LU, LD, SU, LI].sort())
 })
 
 test('6b) 아이들 이벤트는 실제로 등록돼 있어 주입 없이 열거된다', () => {
   assert.deepEqual(registeredIdleEvents().map((e) => e.id).sort(), [...REGISTERED_IDLE].sort())
-  assert.deepEqual(registeredActions().map((e) => e.id), [CC], '액션 목록이 오염됐다')
+  assert.deepEqual(
+    registeredActions().map((e) => e.id).sort(),
+    [CC, PH, LU, LD, SU, LI].sort(), '액션 목록이 오염됐다')
 })
 
 test('6c) 등록된 어떤 것도 COME_CLOSER 보다 우선순위가 높지 않다', () => {
@@ -422,7 +434,8 @@ test('P2-10) COME_CLOSER 는 Phase 2 로 인해 바뀌지 않았다', () => {
   assert.equal(def.returnPolicy, 'hold-and-dissolve')
   assert.equal(def.interruptible, false)
   assert.equal(def.preload, 'auto')
-  assert.deepEqual(registeredActions().map((e) => e.id), [CC])
+  assert.deepEqual(
+    registeredActions().map((e) => e.id).sort(), [CC, PH, LU, LD, SU, LI].sort())
 })
 
 test('P2-11) 모든 아이들 이벤트가 같은 우선순위를 공유한다', () => {
@@ -515,5 +528,192 @@ test('P4) COME_CLOSER 는 Phase 4 로 인해 바뀌지 않았다', () => {
   assert.equal(def.returnPolicy, 'hold-and-dissolve')
   assert.equal(def.interruptible, false)
   assert.equal(def.preload, 'auto')
-  assert.deepEqual(registeredActions().map((e) => e.id), [CC])
+  assert.deepEqual(
+    registeredActions().map((e) => e.id).sort(), [CC, PH, LU, LD, SU, LI].sort())
+})
+
+
+// ── PET_HEAD (2026-09-08) — 첫 INTERACTION 액션, TOUCH/싱글탭 트리거 ──────────
+
+test('PH-1) PET_HEAD 는 ACTION 으로 분류되고 등록돼 있다', () => {
+  assert.deepEqual(classifyRuntimeEvent(PH), { kind: 'ACTION', id: PH })
+  assert.ok(isPetAction(PH))
+  assert.ok(isRegisteredRuntimeEvent(PH))
+  const def = RUNTIME_EVENTS[PH] as RuntimeEventDef
+  assert.equal(def.kind, 'ACTION')
+  assert.equal(def.entryPolicy, 'immediate')   // 사용자가 유발 — 기다리지 않는다
+  assert.equal(def.returnPolicy, 'seam-aligned') // 시작 포즈 복귀 — 디졸브 불필요
+  assert.equal(def.interruptible, false)
+  assert.equal(def.preload, 'none')            // 프리로드 예외는 COME_CLOSER 뿐
+  assert.ok(def.priority < (RUNTIME_EVENTS[CC] as RuntimeEventDef).priority,
+    '다가오기(100)보다 낮아야 한다')
+  assert.ok(def.priority > IDLE_EVENT_PRIORITY, '아이들 이벤트보다는 높아야 한다')
+})
+
+test('PH-2) 낮은 우선순위 PET_HEAD 는 COME_CLOSER 재생을 밀어내지 못한다', () => {
+  const d = decideTrigger(ctx({
+    phase: 'EVENT_PLAYING', currentEventId: CC, requestedEventId: PH, hasSource: true,
+  }))
+  assert.deepEqual(d, { accepted: false, reason: 'busy-non-interruptible' })
+})
+
+test('PH-3) PET_HEAD 재생 중 COME_CLOSER 도 끼어들 수 없다 (non-interruptible)', () => {
+  const d = decideTrigger(ctx({
+    phase: 'EVENT_PLAYING', currentEventId: PH, requestedEventId: CC, hasSource: true,
+  }))
+  assert.deepEqual(d, { accepted: false, reason: 'busy-non-interruptible' })
+})
+
+test('PH-4) 소스가 없으면 no-source — OFF/미소유는 조용히 거절된다', () => {
+  const d = decideTrigger(ctx({ requestedEventId: PH, hasSource: false }))
+  assert.deepEqual(d, { accepted: false, reason: 'no-source' })
+})
+
+test('PH-5) 자발적 스케줄러 후보에 절대 들어가지 않는다', () => {
+  assert.ok(registeredIdleEvents().every((e) => e.id !== PH))
+})
+
+
+// ── LOOK_UP (2026-09-08) — VOICE 트리거 액션 ─────────────────────────────────
+
+test('LU-1) LOOK_UP 은 ACTION 으로 분류·등록되고 우선순위 계단이 맞다', () => {
+  assert.deepEqual(classifyRuntimeEvent(LU), { kind: 'ACTION', id: LU })
+  assert.ok(isRegisteredRuntimeEvent(LU))
+  const def = RUNTIME_EVENTS[LU] as RuntimeEventDef
+  assert.equal(def.kind, 'ACTION')
+  assert.equal(def.entryPolicy, 'immediate')
+  assert.equal(def.returnPolicy, 'seam-aligned')  // MICRO — 시작 포즈 복귀 → HOME
+  assert.equal(def.returnToIdle, true)
+  assert.equal(def.interruptible, false)
+  assert.equal(def.preload, 'none')
+  // 목소리(80) < 터치(90) < 다가오기(100) > 아이들(10)
+  const ph = RUNTIME_EVENTS[PH] as RuntimeEventDef
+  const cc = RUNTIME_EVENTS[CC] as RuntimeEventDef
+  assert.ok(def.priority < ph.priority && ph.priority < cc.priority)
+  assert.ok(def.priority > IDLE_EVENT_PRIORITY)
+})
+
+test('LU-2) LOOK_UP 은 아이들 이벤트 재생을 밀어낸다 (VOICE 가 홈/아이들을 선점)', () => {
+  const d = decideTrigger(ctx({
+    phase: 'EVENT_PLAYING', currentEventId: BLINK, requestedEventId: LU, hasSource: true,
+  }))
+  assert.equal(d.accepted, true)
+})
+
+test('LU-3) 진행 중인 액션은 밀어내지 못한다 (non-interruptible)', () => {
+  for (const current of [CC, PH]) {
+    const d = decideTrigger(ctx({
+      phase: 'EVENT_PLAYING', currentEventId: current, requestedEventId: LU, hasSource: true,
+    }))
+    assert.deepEqual(d, { accepted: false, reason: 'busy-non-interruptible' }, current)
+  }
+})
+
+test('LU-4) 소스 없으면 no-source, 스케줄러 후보에 절대 없다', () => {
+  const d = decideTrigger(ctx({ requestedEventId: LU, hasSource: false }))
+  assert.deepEqual(d, { accepted: false, reason: 'no-source' })
+  assert.ok(registeredIdleEvents().every((e) => e.id !== LU))
+})
+
+test('LU-5) 센서 매핑 — 백엔드 TRIGGERS 의 거울', () => {
+  assert.equal(sensorEventToRuntimeEvent('voice'), LU)
+  assert.equal(sensorEventToRuntimeEvent('VOICE'), LU)
+  assert.equal(sensorEventToRuntimeEvent('touch'), PH)
+  assert.equal(sensorEventToRuntimeEvent('approach'), CC)
+  assert.equal(sensorEventToRuntimeEvent('nfc_tagged'), null)  // 배경 경로의 일
+  assert.equal(sensorEventToRuntimeEvent(''), null)
+})
+
+test('LU-6) 플레이 화면이 센서 스트림을 구독하고 매핑·적격성 게이트를 거친다', () => {
+  const src = readFileSync('src/components/memorial/memorial-device-play-screen.tsx', 'utf8')
+  assert.match(src, /subscribePiRuntimeEvents/)
+  assert.match(src, /sensorEventToRuntimeEvent/)
+  assert.match(src, /isEligibleRef\.current\(id\)/)
+  assert.match(src, /lookUpVideoUrl=\{lookUpSource\}/)
+})
+
+
+// ── 자세 상태 기계 (2026-09-08) — STANDING ↔ LYING ───────────────────────────
+
+test('POSE-1) 자세는 현재 이벤트에서 파생된다', () => {
+  assert.equal(poseForCurrentEvent(null), 'STANDING')          // BREATHING 홈
+  assert.equal(poseForCurrentEvent(LD), 'LYING')               // 전이의 endPose
+  assert.equal(poseForCurrentEvent(LI), 'LYING')               // 누운 홈
+  assert.equal(poseForCurrentEvent(SU), 'STANDING')            // 복귀 전이
+  assert.equal(poseForCurrentEvent(CC), 'STANDING')
+  assert.equal(poseForCurrentEvent(BLINK), 'STANDING')
+})
+
+test('POSE-2) 서 있는 동안 STAND_UP 은 wrong-pose, 누운 동안 기존 전부 wrong-pose', () => {
+  // IDLE(=BREATHING, STANDING) 에서 STAND_UP 은 자세가 틀렸다.
+  assert.deepEqual(
+    decideTrigger(ctx({ requestedEventId: SU, hasSource: true })),
+    { accepted: false, reason: 'wrong-pose' })
+  // LIE_IDLE 루프 중(LYING)에는 아이들/기존 액션 전부 자세가 틀렸다 —
+  // 누운 개가 깜빡이러 일어나거나 다가오면 안 된다.
+  for (const id of [BLINK, EAR, TILT, WAG, CC, PH, LU, LD]) {
+    const d = decideTrigger(ctx({
+      phase: 'EVENT_PLAYING', currentEventId: LI, requestedEventId: id, hasSource: true,
+    }))
+    assert.deepEqual(d, { accepted: false, reason: 'wrong-pose' }, id)
+  }
+})
+
+test('POSE-3) 등록 정의 계약 — 체인/루프홈/스케줄러 격리', () => {
+  const ld = RUNTIME_EVENTS[LD] as RuntimeEventDef
+  const li = RUNTIME_EVENTS[LI] as RuntimeEventDef
+  const su = RUNTIME_EVENTS[SU] as RuntimeEventDef
+  assert.equal(ld.chainTo, LI)                    // 전이 → 누운 홈
+  assert.equal(ld.returnToIdle, false)            // BREATH 복귀 없음
+  assert.equal(li.loopUntilPreempted, true)       // 홈 루프
+  assert.equal(li.interruptible, true)            // STAND_UP 이 밀어낼 수 있다
+  assert.ok(su.priority > li.priority)
+  assert.equal(su.returnToIdle, true)             // NEUTRAL_IDLE 포즈 → BREATHING
+  assert.equal(su.returnPolicy, 'seam-aligned')
+  // 셋 다 자발 스케줄러 후보가 아니다.
+  assert.ok(registeredIdleEvents().every((e) => ![LD, SU, LI].includes(e.id)))
+})
+
+test('POSE-4) 전체 시퀀스: HOME → LIE_DOWN → LIE_IDLE → STAND_UP → HOME', () => {
+  // 플레이어의 상태 전이를 순수 규칙으로 시뮬레이션한다. 각 단계에서
+  // decideTrigger/체인 계약이 허용하는 것만 따라간다.
+  const src = { hasSource: true }
+
+  // 1) HOME(IDLE, STANDING): LIE_DOWN 트리거 수락.
+  const d1 = decideTrigger(ctx({ requestedEventId: LD, ...src }))
+  assert.equal(d1.accepted, true)
+
+  // 2) LIE_DOWN 재생 중: 아무도 끼어들 수 없다 (non-interruptible).
+  for (const id of [SU, CC, BLINK]) {
+    const d = decideTrigger(ctx({
+      phase: 'EVENT_PLAYING', currentEventId: LD, requestedEventId: id, ...src,
+    }))
+    assert.equal(d.accepted, false, id)
+  }
+
+  // 3) LIE_DOWN 종료 → 체인 계약이 LIE_IDLE 로 잇는다 (복귀 아님).
+  const ld = RUNTIME_EVENTS[LD] as RuntimeEventDef
+  assert.equal(ld.chainTo, LI)
+  assert.equal(poseForCurrentEvent(LI), 'LYING')  // 이제 누운 홈이다
+
+  // 4) LIE_IDLE 루프 중: STAND_UP 만 수락된다.
+  const d4 = decideTrigger(ctx({
+    phase: 'EVENT_PLAYING', currentEventId: LI, requestedEventId: SU, ...src,
+  }))
+  assert.equal(d4.accepted, true, 'STAND_UP 이 누운 홈을 선점해야 한다')
+
+  // 5) STAND_UP 종료 → returnToIdle → BREATHING(HOME). 자세는 STANDING.
+  const su = RUNTIME_EVENTS[SU] as RuntimeEventDef
+  assert.equal(su.returnToIdle, true)
+  assert.equal(poseForCurrentEvent(null), 'STANDING')
+  // 그리고 서 있는 자세에서 다시 모든 기존 이벤트가 유효하다.
+  assert.equal(decideTrigger(ctx({ requestedEventId: CC, ...src })).accepted, true)
+  assert.equal(decideTrigger(ctx({ requestedEventId: LD, ...src })).accepted, true)
+})
+
+test('POSE-5) 플레이어 배선 — loop 속성과 체인 처리 (소스 스캔)', () => {
+  const src = readFileSync('src/components/memorial/idle-loop-video.tsx', 'utf8')
+  assert.match(src, /loop=\{def\.loopUntilPreempted === true\}/)
+  assert.match(src, /chainFrom/)
+  assert.match(src, /!state\.event\.loopUntilPreempted/)
 })

@@ -4,12 +4,21 @@ import { resolveIdleDisplaySource } from "@/lib/device-host-flags";
 import { CutoutIdleMotion } from "@/components/memorial/cutout-idle-motion";
 import { IdleLoopVideo } from "@/components/memorial/idle-loop-video";
 import { shouldTransparentComposite } from "@/lib/baked-playback";
-import type { IdleEvent, PetRuntimeTrigger } from "@/lib/pet-runtime-events";
+import type { IdleEvent, PetRuntimeTrigger, RuntimeEventId } from "@/lib/pet-runtime-events";
 
 interface PetIdleDisplayProps {
   idleVideoUrl?: string | null;
   /** COME_CLOSER 등 1회 재생 프리미엄 액션. 없으면 기존 BREATH 전용 동작 그대로. */
   comeCloserVideoUrl?: string | null;
+  /** PET_HEAD (TOUCH/싱글탭 인터랙션). 없으면 트리거가 no-source 로 거절된다. */
+  petHeadVideoUrl?: string | null;
+  /** LOOK_UP (VOICE 인터랙션). 없으면 트리거가 no-source 로 거절된다. */
+  lookUpVideoUrl?: string | null;
+  /**
+   * 그 밖의 등록된 이벤트 소스 (자세 전이 3종 등). 개별 prop 을 더 늘리지
+   * 않는다 — 등록 id 를 키로 쓰는 표 하나로 받는다 (idleEventSources 와 동형).
+   */
+  extraEventSources?: Partial<Record<RuntimeEventId, string | null>>;
   /**
    * 아이들 이벤트 소스 표 (**현재는 개발용 수동 트리거 전용**).
    *
@@ -23,6 +32,8 @@ interface PetIdleDisplayProps {
   /** 더블탭 등에서 호출할 액션 트리거 핸들. trigger("COME_CLOSER") 처럼 쓴다. */
   actionTriggerRef?: React.MutableRefObject<PetRuntimeTrigger | null>;
   onActionStateChange?: (playing: boolean) => void;
+  /** 현재 재생 이벤트 통지 (null = 홈) — LYING 런타임의 자세 파생용. */
+  onRuntimeEventChange?: (eventId: RuntimeEventId | null) => void;
   cutoutUrl?: string | null;
   className?: string;
   style?: React.CSSProperties;
@@ -52,9 +63,13 @@ interface PetIdleDisplayProps {
 export function PetIdleDisplay({
   idleVideoUrl,
   comeCloserVideoUrl,
+  petHeadVideoUrl,
+  lookUpVideoUrl,
+  extraEventSources,
   idleEventSources,
   actionTriggerRef,
   onActionStateChange,
+  onRuntimeEventChange,
   cutoutUrl,
   className,
   style,
@@ -77,10 +92,14 @@ export function PetIdleDisplay({
         // 런타임 이벤트 소스 표 — 액션이든 아이들 이벤트든 여기 항목이 하나 는다.
         eventSources={{
           ...idleEventSources,
+          ...extraEventSources,
           COME_CLOSER: comeCloserVideoUrl ?? null,
+          PET_HEAD: petHeadVideoUrl ?? null,
+          LOOK_UP: lookUpVideoUrl ?? null,
         }}
         actionTriggerRef={actionTriggerRef}
         onActionStateChange={onActionStateChange}
+        onRuntimeEventChange={onRuntimeEventChange}
         className={className}
         style={style}
         preload={preload}

@@ -204,7 +204,7 @@ def test_routing_table_unchanged_with_runway_transport(monkeypatch):
              ("MICRO", "TRANSITION", "LOCOMOTION", "INTERACTION")}
     assert names == {
         "MICRO": ["seedance", "kling"],
-        "TRANSITION": ["kling"],
+        "TRANSITION": ["kling", "seedance"],
         "LOCOMOTION": ["seedance", "kling"],
         "INTERACTION": ["kling", "seedance"],
     }

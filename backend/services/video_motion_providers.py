@@ -599,6 +599,41 @@ class FalKlingProvider(FalVideoProvider):
         return payload
 
 
+class FalWanProvider(FalVideoProvider):
+    """
+    Wan 2.2 A14B turbo I2V (fal) — **저비용 프롬프트 반복 실험 전용**.
+
+    존재 이유: Runway 크레딧 소진 시에도 새 모션 스펙 프롬프트를 싸게 돌려 보기
+    위해서다. fal 의 Seedance 2.5 는 partner_validation_failed 로 전면 차단이라
+    fal 쪽 대안은 Kling(마이크로에 부적합) 아니면 Wan 뿐이다. 페이로드 스키마는
+    레거시 wan_service.py 에서 라이브 검증된 계약 그대로다:
+        {prompt, image_url, resolution, aspect_ratio}
+    turbo 변형은 duration/num_frames 를 노출하지 않는다 — 출력 길이는 모델
+    기본(~5s)이고 출력 규격 검증의 길이 허용 오차(±2s) 안에 든다.
+
+    ⚠️ 상용 라우팅 표(_DEFAULT_ROUTING)에는 **없다**. PHASE6_PROVIDER_<CLASS>=wan
+    명시 오버라이드로만 선택된다 — 다른 모델의 프롬프트 순응은 Seedance 와
+    다르므로, 여기서의 결과는 반복 실험 근거이지 상용 증거가 아니다. durable
+    미지원이라 생성 실행(run) 경로에도 들어올 수 없다 — 벤치/스모크 전용.
+    """
+
+    name = PROVIDER_WAN
+    model_env = "FAL_WAN_MODEL"
+    default_model = "fal-ai/wan/v2.2-a14b/image-to-video/turbo"
+    supports_end_frame = False  # turbo I2V 는 end frame 이 스키마에 없다
+
+    def build_payload(self, request: MotionVideoRequest) -> dict[str, Any]:
+        spec = request.output_spec
+        return {
+            "prompt": request.prompt,
+            "image_url": request.start_image_url,
+            "resolution": str(spec.get("resolution") or "480p"),
+            # wan 은 aspect_ratio 가 명시 파라미터다 (auto 는 16:9 로 샐 수 있어
+            # 레거시에서도 항상 명시했다 — 9:16 앵커 입력과 이중 잠금).
+            "aspect_ratio": str(spec.get("aspect_ratio") or "9:16"),
+        }
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Runway 트랜스포트 — Seedance 2.5 를 Runway Dev API 로 (RUNWAY_API_KEY 재사용)
 # ══════════════════════════════════════════════════════════════════════════
@@ -931,6 +966,8 @@ _DIRECT: dict[str, VideoGenerationProvider] = {
 _FAL: dict[str, VideoGenerationProvider] = {
     PROVIDER_SEEDANCE: FalSeedanceProvider(),
     PROVIDER_KLING: FalKlingProvider(),
+    # 테스트 전용 저비용 어댑터 — 라우팅 표에 없고 env 오버라이드로만 선택된다.
+    PROVIDER_WAN: FalWanProvider(),
 }
 _RUNWAY: dict[str, VideoGenerationProvider] = {
     PROVIDER_SEEDANCE: RunwaySeedanceProvider(),  # Kling 은 Runway 에 없다 — fal 유지
@@ -945,6 +982,7 @@ _TRANSPORTS: dict[str, dict[str, VideoGenerationProvider]] = {
 _AUTO_ORDER: dict[str, tuple[str, ...]] = {
     PROVIDER_SEEDANCE: ("runway", "fal", "direct"),
     PROVIDER_KLING: ("fal", "direct"),
+    PROVIDER_WAN: ("fal",),  # I2V wan 은 fal 뿐 (Runway wan3 는 모션 레퍼런스 전용)
 }
 _MOCK = MockVideoProvider()
 
@@ -975,9 +1013,12 @@ def transport_for(name: str) -> str:
 #: env 로 클래스별 오버라이드: PHASE6_PROVIDER_<CLASS>, PHASE6_FALLBACK_<CLASS>.
 _DEFAULT_ROUTING: dict[str, tuple[str, Optional[str]]] = {
     "MICRO": (PROVIDER_SEEDANCE, PROVIDER_KLING),
-    # TRANSITION 폴백은 기본 없음 — start/end 계약을 진짜로 지키는 프로바이더가
-    # 설정으로 확인될 때만 PHASE6_FALLBACK_TRANSITION 으로 연다.
-    "TRANSITION": (PROVIDER_KLING, None),
+    # TRANSITION 폴백 = Seedance (2026-09-08): RunwaySeedanceProvider 가
+    # promptImage [{uri,position:first|last}] 로 start/end 계약을 실제로
+    # 지원한다(openapi 검증, supports_end_frame=True). 이것이 없으면 durable
+    # 실행 경로(Runway 전용 필터)에서 TRANSITION 의 프로바이더가 0개가 되어
+    # LIE_DOWN 류 실행이 DURABLE_PROVIDER_NOT_CONFIGURED 로 죽는다.
+    "TRANSITION": (PROVIDER_KLING, PROVIDER_SEEDANCE),
     "LOCOMOTION": (PROVIDER_SEEDANCE, PROVIDER_KLING),
     "INTERACTION": (PROVIDER_KLING, PROVIDER_SEEDANCE),
 }
@@ -993,9 +1034,10 @@ def get_provider(name: Optional[str]) -> Optional[VideoGenerationProvider]:
     key = name.strip().lower()
     if key == PROVIDER_MOCK:
         return _MOCK
-    if key not in _DIRECT:
+    # 이름은 어느 트랜스포트에든 존재하면 유효하다 — wan 은 fal 에만 있다.
+    if not any(key in table for table in _TRANSPORTS.values()):
         return None
-    return _TRANSPORTS[transport_for(key)][key]
+    return _TRANSPORTS[transport_for(key)].get(key)
 
 
 #: 레퍼런스 비디오를 실제로 소비하는 프로바이더 (Phase 6.7). 클래스 라우팅

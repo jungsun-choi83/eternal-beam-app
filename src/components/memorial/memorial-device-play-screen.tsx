@@ -40,9 +40,12 @@ import {
 } from "@/lib/playback-source-report";
 import {
   registeredIdleEvents,
+  sensorEventToRuntimeEvent,
   type IdleEvent,
   type PetRuntimeTrigger,
 } from "@/lib/pet-runtime-events";
+import { subscribePiRuntimeEvents } from "@/lib/pi-sensor-bridge";
+import { useLyingRuntime } from "@/components/memorial/use-lying-runtime";
 import { getEffectiveBgVideo } from "@/lib/custom-background-store";
 import {
   broadcastFreeThemeToDevice,
@@ -50,11 +53,12 @@ import {
   type PreviewFinalizeSettings,
 } from "@/lib/finalize-preview-content";
 import { resetThemeBackgroundSyncCache, scheduleThemeBackgroundSync } from "@/lib/device-theme-sync";
+import { preloadDeviceMotions } from "@/lib/device-pet-sync";
 import { resolveIdleVideoUrl } from "@/app/services/videoProcessingApi";
 import { resolveSelectedThemeId } from "@/lib/theme-selection-store";
 import { mergeComeCloserIntoPipeline } from "@/lib/come-closer-asset";
 import { getEternalBeamPetId } from "@/lib/pet-identity";
-import { recognizeTap, type TapPoint } from "@/lib/double-tap";
+import { DEFAULT_DOUBLE_TAP, recognizeTap, type TapPoint } from "@/lib/double-tap";
 
 interface MemorialDevicePlayScreenProps {
   cutoutImage: string | null;
@@ -228,6 +232,11 @@ function MemorialDevicePlayScreenInner({
     () => ({
       ...idleEventFormats,
       COME_CLOSER: premiumAssets?.readyAssets?.COME_CLOSER?.deliveryFormat ?? null,
+      PET_HEAD: premiumAssets?.readyAssets?.PET_HEAD?.deliveryFormat ?? null,
+      LOOK_UP: premiumAssets?.readyAssets?.LOOK_UP?.deliveryFormat ?? null,
+      LIE_DOWN: premiumAssets?.readyAssets?.LIE_DOWN?.deliveryFormat ?? null,
+      STAND_UP: premiumAssets?.readyAssets?.STAND_UP?.deliveryFormat ?? null,
+      LIE_IDLE: premiumAssets?.readyAssets?.LIE_IDLE?.deliveryFormat ?? null,
     }),
     [idleEventFormats, premiumAssets]
   );
@@ -242,12 +251,118 @@ function MemorialDevicePlayScreenInner({
   const comeCloserSource = eligibility.comeCloserAllowed
     ? (pipeline?.come_closer_video_url ?? null)
     : null;
+  // PET_HEAD (TOUCH → 싱글탭) — COME_CLOSER 와 같은 발견 계약(READY 재서명 URL)
+  // 과 같은 적격성 규칙(구독 ∩ READY ∩ ON)을 쓴다. 갈라지면 만료 사용자가
+  // 탭으로만 프리미엄을 계속 쓰게 된다.
+  const petHeadSource = eligibility.isEligible("PET_HEAD")
+    ? (premiumAssets?.readyAssets?.PET_HEAD?.url ?? null)
+    : null;
+  const lookUpSource = eligibility.isEligible("LOOK_UP")
+    ? (premiumAssets?.readyAssets?.LOOK_UP?.url ?? null)
+    : null;
+  // 자세 전이 3종 — 같은 발견 계약 + 같은 적격성. 셋 중 하나라도 빠지면 체인이
+  // 끊기므로(runtime 은 소스 없는 체인 대상에서 BREATH 로 폴백) 개별 게이트로
+  // 충분하다 — 세트 강제는 상품/구매 UX 의 일이지 재생 게이트의 일이 아니다.
+  // ── LYING 런타임 (2026-09-08) — 45~90s 무활동 → 눕기, 깨우기 후 액션 재생 ──
+  // 로직은 lib/lying-runtime 의 컨트롤러가 쥔다. 여기서는 (1) 전이 세트 READY
+  // 전달, (2) 사용자/센서 액션을 dispatchUserAction 으로 라우팅, (3) 플레이어의
+  // 이벤트 변경 통지 연결만 한다. 자발 스케줄러는 이 경로를 타지 않는다 —
+  // 깜빡임이 누운 펫을 일으키면 안 된다 (wrong-pose 거절로 조용히 무시된다).
+  const poseTransitionSources = useMemo(() => {
+    const out: Partial<Record<"LIE_DOWN" | "STAND_UP" | "LIE_IDLE", string | null>> = {};
+    for (const id of ["LIE_DOWN", "STAND_UP", "LIE_IDLE"] as const) {
+      out[id] = eligibility.isEligible(id)
+        ? (premiumAssets?.readyAssets?.[id]?.url ?? null)
+        : null;
+    }
+    return out;
+  }, [eligibility, premiumAssets]);
+  const lying = useLyingRuntime({
+    triggerRef: comeCloserTriggerRef,
+    transitionSources: poseTransitionSources,
+  });
+
+  // ── Device M5-lite Phase 1: READY 모션 프리로드 → Pi(:8787) → UDP → S23 ──
+  // 재생 지시가 아니다 — 기기는 motion_id 별로 **저장만** 하고, BREATHING 만
+  // 홈 루프로 튼다. 소스는 이 화면이 직접 재생하는 값과 같다(구독∩READY∩ON
+  // 게이트를 지난 URL — 웹이 못 트는 자산은 기기에도 실리지 않는다). 전송
+  // 순서는 preloadDeviceMotions 가 BREATHING 마지막을 보장한다 — 단일 슬롯
+  // 구형 빌드의 홈 루프 보존. Pi 미발견/비연동이면 조용한 no-op 다.
+  const devicePreloadSigRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!pipeline?.content_id || !hasIdle) return;
+    const petId = getEternalBeamPetId(pipeline.content_id);
+    if (!petId) return;
+    const motions = [
+      {
+        motionId: "BREATHING",
+        url: pipeline.idle_video_url ?? null,
+        deliveryFormat: breathingDeliveryFormat,
+      },
+      {
+        motionId: "PET_HEAD",
+        url: petHeadSource,
+        deliveryFormat: eventDeliveryFormats.PET_HEAD ?? null,
+      },
+      {
+        motionId: "LOOK_UP",
+        url: lookUpSource,
+        deliveryFormat: eventDeliveryFormats.LOOK_UP ?? null,
+      },
+      {
+        motionId: "COME_CLOSER",
+        url: comeCloserSource,
+        deliveryFormat: eventDeliveryFormats.COME_CLOSER ?? null,
+      },
+    ];
+    // 같은 URL 세트는 다시 보내지 않는다 — 발견 재서명으로 URL 이 갱신되면
+    // 서명이 바뀌므로 자연히 재전송된다 (기기 쪽 만료 URL 교체 경로).
+    const sig = JSON.stringify(motions.map((m) => [m.motionId, m.url]));
+    if (sig === devicePreloadSigRef.current) return;
+    devicePreloadSigRef.current = sig;
+    void preloadDeviceMotions({
+      contentId: pipeline.content_id,
+      petId,
+      cutoutUrl: cutoutDisplay,
+      motions,
+    });
+  }, [
+    pipeline,
+    hasIdle,
+    breathingDeliveryFormat,
+    petHeadSource,
+    lookUpSource,
+    comeCloserSource,
+    eventDeliveryFormats,
+    cutoutDisplay,
+  ]);
 
   // 탭 핸들러는 deps 가 빈 useCallback 이다(제스처 판정이 재생성되면 탭 상태가
   // 끊긴다). 적격성은 렌더마다 바뀔 수 있으므로 ref 로 읽는다 — 핸들러의 배선을
   // 건드리지 않으면서 최신 값을 본다.
   const comeCloserAllowedRef = useRef(eligibility.comeCloserAllowed);
   comeCloserAllowedRef.current = eligibility.comeCloserAllowed;
+  const petHeadAllowedRef = useRef(false);
+  petHeadAllowedRef.current = eligibility.isEligible("PET_HEAD");
+  // 센서 트리거용 — 발화 시점의 최신 적격성을 ref 로 읽는다 (탭 핸들러와 같은 이유).
+  const isEligibleRef = useRef(eligibility.isEligible);
+  isEligibleRef.current = eligibility.isEligible;
+
+  // ── 디바이스 센서 스트림 → 런타임 트리거 ────────────────────────────────
+  // Pi 가 근처에 있으면(:8787 SSE) touch/voice/approach 가 웹 런타임에서도
+  // 해당 모션을 튼다: touch→PET_HEAD, voice→LOOK_UP, approach→COME_CLOSER.
+  // 적격성은 탭 경로와 **같은 규칙**(구독∩READY∩ON)이고, 우선순위/선점/복귀는
+  // decideTrigger 와 기존 런타임이 단독으로 판정한다. Pi 미발견이면 조용한
+  // no-op 이다 — 이 화면의 다른 어떤 것도 이 구독에 의존하지 않는다.
+  useEffect(() => {
+    return subscribePiRuntimeEvents((sensorEvent) => {
+      const id = sensorEventToRuntimeEvent(sensorEvent);
+      if (!id) return;
+      if (!isEligibleRef.current(id)) return;
+      // LYING 이면 컨트롤러가 STAND_UP 을 먼저 태우고 이 요청을 기억한다.
+      lying.dispatchUserAction(id);
+    });
+  }, [lying]);
 
   // 자산이 하나도 없으면 후보가 비어 아무 일도 일어나지 않는다 — BREATHING 유지.
   // 더블탭 COME_CLOSER 와 진입점을 공유하므로 우선순위·선점 판정은 decideTrigger 가
@@ -260,10 +375,24 @@ function MemorialDevicePlayScreenInner({
 
   const handlePetPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     tapStartRef.current = { x: e.clientX, y: e.clientY };
-  }, []);
+    // 화면을 만지는 것 자체가 "살아 있는 사용자"다 — 무활동 타이머 리셋.
+    lying.notifyActivity();
+  }, [lying]);
 
   // 이 화면에는 드래그·핀치가 없다(위치 조절은 preview 에서 끝났다). 그래서
   // 제스처 경합 없이 pointerup 만으로 더블탭을 판정할 수 있다.
+  // 싱글탭 = TOUCH → PET_HEAD (디바이스의 터치 센서와 같은 의미론). 더블탭
+  // 창(maxGapMs)이 지나야 싱글로 확정된다 — 즉시 발화하면 더블탭의 첫 탭마다
+  // PET_HEAD 가 먼저 재생돼 COME_CLOSER 가 lower-priority 로 거절된다.
+  const singleTapTimerRef = useRef<number | null>(null);
+  const cancelPendingSingleTap = useCallback(() => {
+    if (singleTapTimerRef.current != null) {
+      window.clearTimeout(singleTapTimerRef.current);
+      singleTapTimerRef.current = null;
+    }
+  }, []);
+  useEffect(() => cancelPendingSingleTap, [cancelPendingSingleTap]);
+
   const handlePetPointerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     const start = tapStartRef.current;
     tapStartRef.current = null;
@@ -274,13 +403,21 @@ function MemorialDevicePlayScreenInner({
     );
     if (r.kind === "double") {
       lastTapRef.current = null;
+      cancelPendingSingleTap();
       // 더블탭 ∩ 구독 ∩ READY ∩ ON. 자발적 경로와 **같은 규칙**을 쓴다 —
       // 갈라지면 만료된 사용자가 더블탭으로만 프리미엄을 계속 쓸 수 있다.
-      if (comeCloserAllowedRef.current) comeCloserTriggerRef.current?.("COME_CLOSER");
+      if (comeCloserAllowedRef.current) lying.dispatchUserAction("COME_CLOSER");
     } else if (r.kind === "first") {
       lastTapRef.current = r.tap;
+      cancelPendingSingleTap();
+      singleTapTimerRef.current = window.setTimeout(() => {
+        singleTapTimerRef.current = null;
+        // 창이 지났다 — 이 탭은 싱글로 확정. 적격성은 발화 시점 값으로 판정.
+        // 소스가 없으면 런타임이 no-source 로 거절한다 (조용한 무시 = 기존 동작).
+        if (petHeadAllowedRef.current) lying.dispatchUserAction("PET_HEAD");
+      }, DEFAULT_DOUBLE_TAP.maxGapMs + 20);
     }
-  }, []);
+  }, [cancelPendingSingleTap, lying]);
 
   const rebroadcastToDevice = useCallback(async () => {
     if (themeId == null) return;
@@ -407,10 +544,14 @@ function MemorialDevicePlayScreenInner({
                 idleVideoUrl={petIdleSrc}
                 cutoutUrl={cutoutDisplay}
                 comeCloserVideoUrl={comeCloserSource}
+                petHeadVideoUrl={petHeadSource}
+                lookUpVideoUrl={lookUpSource}
+                extraEventSources={poseTransitionSources}
                 idleEventSources={eligibleIdleEventSources}
                 eventDeliveryFormats={eventDeliveryFormats}
                 actionTriggerRef={comeCloserTriggerRef}
                 onActionStateChange={onPlaybackStateChange}
+                onRuntimeEventChange={lying.onRuntimeEventChange}
                 backgroundBaked
                 className={playbackFrameClass(bakedAsset)}
               />
@@ -431,11 +572,15 @@ function MemorialDevicePlayScreenInner({
                 idleVideoUrl={petIdleSrc}
                 cutoutUrl={cutoutDisplay}
                 comeCloserVideoUrl={comeCloserSource}
+                petHeadVideoUrl={petHeadSource}
+                lookUpVideoUrl={lookUpSource}
+                extraEventSources={poseTransitionSources}
                 // 적격한 것만 넘긴다 — 소스가 없으면 런타임이 자기 규칙(no-source)으로
                 // 거절하므로, 수동 트리거가 남아 있어도 OFF 는 재생되지 않는다.
                 idleEventSources={eligibleIdleEventSources}
                 eventDeliveryFormats={eventDeliveryFormats}
                 actionTriggerRef={comeCloserTriggerRef}
+                onRuntimeEventChange={lying.onRuntimeEventChange}
                 // 스케줄러가 "지금 뭔가 재생 중인가"를 아는 유일한 신호다.
                 // 이 prop 없이 스케줄러만 붙이면 COME_CLOSER 재생 중에도 발화해서
                 // 거절 → 재예약 루프를 돈다(busyRef 가 영영 true 가 되지 않는다).

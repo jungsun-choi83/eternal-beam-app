@@ -310,6 +310,11 @@ async def test_bundle_and_action_are_priced_separately(world):
     await _grant(USER, 5)
     await _buy(premium_purchase.KIND_IDLE_BUNDLE)
     assert await _balance(USER) == 4
+    # 번들이 동시 실행 상한(2)을 정당하게 채운다 — 액션 구매 전에 진행 중인
+    # 작업을 완료시켜 슬롯을 비운다(검증 대상은 가격 분리이지 동시성 아님).
+    for a in list(world.active):
+        world.ready[a] = f"url_{a}"
+    world.active.clear()
     await _buy(premium_purchase.action_kind("COME_CLOSER"))
     assert await _balance(USER) == 3
 

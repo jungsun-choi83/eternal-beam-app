@@ -604,6 +604,7 @@ async def purchase(
     if state.missing and can_submit:
         submitted = await _submit_missing(
             user_id=user_id, pet_id=pet_id, missing=state.missing,
+            purchase_targets=actions,
             pet_image_url=pet_image_url, api_base=api_base,
             # ACTION:<ID> = 사용자가 고른 한 건. 번들은 예전 그대로 우선순위를 따른다.
             explicit_pick=kind.startswith(ACTION_KIND_PREFIX),
@@ -678,6 +679,7 @@ async def _submit_missing(
     user_id: str,
     pet_id: str,
     missing: list[str],
+    purchase_targets: tuple[str, ...],
     pet_image_url: str,
     api_base: str,
     explicit_pick: bool = False,
@@ -691,8 +693,17 @@ async def _submit_missing(
     (Behavior Library 의 [생성]). 그때는 생성 우선순위를 강요하지 않는다 —
     누른 것과 다른 행동이 만들어지거나, 앞선 우선순위가 준비될 때까지 거절되면
     안 되기 때문이다. 동시 실행 상한은 그대로 적용된다.
+
+    purchase_targets 는 이 구매가 채우려는 집합이다. 우선순위 판정에서 **이
+    구매의 대상이 아닌** 액션은 "이미 처리됨"으로 간주한다 — 사지 않은 상품
+    (예: 아이들 번들 구매 시의 PET_HEAD/COME_CLOSER)은 이 구매가 영영 채울 수
+    없으므로, pending 에 남겨 두면 채울-수-없는 선순위가 되어 번들 전체가
+    waiting-for-higher-priority 로 죽는다 (PET_HEAD 추가로 실제 발생). 동시
+    실행 상한은 active(실제 진행 중 작업)로 계속 강제된다.
     """
     submitted: list[str] = []
+    targets = {a.upper() for a in purchase_targets}
+    non_targets = [a for a in generation_queue.GENERATION_ORDER if a not in targets]
     for action in sorted(missing, key=generation_queue.generation_rank):
         ready_actions = [
             (m.action_id or "").upper()
@@ -701,7 +712,7 @@ async def _submit_missing(
         active_actions = await motions_svc.list_active_action_ids_for_pet(user_id, pet_id)
         if not generation_queue.decide(
             action_id=action,
-            ready_actions=ready_actions,
+            ready_actions=ready_actions + non_targets,
             active_actions=active_actions,
             respect_priority=not explicit_pick,
         ).allowed:

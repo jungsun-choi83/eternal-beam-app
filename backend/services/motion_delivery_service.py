@@ -73,6 +73,14 @@ PACKAGEABLE_MOTIONS: tuple[str, ...] = (
     "HEAD_TILTING",
     "TAIL_WAGGING",
     "COME_CLOSER",
+    # 첫 INTERACTION 상용 모션 (2026-09-08). 포장 계약은 모션 무관 — 이 목록은
+    # "상용 이행이 허용된 모션"의 정본이고 PREMIUM_MOTIONS 가 여기서 파생된다.
+    # DB CHECK 는 migration 20261023 이 함께 넓힌다.
+    "PET_HEAD",
+    # VOICE 트리거 상용 모션 (2026-09-08). DB CHECK 는 migration 20261024.
+    "LOOK_UP",
+    # 자세 전이 3종 (2026-09-08). DB CHECK 는 migration 20261025.
+    "LIE_DOWN", "STAND_UP", "LIE_IDLE",
 )
 
 #: 브라우저 판정 상수의 서버측 거울 (packed-alpha-canvas.ts). 포장 결과가 이

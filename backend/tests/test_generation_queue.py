@@ -57,13 +57,13 @@ def test_limit_holds_even_when_all_five_arrive_simultaneously():
 
 
 def test_completion_starts_the_next_queued_job():
-    # COME_CLOSER 완료, BLINKING 진행 중 → 다음은 EAR_TWITCHING 하나만.
+    # COME_CLOSER 완료, BLINKING 진행 중 → 다음은 PET_HEAD 하나만 (순서 3위).
     allowed = _who_may_submit(ready=["COME_CLOSER"], active=["BLINKING"])
-    assert allowed == ["EAR_TWITCHING"]
+    assert allowed == ["PET_HEAD"]
 
     # 둘 다 끝났다 → 다음 두 건.
     allowed = _who_may_submit(ready=["COME_CLOSER", "BLINKING"], active=[])
-    assert allowed == ["EAR_TWITCHING", "HEAD_TILTING"]
+    assert allowed == ["PET_HEAD", "EAR_TWITCHING"]
 
 
 def test_queue_drains_in_order_to_completion():
@@ -105,7 +105,7 @@ def test_failed_job_does_not_block_the_queue():
     # COME_CLOSER 를 영영 못 만들더라도(예: 재시도 소진) 나머지는 흐른다:
     # ready 에 넣지 않고 active 로 점유만 시켜 보면 뒤가 이어진다.
     allowed = _who_may_submit(ready=["BLINKING"], active=["COME_CLOSER"])
-    assert allowed == ["EAR_TWITCHING"]
+    assert allowed == ["PET_HEAD"]
 
 
 # ── 4) 이미 ready 인 자산은 건너뛴다 ─────────────────────────────────────────
@@ -114,9 +114,14 @@ def test_failed_job_does_not_block_the_queue():
 def test_ready_assets_are_skipped():
     assert not _allowed("COME_CLOSER", ready=["COME_CLOSER"], active=[])
     assert pending_actions(["COME_CLOSER", "BLINKING"], []) == [
+        "PET_HEAD",
         "EAR_TWITCHING",
         "HEAD_TILTING",
         "TAIL_WAGGING",
+        "LOOK_UP",
+        "LIE_DOWN",
+        "LIE_IDLE",
+        "STAND_UP",
     ]
 
 
