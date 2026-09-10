@@ -1,0 +1,8 @@
+C:/Manscom/Git/eternal-beam-app/device/s23-unity/.utmp/RelWithDebInfo/5n115p4m/arm64-v8a/CMakeFiles/edit_cache.dir
+C:/Manscom/Git/eternal-beam-app/device/s23-unity/.utmp/RelWithDebInfo/5n115p4m/arm64-v8a/CMakeFiles/rebuild_cache.dir
+C:/Manscom/Git/eternal-beam-app/device/s23-unity/.utmp/RelWithDebInfo/5n115p4m/arm64-v8a/GameActivity/CMakeFiles/game.dir
+C:/Manscom/Git/eternal-beam-app/device/s23-unity/.utmp/RelWithDebInfo/5n115p4m/arm64-v8a/GameActivity/CMakeFiles/edit_cache.dir
+C:/Manscom/Git/eternal-beam-app/device/s23-unity/.utmp/RelWithDebInfo/5n115p4m/arm64-v8a/GameActivity/CMakeFiles/rebuild_cache.dir
+C:/Manscom/Git/eternal-beam-app/device/s23-unity/.utmp/RelWithDebInfo/5n115p4m/arm64-v8a/FramePacing/CMakeFiles/swappywrapper.dir
+C:/Manscom/Git/eternal-beam-app/device/s23-unity/.utmp/RelWithDebInfo/5n115p4m/arm64-v8a/FramePacing/CMakeFiles/edit_cache.dir
+C:/Manscom/Git/eternal-beam-app/device/s23-unity/.utmp/RelWithDebInfo/5n115p4m/arm64-v8a/FramePacing/CMakeFiles/rebuild_cache.dir

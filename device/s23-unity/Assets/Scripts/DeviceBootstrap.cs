@@ -9,7 +9,7 @@ namespace EternalBeam.Device
     /// </summary>
     public static class DeviceBootstrap
     {
-        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
+        //[RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         private static void Init()
         {
             // 키오스크 렌더러는 포커스를 잃어도 절대 멈추면 안 된다 — 멈추면

@@ -140,7 +140,7 @@ namespace EternalBeam.Device
             _camera.orthographicSize = 8f; // 쿼드 높이 16 유닛이 화면 세로를 꽉 채운다
             _camera.clearFlags = CameraClearFlags.SolidColor;
             _camera.backgroundColor = TestBackground;
-
+            _camera.enabled = false;
             var shader = Shader.Find("Custom/PetHologram");
             if (shader == null)
             {

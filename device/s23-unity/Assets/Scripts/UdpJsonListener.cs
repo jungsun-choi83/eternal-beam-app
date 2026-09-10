@@ -66,6 +66,7 @@ namespace EternalBeam.Device
                 msg.ContentId = (string)o["content_id"];
                 msg.PetId = (string)o["pet_id"];
                 msg.MotionId = (string)o["motion_id"];
+                msg.ThemeId = (string)o["theme_id"];
                 msg.VideoUrl = (string)o["video_url"];
                 msg.PackedUrl = (string)o["packed_url"];
                 msg.DeliveryFormat = (string)o["delivery_format"];
@@ -94,6 +95,7 @@ namespace EternalBeam.Device
         public string ContentId;
         public string PetId;
         public string MotionId;
+        public string ThemeId;
         public string VideoUrl;
         public string PackedUrl;
         public string DeliveryFormat;
@@ -107,6 +109,7 @@ namespace EternalBeam.Device
                  + " content_id=" + V(ContentId)
                  + " pet_id=" + V(PetId)
                  + " motion_id=" + V(MotionId)
+                 + " theme_id=" + V(ThemeId)
                  + " video_url=" + V(VideoUrl)
                  + " packed_url=" + V(PackedUrl)
                  + " delivery_format=" + V(DeliveryFormat)

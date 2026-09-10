@@ -4,6 +4,9 @@
 EditorBuildSettings:
   m_ObjectHideFlags: 0
   serializedVersion: 2
-  m_Scenes: []
+  m_Scenes:
+  - enabled: 1
+    path: Assets/Scenes/ExternalBeamDevice.unity
+    guid: 7fc0bd0a8d4a3af40807d8e24a2cd718
   m_configObjects: {}
   m_UseUCBPForAssetBundles: 0
