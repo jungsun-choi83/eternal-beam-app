@@ -46,6 +46,8 @@ IMG = "https://cdn.test/cutout.png"
 @pytest.fixture(autouse=True)
 def _isolated(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("HYBRID_USE_SUPABASE", "0")
+    # Phase 7H: 이 파일은 **레거시 이행 계약**을 검증한다 — 명시 회귀 스위치.
+    monkeypatch.setenv("PREMIUM_FULFILLMENT", "legacy")
     monkeypatch.setenv("PET_HYBRID_SEED", "0")
     monkeypatch.setenv("SUBSCRIPTION_MOCK", "1")
     monkeypatch.setenv("PUBLIC_API_BASE_URL", "https://api.test")
@@ -149,9 +151,10 @@ async def test_generate_blinking_makes_exactly_one_provider_call(provider):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("action", list(PREMIUM_ACTIONS))
+@pytest.mark.parametrize("action", list(premium_generation.LEGACY_CAPABLE_ACTIONS))
 async def test_every_explicit_behavior_stops_after_itself(provider, action):
-    """다섯 행동 **각각**이 자기 하나만 만들고 멈춘다."""
+    """레거시 가능 행동 **각각**이 자기 하나만 만들고 멈춘다.
+    (PET_HEAD 는 새 경로 전용 — 아래 fail-closed 테스트가 따로 다룬다.)"""
     await _member()
     await _generate(premium_purchase.action_kind(action))
     await _complete_all_open_jobs()
@@ -247,8 +250,11 @@ def test_legacy_actions_never_enter_the_premium_queue():
     """IDLE/TOUCH/VOICE/NFC 는 자기 파이프라인이 동시성을 관리한다."""
     for legacy in ACTION_ORDER:
         assert not premium_generation.is_queued_action(legacy), f"{legacy} 가 프리미엄 큐에 들어온다"
-    for premium in PREMIUM_ACTIONS:
+    for premium in premium_generation.LEGACY_CAPABLE_ACTIONS:
         assert premium_generation.is_queued_action(premium)
+    # 새 경로 전용 액션은 레거시 큐에 절대 들어오지 않는다.
+    assert not premium_generation.is_queued_action("PET_HEAD")
+    assert not premium_generation.is_queued_action("LOOK_UP")
 
 
 def test_advance_helper_still_filters_legacy_and_reads_the_image():
@@ -296,3 +302,20 @@ async def test_queue_utility_keeps_its_unrestricted_default():
 
     sig = inspect.signature(premium_generation.advance_generation_queue)
     assert sig.parameters["allowed_actions"].default is None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("action", ["PET_HEAD", "LOOK_UP"])
+async def test_new_path_only_actions_fail_closed_on_the_legacy_path(provider, action):
+    """새 경로 전용 액션은 레거시 이행이 지원하지 않는다 — 프롬프트가 없다.
+
+    레거시 모드에서 구매가 들어오면 KeyError 로 죽는 것이 아니라, 깨끗한
+    제출 실패 → 환불(fail-closed)로 끝나야 한다. 새 경로(PREMIUM_FULFILLMENT
+    기본)에서는 정상 생성된다 — test_phase7h_premium_repoint 가 다룬다.
+    """
+    await _member()
+    with pytest.raises(premium_purchase.PurchaseError) as e:
+        await _generate(premium_purchase.action_kind(action))
+    assert e.value.code == "GENERATION_SUBMIT_FAILED"
+    st = await _state()
+    assert action not in st.ready and action not in st.active

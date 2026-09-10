@@ -36,6 +36,15 @@ services:
         sync: false
       - key: BILLING_CRON_SECRET  # 갱신 배치 인증. 미설정이면 renew-due 는 503
         sync: false
+      # ── 일회성 테마 가격 (KRW, 서버가 유일한 권위) ───────────────────────
+      - key: THEME_PRICE_AURORA_KRW
+        value: "4900"
+      - key: THEME_PRICE_SUNSET_KRW
+        value: "4900"
+      - key: THEME_PRICE_OCEAN_DEEP_KRW
+        value: "4900"
+      - key: THEME_PRICE_CUSTOM_PHOTO_BG_KRW
+        value: "4900"
 
       # ── Soul Trace 핸드오프 (Phase 10.5) ──────────────────────────────────
       # Soul Trace 는 **다른 Supabase 프로젝트**다. 교차 DB 조회를 하지 않고,

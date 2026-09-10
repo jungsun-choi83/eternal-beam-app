@@ -58,7 +58,7 @@ def h(monkeypatch, tmp_path):
         hh.uploads.append(path)
         return f"https://cdn/{path}"
 
-    async def fake_refund(uid, amt):
+    async def fake_refund(uid, amt, **_ledger):
         hh.refunds.append((uid, amt))
         class W:
             current_credits = 9
@@ -121,7 +121,11 @@ def test_stale_wan_job_completed_is_promoted(h, monkeypatch):
     assert r["result"] == "reconciled_completed"
     assert h.polls == ["ext-TOUCH"]
     assert any("/candidates/" in p for p in h.uploads), "후보가 저장돼야 한다"
-    assert "u1/p1/SNOW_FOREST_TOUCH.mp4" in h.uploads, "정규 경로로 승격돼야 한다"
+    # Phase 6: 승격 경로에 작업 id 가 들어간다 — 버전마다 다른 객체여야
+    # "Sleeping #1 / #2 가 공존한다"가 기록이 아니라 사실이 된다.
+    assert any(
+        u.startswith("u1/p1/library/SNOW_FOREST_TOUCH_") for u in h.uploads
+    ), "버전별 라이브러리 경로로 승격돼야 한다"
     assert gms._MOCK_JOBS["ext-TOUCH"].status == MotionJobStatus.completed
     assert gms._MOCK_JOBS["ext-TOUCH"].promoted_at is not None
 
@@ -241,7 +245,7 @@ def test_luma_stale_job_completed(h, monkeypatch):
     r = asyncio.run(rec.reconcile_job(job))
     assert r["result"] == "reconciled_completed"
     assert h.polls == ["luma-1"]
-    assert "u1/p1/SNOW_FOREST_TOUCH.mp4" in h.uploads
+    assert any(u.startswith("u1/p1/library/SNOW_FOREST_TOUCH_") for u in h.uploads)
 
 
 def test_luma_stale_job_failed(h, monkeypatch):

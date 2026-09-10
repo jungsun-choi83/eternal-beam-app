@@ -1,0 +1,10 @@
+# Unity 생성물 — 커밋 금지
+Library/
+Logs/
+UserSettings/
+Temp/
+Obj/
+Build/
+Builds/
+*.log
+m1-listening.marker

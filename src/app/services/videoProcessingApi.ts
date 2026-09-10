@@ -300,6 +300,8 @@ export async function cutoutImage(
     autoRefine?: boolean
     /** fetch 상한(ms). adaptive 기본 4분 */
     timeoutMs?: number
+    /** Stable-intake auth; preprocessing itself remains non-persistent here. */
+    accessToken?: string
   } = {}
 ): Promise<CutoutResult> {
   validateVideoApiBase()
@@ -335,6 +337,9 @@ export async function cutoutImage(
   try {
     res = await fetch(`${getBaseUrl()}${cutoutPath}`, {
       method: 'POST',
+      ...(options.accessToken
+        ? { headers: { Authorization: `Bearer ${options.accessToken}` } }
+        : {}),
       body: form,
       signal: ctrl.signal,
     })

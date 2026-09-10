@@ -8,6 +8,7 @@ import {
   isLikelyPackedAlphaSource,
   isPackedAlphaVideo,
 } from "@/lib/packed-alpha-canvas";
+import { eventRenderMode } from "@/lib/baked-playback";
 import {
   type ReturnProfile,
   clampReturnStartScale,
@@ -22,6 +23,7 @@ import {
   type RuntimeEventId,
   type RuntimeEventSources,
   decideTrigger,
+  getRuntimeEvent,
   mountableEvents,
   returnProfileFor,
 } from "@/lib/pet-runtime-events";
@@ -43,6 +45,12 @@ interface IdleLoopVideoProps {
   eventSources?: RuntimeEventSources;
   /** 이벤트 재생이 시작/종료될 때 알림 (UI 힌트용). */
   onActionStateChange?: (playing: boolean) => void;
+  /**
+   * 현재 재생 중인 이벤트 id 통지 (null = 홈/BREATHING). LYING 런타임이
+   * 자세를 **플레이어의 진실에서** 파생하기 위한 신호다 — 체인 폴백 같은
+   * 예외에서도 외부 그림자 상태가 어긋나지 않는다.
+   */
+  onRuntimeEventChange?: (eventId: RuntimeEventId | null) => void;
   /** 트리거 핸들을 부모에게 넘긴다. trigger("COME_CLOSER") 처럼 쓴다. */
   actionTriggerRef?: React.MutableRefObject<PetRuntimeTrigger | null>;
   className?: string;
@@ -51,6 +59,23 @@ interface IdleLoopVideoProps {
   preload?: "none" | "metadata" | "auto";
   /** true(기본): packed alpha / Luma 블랙배경 제거 후 투명 합성 */
   transparentComposite?: boolean;
+  /**
+   * BREATH 소스의 명시적 전달 포맷 (Phase 7F).
+   *
+   * "packed_alpha" 면 packed 렌더러를 **즉시** 선택한다 — 파일명/크로마
+   * 휴리스틱을 기다리지도, 거치지도 않는다. 새로 포장된 자산은 반드시 이
+   * 값으로 오고, blackkey 로 라우팅되면 회색 매트 절반이 그대로 보인다.
+   * 없으면 레거시 — 기존 자동 감지가 그대로 동작한다.
+   */
+  deliveryFormat?: "packed_alpha" | string | null;
+  /**
+   * 이벤트 소스별 명시 전달 포맷 (Phase 7I.1). 이벤트 id → 포맷.
+   *
+   * **이벤트 모드는 BREATH 모드에서 파생되지 않는다** — 모션마다 세대가 다를 수
+   * 있다(packed 새 시스템 자산 + blackkey 레거시 클립 혼합). 값이 없는 이벤트는
+   * 파일명 규칙(`_packed.mp4` → packed) 뒤 레거시 기본(blackkey)으로 그린다.
+   */
+  eventDeliveryFormats?: Partial<Record<RuntimeEventId, string | null>>;
   /**
    * 완성된 장면 영상을 세로 프레임에 넣을 때, 같은 영상을 흐린 cover 배경으로
    * 한 장 더 깐다. 앞 영상은 contain 이라 잘리지 않고, 남는 영역만 이 배경이
@@ -574,11 +599,14 @@ export function IdleLoopVideo({
   src,
   eventSources,
   onActionStateChange,
+  onRuntimeEventChange,
   actionTriggerRef,
   className = "",
   style,
   preload = "metadata",
   transparentComposite = true,
+  deliveryFormat = null,
+  eventDeliveryFormats,
   blurredBackdrop = false,
   onFeetMarginChange,
   onFirstFrame,
@@ -610,8 +638,28 @@ export function IdleLoopVideo({
     []
   );
 
+  // ── 이벤트별 렌더 모드 (Phase 7I.1) ──────────────────────────────────────
+  // renderFrame 은 deps 가 고정된 rAF 콜백이라 최신 props 를 ref 로 본다.
+  // 이벤트 모드는 BREATH(modeRef)에서 파생되지 않는다 — 소스마다 판정한다.
+  const eventFormatsRef = useRef(eventDeliveryFormats ?? {});
+  eventFormatsRef.current = eventDeliveryFormats ?? {};
+  const eventSourcesRef = useRef(sources);
+  eventSourcesRef.current = sources;
+  const eventModeFor = useCallback(
+    (id: RuntimeEventId | null | undefined): RenderMode => {
+      if (!id) return modeRef.current;
+      return eventRenderMode(
+        eventFormatsRef.current[id] ?? null,
+        eventSourcesRef.current[id] ?? null
+      );
+    },
+    []
+  );
+
   const onActionStateChangeRef = useRef(onActionStateChange);
   onActionStateChangeRef.current = onActionStateChange;
+  const onRuntimeEventChangeRef = useRef(onRuntimeEventChange);
+  onRuntimeEventChangeRef.current = onRuntimeEventChange;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scratchRef = useRef(createPackedAlphaScratch());
   const blackkeyScratchRef = useRef<HTMLCanvasElement | null>(null);
@@ -738,6 +786,7 @@ export function IdleLoopVideo({
       /* autoplay policy */
     });
     if (wasPlaying) onActionStateChangeRef.current?.(false);
+    onRuntimeEventChangeRef.current?.(null);
   }, [clearReturnTimers, activeEvent, actionElFor]);
 
   /** 전환 완료 — BREATH 를 유일한 활성 소스로 되돌린다. */
@@ -753,6 +802,7 @@ export function IdleLoopVideo({
     }
     if (idle) videoRef.current = idle;
     if (wasPlaying) onActionStateChangeRef.current?.(false);
+    onRuntimeEventChangeRef.current?.(null);
   }, [clearReturnTimers, activeEvent, actionElFor]);
 
   /**
@@ -790,7 +840,17 @@ export function IdleLoopVideo({
     // 배율 브리지를 쓰는 정책에서만 실측한다. seam-aligned 는 프레이밍이 같으므로
     // 측정 자체가 불필요하고, getImageData 두 번을 아낀다.
     const startScale = profile.scaleBridge
-      ? clampReturnStartScale(measureReturnStartScale(action, idle, modeRef.current))
+      ? clampReturnStartScale(
+          measureReturnStartScale(
+            action,
+            idle,
+            // 어느 한쪽이 packed(vstack)이면 원시 픽셀 높이 측정이 무효다 —
+            // "packed" 를 넘겨 측정을 건너뛰고 폴백 배율(1)로 간다 (Phase 7I.1).
+            modeRef.current === "packed" || eventModeFor(def.id) === "packed"
+              ? "packed"
+              : modeRef.current
+          )
+        )
       : 1;
 
     playbackRef.current = {
@@ -814,7 +874,7 @@ export function IdleLoopVideo({
         startScale.toFixed(3)
       );
     }
-  }, [transparentComposite, startIdle, finishReturn, clearReturnTimers, actionElFor]);
+  }, [transparentComposite, startIdle, finishReturn, clearReturnTimers, actionElFor, eventModeFor]);
 
   /**
    * 런타임 이벤트 트리거 — 진입 규칙은 전부 lib/pet-runtime-events.ts 의
@@ -849,6 +909,7 @@ export function IdleLoopVideo({
       actionEl.currentTime = 0;
       videoRef.current = actionEl;
       onActionStateChangeRef.current?.(true);
+      onRuntimeEventChangeRef.current?.(def.id);
       void actionEl
         .play()
         .then(() => {
@@ -865,6 +926,31 @@ export function IdleLoopVideo({
         });
     },
     [startIdle, clearReturnTimers, actionElFor]
+  );
+
+  /**
+   * 전이 종료 → 체인 대상(자세 전용 홈)으로 하드 컷 (2026-09-08).
+   *
+   * 전이는 목표 키프레임 포즈에서 끝나고 체인 대상은 같은 포즈에서 시작하므로
+   * 디졸브 없이 잇는 것이 가장 깨끗하다. 체인 대상 소스가 없으면(미소유/OFF)
+   * BREATH 복귀로 폴백한다 — 화면이 마지막 프레임에 얼어붙는 것보다 낫다.
+   */
+  const chainFrom = useCallback(
+    (def: RuntimeEventDef) => {
+      const chainId = def.chainTo;
+      const chainDef = chainId ? getRuntimeEvent(chainId) : null;
+      const chainEl = chainId ? actionElFor(chainId) : null;
+      if (chainDef && chainEl?.src) {
+        if (import.meta.env.DEV) console.info(`[${def.id}] → ${chainDef.id} 체인`);
+        startEvent(chainDef, def);
+        return;
+      }
+      if (import.meta.env.DEV) {
+        console.warn(`[${def.id}] 체인 대상(${chainId}) 소스 없음 → BREATH 복귀`);
+      }
+      beginReturn();
+    },
+    [startEvent, beginReturn, actionElFor]
   );
 
   const trigger = useCallback<PetRuntimeTrigger>(
@@ -1002,7 +1088,12 @@ export function IdleLoopVideo({
     const cleanups: Array<() => void> = [];
     for (const [id, actionEl] of entries) {
       const onEnded = () => {
-        if (isPlaying(id)) beginReturn();
+        if (!isPlaying(id)) return;
+        const def = playbackRef.current.phase === "EVENT_PLAYING"
+          ? playbackRef.current.event : null;
+        if (def?.loopUntilPreempted) return; // loop 속성이 처리한다 — 복귀 없음
+        if (def?.chainTo) chainFrom(def);
+        else beginReturn();
       };
       const onFailure = () => {
         if (isPlaying(id)) startIdle();
@@ -1042,7 +1133,7 @@ export function IdleLoopVideo({
       for (const c of cleanups) c();
       cancelStallTimer();
     };
-  }, [eventsKey, startIdle, beginReturn]);
+  }, [eventsKey, startIdle, beginReturn, chainFrom]);
 
   // 언마운트 시 타이머 정리.
   useEffect(() => clearReturnTimers, [clearReturnTimers]);
@@ -1096,13 +1187,16 @@ export function IdleLoopVideo({
     if (
       action &&
       state.phase === "EVENT_PLAYING" &&
+      // 자세 전용 홈(loopUntilPreempted)은 끝이 없다 — loop 속성이 이어 돌린다.
+      !state.event.loopUntilPreempted &&
       videoRef.current === action &&
       !action.paused &&
       Number.isFinite(action.duration) &&
       action.duration > 0 &&
       action.duration - action.currentTime <= ACTION_TAIL_EPSILON_S
     ) {
-      beginReturn();
+      if (state.event.chainTo) chainFrom(state.event);
+      else beginReturn();
     }
 
     // ── 이번 프레임에 그릴 레이어 결정 ────────────────────────────────────────
@@ -1191,14 +1285,18 @@ export function IdleLoopVideo({
       alpha: number,
       scale: number,
       packedScratch: ReturnType<typeof createPackedAlphaScratch>,
-      blackkeyRef: React.MutableRefObject<HTMLCanvasElement | null>
+      blackkeyRef: React.MutableRefObject<HTMLCanvasElement | null>,
+      // 이 레이어의 렌더 모드 (Phase 7I.1). BREATH 는 modeRef, 이벤트는 자기
+      // 포맷으로 판정된 값 — 혼합 세대(packed BREATH + blackkey 레거시 클립,
+      // 또는 그 반대)에서 한쪽이 반토막 나거나 매트가 그대로 보이지 않게 한다.
+      mode: RenderMode = modeRef.current
     ) => {
       if (alpha <= 0.001 || source.readyState < 2) return;
       const svw = source.videoWidth;
       const svh = source.videoHeight;
       if (!svw || !svh) return;
 
-      const frameH = modeRef.current === "packed" ? Math.floor(svh / 2) : svh;
+      const frameH = mode === "packed" ? Math.floor(svh / 2) : svh;
       const { dx, dy, drawW, drawH } = fitFrameRect(cw, ch, svw, frameH);
 
       ctx.save();
@@ -1212,7 +1310,7 @@ export function IdleLoopVideo({
       }
 
       try {
-        if (modeRef.current === "packed") {
+        if (mode === "packed") {
           try {
             drawPackedAlphaVideo(ctx, source, dx, dy, drawW, drawH, packedScratch);
           } catch (packedErr) {
@@ -1253,8 +1351,12 @@ export function IdleLoopVideo({
         // 전환 중 — 두 소스를 같은 프레임에 겹쳐 그린다.
         // 액션을 먼저(뒤에) 깔고 BREATH 를 위에 얹는다: 나타나는 쪽이 위에 있어야
         // 디졸브 후반이 깨끗하다.
-        drawLayer(action, frame.actionAlpha, frame.actionScale, actionScratchRef.current, actionBlackkeyScratchRef);
-        drawLayer(idle, frame.idleAlpha, frame.idleScale, scratchRef.current, blackkeyScratchRef);
+        drawLayer(
+          action, frame.actionAlpha, frame.actionScale,
+          actionScratchRef.current, actionBlackkeyScratchRef,
+          eventModeFor(activeEvent()?.id)
+        );
+        drawLayer(idle, frame.idleAlpha, frame.idleScale, scratchRef.current, blackkeyScratchRef, modeRef.current);
       } else {
         const isAction = video === action;
         drawLayer(
@@ -1262,7 +1364,8 @@ export function IdleLoopVideo({
           1,
           1,
           isAction ? actionScratchRef.current : scratchRef.current,
-          isAction ? actionBlackkeyScratchRef : blackkeyScratchRef
+          isAction ? actionBlackkeyScratchRef : blackkeyScratchRef,
+          isAction ? eventModeFor(activeEvent()?.id) : modeRef.current
         );
       }
       failCountRef.current = 0;
@@ -1278,18 +1381,19 @@ export function IdleLoopVideo({
     }
 
     rafRef.current = requestAnimationFrame(renderFrame);
-  }, [transparentComposite, triggerRawFallback, beginReturn, finishReturn, startEvent]);
+  }, [transparentComposite, triggerRawFallback, beginReturn, finishReturn, startEvent, eventModeFor, chainFrom]);
 
   useEffect(() => {
     failCountRef.current = 0;
     modeDetectedRef.current = false;
     setUseRawFallback(false);
-    packedSourceRef.current = isLikelyPackedAlphaSource(src);
+    packedSourceRef.current =
+      deliveryFormat === "packed_alpha" || isLikelyPackedAlphaSource(src);
     scratchRef.current = createPackedAlphaScratch();
     feetMeasuredRef.current = false;
     firstFrameNotifiedRef.current = false;
     blackkeyScratchRef.current = null;
-  }, [src, transparentComposite]);
+  }, [src, transparentComposite, deliveryFormat]);
 
   // 액션 레이어 스크래치는 액션 소스 집합이 바뀔 때 버린다 — 크기·rgbOnTop 이
   // 캐시돼 있어, 해상도가 다른 클립으로 갈아타면 잘못된 값으로 그린다.
@@ -1309,7 +1413,10 @@ export function IdleLoopVideo({
     el.playsInline = true;
     if (crossOrigin) el.crossOrigin = crossOrigin;
     else el.removeAttribute("crossorigin");
-    packedSourceRef.current = isLikelyPackedAlphaSource(src);
+    // 명시 포맷(Phase 7F)이 있으면 휴리스틱 없이 즉시 확정한다. 새 packed 자산이
+    // 크로마 측정을 기다리는 동안 blackkey 로 그려지면 회색 매트 절반이 보인다.
+    const explicitPacked = deliveryFormat === "packed_alpha";
+    packedSourceRef.current = explicitPacked || isLikelyPackedAlphaSource(src);
     modeRef.current = transparentComposite
       ? packedSourceRef.current
         ? "packed"
@@ -1371,6 +1478,15 @@ export function IdleLoopVideo({
     const detectMode = () => {
       if (!transparentComposite) {
         modeRef.current = "raw";
+        applyAspect();
+        return;
+      }
+      if (explicitPacked) {
+        // 명시 선언이 측정을 이긴다 — 무채색 펫은 크로마 대비가 낮아
+        // isPackedAlphaVideo 가 진짜 packed 를 놓칠 수 있다.
+        modeRef.current = "packed";
+        modeDetectedRef.current = true;
+        packedSourceRef.current = true;
         applyAspect();
         return;
       }
@@ -1447,7 +1563,7 @@ export function IdleLoopVideo({
       el.removeEventListener("ratechange", syncBackdrop);
       el.removeEventListener("timeupdate", syncBackdrop);
     };
-  }, [src, transparentComposite, blurredBackdrop, triggerRawFallback, crossOrigin]);
+  }, [src, transparentComposite, deliveryFormat, blurredBackdrop, triggerRawFallback, crossOrigin]);
 
   useEffect(() => {
     if (!transparentComposite || useRawFallback) return;
@@ -1549,6 +1665,7 @@ export function IdleLoopVideo({
             /* 명시적으로 자동재생 금지 — trigger(id) 로만 재생된다.
                preload 정책은 액션 정의가 쥔다 (새 액션 기본값은 "none"). */
             autoPlay={false}
+            loop={def.loopUntilPreempted === true}
             muted
             playsInline
             preload={def.preload}

@@ -23,7 +23,7 @@ from ..services.credit_generation_service import (
 )
 from ..services.credit_keyframe import KeyframePreparationError
 from ..services.video_generation import normalize_webhook
-from ..services.wallet_service import InsufficientCreditsError
+from ..services.wallet_service import InsufficientCreditsError, WalletUnavailableError
 from ..services.luma_batch_service import submit_all_scenarios
 from ..services import pet_generation_store
 from ..scenarios.pet_scenarios import scenario_count
@@ -65,6 +65,22 @@ async def generate_with_credit_endpoint(
     )
   except InsufficientCreditsError as e:
     raise HTTPException(status_code=403, detail=e.message) from e
+  except WalletUnavailableError as e:
+    # 지갑을 DB 로 확정하지 못했다 → **아무것도 제출하지 않았다.**
+    #
+    # 503 인 이유: 고객 잘못도 잔액 문제도 아니고, 잠시 후 그대로 다시 시도하면
+    # 되는 상태다. 403(잔액 부족)으로 뭉뚱그리면 고객은 충전하러 가고, 500 이면
+    # 재시도를 포기한다. 둘 다 틀린 안내다.
+    raise HTTPException(
+      status_code=503,
+      detail={
+        "code": "WALLET_UNAVAILABLE",
+        "message": "지갑을 확인하지 못했습니다. 크레딧은 차감되지 않았으니 "
+                   "잠시 후 다시 시도해 주세요.",
+        "credits_charged": 0,
+        "submitted": 0,
+      },
+    ) from e
   except KeyframePreparationError as e:
     # 검정 플레이트를 못 만들면 Luma 를 한 건도 제출하지 않았고, 차감분은
     # generate_with_credit 안에서 이미 환불됐다. 크레딧은 그대로 남아 있다.

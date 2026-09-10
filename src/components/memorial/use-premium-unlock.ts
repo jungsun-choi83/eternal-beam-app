@@ -48,11 +48,10 @@ export interface PremiumUnlock {
  */
 export function usePremiumUnlock(params: {
   petId: string | null;
-  petImageUrl?: string | null;
   /** false 면 아무 네트워크도 타지 않는다 (BREATH 자산이 없을 때 등). */
   enabled: boolean;
 }): PremiumUnlock {
-  const { petId, petImageUrl, enabled } = params;
+  const { petId, enabled } = params;
 
   const [assets, setAssets] = useState<PremiumAssets | null>(null);
   const [balance, setBalance] = useState<number | null>(null);
@@ -151,7 +150,7 @@ export function usePremiumUnlock(params: {
 
     const results = await Promise.allSettled(
       current.missingKinds.map((kind) =>
-        purchasePremium({ kind, petId, petImageUrl, accessToken: auth.token })
+        purchasePremium({ kind, petId, accessToken: auth.token })
       )
     );
 
@@ -185,7 +184,7 @@ export function usePremiumUnlock(params: {
     inflightRef.current = false;
     if (!cancelledRef.current) setPurchasing(false);
     await refresh();
-  }, [assets, balance, hasAuth, petId, petImageUrl, refresh]);
+  }, [assets, balance, hasAuth, petId, refresh]);
 
   return { state, assets, loading, purchasing, error, lastCharged, purchase, refresh };
 }

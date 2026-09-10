@@ -161,7 +161,12 @@ export async function ensureStoredReadyPetRegistered(): Promise<PetRegistrationR
     const pipeline = JSON.parse(raw) as {
       content_id?: string;
       idle_video_url?: string;
+      generation_source?: string | null;
     };
+    // Phase 7G — 새 실행 산출물은 클라이언트 등록 금지. pets 포인터의 저자는
+    // 서버 발행(Phase 7A) 하나다. REVIEW 개발 재생을 발행처럼 등록하거나,
+    // 발행된 packed 포인터를 덮어쓰는 사고를 여기서 차단한다.
+    if (pipeline.generation_source === "phase7-run") return null;
     const contentId = (pipeline.content_id || "").trim();
     const breathingUrl = (pipeline.idle_video_url || "").trim();
     if (!contentId || !breathingUrl) return null;

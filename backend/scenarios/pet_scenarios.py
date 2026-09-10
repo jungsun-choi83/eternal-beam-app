@@ -179,7 +179,16 @@ IDLE_EVENTS: tuple[str, ...] = (
 
 #: 웹 전용 프리미엄 액션 — **ACTION_ORDER 에 넣지 않는다.**
 #: 4코인 = IDLE+TOUCH+VOICE+NFC 계약과 /device/sync 의 4종 게이트를 그대로 두기 위함.
-PET_ACTIONS: tuple[str, ...] = ("COME_CLOSER",)
+#: PET_HEAD (2026-09-08): 첫 INTERACTION 상용 모션 — TOUCH 트리거의 목적지
+#: (motion_spec.TRIGGERS["TOUCH"]). 여기 추가되면 구매(ACTION:PET_HEAD →
+#: action:PET_HEAD), Behavior Library 목록, 선호 저장이 함께 열린다.
+#: LOOK_UP (2026-09-08): VOICE 트리거의 목적지 (motion_spec.TRIGGERS["VOICE"]).
+#: 자세 전이 3종 (2026-09-08): LIE_DOWN → LIE_IDLE(누운 홈) → STAND_UP.
+#: LIE_IDLE 은 아이들 이벤트가 **아니다** — IDLE_EVENTS 에 넣으면 번들 구매와
+#: 자발 스케줄러에 끌려 들어간다. 자세 전용 홈 루프는 단건 액션으로만 판다.
+PET_ACTIONS: tuple[str, ...] = (
+    "COME_CLOSER", "PET_HEAD", "LOOK_UP", "LIE_DOWN", "STAND_UP", "LIE_IDLE",
+)
 
 #: 테마 독립 · ACTION_ORDER 밖인 모든 것. 저장 키·파일명 규칙이 동일하다.
 #: 이름은 하위호환으로 유지한다 — 여러 모듈이 이 심볼을 import 하고 있다.

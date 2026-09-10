@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any, Optional
 
@@ -18,9 +19,17 @@ from ..models.hybrid_business import (
 from ..scenarios.pet_scenarios import IDLE_EVENTS, place_public_id, resolve_place_id
 from .credit_keyframe import prepare_black_plate_keyframe
 from .credit_luma_batch import credit_cost, submit_place_motion_set
+from . import credit_ledger
 from . import generated_motions_service as motions_svc
 from . import premium_generation
-from .wallet_service import InsufficientCreditsError, deduct_credits, refund_credits
+from .wallet_service import (
+  InsufficientCreditsError,
+  WalletUnavailableError,
+  deduct_credits,
+  refund_credits,
+)
+
+logger = logging.getLogger(__name__)
 
 
 async def generate_with_credit(
@@ -42,10 +51,33 @@ async def generate_with_credit(
   cost = credit_cost()
 
   # ①② 트랜잭션에 가까운 차감 (지갑 Lock)
-  wallet = await deduct_credits(uid, cost)
+  #
+  # 사유는 action_generation 이다: 이 4코인 팩은 IDLE/TOUCH/VOICE/NFC 네 모션을
+  # 한 장소에 대해 만든다. idle_generation 으로 분류하면 나머지 셋이 설명되지 않고,
+  # 새 사유를 만들면 확정된 어휘가 흔들린다.
+  #
+  # ⚠️ 멱등 키가 없다. 세션은 차감 **뒤에** 만들어지므로 이 시점에는 아직 이 요청을
+  #    유일하게 식별할 값이 없다. 예전과 같은 수준의 방어다(원래도 없었다). 다만
+  #    이제는 원장에 남으므로 이중 차감이 두 줄로 드러난다.
+  wallet = await deduct_credits(
+    uid,
+    cost,
+    reason=credit_ledger.REASON_ACTION_GENERATION,
+    product_key=f"place:{place_key}",
+    unit_price=cost,
+    ref_type="credit_generation_sessions",
+  )
 
+  # legacy_charge=True — 이 경로는 위에서 **예약 없이** 차감했다 (Phase 7 의 예약
+  # 모델로 옮기지 못했다: 기기 호환성이 이전되지 않아 은퇴가 보류됐다 —
+  # docs/LEGACY_RETIREMENT.md §5).
+  #
+  # ⚠️ 이 플래그가 없으면 세션 스키마의 CHECK 가 insert 를 막는다. 그런데 차감은
+  #    이 줄보다 **먼저** 끝났고 아래 try 블록은 아직 시작되지 않았다 — 즉 예외가
+  #    환불 없이 그대로 올라가고, 고객은 4크레딧을 잃고 아무것도 받지 못한다.
+  #    §5 를 끝내면 이 인자와 컬럼이 함께 사라진다.
   session_id = await motions_svc.create_credit_session(
-    uid, pid, place_key, image_url, cost
+    uid, pid, place_key, image_url, cost, legacy_charge=True
   )
 
   try:
@@ -67,12 +99,42 @@ async def generate_with_credit(
       background_baked=background_baked,
     )
   except Exception:
-    await refund_credits(uid, cost)
+    # 원래 예외를 살려서 올린다 — 호출부(pet_v1)가 KeyframePreparationError 등을
+    # 보고 사용자에게 무엇이 잘못됐는지 알려 준다.
+    #
+    # 환불이 확정되지 못하면 그 사실을 **로그로 남기고 원래 예외를 그대로 올린다.**
+    # 여기서 WalletUnavailableError 로 바꿔 던지면 원인(키프레임 실패 등)이 가려지고,
+    # 사용자는 "잠시 후 다시" 라는 잘못된 안내를 받는다. 세션은 processing 으로
+    # 남아 있으므로 웹훅 종료 경로(_finalize_session_if_terminal)가 나중에 다시
+    # 환불을 시도한다 — 크레딧이 영구히 사라지지는 않는다.
+    try:
+      await refund_credits(
+        uid, cost,
+        idempotency_key=credit_ledger.session_refund_key(session_id),
+        product_key=f"place:{place_key}",
+        ref_type="credit_generation_sessions",
+        ref_id=session_id,
+      )
+    except WalletUnavailableError as refund_err:
+      logger.error(
+        "제출 예외 후 환불 미확정 — session=%s user=%s credits=%s: %s "
+        "(세션 종료 경로가 재시도한다)",
+        session_id, uid, cost, refund_err.message,
+      )
     raise
 
   # 4건 모두 제출 실패 → 크레딧 환불
   if submitted == 0:
-    wallet = await refund_credits(uid, cost)
+    # 여기서 실패하면 **올린다.** 아래 응답은 credits_charged=0 이라 "환불됐다"고
+    # 단언하는 셈인데, 확정되지 않은 환불을 그렇게 보고하면 고객은 잔액이
+    # 돌아왔다고 믿는다. 세션은 여전히 남아 있어 종료 경로가 재시도한다.
+    wallet = await refund_credits(
+      uid, cost,
+      idempotency_key=credit_ledger.session_refund_key(session_id),
+      product_key=f"place:{place_key}",
+      ref_type="credit_generation_sessions",
+      ref_id=session_id,
+    )
     return GenerateWithCreditResponse(
       session_id=session_id,
       user_id=uid,
@@ -138,11 +200,58 @@ async def _finalize_session_if_terminal(session_id: str) -> dict[str, Any]:
   refunded = False
   if terminal and status in (SessionStatus.partial, SessionStatus.failed):
     sess = await motions_svc.get_session(session_id)
+
+    # ── 예약 기반 세션 (Phase 7) ─────────────────────────────────────────
+    # 예약을 들고 있으면 환불이 아니라 **해제**다. 둘은 다르다:
+    #     refund               제공한 것을 되돌린다
+    #     reservation_release  애초에 제공된 적이 없다
+    # 해제는 상태 전이 + 보상 행이 한 트랜잭션이라, "표시만 남고 크레딧은
+    # 안 돌아온" 상태가 생길 수 없다 — Phase 1 이 보상 로직으로 막던 것을
+    # 여기서는 구조가 막는다.
+    reservation = (sess or {}).get("reservation_ledger_id")
+    if reservation:
+      from . import generation_credits
+
+      if await motions_svc.mark_session_refunded(session_id):
+        if await generation_credits.release_quietly(reservation):
+          refunded = True
+        else:
+          # 해제하지 못했으면 표시를 되돌려 다음 종료 이벤트가 재시도하게 한다.
+          restored = await motions_svc.unmark_session_refunded(session_id)
+          logger.error(
+            "예약 해제 실패 — session=%s 표시_되돌림=%s", session_id, restored
+          )
+      return {"session_status": status.value, "finalized": terminal, "refunded": refunded}
+
     if sess and not sess.get("refunded_at"):
       # refunded_at 을 먼저 선점한다 — 동시 웹훅에서도 한 번만 통과한다.
       if await motions_svc.mark_session_refunded(session_id):
-        await refund_credits(sess.get("user_id") or "", int(sess.get("credits_charged") or 0))
-        refunded = True
+        amount = int(sess.get("credits_charged") or 0)
+        try:
+          await refund_credits(
+            sess.get("user_id") or "",
+            amount,
+            idempotency_key=credit_ledger.session_refund_key(session_id),
+            ref_type="credit_generation_sessions",
+            ref_id=session_id,
+          )
+          refunded = True
+        except WalletUnavailableError as e:
+          # 선점 표시는 찍혔는데 지갑 환불이 확정되지 않았다. 표시를 되돌려
+          # 다음 웹훅이 같은 판정을 다시 내리게 한다 — 그러지 않으면 세션은
+          # 영원히 "환불됨" 이고 크레딧은 돌아오지 않는다.
+          # (premium_purchase.reconcile_after_terminal 과 같은 구조다.)
+          restored = await motions_svc.unmark_session_refunded(session_id)
+          logger.error(
+            "세션 환불 미확정 — session=%s user=%s credits=%s 환불표시_되돌림=%s: %s",
+            session_id, sess.get("user_id"), amount, restored, e.message,
+          )
+          if not restored:
+            logger.critical(
+              "수동 조치 필요 — 세션 환불 표시는 남고 크레딧은 반환되지 않았다 "
+              "(session=%s user=%s credits=%s)",
+              session_id, sess.get("user_id"), amount,
+            )
   return {"session_status": status.value, "finalized": terminal, "refunded": refunded}
 
 

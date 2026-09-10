@@ -22,6 +22,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getPremiumAccessToken } from "@/lib/premium-auth-token";
 import { readThemeReturnParams, themeReturnEntry } from "@/lib/app-entry";
 import { ThemeStoreError, confirmThemePayment } from "@/lib/theme-store-api";
+import { confirmThemePurchaseReturn } from "@/lib/theme-purchase-return-state";
 
 type Phase =
   | { kind: "working" }
@@ -79,7 +80,11 @@ export function ThemePurchaseReturnScreen() {
           amount: params.amount,
           accessToken: auth.token,
         });
+        // 루트 앱이 이 key 로 선택 테마와 pending 누끼를 되살린다. 확인 성공 전에는
+        // confirmed 로 쓰지 않으므로 승인되지 않은 테마를 보유로 가장하지 않는다.
+        confirmThemePurchaseReturn(r.themeKey);
         setPhase({ kind: "done", themeKey: r.themeKey, alreadyOwned: r.alreadyOwned });
+        window.setTimeout(() => window.location.replace("/"), 350);
       } catch (e) {
         const code = e instanceof ThemeStoreError ? e.code : "UNKNOWN";
         setPhase({
@@ -92,7 +97,8 @@ export function ThemePurchaseReturnScreen() {
   }, [outcome]);
 
   const goBack = useCallback(() => {
-    // 앱 루트로. 테마 선택 화면이 카탈로그를 새로 읽어 OWNED 를 반영한다.
+    // 결제 전 저장한 theme key 가 남아 있어 테마 선택 화면으로 복원된다. 성공이면
+    // 서버 카탈로그가 OWNED 를, 실패면 다시 구매 가능한 상태를 보여 준다.
     window.location.replace("/");
   }, []);
 
@@ -108,6 +114,7 @@ export function ThemePurchaseReturnScreen() {
             {phase.alreadyOwned ? "이미 보유한 테마입니다" : "테마를 구매했습니다"}
           </p>
           <p className="text-xs text-white/45">{phase.themeKey}</p>
+          <p className="text-xs text-white/45">테마 선택 화면으로 돌아가는 중…</p>
         </>
       )}
 
@@ -124,7 +131,7 @@ export function ThemePurchaseReturnScreen() {
           onClick={goBack}
           className="mt-2 rounded-full border border-white/20 px-5 py-2 text-sm text-white/80 active:bg-white/10"
         >
-          돌아가기
+          {phase.kind === "done" ? "테마 선택으로" : "테마 선택으로 돌아가기"}
         </button>
       )}
     </div>

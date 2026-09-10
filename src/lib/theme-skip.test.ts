@@ -11,15 +11,6 @@ import assert from 'node:assert/strict'
 
 import { resolveSkipThemeId } from './theme-skip.ts'
 
-/** handleThemeSkip 본문만 잘라 낸다 (다음 최상위 선언 전까지). */
-function skipBody(src: string): string {
-  const i = src.indexOf('const handleThemeSkip')
-  assert.ok(i > 0, 'handleThemeSkip 을 찾지 못했다')
-  const rest = src.slice(i)
-  const end = rest.indexOf('\n  const handle', 1)
-  return end > 0 ? rest.slice(0, end) : rest
-}
-
 /** themes.ts 의 실제 값 (id, themeKey, premium) — 배열 순서 그대로. */
 const THEMES = [
   { id: 8, key: 'fresh_forest', premium: false },
@@ -109,30 +100,24 @@ test('freeMemorialThemes[0] 은 fresh_forest, id 1 은 snow_forest — 두 기�
   assert.equal(keyOf(1), 'snow_forest', 'preview 폴백 getMemorialTheme(1) 은 snow_forest 다')
 })
 
-test('EternalBeamApp 이 더 이상 무조건 덮어쓰지 않는다', async () => {
+test('테마 선택 화면은 Skip 을 노출하지 않는다', async () => {
   const fs = await import('node:fs/promises')
-  const src = await fs.readFile('src/app/EternalBeamApp.tsx', 'utf8')
-  const body = skipBody(src)
-  assert.ok(body.includes('resolveSkipThemeId'), 'Skip 은 헬퍼를 써야 한다')
-  assert.doesNotMatch(
-    body,
-    /const themeId = freeMemorialThemes\[0\]\?\.id \?\? 1/,
-    '무조건 기본값으로 덮어쓰는 옛 코드가 돌아왔다',
-  )
+  const src = await fs.readFile('src/components/memorial/theme-selection-screen.tsx', 'utf8')
+  assert.doesNotMatch(src, /onClick=\{onSkip\}/, 'Skip 버튼이 다시 노출됐다')
+  assert.doesNotMatch(src, /onSkip: \(\) => void/, '사용하지 않는 Skip 계약이 남아 있다')
 })
 
-test('Skip 의 나머지 라우팅 로직은 보존돼 있다', async () => {
+test('사용 가능한 테마는 항상 미리보기로 이어지고 레거시 결제로 가지 않는다', async () => {
   const fs = await import('node:fs/promises')
-  const src = await fs.readFile('src/app/EternalBeamApp.tsx', 'utf8')
-  const body = skipBody(src)
-  for (const needle of [
-    'persistThemeChoice(themeId)',
-    'scheduleThemeBackgroundSync(themeId)',
-    'isForestTheme(themeId)',
-    'canEnterDevicePlay',
-    "navigateTo('devicePlay')",
-    "navigateTo('preview')",
-  ]) {
-    assert.ok(body.includes(needle), `라우팅 로직이 사라졌다: ${needle}`)
-  }
+  const screen = await fs.readFile('src/components/memorial/theme-selection-screen.tsx', 'utf8')
+  const app = await fs.readFile('src/app/EternalBeamApp.tsx', 'utf8')
+  const start = app.indexOf('const handleThemeContinue')
+  const end = app.indexOf('\n  const handle', start + 1)
+  const body = app.slice(start, end)
+
+  assert.ok(screen.includes(': tc.continueFree'), '무료 테마 CTA가 미리보기를 안내하지 않는다')
+  assert.ok(!screen.includes('continueDevicePlay'), '생성 전 기기 재생 문구가 남아 있다')
+  assert.ok(body.includes("navigateTo('preview')"), '선택 완료가 미리보기로 가지 않는다')
+  assert.ok(!body.includes("'checkout'"), '레거시 결제 화면으로 가는 분기가 남아 있다')
+  assert.ok(!body.includes("navigateTo('devicePlay')"), '테마 선택에서 기기 화면으로 건너뛴다')
 })
