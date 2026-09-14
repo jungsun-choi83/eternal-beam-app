@@ -191,7 +191,7 @@ def test_reference_capable_registry():
 
 
 def test_reference_url_reaches_provider_request(storage, monkeypatch):
-    h, _ = _prepare_pipeline(monkeypatch, storage)
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY",))
     _install_resolved_reference(monkeypatch)
     provider = RefCapableFake("wan", [GOOD()])
 
@@ -217,7 +217,7 @@ def test_reference_url_reaches_provider_request(storage, monkeypatch):
 
 def test_degrades_when_no_reference_capable_provider(storage, monkeypatch):
     """소비 불가 → I2V 강등 + 경고. 레퍼런스 조건부로 표기하지 않는다 (요구 5/6)."""
-    h, _ = _prepare_pipeline(monkeypatch, storage)
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY",))
     _install_resolved_reference(monkeypatch)
     provider = FakeVideoProvider("seedance", [GOOD()])  # supports_motion_reference=False
 
@@ -233,7 +233,7 @@ def test_degrades_when_no_reference_capable_provider(storage, monkeypatch):
 
 
 def test_degrades_when_reference_exceeds_provider_limit(storage, monkeypatch):
-    h, _ = _prepare_pipeline(monkeypatch, storage)
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY",))
     _install_resolved_reference(monkeypatch, {**REF_PAYLOAD, "duration_sec": 20.0})
     provider = RefCapableFake("wan", [GOOD()])
 
@@ -246,7 +246,7 @@ def test_degrades_when_reference_exceeds_provider_limit(storage, monkeypatch):
 
 def test_unresolved_reference_keeps_existing_degraded_path(storage, monkeypatch):
     """레퍼런스 미해석 (기존 Phase 6.6 동작) — 리졸버가 이미 I2V 로 강등한다."""
-    h, _ = _prepare_pipeline(monkeypatch, storage)
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY",))
     _install_resolved_reference(monkeypatch, payload=None)
     provider = FakeVideoProvider("seedance", [GOOD()])
 

@@ -297,7 +297,7 @@ def test_prompts_by_class_and_no_themes(storage, monkeypatch):
     from backend.services.motion_video_prompts import build_motion_video_prompt
     from backend.services.theme_catalog import ALL_THEME_KEYS
 
-    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("NEUTRAL_IDLE", "LIE"))
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("NEUTRAL_IDLE", "STAND_READY", "LIE"))
     breath = _build_motion(h, "BREATHING", [FakeVideoProvider("seedance", [GOOD()])])
     lie = _build_motion(h, "LIE_DOWN", [FakeVideoProvider("kling", [GOOD()])])
 
@@ -323,7 +323,7 @@ def test_prompts_by_class_and_no_themes(storage, monkeypatch):
 
 
 def test_transition_sends_both_frames(storage, monkeypatch):
-    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("NEUTRAL_IDLE", "LIE"))
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("NEUTRAL_IDLE", "STAND_READY", "LIE"))
     provider = FakeVideoProvider("kling", [GOOD()])
 
     v = _build_motion(h, "LIE_DOWN", [provider])
@@ -338,7 +338,7 @@ def test_transition_sends_both_frames(storage, monkeypatch):
 
 
 def test_transition_without_end_capable_provider_fails_safely(storage, monkeypatch):
-    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("NEUTRAL_IDLE", "LIE"))
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("NEUTRAL_IDLE", "STAND_READY", "LIE"))
     incapable = FakeVideoProvider("seedance", [GOOD()], end_frame=False)
 
     with pytest.raises(mv.MotionVideoError) as e:
@@ -348,7 +348,8 @@ def test_transition_without_end_capable_provider_fails_safely(storage, monkeypat
 
 
 def test_transition_missing_target_keyframe_safe(storage, monkeypatch):
-    h, _ = _prepare_pipeline(monkeypatch, storage)  # NEUTRAL_IDLE 만
+    # 시작(STAND_READY)만 있고 목표(LIE)가 없다 — Phase 4 라우팅 반영.
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY",))
     with pytest.raises(mv.MotionVideoError) as e:
         _build_motion(h, "LIE_DOWN", [FakeVideoProvider("kling", [GOOD()])])
     assert e.value.code == "TARGET_KEYFRAME_REQUIRED"
@@ -360,7 +361,8 @@ def test_transition_missing_target_keyframe_safe(storage, monkeypatch):
 
 
 def test_locomotion_fallback_warning_persisted(storage, monkeypatch):
-    h, _ = _prepare_pipeline(monkeypatch, storage)
+    # Phase 4: 이동은 STAND_READY 시작.
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY",))
     v = _build_motion(h, "COME_CLOSER", [FakeVideoProvider("seedance", [GOOD()])])
     assert v.status == mv.STATUS_COMPLETE
     assert v.video_strategy == "IMAGE_TO_VIDEO"  # 레퍼런스 라이브러리 없음 → 선언된 폴백
@@ -959,19 +961,65 @@ def test_qa_locomotion_close_approach_passes_with_normalized_identity():
     assert r["identity_evaluation"]["rule"] == "locomotion_mean_consistency"
     assert r["checks"]["identity_over_time"] == "PASS"
     assert r["decision"] == "PASS"
-    assert r["qa_version"] == "motion-video-qa-v4"
+    assert r["qa_version"] == "motion-video-qa-v6"
 
 
-def test_qa_micro_identity_rule_is_unchanged_full_frame_worst():
-    """같은 다가오기 프레임을 MICRO 로 평가하면 예전 규칙 그대로다 — 그리고
-    전체 프레임 최악값이 실제로 무너진다(구조적 편향의 재현이자 비회귀 증명)."""
+def test_qa_micro_uses_normalized_signature_but_keeps_worst_frame_rule():
+    """v5 — MICRO 도 **시그니처**는 펫 크롭 정규화다. 바뀐 것은 무엇으로 재는가
+    뿐이고, 판정 **규칙**은 여전히 worst_frame 이다 (평균/인접 일관성 규칙은
+    LOCOMOTION 전용). 라이브 실측 근거: BREATHING 은 펫이 거의 안 움직이는데
+    전체 프레임 히스토그램이 평평한 배경의 양자화 이동에 지배됐다."""
     r = _eval_loco(
         [_approach_frame(s) for s in _APPROACH_SIZES],
         contract={"motion_class": "MICRO", "video_compat": {}},
     )
-    assert r["identity_evaluation"]["mode"] == "full_frame"
+    assert r["identity_evaluation"]["mode"] == "pet_normalized"
     assert r["identity_evaluation"]["rule"] == "worst_frame"
-    assert r["checks"]["identity_over_time"] in ("REVIEW", "FAIL")
+    # LOCOMOTION 전용 규칙의 증거(평균/인접)는 MICRO 에 달리지 않는다.
+    assert "adjacent_min" not in r["identity_evaluation"]
+
+    # 규칙이 worst_frame 이라는 증명 — 한 프레임만 다른 개체여도 PASS 가 아니다.
+    # (LOCOMOTION 의 평균 규칙이었다면 크레이터 한 장은 평균에 묻힐 수 있다.)
+    swapped = [_approach_frame(s) for s in _APPROACH_SIZES[:-1]] + [
+        _approach_frame(_APPROACH_SIZES[-1], swap_color=True)
+    ]
+    r2 = _eval_loco(swapped, contract={"motion_class": "MICRO", "video_compat": {}})
+    assert r2["checks"]["identity_over_time"] != "PASS"
+    assert any("worst_frame" in reason for reason in r2["reasons"])
+
+
+def test_qa_interaction_uses_normalized_signature_keeps_worst_frame_rule():
+    """v6 — INTERACTION 도 정규화 시그니처다. 규칙은 worst_frame 그대로.
+
+    라이브 실측 근거(PET_HEAD/wan): 같은 프레임이 전체 프레임 0.33~0.71 vs 펫
+    정규화 0.845~0.944 였다 — 스펙이 허용한 손(allow_generated_hand)의 피부
+    픽셀이 신원 점수를 깎는 구조였다. 허용된 연출이 신원을 깎으면 안 된다.
+    """
+    contract = {
+        "motion_class": "INTERACTION",
+        "video_compat": {"returns_to_start_pose": True, "allow_generated_hand": True},
+    }
+    r = _eval_loco([_approach_frame(s) for s in _APPROACH_SIZES], contract=contract)
+    assert r["identity_evaluation"]["mode"] == "pet_normalized"
+    assert r["identity_evaluation"]["rule"] == "worst_frame"
+    # LOCOMOTION 전용 평균/인접 규칙은 INTERACTION 에 적용되지 않는다.
+    assert "adjacent_min" not in r["identity_evaluation"]
+
+
+def test_qa_normalization_never_drops_unsegmentable_frames_fail_open():
+    """정규화 불가 프레임이 섞이면 전체 프레임 방식으로 폴백한다 — 부분 측정 금지.
+
+    회귀 근거: 정규화를 MICRO 로 넓혔을 때, 전경 분할이 실패하는 화이트아웃
+    프레임이 sims 에서 조용히 빠져 5 장 중 3 장이 화이트아웃인 클립이 신원
+    PASS 를 받았다. 신원이 사라진 프레임이야말로 분할이 실패하는 프레임이므로
+    부분 측정은 곧 fail-open 이다.
+    """
+    frames = [_good_frame(), _good_frame(), white_frame(), white_frame(), white_frame()]
+    r = _eval(frames)  # MICRO 계약
+    ev = r["identity_evaluation"]
+    assert ev["normalized_frames"] < ev["decoded_frames"]
+    assert ev["mode"] == "full_frame"
+    assert r["checks"]["identity_over_time"] == "FAIL"
 
 
 def test_qa_locomotion_identity_swap_is_not_masked_by_normalization():

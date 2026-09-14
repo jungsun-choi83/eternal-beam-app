@@ -269,8 +269,13 @@ function MemorialDevicePlayScreenInner({
   // 이벤트 변경 통지 연결만 한다. 자발 스케줄러는 이 경로를 타지 않는다 —
   // 깜빡임이 누운 펫을 일으키면 안 된다 (wrong-pose 거절로 조용히 무시된다).
   const poseTransitionSources = useMemo(() => {
-    const out: Partial<Record<"LIE_DOWN" | "STAND_UP" | "LIE_IDLE", string | null>> = {};
-    for (const id of ["LIE_DOWN", "STAND_UP", "LIE_IDLE"] as const) {
+    // SIT_TO_STAND (2026-09-10): 앉은 홈 ↔ STAND_READY 진입 브리지. 발견
+    // 계약에 자산이 없으면(대부분의 펫 — 서 있는 홈이거나 미생성) null 이고,
+    // 런타임은 지금까지처럼 직행한다 (decideTrigger 의 hasBridgeSource 게이트).
+    const out: Partial<
+      Record<"LIE_DOWN" | "STAND_UP" | "LIE_IDLE" | "SIT_TO_STAND", string | null>
+    > = {};
+    for (const id of ["LIE_DOWN", "STAND_UP", "LIE_IDLE", "SIT_TO_STAND"] as const) {
       out[id] = eligibility.isEligible(id)
         ? (premiumAssets?.readyAssets?.[id]?.url ?? null)
         : null;

@@ -44,7 +44,20 @@ logger = logging.getLogger(__name__)
 #     불변) + 최악 프레임 대신 평균·인접 일관성·VLM same-pet 증거로 판정.
 #     임계값(PHASE6_QA_IDENTITY_*)은 전역과 동일하고, 다른 클래스의 신원 규칙과
 #     나머지 검사(시간 안정성/루프/끝점/VLM/합성)는 v3 그대로다.
-MOTION_VIDEO_QA_VERSION = "motion-video-qa-v4"
+# v5: MICRO 도 신원 **시그니처**를 펫 크롭 정규화로 바꾼다 (판정 규칙은 worst_frame
+#     그대로 — v4 의 평균/인접 규칙은 LOCOMOTION 전용이다). 이유는 v4 와 반대
+#     방향의 같은 구조적 편향이다: MICRO 는 펫이 거의 안 움직이는데 전체 프레임
+#     히스토그램이 **평평한 배경**에 지배된다. BREATHING wan 라이브 실측에서
+#     h264 첫 프레임의 배경이 (182,180,181)→(183,183,186) 로 1~5 단계 양자화
+#     이동하자 시각적으로 동일한 프레임의 hist_intersection 이 0.353 까지 꺼졌다
+#     (frame0 vs frame2 = 0.473). 루프 복귀 검사가 같은 이유로 이미 SSIM 으로
+#     옮겨 간 그 편향이다. 임계값과 나머지 검사는 불변.
+# v6: INTERACTION 도 같은 정규화 시그니처로 (판정 규칙은 worst_frame 그대로).
+#     PET_HEAD wan 라이브 실측에서 같은 프레임이 전체 프레임 0.33~0.71 vs 펫
+#     정규화 0.845~0.944 로 갈렸다 — 스펙이 **허용한** 손(allow_generated_hand)의
+#     피부 픽셀과 첫 프레임 배경 양자화가 신원 점수를 지배했다. 즉 허용된 연출이
+#     신원 점수를 깎는 구조다. 임계값과 나머지 검사는 불변.
+MOTION_VIDEO_QA_VERSION = "motion-video-qa-v6"
 FRAME_SAMPLING_VERSION = "frame-sampling-v2"
 
 #: 결정론적 샘플 지점. 마지막은 끝 구간을 순차 디코딩한 실제 마지막 프레임.
@@ -268,7 +281,11 @@ def evaluate_motion_video(
     sigs = [_frame_signature(f) if f is not None else None for f in (frames or [])]
     start_sig = _frame_signature(start_keyframe_rgb) if start_keyframe_rgb is not None else None
 
-    locomotion = str(spec_contract.get("motion_class")) == "LOCOMOTION"
+    motion_class = str(spec_contract.get("motion_class") or "")
+    locomotion = motion_class == "LOCOMOTION"
+    micro = motion_class == "MICRO"
+    interaction = motion_class == "INTERACTION"
+
     identity_evaluation: dict[str, Any] = {
         "mode": "full_frame",
         "rule": ("locomotion_mean_consistency" if locomotion else "worst_frame"),
@@ -280,21 +297,33 @@ def evaluate_motion_video(
         reasons.append("frame_sampling_unavailable")
     else:
         # ── 신원 드리프트: 모든 샘플 프레임 vs 시작 키프레임 ─────────────
-        # v4 — LOCOMOTION 만 펫 크롭 정규화 시그니처로 비교한다. 전체 프레임
-        # 히스토그램은 다가오기가 성공할수록 시작 키프레임과 멀어지는 구조적
-        # 편향이 있다(모션의 성공이 신원 점수를 낮춘다). 정규화가 불가능하면
+        # v4/v5 — LOCOMOTION·MICRO 는 펫 크롭 정규화 시그니처로 비교한다. 전체
+        # 프레임 히스토그램은 양방향으로 구조적 편향이 있다: 다가오기가 성공할수록
+        # 시작 키프레임과 멀어지고(v4), MICRO 는 거의 안 움직이는 대신 평평한
+        # 배경의 1~2 단계 양자화 이동이 점수를 지배한다(v5). 정규화가 불가능하면
         # (배경 모델 실패 등) 전체 프레임 방식으로 폴백한다. 다른 클래스와
         # 나머지 검사(시간 안정성/루프/끝점)는 계속 전체 프레임 시그니처다.
+        #
+        # ⚠️ 폴백 조건은 "**모든** 디코딩된 프레임이 정규화됐는가" 다. 정규화
+        # 불가 프레임은 sims 에서 조용히 빠지는데, 그게 하필 신원이 사라진
+        # 프레임(화이트아웃/장면 전환 — 전경 분할 자체가 실패하는 바로 그 경우)
+        # 이라 부분 측정을 허용하면 fail-open 이 된다: 5 프레임 중 3 장이
+        # 화이트아웃인 클립이 나머지 2 장만으로 신원 PASS 를 받았다.
+        
+        use_pet_normalized_identity = locomotion or micro or interaction
+        
         id_sigs, id_start = sigs, start_sig
-        if locomotion:
+        if use_pet_normalized_identity:
             norm_start = _pet_normalized_signature(start_keyframe_rgb)
             norm_sigs = [
                 (_pet_normalized_signature(f) if f is not None else None)
                 for f in (frames or [])
             ]
             measurable = sum(1 for s in norm_sigs if s is not None)
+            decoded_frames = len(valid)
             identity_evaluation["normalized_frames"] = measurable
-            if norm_start is not None and measurable >= max(2, len(valid) // 2):
+            identity_evaluation["decoded_frames"] = decoded_frames
+            if norm_start is not None and measurable == decoded_frames:
                 id_sigs, id_start = norm_sigs, norm_start
                 identity_evaluation["mode"] = "pet_normalized"
 

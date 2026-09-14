@@ -26,7 +26,15 @@ from typing import Any, Optional
 from ..scenarios.pet_scenarios import ACTION_ORDER, IDLE_EVENTS, PET_ACTIONS
 from .luma_idle_templates import IDLE_TEMPLATE_ORDER
 
-KEYFRAME_SPEC_VERSION = "keyframe-spec-v1"
+# v2 (2026-09-10): NEUTRAL_IDLE 이 포즈를 다시 고르지 않는다 — "sitting or
+# standing" 선택 문구 제거, 정본(Canonical)의 기존 자세를 그대로 유지하도록
+# 서술. 버전을 올리는 이유: 키프레임 재사용 게이트(action_keyframe_service 의
+# skip_if_unchanged/resume)가 analyzer_versions 로 이 값을 비교한다 — 안 올리면
+# 앉기로 쏠린 기존 NEUTRAL_IDLE 키프레임이 새 문구 아래에서도 영원히 재사용된다.
+# v2 확장 (같은 날, Phase 4 — v2 아티팩트가 생성되기 전이라 버전 재범프 없음):
+# STAND_READY 역할 신설(이동/기립 전이의 명시적 서기 시작점, COME_CLOSER +
+# LIE_DOWN 이관), SLEEP 서술에 LIE 와의 신체 구성 차이(머리 내림/말림) 명시.
+KEYFRAME_SPEC_VERSION = "keyframe-spec-v2"
 KEYFRAME_PROMPT_VERSION = "keyframe-prompt-v1"
 
 #: 웹 홈 상태 id (pet-runtime-events.ts IDLE_HOME_STATE 미러 — TS 와 동일 문자열).
@@ -50,14 +58,24 @@ class KeyframeRole:
     supported_action_ids: tuple[str, ...] = field(default_factory=tuple)
 
 
-#: 현재 런타임의 전 행동 — 전부 중립 대기 포즈에서 시작한다.
 #: 시작 포즈가 LIE 인 액션 — NEUTRAL_IDLE 이 아니라 LIE 역할이 담당한다.
 _LIE_START_ACTIONS: tuple[str, ...] = ("LIE_IDLE", "STAND_UP")
 
+#: 시작 포즈가 **명시적 서기**인 액션 — STAND_READY 역할이 담당한다 (Phase 4).
+#: NEUTRAL_IDLE 은 keyframe-spec-v2 부터 정본 자세를 물려받아 앉아 있을 수
+#: 있으므로, 이동(COME_CLOSER)과 기립→눕기 전이(LIE_DOWN)의 시작점으로 쓸 수
+#: 없다 — 걷기 시작은 네 발로 서 있어야 한다. (RUN/WALK 는 motion_spec 에만
+#: 있는 미래 모션 id 라 여기 액션 레지스트리 매핑에는 등장하지 않는다.)
+_STAND_READY_ACTIONS: tuple[str, ...] = ("COME_CLOSER", "LIE_DOWN")
+
 _NEUTRAL_ACTIONS: tuple[str, ...] = (
     tuple(ACTION_ORDER)          # IDLE, TOUCH(=PET_HEAD_START), VOICE, NFC
-    # PET_ACTIONS 중 중립 시작만 — LIE 시작(LIE_IDLE/STAND_UP)은 아래 LIE 역할로.
-    + tuple(a for a in PET_ACTIONS if a not in _LIE_START_ACTIONS)
+    # PET_ACTIONS 중 중립 시작만 — LIE 시작은 LIE 역할로, 서기 시작은
+    # STAND_READY 역할로 (아래).
+    + tuple(
+        a for a in PET_ACTIONS
+        if a not in _LIE_START_ACTIONS and a not in _STAND_READY_ACTIONS
+    )
     + (BREATHING_HOME_STATE,)    # 웹 홈 상태
     + tuple(IDLE_EVENTS)         # BLINKING, EAR_TWITCHING, HEAD_TILTING, TAIL_WAGGING
     + tuple(IDLE_TEMPLATE_ORDER) # IDLE_BREATH … IDLE_LOOK_AROUND
@@ -66,15 +84,40 @@ _NEUTRAL_ACTIONS: tuple[str, ...] = (
 KEYFRAME_ROLES: dict[str, KeyframeRole] = {
     "NEUTRAL_IDLE": KeyframeRole(
         role="NEUTRAL_IDLE",
+        # 홈/기준 포즈다 — 포즈를 **새로 고르는 단계가 아니다** (spec-v2).
+        # 이전 문구 "sitting or standing" 은 이미지 모델에게 선택권을 줬고
+        # 앉기로 강하게 쏠렸다. 이제 정본의 기존 자세를 그대로 물려받는다:
+        # 정본이 서 있으면 서 있고, 앉아 있으면 앉아 있다.
         required_pose=(
-            "a calm neutral sitting or standing pose, body relaxed, head level and "
-            "facing slightly toward the camera, eyes open, mouth relaxed"
+            "a calm neutral pose that keeps the pet's existing body posture "
+            "exactly as shown in the canonical reference image — if the "
+            "reference pet is standing it stays standing, if sitting it stays "
+            "sitting; do not switch to any other posture — body relaxed, head "
+            "level and facing slightly toward the camera, eyes open, mouth "
+            "relaxed"
         ),
         required_visibility=("face", "full_body", "ears", "front_paws"),
         body_motion_complexity="micro",
         preferred_canonical_source="raw",
         video_compat={"loopable_base": True, "motion_class": "idle"},
         supported_action_ids=_NEUTRAL_ACTIONS,
+    ),
+    "STAND_READY": KeyframeRole(
+        role="STAND_READY",
+        # 이동/기립 전이의 시작점 (Phase 4). NEUTRAL_IDLE 과 달리 자세를
+        # 물려받지 않는다 — 정본이 앉아 있어도 이 역할은 반드시 서 있다.
+        # 걷기·달리기·눕기 전이는 네 발로 선 자세에서만 자연스럽게 시작한다.
+        required_pose=(
+            "standing upright and alert on all four legs, weight evenly "
+            "balanced over all four paws, ready to move, tail in a natural "
+            "position, head level and facing slightly toward the camera, "
+            "eyes open"
+        ),
+        required_visibility=("face", "full_body", "front_paws"),
+        body_motion_complexity="medium",
+        preferred_canonical_source="raw",
+        video_compat={"loopable_base": False, "motion_class": "locomotion"},
+        supported_action_ids=_STAND_READY_ACTIONS,
     ),
     "LIE": KeyframeRole(
         role="LIE",
@@ -91,9 +134,13 @@ KEYFRAME_ROLES: dict[str, KeyframeRole] = {
     ),
     "SLEEP": KeyframeRole(
         role="SLEEP",
+        # LIE 와 다른 신체 구성이어야 한다 (Phase 4) — LIE 는 머리를 들고 깨어
+        # 있는 자세, SLEEP 은 머리를 내리거나 몸을 만 완전 이완 자세다.
         required_pose=(
-            "curled up or lying comfortably with eyes fully closed, sleeping "
-            "peacefully, body settled"
+            "curled up or lying comfortably with the head resting down on or "
+            "near the paws, eyes fully closed, sleeping peacefully, body fully "
+            "settled — clearly different from an awake lying pose with the "
+            "head upright"
         ),
         required_visibility=("full_body",),
         body_motion_complexity="micro",
@@ -127,8 +174,11 @@ KEYFRAME_ROLES: dict[str, KeyframeRole] = {
     ),
 }
 
-#: 결정론적 순서 (벤치마크 순서).
-KEYFRAME_ROLE_ORDER: tuple[str, ...] = ("NEUTRAL_IDLE", "LIE", "SLEEP", "LOOK_UP", "HAPPY")
+#: 결정론적 순서 (벤치마크 순서). 앞의 4개가 기계적으로 쓰이는 포즈 역할이다
+#: (Phase 4) — LOOK_UP/HAPPY 는 매핑 없는 미래 벤치마크로 남는다.
+KEYFRAME_ROLE_ORDER: tuple[str, ...] = (
+    "NEUTRAL_IDLE", "STAND_READY", "LIE", "SLEEP", "LOOK_UP", "HAPPY",
+)
 
 
 def get_role(role: str) -> Optional[KeyframeRole]:

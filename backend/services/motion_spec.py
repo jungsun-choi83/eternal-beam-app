@@ -64,7 +64,17 @@ from .action_keyframe_spec import BREATHING_HOME_STATE, KEYFRAME_ROLES
 #     0.3~2%, 어깨 동반, 약간 불규칙한 리듬)을 **하라는 말**로 명시하고 금지는
 #     카메라/이동/균일 스케일 셋만 남긴다. breathing-temporal-qa-v2 보정과 한
 #     쌍이다. 다른 모션 서술은 불변.
-MOTION_SPEC_VERSION = "motion-spec-v10"
+# v11 (2026-09-10, Phase 4 키프레임 역할 확장): 서서 시작하는 모션들의 시작
+#     키프레임을 STAND_READY 로 라우팅 — LOCOMOTION 3종(COME_CLOSER/RUN/WALK)
+#     + LIE_DOWN. NEUTRAL_IDLE 은 keyframe-spec-v2 부터 정본 자세를 물려받아
+#     앉아 있을 수 있으므로, 이동/기립 시작점은 명시적 서기 포즈가 필요하다.
+#     서술(프롬프트)/전략/길이/레퍼런스 전부 불변 — 시작 역할만 바뀐다.
+#     ⚠️ 이 범프로 v10 이하 모션 버전에 핀된 FAILED 런은 재시도 시
+#     _stale_motion_pin 이 언핀하고 현행 스펙으로 재생성한다(유료).
+#     v11 확장 (같은 날 — v11 아티팩트 생성 전이라 재범프 없음): 앉은 홈 ↔
+#     STAND_READY 이음매 브리지 전이 SIT_TO_STAND / STAND_TO_SIT 추가.
+#     기존 모션 정의는 바이트 단위로 불변이다.
+MOTION_SPEC_VERSION = "motion-spec-v11"
 # v2 (Phase 6.6): pet_motion_profile 추가 + motion_reference 가 라이브러리에서
 # 해석된 실제 자산/버전/호환성/출처를 담는다 (미해석 시 기존 v1 형태 + 경고 유지).
 PHASE6_CONTRACT_VERSION = "phase6-contract-v2"
@@ -142,13 +152,11 @@ MOTIONS: dict[str, MotionSpec] = {
         # 펄스. 살아 있는 호흡의 실체(어깨 동반, 약간 불규칙한 리듬)를 허용으로
         # 명시하고, 금지는 QA 가 실제로 거부하는 셋(카메라/이동/균일 스케일)만
         # 남긴다.
-        "Calm, relaxed resting breathing. The chest, ribcage and flank visibly "
-        "expand and relax with a soft natural rhythm. A subtle shoulder rise and "
-        "very small natural head and neck response are allowed. Breathing depth "
-        "and timing may vary slightly rather than being perfectly mechanical. "
-        "The paws and seated body base remain planted. Do not move the camera or "
-        "change framing. Do not walk, translate, or slide the pet. Do not stretch "
-        "or uniformly scale the whole body",
+        "Calm, natural resting breathing. "
+        "The chest, ribcage and flank gently expand and relax with a soft natural rhythm. "
+        "Small natural movement in the shoulders, head and fur is allowed. "
+        "The pet stays in the same overall pose and position. "
+        "Do not walk, slide, translate, stretch, squash or uniformly scale the whole body.",
         "NEUTRAL_IDLE", loopable=True,
     ),
     "BLINKING": _micro("BLINKING", "자연스러운 눈 깜빡임 1~2회", "NEUTRAL_IDLE"),
@@ -170,10 +178,9 @@ MOTIONS: dict[str, MotionSpec] = {
     "HAPPY": _micro("HAPPY", "반가운 알림 반응 — 귀 쫑긋, 밝은 표정, 가벼운 몸짓", "HAPPY"),
     "LIE_IDLE": _micro(
         "LIE_IDLE",
-        "The pet rests calmly lying on its belly, exactly as in the reference "
-        "image. Gentle relaxed breathing is the only visible movement — the "
-        "chest and flank softly rise and fall. The pet stays lying in place and "
-        "returns to the exact starting resting pose so the clip loops smoothly",
+        "The pet rests calmly lying on its belly, exactly as in the reference image. "
+        "The pet breathes calmly and naturally with very small body movement while staying relaxed and lying in place. "
+        "It returns to the exact starting resting pose so the clip loops smoothly",
         "LIE",
         loopable=True,
     ),
@@ -184,9 +191,37 @@ MOTIONS: dict[str, MotionSpec] = {
         description="From its standing pose, the pet naturally bends its legs "
         "and settles down to lie on its belly, ending calm and relaxed in the "
         "lying pose shown in the second frame",
-        start_keyframe_role="NEUTRAL_IDLE", target_keyframe_role="LIE",
+        start_keyframe_role="STAND_READY", target_keyframe_role="LIE",
         requires_target_keyframe=True, preferred_video_strategy=STRATEGY_START_END,
         duration_range_sec=(2.5, 5.0), loopable=False,
+        video_compat={"returns_to_start_pose": False, "motion_scale": "body"},
+    ),
+    # ── 앉은 홈 ↔ STAND_READY 브리지 (Phase 4 이음매 수리) ──────────────
+    # NEUTRAL_IDLE 은 keyframe-spec-v2 부터 정본 자세를 물려받아 앉아 있을 수
+    # 있다. 그때 STAND_READY 시작 모션(COME_CLOSER/LIE_DOWN 등)으로의 하드 컷은
+    # 자세 점프가 보인다 — 이 두 브리지가 그 사이를 잇는다. START_END 라 양 끝이
+    # 실제 키프레임 이미지와 일치한다: 진입 컷은 홈 포즈끼리, 체인 컷은
+    # STAND_READY 포즈끼리 맞아 어떤 디졸브보다 깨끗하다. **수요 기반**이다:
+    # 홈이 이미 서 있는 펫은 생성할 이유가 없고(자산 없음 = 런타임이 직행),
+    # 생성 여부 결정이 곧 "브리지를 틀 것인가"의 신호다.
+    "SIT_TO_STAND": MotionSpec(
+        motion_id="SIT_TO_STAND", motion_class=CLASS_TRANSITION,
+        description="From its current relaxed neutral pose, the pet smoothly "
+        "rises to stand on all four legs, ending calm and balanced in the "
+        "standing pose shown in the second frame, ready to move",
+        start_keyframe_role="NEUTRAL_IDLE", target_keyframe_role="STAND_READY",
+        requires_target_keyframe=True, preferred_video_strategy=STRATEGY_START_END,
+        duration_range_sec=(2.0, 4.0), loopable=False,
+        video_compat={"returns_to_start_pose": False, "motion_scale": "body"},
+    ),
+    "STAND_TO_SIT": MotionSpec(
+        motion_id="STAND_TO_SIT", motion_class=CLASS_TRANSITION,
+        description="From standing on all four legs, the pet calmly settles "
+        "back into its natural relaxed neutral pose shown in the second "
+        "frame, ending still and comfortable",
+        start_keyframe_role="STAND_READY", target_keyframe_role="NEUTRAL_IDLE",
+        requires_target_keyframe=True, preferred_video_strategy=STRATEGY_START_END,
+        duration_range_sec=(2.0, 4.0), loopable=False,
         video_compat={"returns_to_start_pose": False, "motion_scale": "body"},
     ),
     "STAND_UP": MotionSpec(
@@ -219,7 +254,7 @@ MOTIONS: dict[str, MotionSpec] = {
     "COME_CLOSER": MotionSpec(
         motion_id="COME_CLOSER", motion_class=CLASS_LOCOMOTION,
         description="카메라 쪽으로 다가오기 (기존 프리미엄 액션)",
-        start_keyframe_role="NEUTRAL_IDLE",
+        start_keyframe_role="STAND_READY",
         motion_reference_id="DOG_APPROACH", motion_reference_policy=REF_PREFERRED,
         preferred_video_strategy=STRATEGY_I2V_MOTION_REF,
         fallback_video_strategy=STRATEGY_I2V,
@@ -231,7 +266,7 @@ MOTIONS: dict[str, MotionSpec] = {
     "RUN": MotionSpec(
         motion_id="RUN", motion_class=CLASS_LOCOMOTION,
         description="신나게 달리기 (미래 모션)",
-        start_keyframe_role="NEUTRAL_IDLE",
+        start_keyframe_role="STAND_READY",
         motion_reference_id="DOG_RUN", motion_reference_policy=REF_PREFERRED,
         preferred_video_strategy=STRATEGY_I2V_MOTION_REF,
         fallback_video_strategy=STRATEGY_I2V,
@@ -241,7 +276,7 @@ MOTIONS: dict[str, MotionSpec] = {
     "WALK": MotionSpec(
         motion_id="WALK", motion_class=CLASS_LOCOMOTION,
         description="자연스러운 걸음걸이 (미래 모션)",
-        start_keyframe_role="NEUTRAL_IDLE",
+        start_keyframe_role="STAND_READY",
         motion_reference_id="WALK_REF", motion_reference_policy=REF_PREFERRED,
         preferred_video_strategy=STRATEGY_I2V_MOTION_REF,
         fallback_video_strategy=STRATEGY_I2V,
@@ -278,9 +313,12 @@ MOTIONS: dict[str, MotionSpec] = {
         # 모델에게 보내는 긍정형 장면 묘사만 담는다. 손 허용/복귀 문장은
         # INTERACTION 빌더(allow_generated_hand)가 덧붙이므로 일부 중복되지만
         # 무해하다 (BREATHING 의 선례와 동일).
-        description="A gentle human hand may briefly enter the frame to pet the "
-        "pet's head. The pet responds naturally and contentedly, then returns to "
-        "the starting pose",
+        description= "A gentle human hand may briefly enter the frame to pet the pet's head. "
+        "The pet responds naturally and contentedly"
+        "or slight lean into the hand. Keep the pet's entire head, face, ears and muzzle "
+        "fully visible inside the frame throughout the motion, with clear safe space above "
+        "the head. Do not raise the head far enough to leave the frame or crop any part of "
+        "the face. The pet then returns naturally to the starting pose.",
         start_keyframe_role="NEUTRAL_IDLE",
         preferred_video_strategy=STRATEGY_I2V,
         duration_range_sec=(3.0, 5.0),

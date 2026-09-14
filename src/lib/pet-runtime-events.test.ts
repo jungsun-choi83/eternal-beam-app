@@ -47,6 +47,7 @@ const LU = 'LOOK_UP'
 const LD = 'LIE_DOWN'
 const SU = 'STAND_UP'
 const LI = 'LIE_IDLE'
+const STS = 'SIT_TO_STAND'
 const BLINK = 'BLINKING'
 const EAR = 'EAR_TWITCHING'
 const TILT = 'HEAD_TILTING'
@@ -63,7 +64,7 @@ test('1) COME_CLOSER 는 ACTION 으로 분류된다', () => {
   assert.ok(isPetAction(CC))
   assert.ok(!isIdleEvent(CC), 'COME_CLOSER 가 아이들 이벤트로 새면 안 된다')
   assert.equal(RUNTIME_EVENTS[CC]?.kind, 'ACTION')
-  assert.deepEqual([...PET_ACTION_IDS], [CC, PH, LU, LD, SU, LI])
+  assert.deepEqual([...PET_ACTION_IDS], [CC, PH, LU, LD, SU, LI, STS])
 })
 
 // ── 2) 아이들 이벤트는 분류되지만 아직 등록되지 않았다 ────────────────────────
@@ -86,7 +87,7 @@ test('8) 선언된 아이들 이벤트 4종이 모두 등록됐다 (Phase 4 완�
   }
   // 등록표는 정확히 액션 2종(COME_CLOSER + PET_HEAD) + 아이들 4종.
   assert.deepEqual(
-    Object.keys(RUNTIME_EVENTS).sort(), [CC, PH, LU, LD, SU, LI, ...ALL_IDLE].sort())
+    Object.keys(RUNTIME_EVENTS).sort(), [CC, PH, LU, LD, SU, LI, STS, ...ALL_IDLE].sort())
 })
 
 test('8b) 미선언 id 는 여전히 트리거되지 않는다 (오타·미래 이벤트)', () => {
@@ -212,14 +213,14 @@ test('6) registeredIdleEvents() 는 COME_CLOSER 를 절대 포함하지 않는�
   // Phase 2 — BLINKING + EAR_TWITCHING 이 등록돼 있다.
   assert.deepEqual(idle.map((e) => e.id).sort(), [...REGISTERED_IDLE].sort())
   assert.deepEqual(
-    registeredActions().map((e) => e.id).sort(), [CC, PH, LU, LD, SU, LI].sort())
+    registeredActions().map((e) => e.id).sort(), [CC, PH, LU, LD, SU, LI, STS].sort())
 })
 
 test('6b) 아이들 이벤트는 실제로 등록돼 있어 주입 없이 열거된다', () => {
   assert.deepEqual(registeredIdleEvents().map((e) => e.id).sort(), [...REGISTERED_IDLE].sort())
   assert.deepEqual(
     registeredActions().map((e) => e.id).sort(),
-    [CC, PH, LU, LD, SU, LI].sort(), '액션 목록이 오염됐다')
+    [CC, PH, LU, LD, SU, LI, STS].sort(), '액션 목록이 오염됐다')
 })
 
 test('6c) 등록된 어떤 것도 COME_CLOSER 보다 우선순위가 높지 않다', () => {
@@ -435,7 +436,7 @@ test('P2-10) COME_CLOSER 는 Phase 2 로 인해 바뀌지 않았다', () => {
   assert.equal(def.interruptible, false)
   assert.equal(def.preload, 'auto')
   assert.deepEqual(
-    registeredActions().map((e) => e.id).sort(), [CC, PH, LU, LD, SU, LI].sort())
+    registeredActions().map((e) => e.id).sort(), [CC, PH, LU, LD, SU, LI, STS].sort())
 })
 
 test('P2-11) 모든 아이들 이벤트가 같은 우선순위를 공유한다', () => {
@@ -529,7 +530,7 @@ test('P4) COME_CLOSER 는 Phase 4 로 인해 바뀌지 않았다', () => {
   assert.equal(def.interruptible, false)
   assert.equal(def.preload, 'auto')
   assert.deepEqual(
-    registeredActions().map((e) => e.id).sort(), [CC, PH, LU, LD, SU, LI].sort())
+    registeredActions().map((e) => e.id).sort(), [CC, PH, LU, LD, SU, LI, STS].sort())
 })
 
 
@@ -716,4 +717,75 @@ test('POSE-5) 플레이어 배선 — loop 속성과 체인 처리 (소스 스�
   assert.match(src, /loop=\{def\.loopUntilPreempted === true\}/)
   assert.match(src, /chainFrom/)
   assert.match(src, /!state\.event\.loopUntilPreempted/)
+})
+
+// ── SIT_TO_STAND 진입 브리지 (2026-09-10) — 앉은 홈 ↔ STAND_READY 이음매 ────
+//
+// NEUTRAL_IDLE 홈은 keyframe-spec-v2 부터 정본 자세를 물려받아 앉아 있을 수
+// 있다. STAND_READY 시작 액션(COME_CLOSER/LIE_DOWN)은 브리지 **자산이 있을
+// 때만** SIT_TO_STAND 경유로 시작한다 — 자산 생성 여부가 곧 수요 신호다
+// (서 있는 홈 펫은 브리지를 만들지 않고, 런타임은 지금까지처럼 직행한다).
+
+test('BR-1) 브리지 소스가 있으면 COME_CLOSER 는 SIT_TO_STAND 경유로 시작한다', () => {
+  const d = decideTrigger({
+    phase: 'IDLE', currentEventId: null, requestedEventId: CC,
+    hasSource: true, hasBridgeSource: true,
+  })
+  assert.equal(d.accepted && d.event.id, STS)
+  assert.equal(d.accepted && d.event.chainTo, CC, '브리지가 원래 이벤트로 체인돼야 한다')
+  assert.equal(d.accepted && d.event.entryPolicy, 'immediate')
+  assert.equal(d.accepted && d.event.interruptible, false)
+})
+
+test('BR-2) LIE_DOWN 브리지 — 자체 체인(LIE_IDLE)은 레지스트리에 그대로 살아 있다', () => {
+  const d = decideTrigger({
+    phase: 'IDLE', currentEventId: null, requestedEventId: LD,
+    hasSource: true, hasBridgeSource: true,
+  })
+  assert.equal(d.accepted && d.event.id, STS)
+  assert.equal(d.accepted && d.event.chainTo, LD)
+  // 브리지 종료 → LIE_DOWN(레지스트리 정의) → LIE_IDLE 체인은 그대로다.
+  assert.equal(RUNTIME_EVENTS[LD]?.chainTo, 'LIE_IDLE')
+})
+
+test('BR-3) 브리지 소스가 없으면 직행 — 서 있는 홈 펫·기존 호출부의 기본 경로', () => {
+  for (const extra of [{}, { hasBridgeSource: false }]) {
+    const d = decideTrigger({
+      phase: 'IDLE', currentEventId: null, requestedEventId: CC,
+      hasSource: true, ...extra,
+    })
+    assert.equal(d.accepted && d.event.id, CC)
+    assert.equal(d.accepted && d.event.chainTo, undefined)
+  }
+})
+
+test('BR-4) entryBridge 를 선언하지 않은 액션은 브리지 소스가 있어도 직행한다', () => {
+  const d = decideTrigger({
+    phase: 'IDLE', currentEventId: null, requestedEventId: PH,
+    hasSource: true, hasBridgeSource: true,
+  })
+  assert.equal(d.accepted && d.event.id, PH)
+})
+
+test('BR-5) 브리지 재생 중에는 무엇도 끼어들 수 없다 (non-interruptible 진입)', () => {
+  const d = decideTrigger({
+    phase: 'EVENT_PLAYING', currentEventId: STS, requestedEventId: PH, hasSource: true,
+  })
+  assert.ok(!d.accepted && d.reason === 'busy-non-interruptible')
+})
+
+test('BR-6) 브리지 자세 계약 — STANDING 시작/종료, 누운 펫은 애초에 거절된다', () => {
+  assert.equal(poseForCurrentEvent(STS), 'STANDING')
+  const d = decideTrigger({
+    phase: 'EVENT_PLAYING', currentEventId: LI, requestedEventId: CC,
+    hasSource: true, hasBridgeSource: true,
+  })
+  assert.ok(!d.accepted && d.reason === 'wrong-pose')
+})
+
+test('BR-7) 브리지는 직접 트리거·스케줄러 후보가 아니다', () => {
+  // ACTION 이므로 registeredIdleEvents(스케줄러)에는 절대 들어가지 않는다.
+  assert.ok(registeredIdleEvents().every((e) => e.id !== STS))
+  // 우선순위는 나르는 최고 액션(COME_CLOSER)과 같다 — 6c 최상위 계약 유지.
+  assert.equal(RUNTIME_EVENTS[STS]?.priority, RUNTIME_EVENTS[CC]?.priority)
 })

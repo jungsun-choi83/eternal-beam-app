@@ -291,3 +291,101 @@ def test_fal_end_frame_capability_env_gate(monkeypatch):
     monkeypatch.setenv("FAL_SEEDANCE_SUPPORTS_END_FRAME", "0")
     assert FalSeedanceProvider().supports_end_frame is False
     assert FalKlingProvider().supports_end_frame is True
+
+
+# ── wan-flf2v (TRANSITION 벤치 전용 first-last-frame 어댑터) ─────────────────
+
+
+def test_wan_flf_payload_matches_documented_contract():
+    """fal 문서로 검증한 스키마 그대로 — 필드 집합까지 정확히 (추측 금지).
+
+    fal-ai/wan-flf2v: 필수 prompt/start_image_url/end_image_url,
+    resolution(480p|720p), aspect_ratio(auto|16:9|9:16|1:1),
+    num_frames(81..100), frames_per_second(5..24).
+    """
+    from backend.services.video_motion_providers import FalWanFlfProvider
+
+    p = FalWanFlfProvider()
+    assert p.model_name() == "fal-ai/wan-flf2v"
+    assert p.supports_end_frame is True  # 이 어댑터의 존재 이유다
+    assert p.supports_durable_jobs is False  # 생성 실행(run) 경로 진입 불가
+
+    req = MotionVideoRequest(
+        prompt="p", start_image_url="https://x/start.png", start_image_bytes=b"x",
+        end_image_url="https://x/end.png", end_image_bytes=b"y",
+        output_spec={**SPEC, "resolution": "480p", "duration_sec": 4},
+    )
+    assert p.build_payload(req) == {
+        "prompt": "p",
+        "start_image_url": "https://x/start.png",
+        "end_image_url": "https://x/end.png",   # image_url 이 아니다
+        "resolution": "480p",
+        "aspect_ratio": "9:16",                  # 기본 auto 는 16:9 로 샐 수 있다
+        "num_frames": 81,
+        "frames_per_second": 20,                 # 81/4.05s — 요청 길이를 fps 로 환산
+    }
+
+
+def test_wan_flf_refuses_start_only_request_before_billing():
+    """목표 프레임 없는 호출은 계약 위반 — 조용한 start-only 강등은 없다."""
+    from backend.services.video_motion_providers import (
+        FalWanFlfProvider,
+        VideoProviderError,
+    )
+
+    req = MotionVideoRequest(
+        prompt="p", start_image_url="https://x/s.png", start_image_bytes=b"x",
+        output_spec={**SPEC, "duration_sec": 4},
+    )
+    with pytest.raises(VideoProviderError) as e:
+        FalWanFlfProvider().build_payload(req)
+    assert e.value.code == "PROVIDER_CONTRACT"
+    # generate() 경로에서도 HTTP·키 이전에 잡힌다 (과금 호출이 나가지 않는다).
+    with pytest.raises(VideoProviderError) as e2:
+        FalWanFlfProvider().generate(req)
+    assert e2.value.code == "PROVIDER_CONTRACT"
+
+
+def test_wan_flf_unrepresentable_duration_stops_locally():
+    """길이 = num_frames/fps 다. 표현 불가능한 길이는 과금 전에 멈춘다."""
+    from backend.services.video_motion_providers import (
+        FalWanFlfProvider,
+        VideoProviderError,
+    )
+
+    p = FalWanFlfProvider()
+    base = dict(
+        prompt="p", start_image_url="https://x/s.png", start_image_bytes=b"x",
+        end_image_url="https://x/e.png",
+    )
+    # 81 프레임 / fps 5..24 → 3.375s .. 16.2s
+    assert p.build_payload(
+        MotionVideoRequest(**base, output_spec={**SPEC, "duration_sec": 3.4})
+    )["frames_per_second"] == 24
+    with pytest.raises(VideoProviderError) as e:
+        p.build_payload(MotionVideoRequest(**base, output_spec={**SPEC, "duration_sec": 2.5}))
+    assert e.value.code == "PROVIDER_CONTRACT"
+    with pytest.raises(VideoProviderError) as e2:
+        p.build_payload(MotionVideoRequest(**base, output_spec={**SPEC, "duration_sec": 20}))
+    assert e2.value.code == "PROVIDER_CONTRACT"
+
+
+def test_wan_flf_is_not_in_any_class_routing_table(monkeypatch):
+    """명시 오버라이드 전용 — 상용 라우팅 표를 오염시키지 않는다."""
+    monkeypatch.setenv("FAL_KEY", "k")
+    for cls in ("MICRO", "TRANSITION", "LOCOMOTION", "INTERACTION"):
+        assert "wan_flf" not in [p.name for p in vp.routing_for_class(cls)]
+    assert vp.get_provider("wan_flf") is not None
+    # 오버라이드는 **primary 만** 바꾼다 — 클래스 기본 폴백(seedance)은 남는다.
+    monkeypatch.setenv("PHASE6_PROVIDER_TRANSITION", "wan_flf")
+    assert [p.name for p in vp.routing_for_class("TRANSITION")] == ["wan_flf", "seedance"]
+    # 단독 통제 실행은 폴백을 명시적으로 비워야 성립한다 (라이브 러너가 그렇게 한다).
+    monkeypatch.setenv("PHASE6_FALLBACK_TRANSITION", "")
+    assert [p.name for p in vp.routing_for_class("TRANSITION")] == ["wan_flf"]
+
+
+def test_wan_flf_model_is_env_overridable(monkeypatch):
+    monkeypatch.setenv("FAL_WAN_FLF_MODEL", "fal-ai/wan/v9/custom-flf")
+    from backend.services.video_motion_providers import FalWanFlfProvider
+
+    assert FalWanFlfProvider().model_name() == "fal-ai/wan/v9/custom-flf"

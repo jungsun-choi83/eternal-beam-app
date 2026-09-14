@@ -958,11 +958,19 @@ export function IdleLoopVideo({
       const actionEl = actionElFor(requestedId);
       const state = playbackRef.current;
 
+      // 진입 브리지 소스 (2026-09-10) — 요청 이벤트가 entryBridge 를 선언했고
+      // 그 소스가 마운트돼 있으면 decideTrigger 가 브리지 경유로 바꿔치기한다.
+      const requestedDef = getRuntimeEvent(requestedId);
+      const bridgeEl = requestedDef?.entryBridge
+        ? actionElFor(requestedDef.entryBridge)
+        : null;
+
       const decision = decideTrigger({
         phase: state.phase,
         currentEventId: state.phase === "IDLE" ? null : state.event.id,
         requestedEventId: requestedId,
         hasSource: !!actionEl?.src,
+        hasBridgeSource: !!bridgeEl?.src,
       });
 
       if (!decision.accepted) {

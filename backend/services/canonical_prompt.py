@@ -18,7 +18,7 @@ CANONICAL_PROMPT_VERSION = "canonical-prompt-v1"
 
 #: 정본 출력 사양 — 프롬프트와 프로바이더 파라미터 양쪽에 쓰인다.
 CANONICAL_OUTPUT_SPEC: dict[str, Any] = {
-    "pose": "neutral standing or neutral sitting",
+    "pose": "preserve reference-supported natural posture",
     "angle": "front three-quarter",
     "background": "plain solid neutral light-gray",
     "lighting": "even neutral",
@@ -34,8 +34,12 @@ _BASE = (
     "distinctive markings, ear shape, body proportions, paws and tail appearance, "
     "exactly as supported by the references. Do not invent markings or features that "
     "the references do not show.\n"
-    "Show the full pet in a neutral natural standing or sitting pose, seen from a "
-    "front three-quarter angle, camera at the pet's eye level, no extreme perspective. "
+    "Show the full pet while preserving the natural posture supported by the supplied "
+    "reference photos. Do not change a clearly standing pet into a sitting pose, or a "
+    "clearly sitting pet into a standing pose. If posture is ambiguous across the "
+    "references, preserve the posture most strongly supported by the primary reference. "
+    "Show the pet from a front three-quarter angle, camera at the pet's eye level, "
+    "no extreme perspective. "
     "All visible legs and anatomy must be natural and consistent; paws, ears and tail "
     "visible where the pet's anatomy and the references support it. Neutral expression.\n"
     "Plain solid neutral light-gray background. Even neutral lighting. "
@@ -131,10 +135,11 @@ _COMPACT_BASE = (
     "Photorealistic canonical reference image of the exact same pet shown in the "
     "supplied reference photos. Preserve its exact identity: facial proportions, "
     "coat colors, markings, ear shape, body proportions, paws and tail — do not "
-    "invent features the references do not show. Full body visible, neutral "
-    "natural standing or sitting pose, front three-quarter angle, camera at the "
-    "pet's eye level, natural anatomy, neutral expression. Plain solid neutral "
-    "light-gray background, even lighting. No accessories, no other animals, "
+    "invent features the references do not show. Full body visible. Preserve the "
+    "natural posture supported by the references; do not change a clearly standing "
+    "pet to sitting or a clearly sitting pet to standing. Front three-quarter angle, "
+    "camera at the pet's eye level, natural anatomy, neutral expression. Plain solid "
+    "neutral light-gray background, even lighting. No accessories, no other animals, "
     "no human, no objects, no text, no stylization."
 )
 

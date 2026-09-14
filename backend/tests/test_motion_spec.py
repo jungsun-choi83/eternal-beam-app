@@ -112,7 +112,7 @@ def test_all_roles_exist_and_keyframes_are_reused():
 
 def test_transitions_declare_explicit_start_target_pairs():
     pairs = {
-        "LIE_DOWN": ("NEUTRAL_IDLE", "LIE"),
+        "LIE_DOWN": ("STAND_READY", "LIE"),  # Phase 4: 눕기는 선 자세에서 시작
         "STAND_UP": ("LIE", "NEUTRAL_IDLE"),
         "FALL_ASLEEP": ("LIE", "SLEEP"),
         "WAKE_UP": ("SLEEP", "LIE"),
@@ -122,6 +122,31 @@ def test_transitions_declare_explicit_start_target_pairs():
         assert spec.motion_class == ms.CLASS_TRANSITION
         assert (spec.start_keyframe_role, spec.target_keyframe_role) == (start, target)
         assert spec.requires_target_keyframe is True
+
+
+def test_sit_stand_bridges_repair_seated_home_seam():
+    """앉은 홈 ↔ STAND_READY 브리지 (2026-09-10, Phase 4 이음매 수리).
+
+    NEUTRAL_IDLE 은 정본 자세를 물려받아 앉아 있을 수 있다 — STAND_READY 시작
+    모션으로의 진입/복귀는 이 두 전이가 잇는다. START_END 라 양 끝이 실제
+    키프레임 이미지와 일치한다(포즈 일치 하드 컷). 수요 기반: 서 있는 홈 펫은
+    생성할 이유가 없다.
+    """
+    pairs = {
+        "SIT_TO_STAND": ("NEUTRAL_IDLE", "STAND_READY"),
+        "STAND_TO_SIT": ("STAND_READY", "NEUTRAL_IDLE"),
+    }
+    for mid, (start, target) in pairs.items():
+        spec = ms.MOTIONS[mid]
+        assert spec.motion_class == ms.CLASS_TRANSITION
+        assert (spec.start_keyframe_role, spec.target_keyframe_role) == (start, target)
+        assert spec.requires_target_keyframe is True
+        assert spec.preferred_video_strategy == ms.STRATEGY_START_END
+        assert spec.loopable is False
+    # STAND_UP 은 브리지가 필요 없다 — 끝 프레임이 곧 홈(NEUTRAL_IDLE) 키프레임
+    # 이미지라 눕기→홈 복귀는 구성상 이음매가 없다. 여기를 STAND_READY 로 바꾸면
+    # 없던 이음매가 생긴다.
+    assert ms.MOTIONS["STAND_UP"].target_keyframe_role == "NEUTRAL_IDLE"
 
 
 def test_interaction_does_not_require_human_in_keyframe():
@@ -174,19 +199,19 @@ def test_micro_resolves_single_reusable_keyframe(storage, monkeypatch):
 
 
 def test_transition_resolves_start_and_target(storage, monkeypatch):
-    _, _, built = _prepare_keyframes(monkeypatch, storage, roles=("NEUTRAL_IDLE", "LIE"))
+    _, _, built = _prepare_keyframes(monkeypatch, storage, roles=("STAND_READY", "LIE"))
 
     spec = _resolve("LIE_DOWN")
     assert spec["motion_class"] == "TRANSITION"
     assert spec["video_strategy"] == ms.STRATEGY_START_END
-    assert spec["start_keyframe"]["role"] == "NEUTRAL_IDLE"
+    assert spec["start_keyframe"]["role"] == "STAND_READY"
     assert spec["target_keyframe"]["role"] == "LIE"
     assert spec["target_keyframe"]["keyframe_id"] == built["LIE"].id
     assert spec["loopable"] is False
 
 
 def test_transition_missing_target_fails_safely(storage, monkeypatch):
-    _prepare_keyframes(monkeypatch, storage)  # NEUTRAL_IDLE 만
+    _prepare_keyframes(monkeypatch, storage, roles=("STAND_READY",))  # 시작만, 목표(LIE) 없음
     with pytest.raises(ms.MotionSpecError) as e:
         _resolve("LIE_DOWN")
     assert e.value.code == "TARGET_KEYFRAME_REQUIRED" and e.value.status == 409
@@ -211,7 +236,7 @@ def test_review_keyframe_is_not_silently_used(storage, monkeypatch):
 
 
 def test_locomotion_falls_back_with_warning(storage, monkeypatch):
-    _prepare_keyframes(monkeypatch, storage)
+    _prepare_keyframes(monkeypatch, storage, roles=("STAND_READY",))  # Phase 4: 이동은 서기 시작
     spec = _resolve("COME_CLOSER")
     # 라이브러리 미해석 시 v1 형태 유지 (Phase 6.6: resolution 표시 추가).
     mr = spec["motion_reference"]
@@ -289,7 +314,7 @@ def test_router_lists_motions_and_triggers(client):
 
 
 def test_router_resolves_spec(client, storage, monkeypatch):
-    _prepare_keyframes(monkeypatch, storage, roles=("NEUTRAL_IDLE", "LIE"))
+    _prepare_keyframes(monkeypatch, storage, roles=("STAND_READY", "LIE"))
     res = client.get(f"/api/v1/pet/keyframes/{PET}/motions/LIE_DOWN/spec", headers=AUTH)
     assert res.status_code == 200
     body = res.json()

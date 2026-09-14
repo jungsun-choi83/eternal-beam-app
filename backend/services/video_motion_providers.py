@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
 PROVIDER_SEEDANCE = "seedance"
 PROVIDER_KLING = "kling"
 PROVIDER_WAN = "wan"  # 레퍼런스 조건부 경로 (Phase 6.7) — 클래스 라우팅 표에는 없다
+PROVIDER_WAN_FLF = "wan_flf"  # wan 계열 first-last-frame — TRANSITION 벤치 전용
 PROVIDER_MOCK = "mock"
 
 
@@ -634,6 +635,76 @@ class FalWanProvider(FalVideoProvider):
         }
 
 
+class FalWanFlfProvider(FalVideoProvider):
+    """
+    Wan 2.1 First-Last-Frame-to-Video (fal) — **TRANSITION 벤치 전용**.
+
+    존재 이유: TRANSITION(LIE_DOWN/STAND_UP/SIT_TO_STAND…)은 START_END_FRAME 이라
+    목표 키프레임이 실제 프로바이더 입력이어야 한다. wan 2.2 turbo I2V 에는 end
+    frame 이 스키마에 없어 라우팅이 fail-closed 로 거절한다(목표 프레임을 버린
+    생성은 등가물이 아니다). 이 어댑터는 그 공백만 메운다 — 기존 wan 어댑터는
+    바이트 단위로 불변이다.
+
+    스키마는 fal 문서에서 검증했다 (추측 없음, 2026-09-11):
+      POST fal-ai/wan-flf2v
+        필수: prompt, start_image_url, end_image_url
+        선택: resolution(480p|720p, 기본 720p), aspect_ratio(auto|16:9|9:16|1:1,
+              기본 auto), num_frames(81..100, 기본 81),
+              frames_per_second(5..24, 기본 16), seed, negative_prompt,
+              num_inference_steps, guide_scale, shift, acceleration, loras
+        출력: {"video": {"url": ...}, "seed": ...}
+
+    turbo 와 달리 길이가 **제어 가능**하다: 길이 = num_frames / fps 다. 요청
+    사양의 duration_sec 를 fps 로 환산해 명시한다 — 프로바이더 기본값(81/16 ≈
+    5.06s)에 기대지 않는다는 기존 원칙 그대로다. 표현 불가능한 길이는
+    PROVIDER_CONTRACT 로 **과금 전에** 멈춘다.
+
+    ⚠️ 라우팅 표에 없다. PHASE6_PROVIDER_<CLASS>=wan_flf 명시 오버라이드로만
+    선택된다. 모델 계열이 wan 2.1 이라 2.2-turbo 실험 결과와 직접 비교되지
+    않는다 — 벤치 근거이지 상용 증거가 아니다. durable 미지원이라 생성 실행(run)
+    경로에도 들어올 수 없다.
+    """
+
+    name = PROVIDER_WAN_FLF
+    model_env = "FAL_WAN_FLF_MODEL"
+    default_model = "fal-ai/wan-flf2v"
+    supports_end_frame = True
+
+    #: 문서화된 계약 상한/하한 — 여기서 벗어난 요청은 만들어 보내지 않는다.
+    NUM_FRAMES = 81          # 문서 기본값이자 하한 (81..100)
+    MIN_FPS, MAX_FPS = 5, 24
+
+    def build_payload(self, request: MotionVideoRequest) -> dict[str, Any]:
+        spec = request.output_spec
+        if not request.end_image_url:
+            # 이 어댑터의 존재 이유가 목표 프레임이다 — 없으면 계약 위반이다
+            # (start-only 로 조용히 강등하지 않는다).
+            raise VideoProviderError(
+                "PROVIDER_CONTRACT",
+                "wan-flf2v 는 first-last-frame 경로다 — end_image_url 없이 호출할 수 없다.",
+            )
+        duration = float(spec.get("duration_sec") or 0)
+        lo, hi = self.NUM_FRAMES / self.MAX_FPS, self.NUM_FRAMES / self.MIN_FPS
+        if not (lo - 0.05 <= duration <= hi + 0.05):
+            raise VideoProviderError(
+                "PROVIDER_CONTRACT",
+                f"wan-flf2v 로 표현 가능한 길이는 {lo:.2f}..{hi:.1f}s 다 "
+                f"({self.NUM_FRAMES} 프레임 / fps {self.MIN_FPS}..{self.MAX_FPS}) — "
+                f"{duration}s 요청은 계약 위반 (모션 스펙/프로파일을 조정하라).",
+            )
+        fps = min(self.MAX_FPS, max(self.MIN_FPS, round(self.NUM_FRAMES / duration)))
+        return {
+            "prompt": request.prompt,
+            "start_image_url": request.start_image_url,
+            "end_image_url": request.end_image_url,
+            "resolution": str(spec.get("resolution") or "480p"),
+            # 기본 auto 는 16:9 로 샐 수 있다 — 9:16 앵커 입력과 이중 잠금.
+            "aspect_ratio": str(spec.get("aspect_ratio") or "9:16"),
+            "num_frames": self.NUM_FRAMES,
+            "frames_per_second": fps,
+        }
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # Runway 트랜스포트 — Seedance 2.5 를 Runway Dev API 로 (RUNWAY_API_KEY 재사용)
 # ══════════════════════════════════════════════════════════════════════════
@@ -968,6 +1039,8 @@ _FAL: dict[str, VideoGenerationProvider] = {
     PROVIDER_KLING: FalKlingProvider(),
     # 테스트 전용 저비용 어댑터 — 라우팅 표에 없고 env 오버라이드로만 선택된다.
     PROVIDER_WAN: FalWanProvider(),
+    # TRANSITION 벤치 전용 (start+end) — 마찬가지로 명시 오버라이드 전용.
+    PROVIDER_WAN_FLF: FalWanFlfProvider(),
 }
 _RUNWAY: dict[str, VideoGenerationProvider] = {
     PROVIDER_SEEDANCE: RunwaySeedanceProvider(),  # Kling 은 Runway 에 없다 — fal 유지
@@ -983,6 +1056,7 @@ _AUTO_ORDER: dict[str, tuple[str, ...]] = {
     PROVIDER_SEEDANCE: ("runway", "fal", "direct"),
     PROVIDER_KLING: ("fal", "direct"),
     PROVIDER_WAN: ("fal",),  # I2V wan 은 fal 뿐 (Runway wan3 는 모션 레퍼런스 전용)
+    PROVIDER_WAN_FLF: ("fal",),
 }
 _MOCK = MockVideoProvider()
 

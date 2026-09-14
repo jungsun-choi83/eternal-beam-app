@@ -277,7 +277,7 @@ def test_resolver_makes_no_video_provider_calls(monkeypatch):
 
 
 def test_profile_derivation_is_structural_only(storage, monkeypatch):
-    h, _ = _prepare_pipeline(monkeypatch, storage)
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY",))
     profile_obj = _run(ids.get_profile(user_id=USER, pet_id=PET))
     p = mrs.derive_motion_profile(profile_obj)
 
@@ -300,7 +300,7 @@ def test_profile_derivation_is_structural_only(storage, monkeypatch):
 
 
 def test_contract_resolves_reference_with_asset(storage, monkeypatch):
-    h, _ = _prepare_pipeline(monkeypatch, storage)
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY",))
     reg("DOG_APPROACH_FRONT_GENERIC", motion="COME_CLOSER", view="FRONT",
         direction="TOWARD_CAMERA")
 
@@ -321,7 +321,7 @@ def test_contract_resolves_reference_with_asset(storage, monkeypatch):
 
 
 def test_required_policy_fails_safely_without_compatible_reference(storage, monkeypatch):
-    h, _ = _prepare_pipeline(monkeypatch, storage)
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY",))
     monkeypatch.setitem(
         ms.MOTIONS, "RUN",
         dataclasses.replace(ms.MOTIONS["RUN"], motion_reference_policy=ms.REF_REQUIRED),
@@ -332,7 +332,7 @@ def test_required_policy_fails_safely_without_compatible_reference(storage, monk
 
 
 def test_generation_records_reference_version_immutably(storage, monkeypatch):
-    h, _ = _prepare_pipeline(monkeypatch, storage)
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY",))
     reg("DOG_APPROACH_FRONT_GENERIC", motion="COME_CLOSER", view="FRONT",
         direction="TOWARD_CAMERA")
 
@@ -375,7 +375,7 @@ def client(monkeypatch) -> ASGITestClient:
 
 
 def test_router_register_status_list_resolve(client, storage, monkeypatch):
-    h, _ = _prepare_pipeline(monkeypatch, storage)
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY",))
 
     body = {
         "reference_key": "DOG_RUN_FRONT_SHORT_LEG", "species": "DOG", "motion_id": "RUN",

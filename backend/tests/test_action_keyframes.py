@@ -173,9 +173,14 @@ def test_roles_map_only_existing_action_ids():
             assert aid in known, f"{aid} 는 기존 레지스트리에 없다 — 새 액션 id 금지"
             assert aid not in seen, f"{aid} 가 두 역할에 매핑됐다"
             seen.add(aid)
-    # 현재 런타임 행동은 전부 NEUTRAL_IDLE 로 흡수된다 (다대일 재사용).
-    for aid in ("BREATHING", "BLINKING", "COME_CLOSER", "TOUCH", "IDLE_BREATH"):
+    # 중립 시작 행동은 NEUTRAL_IDLE 로 흡수된다 (다대일 재사용).
+    for aid in ("BREATHING", "BLINKING", "TOUCH", "IDLE_BREATH", "PET_HEAD", "LOOK_UP"):
         assert spec_mod.role_for_action(aid) == "NEUTRAL_IDLE"
+    # Phase 4: 서기 시작(이동/눕기 전이)은 STAND_READY, LIE 시작은 LIE.
+    for aid in ("COME_CLOSER", "LIE_DOWN"):
+        assert spec_mod.role_for_action(aid) == "STAND_READY"
+    for aid in ("LIE_IDLE", "STAND_UP"):
+        assert spec_mod.role_for_action(aid) == "LIE"
     assert spec_mod.role_for_action("NOT_AN_ACTION") is None
 
 
@@ -282,6 +287,103 @@ def test_spec_snapshot_recorded_on_keyframe(storage, monkeypatch):
     assert k.spec["spec_version"] == spec_mod.KEYFRAME_SPEC_VERSION
     assert "BREATHING" in k.spec["supported_action_ids"]
     assert k.spec["video_compat"]["loopable_base"] is True
+
+
+def test_neutral_idle_preserves_canonical_posture_not_a_pose_choice():
+    """spec-v2: NEUTRAL_IDLE 은 홈/기준 포즈다 — 앉기/서기를 **다시 고르지 않는다**.
+
+    이전 문구 "sitting or standing pose" 는 이미지 모델에게 포즈 선택권을 줬고
+    앉기로 강하게 쏠렸다. 이제 정본(Canonical)의 기존 자세를 그대로 물려받는다:
+    정본이 서 있으면 서 있고, 앉아 있으면 앉아 있다.
+    """
+    spec = spec_mod.KEYFRAME_ROLES["NEUTRAL_IDLE"]
+    pose = spec.required_pose
+    # 포즈 선택 문구 금지 — 이 문구가 앉기 쏠림의 원인이었다.
+    assert "sitting or standing pose" not in pose
+    assert "standing or sitting pose" not in pose
+    # 정본 자세 유지가 명시된다 — 양방향 모두.
+    assert "existing body posture" in pose
+    assert "canonical reference image" in pose
+    assert "stays standing" in pose and "stays sitting" in pose
+    # 중립 홈 특성은 유지된다 (몸 이완 / 머리 수평 / 눈 뜸 / 입 이완).
+    for kept in ("body relaxed", "head level", "eyes open", "mouth relaxed"):
+        assert kept in pose, kept
+    # 가시성·역할 계약은 그대로다 — 문구만 바뀌었다.
+    assert spec.required_visibility == ("face", "full_body", "ears", "front_paws")
+    assert spec.video_compat["loopable_base"] is True
+    # 버전 범프 — 재사용 게이트(analyzer_versions)가 이 값을 비교하므로, 안
+    # 올리면 앉기로 쏠린 기존 NEUTRAL_IDLE 키프레임이 영원히 재사용된다.
+    assert spec_mod.KEYFRAME_SPEC_VERSION == "keyframe-spec-v2"
+    # 두 프롬프트 빌더 모두에 실제로 실린다 (컴팩트는 Runway 1000자 계약 유지).
+    prompt = spec_mod.build_keyframe_prompt(spec, {})
+    assert "keeps the pet's existing body posture" in prompt
+    compact = spec_mod.build_compact_keyframe_prompt(spec, {})
+    assert "keeps the pet's existing body posture" in compact
+    assert len(compact) <= 1000
+    # 다른 역할의 문구는 건드리지 않았다.
+    assert "lying down naturally" in spec_mod.KEYFRAME_ROLES["LIE"].required_pose
+
+
+def test_phase4_four_pose_roles_and_lazy_generation_contract():
+    """Phase 4: 포즈 역할 4종 + 지연 생성 계약 (스펙 수준).
+
+    신규 펫의 최소 생성물은 Canonical + NEUTRAL_IDLE 이다 — 기본 모션
+    (BREATHING/아이들 4종/PET_HEAD/LOOK_UP)이 전부 NEUTRAL_IDLE 시작이고 목표
+    키프레임이 없기 때문에, 런 오케스트레이션(KEYFRAMES 스테이지는 스펙이
+    가리키는 역할만 만든다)이 다른 역할을 만들 이유가 없다. STAND_READY/LIE/
+    SLEEP 은 그 역할을 시작(또는 목표)으로 요구하는 모션이 요청될 때만 생긴다.
+    """
+    from backend.services import motion_spec as ms
+
+    # 기계적 포즈 역할 4종이 1급으로 존재하고 순서가 결정론적이다.
+    assert spec_mod.KEYFRAME_ROLE_ORDER[:4] == ("NEUTRAL_IDLE", "STAND_READY", "LIE", "SLEEP")
+    for role in spec_mod.KEYFRAME_ROLE_ORDER:
+        assert role in spec_mod.KEYFRAME_ROLES
+
+    # STAND_READY 는 명시적 서기다 — NEUTRAL_IDLE 과 달리 자세를 물려받지 않는다.
+    stand = spec_mod.KEYFRAME_ROLES["STAND_READY"].required_pose
+    assert "standing upright" in stand and "all four" in stand
+    assert "canonical reference" not in stand
+
+    # SLEEP 은 LIE 와 다른 신체 구성 — 눈 감김 + 머리 내림 vs 머리 들고 깨어 있음.
+    assert "eyes fully closed" in spec_mod.KEYFRAME_ROLES["SLEEP"].required_pose
+    assert "head resting down" in spec_mod.KEYFRAME_ROLES["SLEEP"].required_pose
+    assert "head upright and awake" in spec_mod.KEYFRAME_ROLES["LIE"].required_pose
+
+    # 신규 펫 기본 모션은 NEUTRAL_IDLE 하나만 요구한다 — 지연 생성의 근거.
+    basic = ("BREATHING", "BLINKING", "EAR_TWITCHING", "HEAD_TILTING",
+             "TAIL_WAGGING", "PET_HEAD", "LOOK_UP")
+    for mid in basic:
+        m = ms.MOTIONS[mid]
+        assert m.start_keyframe_role == "NEUTRAL_IDLE", mid
+        assert not m.requires_target_keyframe and m.target_keyframe_role is None, mid
+
+    # 역할별 수요 모션 — 해당 모션이 요청될 때만 그 역할이 필요해진다.
+    assert {"COME_CLOSER", "RUN", "WALK", "LIE_DOWN"} <= set(
+        ms.motions_for_keyframe_role("STAND_READY"))
+    assert {"LIE_IDLE", "STAND_UP", "FALL_ASLEEP"} <= set(
+        ms.motions_for_keyframe_role("LIE"))
+    assert {"SLEEP_BREATH", "FALL_ASLEEP", "WAKE_UP"} <= set(
+        ms.motions_for_keyframe_role("SLEEP"))
+
+
+def test_stand_ready_builds_on_demand_with_role_scoped_storage(storage, monkeypatch):
+    """STAND_READY 는 다른 역할과 같은 빌더/정책으로 생성되고, 저장 경로가
+    역할별로 갈라지며(keyframes/stand_ready/v1/), 역할당 승인 이미지는 1장이다."""
+    h, _ = _prepare_canonical(monkeypatch, storage)
+    install_kf_vlm(monkeypatch, VLM_KF_OK)
+    provider = FakeProvider("runway", [GOOD()] * 10)
+    k = _build_kf(h, [provider], role="STAND_READY")
+
+    assert k.status == kf.STATUS_COMPLETE
+    assert k.keyframe_role == "STAND_READY"
+    assert provider.calls == 1  # 후보 정책 불변: 첫 QA PASS 에서 즉시 멈춘다
+    # 역할당 승인 이미지 1장 — 선택은 정확히 하나다.
+    assert k.selected_candidate_id
+    assert sum(1 for c in k.candidates if c.selected) == 1
+    # 저장 경로가 역할별로 물질화된다.
+    sel = next(c for c in k.candidates if c.selected)
+    assert "/keyframes/stand_ready/v1/" in (sel.raw_object_path or "")
 
 
 # ══════════════════════════════════════════════════════════════════════════

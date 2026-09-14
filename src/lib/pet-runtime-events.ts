@@ -53,7 +53,10 @@ export type PetAction =
   | "LOOK_UP"
   | "LIE_DOWN"
   | "STAND_UP"
-  | "LIE_IDLE";
+  | "LIE_IDLE"
+  // 진입 브리지 (2026-09-10) — 직접 트리거되는 액션이 아니라, 앉은 홈에서
+  // STAND_READY 시작 모션으로 갈 때 decideTrigger 가 끼워 넣는 전이다.
+  | "SIT_TO_STAND";
 
 /**
  * 펫의 자세 상태 (2026-09-08, 전이 모션 도입).
@@ -162,6 +165,15 @@ export interface RuntimeEventDef {
    * 홈 루프(LIE_IDLE). 벗어나는 길은 선점(더 높은 우선순위 트리거)뿐이다.
    */
   loopUntilPreempted?: boolean;
+  /**
+   * 진입 브리지 (2026-09-10) — 이 이벤트의 시작 포즈가 홈과 다를 수 있을 때
+   * (STAND_READY 시작 모션 vs 앉은 NEUTRAL_IDLE 홈) 사이를 잇는 전이 id.
+   * decideTrigger 가 브리지 **소스가 있을 때만** 요청을 브리지로 바꿔치기하고
+   * chainTo 를 원래 이벤트로 동적으로 박는다. 소스가 없으면(= 서 있는 홈이라
+   * 브리지를 생성하지 않은 펫) 지금까지처럼 직행한다 — 생성 여부 결정이 곧
+   * "브리지가 필요한 펫인가"의 수요 신호다.
+   */
+  entryBridge?: RuntimeEventId;
 }
 
 /**
@@ -181,6 +193,7 @@ export const PET_ACTION_IDS: readonly PetAction[] = [
   "LIE_DOWN",
   "STAND_UP",
   "LIE_IDLE",
+  "SIT_TO_STAND",
 ];
 
 /**
@@ -213,6 +226,8 @@ export const RUNTIME_EVENTS: Readonly<Partial<Record<RuntimeEventId, RuntimeEven
     returnPolicy: "hold-and-dissolve",
     themeIndependent: true,
     preload: "auto",
+    // Phase 4: STAND_READY 포즈에서 시작한다 — 앉은 홈이면 SIT_TO_STAND 로 진입.
+    entryBridge: "SIT_TO_STAND",
   },
 
   // PET_HEAD (2026-09-08) — 첫 INTERACTION 액션. TOUCH(웹에서는 싱글탭)가
@@ -269,6 +284,29 @@ export const RUNTIME_EVENTS: Readonly<Partial<Record<RuntimeEventId, RuntimeEven
     requiredPose: "STANDING",
     endPose: "LYING",
     chainTo: "LIE_IDLE",
+    // Phase 4: STAND_READY 포즈에서 시작한다 — 앉은 홈이면 SIT_TO_STAND 로 진입.
+    entryBridge: "SIT_TO_STAND",
+  },
+
+  // ── 진입 브리지 (2026-09-10) — 앉은 홈 → STAND_READY 이음매 수리 ──────
+  // 직접 트리거 대상이 아니다: decideTrigger 가 entryBridge 요청을 이 정의로
+  // 바꿔치기하고 chainTo 를 원래 이벤트로 동적으로 박는다 (재생 중 판정은
+  // 레지스트리의 이 정의를 본다 — priority 100 = 브리지가 나르는 최고 우선
+  // 액션(COME_CLOSER)과 같게, non-interruptible = 진입은 끝까지 간다).
+  // 시작 프레임 = NEUTRAL_IDLE 키프레임(홈 포즈), 끝 프레임 = STAND_READY
+  // 키프레임(체인 대상의 시작 포즈) — 양쪽 하드 컷이 전부 포즈 일치다.
+  SIT_TO_STAND: {
+    id: "SIT_TO_STAND",
+    kind: "ACTION",
+    priority: 100,
+    interruptible: false,
+    returnToIdle: false,
+    entryPolicy: "immediate",
+    returnPolicy: "immediate", // 복귀 없음 — 동적 chainTo 가 대신한다
+    themeIndependent: true,
+    preload: "none",
+    requiredPose: "STANDING",
+    endPose: "STANDING",
   },
   LIE_IDLE: {
     id: "LIE_IDLE",
@@ -477,6 +515,11 @@ export interface TriggerContext {
   requestedEventId: string;
   /** 요청된 이벤트의 소스 URL 이 실제로 붙어 있는가. */
   hasSource: boolean;
+  /**
+   * 요청된 이벤트의 entryBridge 소스가 붙어 있는가 (2026-09-10). 생략/false =
+   * 브리지 없음 → 직행 (서 있는 홈 펫과 기존 호출부 전부의 기본 경로).
+   */
+  hasBridgeSource?: boolean;
 }
 
 /**
@@ -526,7 +569,7 @@ export function decideTrigger(ctx: TriggerContext): TriggerDecision {
     return { accepted: false, reason: "wrong-pose" };
   }
 
-  if (ctx.phase === "IDLE") return { accepted: true, event: requested };
+  if (ctx.phase === "IDLE") return { accepted: true, event: withEntryBridge(requested, ctx) };
   if (ctx.phase === "EVENT_RETURNING") return { accepted: false, reason: "returning" };
 
   const current = ctx.currentEventId ? RUNTIME_EVENTS[ctx.currentEventId] : undefined;
@@ -536,7 +579,26 @@ export function decideTrigger(ctx: TriggerContext): TriggerDecision {
   if (requested.priority <= current.priority) {
     return { accepted: false, reason: "lower-priority" };
   }
-  return { accepted: true, event: requested };
+  return { accepted: true, event: withEntryBridge(requested, ctx) };
+}
+
+/**
+ * 수락된 요청에 진입 브리지를 끼운다 (2026-09-10, 앉은 홈 ↔ STAND_READY 수리).
+ *
+ * 판정(자세/우선순위/소스)은 **요청된 이벤트** 기준으로 이미 끝났다 — 여기서는
+ * 재생 시작 대상만 바꾼다: 브리지 정의에 chainTo=원래 이벤트를 동적으로 박아
+ * 돌려주면, 플레이어는 시작한 def 객체의 chainTo 를 읽으므로(chainFrom) 브리지
+ * 종료 시 원래 이벤트로 하드 컷 체인된다. 원래 이벤트의 자체 chainTo(LIE_DOWN→
+ * LIE_IDLE)는 레지스트리에서 다시 해석되므로 그대로 살아 있다.
+ *
+ * 브리지 소스가 없으면 직행 — 서 있는 홈 펫은 브리지 자산을 애초에 생성하지
+ * 않으므로(수요 기반), 그 결정이 곧 "브리지 불필요" 신호다.
+ */
+function withEntryBridge(requested: RuntimeEventDef, ctx: TriggerContext): RuntimeEventDef {
+  if (!requested.entryBridge || !ctx.hasBridgeSource) return requested;
+  const bridge = RUNTIME_EVENTS[requested.entryBridge];
+  if (!bridge || bridge.id === requested.id) return requested;
+  return { ...bridge, chainTo: requested.id };
 }
 
 /**
