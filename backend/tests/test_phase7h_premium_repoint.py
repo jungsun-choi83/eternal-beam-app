@@ -288,6 +288,22 @@ def test_blinking_purchase_creates_run_and_pass_finalizes_commerce(storage, monk
     assert state.active == [] and state.missing == []
 
 
+def test_blinking_start_keyframe_does_not_request_canonical_reuse(storage, monkeypatch):
+    """BREATHING → NEUTRAL_IDLE 재사용은 BREATHING 전용이다 — BLINKING 도 같은
+    NEUTRAL_IDLE 시작 키프레임을 쓰지만(다대일 재사용, action_keyframe_spec),
+    _execute() 는 이 호출에 allow_canonical_reuse 를 켜지 않는다."""
+    seed_intake()
+    harness = _premium_harness(monkeypatch, "BLINKING", decision="PASS")
+    _run(_grant(5))
+
+    _buy()
+    done = _work()
+    assert done.status == runs.STATUS_PUBLISHED
+    assert len(harness.keyframe_build_calls) == 1
+    assert harness.keyframe_build_calls[0]["keyframe_role"] == "NEUTRAL_IDLE"
+    assert not harness.keyframe_build_calls[0].get("allow_canonical_reuse")
+
+
 def test_retry_and_second_purchase_do_not_duplicate(storage, monkeypatch):
     seed_intake()
     _premium_harness(monkeypatch, "BLINKING", decision="PASS")

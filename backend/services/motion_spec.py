@@ -29,7 +29,8 @@ INTERACTION IMAGE_TO_VIDEO          v1 은 사람 손을 요구하지 않는다 
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import asyncio
+from dataclasses import dataclass, field, replace
 from typing import Any, Optional
 
 from ..scenarios.pet_scenarios import IDLE_EVENTS, PET_ACTIONS
@@ -74,10 +75,20 @@ from .action_keyframe_spec import BREATHING_HOME_STATE, KEYFRAME_ROLES
 #     v11 확장 (같은 날 — v11 아티팩트 생성 전이라 재범프 없음): 앉은 홈 ↔
 #     STAND_READY 이음매 브리지 전이 SIT_TO_STAND / STAND_TO_SIT 추가.
 #     기존 모션 정의는 바이트 단위로 불변이다.
-MOTION_SPEC_VERSION = "motion-spec-v11"
+# v12 (Phase 4 authoritative motion registry): 기존 모션 id/키프레임 라우팅/전략은
+#     그대로 유지하고, 각 모션에 정본 요구사항(requirements)을 추가한다.
+#     (class/type, 역할, 길이, loop/interrupt, morphology 민감도,
+#      reference/provider/QA 요구사항). Phase 6.7 매칭/소비 로직은 바꾸지 않는다.
+# v14 (Phase 6): motion video QA 에 구조/해부학 도메인 체크
+#     structural_morphology_consistency 를 정본 요구사항으로 선언.
+# v15: 모션 클래스 기본 + 모션별 override 가능한 영상 provider 순서를 이 파일의
+#      정본으로 이동. 생성 서비스/adapter registry 는 이 순서를 소비할 뿐이다.
+MOTION_SPEC_VERSION = "motion-spec-v15"
 # v2 (Phase 6.6): pet_motion_profile 추가 + motion_reference 가 라이브러리에서
 # 해석된 실제 자산/버전/호환성/출처를 담는다 (미해석 시 기존 v1 형태 + 경고 유지).
-PHASE6_CONTRACT_VERSION = "phase6-contract-v2"
+# v3 (Phase 4): resolve 계약에 motion_type + requirements 를 동봉한다.
+PHASE6_CONTRACT_VERSION = "phase6-contract-v3"
+MOTION_REGISTRY_CONTRACT_VERSION = "motion-registry-v1"
 
 CLASS_MICRO = "MICRO"
 CLASS_TRANSITION = "TRANSITION"
@@ -88,6 +99,26 @@ MOTION_CLASSES = (CLASS_MICRO, CLASS_TRANSITION, CLASS_LOCOMOTION, CLASS_INTERAC
 STRATEGY_I2V = "IMAGE_TO_VIDEO"
 STRATEGY_START_END = "START_END_FRAME"
 STRATEGY_I2V_MOTION_REF = "IMAGE_TO_VIDEO_WITH_MOTION_REF"
+
+# ── 모션 영상 provider 라우팅 정본 ────────────────────────────────────────
+#
+# 값은 adapter 구현명이 아니라 안정적인 registry id 다. 실제 adapter/transport
+# 선택은 video_motion_providers 가 담당한다. 따라서 모델 교체는 이 표만 바꾸고,
+# 생성 서비스에는 motion id → provider 분기가 생기지 않는다.
+PROVIDER_WAN_3_STANDARD = "wan_3_standard"
+PROVIDER_SEEDANCE = "seedance"
+PROVIDER_KLING_3 = "kling_3"
+
+MOTION_PROVIDER_ORDER_BY_CLASS: dict[str, tuple[str, ...]] = {
+    CLASS_MICRO: (PROVIDER_WAN_3_STANDARD, PROVIDER_SEEDANCE),
+    CLASS_INTERACTION: (PROVIDER_SEEDANCE, PROVIDER_KLING_3),
+    CLASS_LOCOMOTION: (PROVIDER_KLING_3, PROVIDER_WAN_3_STANDARD),
+    CLASS_TRANSITION: (PROVIDER_KLING_3, PROVIDER_WAN_3_STANDARD),
+}
+
+# 특정 모션만 클래스 기본과 다르게 운영할 때 이 표에 추가한다.
+# 예: "LOOK_UP": (PROVIDER_SEEDANCE, PROVIDER_WAN_3_STANDARD)
+MOTION_PROVIDER_ORDER_OVERRIDES: dict[str, tuple[str, ...]] = {}
 
 REF_NONE = "none"
 REF_PREFERRED = "preferred"
@@ -123,6 +154,10 @@ class MotionSpec:
     #: 레퍼런스 매칭용 선호 카메라 뷰/이동 방향 (Phase 6.6). None = 무관.
     preferred_camera_view: Optional[str] = None
     preferred_travel_direction: Optional[str] = None
+    #: class 보다 세분화한 타입(도메인 용어). 기존 런타임 id 와는 독립.
+    motion_type: str = "GENERIC"
+    #: authoritative motion registry 요구사항 (Phase 4).
+    requirements: dict[str, Any] = field(default_factory=dict)
 
 
 #: MICRO 는 클래스 전체가 **고정 4.0s** 다 (v6). 프로바이더 최소(Runway
@@ -329,6 +364,245 @@ MOTIONS: dict[str, MotionSpec] = {
     ),
 }
 
+
+_MOTION_TYPES: dict[str, str] = {
+    BREATHING_HOME_STATE: "IDLE_BREATH",
+    "BLINKING": "IDLE_FACE_MICRO",
+    "EAR_TWITCHING": "IDLE_EAR_MICRO",
+    "HEAD_TILTING": "IDLE_HEAD_MICRO",
+    "TAIL_WAGGING": "IDLE_TAIL_MICRO",
+    "LOOK_UP": "ATTENTIVE_LOOK",
+    "HAPPY": "AFFECTIVE_MICRO",
+    "LIE_IDLE": "LIE_IDLE_LOOP",
+    "SLEEP_BREATH": "SLEEP_BREATH_LOOP",
+    "LIE_DOWN": "POSE_TRANSITION_DOWN",
+    "SIT_TO_STAND": "POSE_TRANSITION_UP",
+    "STAND_TO_SIT": "POSE_TRANSITION_DOWN",
+    "STAND_UP": "POSE_TRANSITION_UP",
+    "FALL_ASLEEP": "STATE_TRANSITION_SLEEP",
+    "WAKE_UP": "STATE_TRANSITION_WAKE",
+    "COME_CLOSER": "APPROACH_LOCOMOTION",
+    "RUN": "RUN_LOCOMOTION",
+    "WALK": "WALK_LOCOMOTION",
+    "ROLL_OVER": "ROLL_TRANSITION",
+    "SIT_DOWN": "SIT_TRANSITION",
+    "PET_HEAD": "HUMAN_INTERACTION_REACTION",
+}
+
+_MORPHOLOGY_SENSITIVITY: dict[str, str] = {
+    BREATHING_HOME_STATE: "LOW",
+    "BLINKING": "LOW",
+    "EAR_TWITCHING": "LOW",
+    "HEAD_TILTING": "LOW",
+    "TAIL_WAGGING": "MEDIUM",
+    "LOOK_UP": "LOW",
+    "HAPPY": "MEDIUM",
+    "LIE_IDLE": "MEDIUM",
+    "SLEEP_BREATH": "MEDIUM",
+    "LIE_DOWN": "MEDIUM",
+    "SIT_TO_STAND": "MEDIUM",
+    "STAND_TO_SIT": "MEDIUM",
+    "STAND_UP": "MEDIUM",
+    "FALL_ASLEEP": "MEDIUM",
+    "WAKE_UP": "MEDIUM",
+    "COME_CLOSER": "HIGH",
+    "RUN": "HIGH",
+    "WALK": "HIGH",
+    "ROLL_OVER": "HIGH",
+    "SIT_DOWN": "MEDIUM",
+    "PET_HEAD": "MEDIUM",
+}
+
+
+def _class_default_qa(spec: MotionSpec) -> dict[str, Any]:
+    structural_checks = ["vlm_anatomy"]
+    identity_checks = ["identity_over_time", "vlm_same_pet"]
+    motion_specific = ["vlm_motion", "temporal_stability", "vlm_composition"]
+
+    if spec.motion_class == CLASS_TRANSITION:
+        structural_checks = [
+            "starts_at_start_pose",
+            "reaches_target_pose",
+            "vlm_anatomy",
+            "structural_morphology_consistency",
+        ]
+        motion_specific = ["vlm_motion", "vlm_target_pose", "temporal_stability", "vlm_composition"]
+    elif spec.motion_class == CLASS_LOCOMOTION:
+        structural_checks = ["vlm_anatomy", "structural_morphology_consistency"]
+        identity_checks = ["identity_over_time", "vlm_same_pet"]
+        motion_specific = ["vlm_motion", "temporal_stability", "vlm_composition"]
+    elif spec.motion_class == CLASS_INTERACTION:
+        structural_checks = ["vlm_anatomy", "structural_morphology_consistency"]
+        motion_specific = ["vlm_motion", "temporal_stability", "vlm_composition"]
+
+    if bool(spec.video_compat.get("returns_to_start_pose")):
+        motion_specific.append("loop_return")
+    if spec.motion_id == BREATHING_HOME_STATE:
+        motion_specific.append("temporal_breathing")
+
+    return {
+        "structural_anatomy": {
+            "required_checks": structural_checks,
+            "morphology_consistency": {
+                "check": "structural_morphology_consistency",
+                # body_size_class 제외 — 프레임 점유율은 실제 체급이 아니라서
+                # 구조 QA 의 비교 축이 될 수 없다.
+                "compare_fields": [
+                    "body_length_class",
+                    "leg_length_class",
+                    "head_proportion_class",
+                    "muzzle_proportion_class",
+                    "body_build_class",
+                    "ear_form",
+                    "tail_form",
+                ],
+                "minimum_support_frames": 2,
+                "strong_contradiction_ratio": 0.7,
+                "use_sampled_frames": True,
+                "missing_evidence_policy": "unknown_or_review_never_fail",
+                "severe_corruption_signals": [
+                    "limb_count_or_placement",
+                    "joint_anatomy_plausibility",
+                    "body_deformation",
+                ],
+                # 자세·카메라·기울기에 따라 자연히 함께 바뀌는 bbox/실루엣 신호들.
+                # 어느 모션 클래스에서도 이것들의 변화만으로 해부학 붕괴를 주장할
+                # 수 없다 — 강한 모순도 자문(REVIEW)으로만 남긴다.
+                "pose_dependent_fields": [
+                    "body_length_class",
+                    "leg_length_class",
+                    "body_build_class",
+                ],
+                "pose_dependent_policy": "review_never_fail",
+                "pose_dependent_signals": ["body_deformation"],
+                # severe_corruption_signals 는 전부 휴리스틱 마스크 기하에서
+                # 나온다 — required_checks 에 올리지 않는 한 자문(REVIEW)이다.
+                # 하드 FAIL 게이트는 required 인 vlm_anatomy /
+                # structural_morphology_consistency 가 담당한다.
+                "severe_corruption_signal_policy": "advisory_unless_required",
+            },
+            "notes": "Structure/anatomy checks are fail-closed in QA when explicit FAIL appears, except pose-dependent morphology signals and non-required advisory checks.",
+        },
+        "identity": {
+            "required_checks": identity_checks,
+            "notes": "Identity continuity over time remains mandatory.",
+        },
+        "motion_specific": {
+            "required_checks": motion_specific,
+            "notes": "Motion-class specific checks are declared in registry and executed in motion_video_qa.",
+        },
+    }
+
+
+def _morphology_match_fields(spec: MotionSpec) -> list[str]:
+    """
+    모션별 구조 매칭 축 (종은 항상 하드 게이트라 별도).
+
+    body_size_class 는 축이 아니다: 사진에서 얻을 수 있는 유일한 근거가
+    프레임 점유율(카메라 거리의 함수)이라 실제 체급이 아니었다. 실측 소스가
+    생기기 전까지 구조 매칭에서 제외한다.
+    """
+    base = ["leg_length_class", "body_length_class"]
+    if spec.motion_class == CLASS_LOCOMOTION:
+        return [*base, "body_build_class"]
+    if spec.motion_id in ("TAIL_WAGGING", "LIE_IDLE", "SLEEP_BREATH"):
+        return [*base, "tail_form"]
+    if spec.motion_id == "PET_HEAD":
+        return ["head_proportion_class", "muzzle_proportion_class", "ear_form"]
+    return base
+
+
+def _morphology_confidence_floor(spec: MotionSpec) -> str:
+    sensitivity = _MORPHOLOGY_SENSITIVITY.get(spec.motion_id, "MEDIUM")
+    return "medium" if sensitivity in ("HIGH", "MEDIUM") else "low"
+
+
+def _requirements_for(spec: MotionSpec) -> dict[str, Any]:
+    required_end_roles: list[str] = []
+    optional_end_roles: list[str] = []
+    if spec.target_keyframe_role:
+        if spec.requires_target_keyframe:
+            required_end_roles = [spec.target_keyframe_role]
+        else:
+            optional_end_roles = [spec.target_keyframe_role]
+
+    provider_required_all: list[str] = []
+    provider_preferred_any: list[str] = []
+    degrade_allowed = True
+    degrade_target = spec.fallback_video_strategy
+
+    if spec.preferred_video_strategy == STRATEGY_START_END:
+        provider_required_all.append("supports_end_frame")
+        degrade_allowed = False
+        degrade_target = None
+    if spec.preferred_video_strategy == STRATEGY_I2V_MOTION_REF:
+        provider_preferred_any.append("supports_motion_reference")
+        if spec.motion_reference_policy == REF_REQUIRED:
+            provider_required_all.append("supports_motion_reference")
+
+    match_fields = _morphology_match_fields(spec)
+
+    reference_requirements: dict[str, Any] = {
+        "policy": spec.motion_reference_policy,
+        "reference_id": spec.motion_reference_id,
+        "required": spec.motion_reference_policy == REF_REQUIRED,
+        "preferred": spec.motion_reference_policy == REF_PREFERRED,
+        "allows_fallback": bool(spec.fallback_video_strategy),
+        "fallback_video_strategy": spec.fallback_video_strategy,
+    }
+    if spec.motion_reference_policy != REF_NONE:
+        reference_requirements["morphology_match_fields"] = ["species", *match_fields]
+
+    return {
+        "registry_contract_version": MOTION_REGISTRY_CONTRACT_VERSION,
+        "roles": {
+            "required_start_roles": [spec.start_keyframe_role],
+            "required_end_roles": required_end_roles,
+            "optional_end_roles": optional_end_roles,
+        },
+        "duration": {
+            "range_sec": [float(spec.duration_range_sec[0]), float(spec.duration_range_sec[1])],
+        },
+        "loopability": {
+            "loopable": bool(spec.loopable),
+        },
+        "interruptibility": {
+            "interruptible": bool(spec.interruptible),
+        },
+        "morphology": {
+            "sensitivity": _MORPHOLOGY_SENSITIVITY.get(spec.motion_id, "MEDIUM"),
+            "constraint_mode": "structural_only",
+            "confidence_floor": _morphology_confidence_floor(spec),
+            "match_fields": match_fields,
+            "required_profile_fields": [
+                "species",
+                *match_fields,
+            ]
+            if spec.motion_reference_policy != REF_NONE or spec.motion_class == CLASS_LOCOMOTION
+            else ["species"],
+            "forbidden_logic": ["breed_specific_logic"],
+        },
+        "reference": reference_requirements,
+        "provider_capabilities": {
+            "required_all": provider_required_all,
+            "preferred_any": provider_preferred_any,
+            "degrade_allowed": degrade_allowed,
+            "degrade_to_strategy": degrade_target,
+        },
+        "qa": _class_default_qa(spec),
+    }
+
+
+# authoritative registry 확장: 기존 모션 시스템을 유지하고 항목별 요구사항만 주입.
+MOTIONS = {
+    motion_id: replace(
+        spec,
+        motion_type=_MOTION_TYPES.get(motion_id, spec.motion_class),
+        requirements=_requirements_for(spec),
+    )
+    for motion_id, spec in MOTIONS.items()
+}
+
 #: 결정론적 순서.
 MOTION_ORDER: tuple[str, ...] = tuple(MOTIONS.keys())
 
@@ -350,6 +624,21 @@ def get_motion(motion_id: str) -> Optional[MotionSpec]:
     return MOTIONS.get((motion_id or "").strip().upper())
 
 
+def provider_order_for_class(motion_class: str) -> tuple[str, ...]:
+    """클래스 기본 provider registry id 순서. 미등록 클래스는 fail-closed."""
+    return tuple(MOTION_PROVIDER_ORDER_BY_CLASS.get((motion_class or "").strip().upper(), ()))
+
+
+def provider_order_for_motion(motion_id: str) -> tuple[str, ...]:
+    """모션별 override > 클래스 기본. 알 수 없는 모션은 빈 순서로 닫힌다."""
+    normalized = (motion_id or "").strip().upper()
+    spec = MOTIONS.get(normalized)
+    if not spec:
+        return ()
+    override = MOTION_PROVIDER_ORDER_OVERRIDES.get(normalized)
+    return tuple(override) if override is not None else provider_order_for_class(spec.motion_class)
+
+
 def motion_for_trigger(trigger_id: str) -> Optional[str]:
     return TRIGGERS.get((trigger_id or "").strip().upper())
 
@@ -367,8 +656,10 @@ def motions_for_keyframe_role(role: str) -> list[str]:
 def motion_snapshot(spec: MotionSpec) -> dict[str, Any]:
     return {
         "motion_spec_version": MOTION_SPEC_VERSION,
+        "registry_contract_version": MOTION_REGISTRY_CONTRACT_VERSION,
         "motion_id": spec.motion_id,
         "motion_class": spec.motion_class,
+        "motion_type": spec.motion_type,
         "description": spec.description,
         "start_keyframe_role": spec.start_keyframe_role,
         "target_keyframe_role": spec.target_keyframe_role,
@@ -381,11 +672,25 @@ def motion_snapshot(spec: MotionSpec) -> dict[str, Any]:
         "loopable": spec.loopable,
         "interruptible": spec.interruptible,
         "video_compat": dict(spec.video_compat),
+        "provider_order": list(provider_order_for_motion(spec.motion_id)),
+        "requirements": dict(spec.requirements),
     }
 
 
 # ── 임포트 시 자기 검증 — 잘못된 스펙은 배포 전에 죽는다 ────────────────────
 def _assert_registry_valid() -> None:
+    assert set(MOTION_PROVIDER_ORDER_BY_CLASS) == set(MOTION_CLASSES), (
+        "모든 모션 클래스에 provider 순서가 정확히 하나씩 필요하다"
+    )
+    for motion_class, order in MOTION_PROVIDER_ORDER_BY_CLASS.items():
+        assert order, f"{motion_class}: provider 순서가 비어 있다"
+        assert all(isinstance(provider_id, str) and provider_id.strip() for provider_id in order)
+        assert len(order) == len(set(order)), f"{motion_class}: provider 순서 중복"
+    for motion_id, order in MOTION_PROVIDER_ORDER_OVERRIDES.items():
+        assert motion_id in MOTIONS, f"provider override 의 모션이 없다: {motion_id}"
+        assert order, f"{motion_id}: provider override 가 비어 있다"
+        assert len(order) == len(set(order)), f"{motion_id}: provider override 중복"
+
     for spec in MOTIONS.values():
         assert spec.motion_class in MOTION_CLASSES, spec.motion_id
         assert spec.start_keyframe_role in KEYFRAME_ROLES, (
@@ -396,6 +701,29 @@ def _assert_registry_valid() -> None:
         if spec.requires_target_keyframe:
             assert spec.target_keyframe_role, spec.motion_id
         assert spec.motion_reference_policy in (REF_NONE, REF_PREFERRED, REF_REQUIRED)
+        assert spec.motion_type, f"{spec.motion_id}: motion_type 누락"
+        req = spec.requirements
+        assert isinstance(req, dict), f"{spec.motion_id}: requirements 누락"
+        for k in (
+            "registry_contract_version",
+            "roles",
+            "duration",
+            "loopability",
+            "interruptibility",
+            "morphology",
+            "reference",
+            "provider_capabilities",
+            "qa",
+        ):
+            assert k in req, f"{spec.motion_id}: requirements.{k} 누락"
+        roles = req.get("roles") or {}
+        assert roles.get("required_start_roles") == [spec.start_keyframe_role], (
+            f"{spec.motion_id}: requirements 시작 역할 불일치"
+        )
+        if spec.requires_target_keyframe:
+            assert roles.get("required_end_roles") == [spec.target_keyframe_role], (
+                f"{spec.motion_id}: requirements 목표 역할 불일치"
+            )
         if spec.motion_class == CLASS_MICRO:
             # v6 정책: MICRO 는 클래스 전체가 고정 4.0s — 프로바이더 최소 미달
             # 요청(3s → Runway 계약 위반)이 스펙 단계에서 다시 생길 수 없게 한다.
@@ -437,6 +765,13 @@ def _keyframe_payload(k: Any) -> dict[str, Any]:
             {"bucket": getattr(sel, "cutout_bucket", None),
              "object_path": sel.cutout_object_path}
             if sel and sel.cutout_object_path
+            else None
+        ),
+        # 하류(Phase 6)가 실제로 먹는 입력. raw 는 증거, plate 는 생성 입력이다.
+        "plate": (
+            {"bucket": getattr(sel, "plate_bucket", None),
+             "object_path": getattr(sel, "plate_object_path", None)}
+            if sel and getattr(sel, "plate_object_path", None)
             else None
         ),
     }
@@ -484,38 +819,116 @@ async def resolve_video_generation_spec(
 
     warnings: list[str] = []
 
-    start = await _approved_keyframe(user_id, pet_id, spec.start_keyframe_role)
-    if not start:
-        raise MotionSpecError(
-            "KEYFRAME_REQUIRED",
-            f"승인된 {spec.start_keyframe_role} 키프레임이 필요합니다 — 먼저 빌드/승인하세요.",
-            status=409,
-        )
+    # ── 펫 모션/형태 프로필 (Phase 6.6/Phase 5) — 신원이 아니라 구조 속성만 ─────
+    from . import (
+        canonical_pet_service,
+        motion_reference_service,
+        pet_identity_service,
+        pet_morphology_service,
+        pet_reference_set_service,
+    )
 
-    target_payload = None
-    if spec.target_keyframe_role:
-        target = await _approved_keyframe(user_id, pet_id, spec.target_keyframe_role)
-        if target:
-            target_payload = _keyframe_payload(target)
-        elif spec.requires_target_keyframe:
+    async def _resolve_keyframes():
+        start = await _approved_keyframe(user_id, pet_id, spec.start_keyframe_role)
+        if not start:
             raise MotionSpecError(
-                "TARGET_KEYFRAME_REQUIRED",
-                f"전이 모션 {spec.motion_id} 은 {spec.target_keyframe_role} 키프레임이 필요합니다.",
+                "KEYFRAME_REQUIRED",
+                f"승인된 {spec.start_keyframe_role} 키프레임이 필요합니다 — 먼저 빌드/승인하세요.",
                 status=409,
             )
+        target_payload = None
+        if spec.target_keyframe_role:
+            target = await _approved_keyframe(user_id, pet_id, spec.target_keyframe_role)
+            if target:
+                target_payload = _keyframe_payload(target)
+            elif spec.requires_target_keyframe:
+                raise MotionSpecError(
+                    "TARGET_KEYFRAME_REQUIRED",
+                    f"전이 모션 {spec.motion_id} 은 {spec.target_keyframe_role} 키프레임이 필요합니다.",
+                    status=409,
+                )
+        return start, target_payload
 
-    # ── 펫 모션/형태 프로필 (Phase 6.6) — 신원이 아니라 구조 속성만 ─────────
-    from . import motion_reference_service, pet_identity_service
+    async def _resolve_identity():
+        try:
+            return await pet_identity_service.get_profile(user_id=user_id, pet_id=pet_id)
+        except pet_identity_service.PetIdentityError:
+            return None  # 프로필 조회 실패 → 프로필 UNKNOWN → 레퍼런스 미해석 (LEVEL_4)
 
-    identity_profile = None
+    # 키프레임 계보(순서/예외 의존)와 신원 프로필(완전 독립, 예외 없음)을
+    # 동시에 가져온다 — _resolve_identity 는 절대 예외를 내지 않으므로
+    # gather 가 내는 예외는 항상 _resolve_keyframes 쪽 그대로다 (에러 코드/
+    # 순서 불변).
+    (start, target_payload), identity_profile = await asyncio.gather(
+        _resolve_keyframes(), _resolve_identity()
+    )
+
+    # ── 형태 프로필 계보 ────────────────────────────────────────────────────
+    #
+    # 이 키프레임을 만든 레퍼런스 세트가 형태 프로필 버전을 **핀으로 박아** 두면,
+    # 그 버전이 이 모션의 유일한 답이다. 예전에는 핀을 못 읽었을 때 조용히
+    # `get_profile(version=None)` — 즉 **최신 프로필** — 로 떨어졌다. 같은
+    # 키프레임을 같은 계약으로 다시 돌려도 그 사이 프로필이 한 번 다시 빌드되면
+    # 다른 형태로 생성됐고, 기록에는 "핀됨"이라고 남았다. 재현되지 않는 계보다.
+    #
+    # 이제 핀이 **선언된** 경우, 그 버전을 못 읽으면 형태는 UNKNOWN 이다(None).
+    # 최신으로 대신하지 않는다 — 다른 아이의 몸을 빌려 쓰는 것과 같다.
+    # 최신을 보는 것은 핀이 애초에 없는 계보(핀 이전 자산)뿐이다.
+    pinned_morphology = None
+    morphology_pin_declared = False
+    morphology_pin_version: Optional[int] = None
     try:
-        identity_profile = await pet_identity_service.get_profile(
-            user_id=user_id, pet_id=pet_id
+        canonical = None
+        if getattr(start, "canonical_version", None):
+            canonical = await canonical_pet_service.get_canonical(
+                user_id=user_id,
+                pet_id=pet_id,
+                version=int(getattr(start, "canonical_version")),
+            )
+        if canonical and canonical.reference_set_version:
+            refset = await pet_reference_set_service.get_set(
+                user_id=user_id,
+                pet_id=pet_id,
+                version=int(canonical.reference_set_version),
+            )
+            if refset and refset.morphology_profile_version:
+                morphology_pin_declared = True
+                morphology_pin_version = int(refset.morphology_profile_version)
+                pinned_morphology = await pet_morphology_service.get_profile(
+                    user_id=user_id,
+                    pet_id=pet_id,
+                    version=morphology_pin_version,
+                )
+        if pinned_morphology is None and not morphology_pin_declared:
+            pinned_morphology = await pet_morphology_service.get_profile(
+                user_id=user_id,
+                pet_id=pet_id,
+            )
+    except (
+        canonical_pet_service.CanonicalPetError,
+        pet_reference_set_service.PetReferenceSetError,
+        pet_morphology_service.PetMorphologyError,
+        ValueError,
+        TypeError,
+    ):
+        # 계보를 확인하지 못했다 — 무엇이 핀돼 있었는지도 모른다. 최신으로
+        # 메우지 않는다.
+        pinned_morphology = None
+
+    if morphology_pin_declared and pinned_morphology is None:
+        warnings.append(
+            f"pinned morphology profile v{morphology_pin_version} unavailable — "
+            "morphology treated as UNKNOWN (latest profile NOT substituted)"
         )
-    except pet_identity_service.PetIdentityError:
-        pass  # 프로필 조회 실패 → 프로필 UNKNOWN → 레퍼런스 미해석 (LEVEL_4)
+
+    confidence_floor = (
+        ((spec.requirements or {}).get("morphology") or {}).get("confidence_floor") or "medium"
+    )
     pet_motion_profile = motion_reference_service.derive_motion_profile(
-        identity_profile, overrides=morphology_overrides
+        identity_profile,
+        overrides=morphology_overrides,
+        morphology_profile=pinned_morphology,
+        confidence_floor=str(confidence_floor),
     )
 
     strategy = spec.preferred_video_strategy
@@ -528,6 +941,7 @@ async def resolve_video_generation_spec(
             desired_view=(desired_view or spec.preferred_camera_view),
             direction=(direction or spec.preferred_travel_direction),
             speed=speed,
+            motion_requirements=spec.requirements,
         )
         if resolved:
             motion_reference = {
@@ -559,9 +973,11 @@ async def resolve_video_generation_spec(
     return {
         "pet_motion_profile": pet_motion_profile,
         "contract_version": PHASE6_CONTRACT_VERSION,
+        "registry_contract_version": MOTION_REGISTRY_CONTRACT_VERSION,
         "motion_spec_version": MOTION_SPEC_VERSION,
         "motion_id": spec.motion_id,
         "motion_class": spec.motion_class,
+        "motion_type": spec.motion_type,
         "start_keyframe": _keyframe_payload(start),
         "target_keyframe": target_payload,
         "motion_reference": motion_reference,
@@ -570,6 +986,8 @@ async def resolve_video_generation_spec(
         "interruptible": spec.interruptible,
         "duration_range_sec": list(spec.duration_range_sec),
         "video_compat": dict(spec.video_compat),
+        "provider_order": list(provider_order_for_motion(spec.motion_id)),
+        "requirements": dict(spec.requirements),
         "canonical_version_id": start.canonical_version_id,
         "warnings": warnings,
     }

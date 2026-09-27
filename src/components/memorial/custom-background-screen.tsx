@@ -2,8 +2,9 @@
 
 import { useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, Check, Flower2 } from "lucide-react";
+import { Check, Flower2 } from "lucide-react";
 import { memorialT } from "@/components/memorial/memorial-i18n";
+import { BackButton } from "@/components/ui/screen-header";
 import { dataUrlToFile } from "@/lib/data-url-to-file";
 import {
   enqueueCustomBackgroundJob,
@@ -11,9 +12,11 @@ import {
   type BackgroundVideoJobStatusResult,
 } from "@/lib/background-bg-api";
 import {
+  CUSTOM_BG_CONTENT_ID_KEY,
   CUSTOM_BG_JOB_ID_KEY,
   setStoredCustomBgVideoUrl,
 } from "@/lib/custom-background-store";
+import { resolveCustomBackgroundResume } from "@/lib/custom-background-resume";
 import { getStoredContentId } from "@/lib/persist-device-content";
 import { useProcessingClock } from "@/lib/use-processing-clock";
 
@@ -126,6 +129,34 @@ export function CustomBackgroundScreen({
     };
 
     const start = async () => {
+      const contentId = getStoredContentId() || null;
+
+      // Phase 9 — 새로고침 재개. 같은 펫(content_id)의 서버 작업이 이미
+      // 진행 중이면 새로 만들지 않고 그 작업의 상태를 이어서 조회한다.
+      const decision = resolveCustomBackgroundResume(
+        {
+          jobId: localStorage.getItem(CUSTOM_BG_JOB_ID_KEY),
+          contentId: localStorage.getItem(CUSTOM_BG_CONTENT_ID_KEY),
+        },
+        contentId
+      );
+      if (decision.action === "resume") {
+        try {
+          const job = await getCustomBackgroundJobStatus(decision.jobId);
+          if (cancelledRef.current) return;
+          if (job.status !== "failed") {
+            applyStatus(job, elapsedSecRef.current);
+            return;
+          }
+        } catch {
+          // 서버에 더 이상 없거나 조회 실패 — 아래에서 새로 시작한다.
+        }
+      }
+
+      // 재개하지 않기로 했거나 재개가 실패했다 — 남의/실패한 표식은 지운다.
+      localStorage.removeItem(CUSTOM_BG_JOB_ID_KEY);
+      localStorage.removeItem(CUSTOM_BG_CONTENT_ID_KEY);
+
       if (!uploadedImage) {
         setErrorMessage(t.missingPhoto);
         setState("failed");
@@ -135,10 +166,10 @@ export function CustomBackgroundScreen({
       setErrorMessage(null);
       try {
         const file = await toPhotoFile(uploadedImage);
-        const contentId = getStoredContentId() || undefined;
-        const job = await enqueueCustomBackgroundJob(file, { contentId });
+        const job = await enqueueCustomBackgroundJob(file, { contentId: contentId || undefined });
         if (cancelledRef.current) return;
         localStorage.setItem(CUSTOM_BG_JOB_ID_KEY, job.job_id);
+        if (contentId) localStorage.setItem(CUSTOM_BG_CONTENT_ID_KEY, contentId);
         setState("queued");
         setStageLabel(t.stageQueued);
         pollTimerRef.current = setTimeout(poll, POLL_INTERVAL_MS);
@@ -161,53 +192,41 @@ export function CustomBackgroundScreen({
   const showNoWorkerHint = state === "queued" && elapsedSec >= NO_WORKER_HINT_SEC;
 
   return (
-    <div className="h-full flex flex-col relative overflow-hidden">
-      <header className="px-6 pt-8 pb-4 flex items-center justify-between relative shrink-0">
-        <motion.button
-          initial={{ opacity: 0, x: -10 }}
-          animate={{ opacity: 1, x: 0 }}
-          onClick={onBack}
-          className="w-10 h-10 rounded-full flex items-center justify-center"
-          style={{ background: "#1C1C1E", border: "1px solid #333333" }}
-          whileHover={{ scale: 1.05 }}
-          whileTap={{ scale: 0.95 }}
-        >
-          <ArrowLeft className="w-4 h-4" style={{ color: "#F5F5F7" }} strokeWidth={1.5} />
-        </motion.button>
-        <motion.h1
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-xl font-light absolute left-1/2 -translate-x-1/2 text-center"
-          style={{ color: "#F5F5F7" }}
-        >
-          {t.title}
-        </motion.h1>
-        <div className="w-10 h-10" />
+    <div className="custom-bg-screen h-full flex flex-col relative overflow-hidden">
+      <header className="eb-screen-header">
+        <div className="eb-screen-header__leading">
+          <BackButton onClick={onBack} label={memorialT(language).common.back} />
+        </div>
+        <h1 className="eb-screen-header__title eb-title text-center">{t.title}</h1>
+        <div className="eb-screen-header__trailing" />
       </header>
 
-      <div className="flex-1 px-8 py-4 flex flex-col items-center justify-center text-center gap-6 min-h-0 overflow-y-auto">
+      <div className="flex-1 px-6 py-4 flex flex-col items-center justify-center text-center gap-6 min-h-0 overflow-y-auto">
         {(state === "starting" || state === "queued" || state === "running") && (
           <>
+            {/* Loading indicator — the one rotating element; gold wash, no glow. */}
             <motion.div
               className="w-20 h-20 rounded-full flex items-center justify-center"
               style={{
-                background: "linear-gradient(135deg, #c9a227, #f5d77a)",
-                boxShadow: "0 0 40px rgba(201, 162, 39, 0.35)",
+                background: "var(--eb-gold-wash)",
+                border: "1px solid var(--eb-gold-line)",
+                color: "var(--eb-gold-text)",
               }}
               animate={{ rotate: 360 }}
               transition={{ duration: 2.2, repeat: Infinity, ease: "linear" }}
+              aria-hidden
             >
-              <Flower2 className="w-9 h-9 text-[#0a0a0a]" strokeWidth={1.5} />
+              <Flower2 className="w-9 h-9" strokeWidth={1.5} />
             </motion.div>
-            <div>
-              <p className="text-base font-light" style={{ color: "#F5F5F7" }}>
+            <div role="status">
+              <p className="eb-body font-medium">
                 {stageLabel || t.stageRunningDefault}
               </p>
-              <p className="text-xs mt-3 tabular-nums" style={{ color: "#888" }}>
+              <p className="eb-caption mt-3 tabular-nums">
                 {t.elapsedHint(elapsedSec)}
               </p>
               {showNoWorkerHint ? (
-                <p className="text-xs mt-3 max-w-[260px] mx-auto" style={{ color: "#e8c97a" }}>
+                <p className="eb-notice eb-notice--warning mt-3 max-w-[280px] mx-auto text-left">
                   {t.noWorkerHint}
                 </p>
               ) : null}
@@ -217,10 +236,11 @@ export function CustomBackgroundScreen({
 
         {state === "done" && resultVideoUrl && (
           <>
-            <div className="w-full max-w-[280px] rounded-2xl overflow-hidden border border-white/10">
+            <div className="theme-preview-frame w-full max-w-[280px] overflow-hidden">
               <video
                 src={resultVideoUrl}
-                className="w-full aspect-video object-cover bg-black"
+                className="w-full aspect-video object-cover"
+                style={{ background: "var(--eb-surface-inverse)" }}
                 autoPlay
                 loop
                 muted
@@ -228,23 +248,17 @@ export function CustomBackgroundScreen({
               />
             </div>
             <div>
-              <p className="text-base font-medium" style={{ color: "#F1E5D1" }}>
+              <p className="eb-body font-medium">
                 {t.readyTitle}
               </p>
-              <p className="text-xs mt-2 max-w-[260px] mx-auto" style={{ color: "#A1A1A6" }}>
+              <p className="eb-body-sm mt-2 max-w-[280px] mx-auto">
                 {t.readyBody}
               </p>
             </div>
             <motion.button
               type="button"
               onClick={() => onComplete(resultVideoUrl)}
-              className="w-full max-w-[280px] py-3.5 rounded-2xl font-normal text-[15px] flex items-center justify-center gap-2"
-              style={{
-                background:
-                  "linear-gradient(135deg, #b8860b 0%, #c9a227 30%, #d4af37 50%, #f5d77a 70%, #d4af37 100%)",
-                color: "#0a0a0a",
-                boxShadow: "0 10px 40px rgba(201, 162, 39, 0.25)",
-              }}
+              className="cta-gold eb-btn-label w-full max-w-[280px] flex items-center justify-center gap-2"
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
             >
@@ -256,18 +270,11 @@ export function CustomBackgroundScreen({
 
         {(state === "failed" || state === "timeout") && (
           <>
-            <div
-              className="w-full max-w-[300px] px-4 py-4 rounded-2xl text-sm"
-              style={{
-                background: "rgba(80, 20, 20, 0.35)",
-                color: "#f5c2c2",
-                border: "1px solid #553333",
-              }}
-            >
+            <div role="alert" className="eb-notice eb-notice--error w-full max-w-[300px] flex-col text-left">
               <p className="font-medium mb-1">
                 {state === "timeout" ? t.timeoutTitle : t.failedTitle}
               </p>
-              <p className="text-xs" style={{ color: "#e0b8b8" }}>
+              <p className="eb-caption" style={{ color: "inherit" }}>
                 {state === "timeout" ? t.timeoutBody : errorMessage || t.startFailed}
               </p>
             </div>
@@ -275,20 +282,14 @@ export function CustomBackgroundScreen({
               <button
                 type="button"
                 onClick={() => setRetryKey((k) => k + 1)}
-                className="w-full py-3 rounded-xl text-sm font-medium"
-                style={{
-                  background: "rgba(201, 162, 39, 0.2)",
-                  color: "#f5d77a",
-                  border: "1px solid rgba(201, 162, 39, 0.35)",
-                }}
+                className="eb-btn eb-btn--primary eb-btn--block"
               >
                 {t.retry}
               </button>
               <button
                 type="button"
                 onClick={onBack}
-                className="w-full py-3 rounded-xl text-sm"
-                style={{ color: "#A1A1A6" }}
+                className="eb-btn eb-btn--ghost eb-btn--block"
               >
                 {t.backToThemes}
               </button>

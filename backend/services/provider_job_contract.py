@@ -8,6 +8,10 @@ from typing import Any
 PENDING = "PENDING"
 SUCCEEDED = "SUCCEEDED"
 FAILED = "FAILED"
+#: A durable job that never resolved within its persisted deadline, or whose
+#: poll/collect calls errored too many times in a row. Terminal like FAILED —
+#: never re-polled or auto-resubmitted — but distinguishable for monitoring.
+TIMED_OUT = "TIMED_OUT"
 
 
 @dataclass(frozen=True)

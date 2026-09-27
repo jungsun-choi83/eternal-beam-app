@@ -116,6 +116,88 @@ services:
       - key: LUMA_API_KEY
         sync: false
 
+  # ── 생성 워커 (Phase 7D) ────────────────────────────────────────────────
+  # pet_generation_runs 를 폴링/전진시키는 상주 프로세스. 웹 서비스는 이 워커를
+  # 절대 기동하지 않는다(backend/main.py lifespan 은 이를 참조하지 않는다) —
+  # 웹이 죽거나 재배포돼도 생성은 멈추지 않고, 반대로 이 워커가 죽어도 웹은
+  # 영향받지 않는다. `type: worker` 는 Render 가 크래시/배포 후 자동 재시작한다.
+  #
+  # dockerCommand 에서 `exec` 를 쓰는 이유: `sh -c "python ..."` 로만 실행하면
+  # sh 가 PID 1 이 되어 Render 가 보내는 SIGTERM 을 자식(python)에게 전달하지
+  # 않는 셸이 있다 — 그러면 lease 를 정리할 기회 없이 강제 SIGKILL 로 죽는다.
+  # `exec` 는 python 프로세스가 sh 를 대체(PID 1)하게 해 SIGTERM 을 직접
+  # 받게 하고, 워커가 현재 tick 을 마친 뒤 새 run 을 더 이상 점유하지 않고
+  # 깔끔히 멈추게 한다. 강제 종료(SIGKILL)로 중간에 죽더라도 점유 중이던
+  # run 은 execution_token 으로 펜싱된 lease 라서 다른 워커가 함부로 가로채지
+  # 못하고, GENERATION_RUN_LEASE_SECONDS 후 자동 만료되어 안전하게 재점유된다
+  # (claim_next_pet_generation_run, supabase/migrations/20261019000000_*.sql).
+  - type: worker
+    name: eternal-beam-generation-worker
+    region: singapore
+    plan: starter
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: "sh -c 'exec python -m backend.workers.pet_generation_worker'"
+    autoDeploy: true
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      # 워커 전용 설정 — 웹 서비스에는 절대 넣지 않는다(넣으면 웹 프로세스
+      # 안에서 두 번째 폴링 루프가 돌아 이 블루프린트가 고치려는 문제,
+      # 곧 "웹 재시작/스케일과 생성 폴링이 얽히는 상태"가 되돌아온다).
+      - key: PET_GENERATION_WORKER_ENABLED
+        value: "1"
+      - key: PET_GENERATION_WORKER_POLL_SEC
+        value: "10"
+      - key: PET_GENERATION_WORKER_LOG_LEVEL
+        value: "INFO"
+      - key: GENERATION_RUN_LEASE_SECONDS
+        value: "300"
+      # BREATHING/Phase 6-7 모션 생성(video_motion_providers.live_generation_
+      # allowed(), motion_video_service.py 가 호출)의 실 프로바이더 대량 과금
+      # 게이트. GENERATION_MOCK(아래)과는 별개 스위치 — GENERATION_MOCK 은
+      # video_generation.py 의 구(WAN/Luma) 파이프라인만 막고 이 게이트에는
+      # 아무 영향이 없다. 이 값이 없으면(기본 off) MOTION_GENERATION 단계가
+      # 항상 LIVE_GENERATION_BLOCKED(403)로 실패한다 — "all"은 pet_id 무관
+      # 전체 허용이라 PHASE6_LIVE_ALLOWLIST 는 넣지 않는다(둘 중 하나만 유효).
+      # 정본/키프레임 이미지(CANONICAL_GENERATION_MOCK/KEYFRAME_GENERATION_
+      # MOCK, canonical_image_providers.py)는 이 값과 무관하게 별도 스위치이고
+      # 여기 없으므로 기본값(0=실 생성)으로 남는다 — 배포 전 그것이 의도한
+      # 상태인지 반드시 별도로 확인한다.
+      - key: PHASE6_LIVE_MODE
+        value: "all"
+      # 아래부터는 웹 서비스와 동일하게 맞춘 생성 파이프라인 설정.
+      # 값이 갈라지면(예: 한쪽만 GENERATION_MOCK=1) 웹이 큐에 넣은 run 을
+      # 워커가 다른 프로바이더 모드로 처리해버리는 불일치가 생긴다 — 값을
+      # 바꿀 때는 web 서비스와 이 워커 서비스 둘 다 같이 바꾼다.
+      - key: HYBRID_USE_SUPABASE
+        value: "1"
+      - key: PET_HYBRID_SEED
+        value: "0"
+      - key: PET_BATCH_USE_SUPABASE
+        value: "1"
+      - key: GENERATION_MOCK
+        value: "1"
+      - key: LUMA_CREDIT_CONCURRENCY
+        value: "3"
+      - key: SUPABASE_STORAGE_BUCKET
+        value: user-assets
+      - key: LUMA_MOCK
+        value: "1"
+      - key: MOCK_LUMA_USE_KEYFRAME
+        value: "1"
+      - key: MOCK_LUMA_VIDEO_URL
+        value: https://eternal-beam-app.vercel.app/demo/goya_idle_packed.mp4
+      # 웹 서비스와 값을 "공유"하되, Render sync:false 는 서비스별로 각각
+      # 입력해야 한다(자동 동기화되지 않는다) — Blueprint 적용 후
+      # Environment 탭에서 web 서비스와 동일한 값을 이 워커 서비스에도 넣는다.
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: LUMA_API_KEY
+        sync: false
+
 # ── 월 정기결제 갱신 배치 ─────────────────────────────────────────────────────
 # 지금은 .github/workflows/billing-renewal.yml (무료) 이 담당한다.
 # Render 유료 플랜으로 올리면 아래 cron 서비스로 옮길 수 있다 — 서버 코드는

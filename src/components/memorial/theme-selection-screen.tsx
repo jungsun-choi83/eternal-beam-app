@@ -1,7 +1,8 @@
 "use client";
 
-import { memo, useCallback, useEffect, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, Check, Flower2 } from "lucide-react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Check, Flower2, Lock } from "lucide-react";
+import { BackButton } from "@/components/ui/screen-header";
 import { memorialT, themeDisplayName } from "@/components/memorial/memorial-i18n";
 import {
   ETERNAL_BEAM_PIPELINE_KEY,
@@ -10,27 +11,37 @@ import {
 import {
   freeMemorialThemes,
   getMemorialTheme,
+  getThemeCardThumb,
   ORIGINAL_PHOTO_THEME_KEY,
   premiumMemorialThemes,
   type MemorialTheme,
 } from "@/components/memorial/themes";
-import { ThemeBackgroundVideo } from "@/components/memorial/theme-background-video";
 import { getEffectiveBgVideo } from "@/lib/custom-background-store";
 import { resetThemeBackgroundSyncCache } from "@/lib/device-theme-sync";
 import { useThemeOwnership } from "@/components/memorial/use-theme-ownership";
 import { formatCredits, themeRow, type ThemeOffer } from "@/lib/theme-ownership";
+import { groupPremiumThemes } from "@/lib/theme-groups";
+import { computeCreateFlowSteps } from "@/lib/create-flow-steps";
+import { CreateFlowStepper, type CreateFlowStepView } from "@/components/memorial/create-flow-stepper";
 import { CreditPackSheet } from "@/components/memorial/credit-pack-sheet";
-import { CutoutStage } from "@/components/memorial/cutout-stage";
-import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
+import { applyLibraryOverride, type LibraryPublication } from "@/lib/library-publication";
 
 interface ThemeSelectionScreenProps {
   cutoutImage: string | null;
   /**
+   * My Library 경로인가 — 부모(MyLibraryScreen)가 동기적으로 내려주는 값.
+   * sessionStorage 를 읽는 effect 가 돌 때까지 기다리지 않고 **첫 렌더부터**
+   * 이 값으로 라이브러리 모드를 확정한다.
+   */
+  isLibraryFlow?: boolean;
+  /** isLibraryFlow 일 때만 의미 있다 — 발행된 모션의 정본 메타데이터. */
+  libraryPublication?: LibraryPublication | null;
+  /**
    * "원본 사진 그대로" 에 쓸 **해결된 한 장.** 부모가 한 번 정해 내려 준다.
    *
    * 이 화면이 직접 localStorage 를 읽지 않는 이유: 방금 올린 사진은 React
-   * 상태에 있고 저장은 그보다 늦거나 실패할 수 있다. 각자 읽으면 카드와 큰
-   * 미리보기와 생성이 서로 다른 그림을 본다.
+   * 상태에 있고 저장은 그보다 늦거나 실패할 수 있다. 각자 읽으면 카드와 생성이
+   * 서로 다른 그림을 본다.
    */
   originalPhoto?: string | null;
   selectedTheme: number | null;
@@ -42,231 +53,154 @@ interface ThemeSelectionScreenProps {
   onBack: () => void;
 }
 
-function findCenteredThemeId(
-  container: HTMLDivElement,
-  themes: MemorialTheme[]
-): number | null {
-  const center = container.scrollLeft + container.clientWidth / 2;
-  let bestId: number | null = null;
-  let bestDist = Infinity;
+/** 카드 그리드/필터 알약이 쓰는 상태 — Included/Owned/Premium/Custom. */
+type ThemeCardGroup = "included" | "owned" | "premium" | "custom";
+type ThemeFilter = "all" | ThemeCardGroup;
 
-  for (let i = 0; i < container.children.length; i++) {
-    const card = container.children[i] as HTMLElement;
-    const cardCenter = card.offsetLeft + card.offsetWidth / 2;
-    const dist = Math.abs(center - cardCenter);
-    if (dist < bestDist) {
-      bestDist = dist;
-      bestId = themes[i]?.id ?? null;
-    }
-  }
-  return bestId;
+interface ThemeCard {
+  theme: MemorialTheme;
+  group: ThemeCardGroup;
 }
 
-const ThemeThumb = memo(function ThemeThumb({
+const FILTER_ORDER: ThemeFilter[] = ["all", "included", "owned", "premium", "custom"];
+
+/**
+ * 카드 썸네일 = 테마 gradient 바탕 **위에** 카탈로그의 실제 미리보기 사진.
+ *
+ * 바탕을 먼저 까는 이유: theme-thumbs 의 원본은 수 MB 짜리 풀사이즈 사진이라
+ * (golden_meadow 9MB, sunset 7MB …) 느린 회선에서는 몇 초 동안 사진이 오지
+ * 않는다. 캐러셀 시절에는 ±1 카드만 로드해 이 지연이 가려졌지만, 그리드는
+ * 카드 11장을 한 번에 그린다 — 바탕이 없으면 그동안 카드가 "이름만 있는
+ * 빈 상자"로 보인다. gradient 는 테마마다 카탈로그가 이미 갖고 있는 값이라
+ * 새 에셋을 만들지 않고, 사진이 도착하면 그 위를 덮는다.
+ *
+ * 사진 주소는 getThemeCardThumb 가 정한다 — "원본 사진 그대로"는 고객이 올린
+ * 사진 자체(없으면 빈 바탕), 나머지는 카탈로그 thumb. 실제 에셋이 없는 경우
+ * (원본 미주입, 404) 에만 바탕이 그대로 남는다. alt="" 라 깨진 이미지 아이콘도
+ * 그려지지 않는다.
+ */
+const ThemeThumb = ({
   theme,
-  loadImage,
   originalPhoto,
 }: {
   theme: MemorialTheme;
-  loadImage: boolean;
-  /** 원본 갈래 카드가 보여 줄 사진. 큰 미리보기·생성과 **같은 값**이다. */
+  /** 원본 갈래 카드가 보여 줄 사진. 생성과 **같은 값**이다. */
   originalPhoto?: string | null;
-}) {
-  if (!loadImage) {
-    return <div className="absolute inset-0 bg-[#141416]" aria-hidden />;
-  }
-  // "원본 사진 그대로"의 썸네일은 **고객이 올린 사진 자체**다. 고정 에셋을 두면
-  // 다른 사진처럼 보이고, 고객은 자기 배경이 어떤 것인지 확인할 수 없다.
-  const src =
-    theme.themeKey === ORIGINAL_PHOTO_THEME_KEY
-      ? originalPhoto || theme.thumb
-      : theme.thumb;
-  if (!src) {
-    return <div className="absolute inset-0 bg-[#141416]" aria-hidden />;
-  }
+}) => {
+  const src = getThemeCardThumb(theme, originalPhoto);
   return (
-    <img
-      src={src}
-      alt=""
-      loading="lazy"
-      decoding="async"
-      className="absolute inset-0 h-full w-full object-cover"
-    />
+    <>
+      <div className={`theme-grid__thumb-base bg-gradient-to-b ${theme.gradient}`} aria-hidden />
+      {src ? (
+        <img src={src} alt="" loading="lazy" decoding="async" className="theme-grid__img" />
+      ) : null}
+    </>
   );
-});
+};
 
 /**
- * 소유 상태 배지 — FREE / OWNED / 가격 / 준비 중.
+ * 카드 아래 상태 문구 — FREE / OWNED / 가격 / 준비 중.
  *
  * themes.ts 의 하드코딩된 `price`("$2.99")를 더 이상 쓰지 않는다. 그 값은 레거시
  * PayPal 표시용이고, 실제 판매 여부·가격은 **서버 카탈로그**가 정한다.
- * 두 곳이 다르면 눌러도 거절당하는 버튼이 생긴다.
  */
-function ThemeOwnershipBadge({
+function ThemeStateLabel({
   theme,
   offers,
+  tc,
 }: {
   theme: MemorialTheme;
   offers: Map<string, ThemeOffer>;
+  tc: ReturnType<typeof memorialT>["theme"];
 }) {
   const row = themeRow(theme, offers);
-  // 배지도 **크레딧**을 보여 준다 — CTA 와 다른 통화를 쓰면 무엇을 내는지 헷갈린다.
+  // 가격도 **크레딧**을 보여 준다 — CTA 와 다른 통화를 쓰면 무엇을 내는지 헷갈린다.
   const price = formatCredits(row.creditPrice);
 
-  const [label, color] =
-    row.state === "free"
-      ? ["FREE", "#a8e6a3"]
-      : row.state === "owned"
-        ? ["OWNED", "#a8e6a3"]
-        : row.state === "not-owned"
-          ? [price ? `${price} 크레딧` : "BUY", "#f5d77a"]
-          : ["준비 중", "#9a9a9a"];
+  if (row.state === "free") {
+    return <span className="theme-grid__state theme-grid__state--free">{tc.stateFree}</span>;
+  }
+  if (row.state === "owned") {
+    return <span className="theme-grid__state theme-grid__state--owned">{tc.stateOwned}</span>;
+  }
+  if (row.state === "not-owned" && price) {
+    return (
+      <span className="theme-grid__state theme-grid__state--premium">
+        <Lock className="w-3 h-3" strokeWidth={2} aria-hidden />
+        {tc.statePriceCredits(row.creditPrice ?? 0)}
+      </span>
+    );
+  }
+  return <span className="theme-grid__state theme-grid__state--coming-soon">{tc.comingSoon}</span>;
+}
+
+function ThemeGridCard({
+  theme,
+  group,
+  selected,
+  offers,
+  themeLabel,
+  originalPhoto,
+  hasCustomAsset,
+  tc,
+  onSelect,
+}: {
+  theme: MemorialTheme;
+  group: ThemeCardGroup;
+  selected: boolean;
+  offers: Map<string, ThemeOffer>;
+  themeLabel: (th: MemorialTheme) => string;
+  originalPhoto?: string | null;
+  /** requiresGeneration 테마가 아니면 항상 true — 자리표시자 갈래가 없다. */
+  hasCustomAsset: boolean;
+  tc: ReturnType<typeof memorialT>["theme"];
+  onSelect: () => void;
+}) {
+  const isCustom = Boolean(theme.requiresGeneration);
+  const isCustomPlaceholder = isCustom && !hasCustomAsset;
 
   return (
-    <div className="absolute top-2 right-2 rounded-full bg-black/50 px-1.5 py-0.5">
-      <span className="text-[8px] tracking-wide" style={{ color }}>
-        {label}
-      </span>
-    </div>
+    <button
+      type="button"
+      data-theme-id={theme.id}
+      data-theme-group={group}
+      onClick={onSelect}
+      aria-pressed={selected}
+      className={`theme-grid__card${selected ? " theme-grid__card--selected" : ""}${
+        isCustomPlaceholder ? " theme-grid__card--custom" : ""
+      }`}
+    >
+      {/* 모든 카드가 같은 썸네일을 쓴다 — 커스텀도 카탈로그의 자리표시자 에셋을
+          그리고, 꽃 배지로 "내 사진으로 만드는 배경"임을 표시한다(캐러셀과 같다). */}
+      <div className="theme-grid__thumb">
+        <ThemeThumb theme={theme} originalPhoto={originalPhoto} />
+        {isCustom ? (
+          <div className="theme-grid__badge" aria-hidden>
+            <Flower2 className="w-3 h-3" strokeWidth={2} />
+          </div>
+        ) : null}
+        {selected ? (
+          <div className="eb-check-mark theme-grid__check">
+            <Check className="w-3 h-3" strokeWidth={3} />
+          </div>
+        ) : null}
+      </div>
+      <div className="theme-grid__body">
+        <p className="theme-grid__name">{isCustomPlaceholder ? tc.customCardTitle : themeLabel(theme)}</p>
+        {isCustomPlaceholder ? (
+          <p className="theme-grid__state theme-grid__state--free">{tc.customCardHint}</p>
+        ) : (
+          <ThemeStateLabel theme={theme} offers={offers} tc={tc} />
+        )}
+      </div>
+    </button>
   );
 }
 
-const ThemeCarousel = memo(function ThemeCarousel({
-  themes,
-  selectedTheme,
-  themeLabel,
-  carouselRef,
-  carouselId,
-  isInteractionTarget,
-  onInteractionStart,
-  onSelect,
-  onSnapTheme,
-  offers,
-  originalPhoto = null,
-}: {
-  themes: MemorialTheme[];
-  selectedTheme: number | null;
-  /** 서버 카탈로그. 비어 있으면 폴백 표시(유료는 잠김). */
-  offers: Map<string, ThemeOffer>;
-  themeLabel: (th: MemorialTheme) => string;
-  carouselRef: React.RefObject<HTMLDivElement | null>;
-  carouselId: "free" | "premium";
-  isInteractionTarget: () => boolean;
-  onInteractionStart: (id: "free" | "premium") => void;
-  onSelect: (theme: MemorialTheme) => void;
-  onSnapTheme: (themeId: number, source: "free" | "premium") => void;
-  originalPhoto?: string | null;
-}) {
-  const [focusIndex, setFocusIndex] = useState(() =>
-    Math.max(0, themes.findIndex((t) => t.id === selectedTheme))
-  );
-
-  useEffect(() => {
-    const idx = themes.findIndex((t) => t.id === selectedTheme);
-    if (idx >= 0) setFocusIndex(idx);
-  }, [selectedTheme, themes]);
-
-  useEffect(() => {
-    const el = carouselRef.current;
-    if (!el) return;
-
-    let raf = 0;
-    const syncFromScroll = () => {
-      if (!isInteractionTarget()) return;
-      const id = findCenteredThemeId(el, themes);
-      if (id == null) return;
-      const idx = themes.findIndex((t) => t.id === id);
-      if (idx >= 0) setFocusIndex(idx);
-      onSnapTheme(id, carouselId);
-    };
-
-    const onScroll = () => {
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(syncFromScroll);
-    };
-
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => {
-      cancelAnimationFrame(raf);
-      el.removeEventListener("scroll", onScroll);
-    };
-  }, [carouselId, carouselRef, themes, onSnapTheme, isInteractionTarget]);
-
-  const scrollByPage = useCallback(
-    (dir: -1 | 1) => {
-      const el = carouselRef.current;
-      if (!el) return;
-      el.scrollBy({ left: dir * Math.max(140, el.clientWidth * 0.65), behavior: "smooth" });
-    },
-    [carouselRef]
-  );
-
-  return (
-    <div className="relative">
-      <button
-        type="button"
-        aria-label="Previous"
-        onClick={() => scrollByPage(-1)}
-        className="absolute left-0 top-1/2 z-10 -translate-y-1/2 rounded-full p-2 bg-white/15 border border-white/25"
-      >
-        <ArrowLeft className="h-4 w-4 text-white" />
-      </button>
-      <button
-        type="button"
-        aria-label="Next"
-        onClick={() => scrollByPage(1)}
-        className="absolute right-0 top-1/2 z-10 -translate-y-1/2 rounded-full p-2 bg-white/15 border border-white/25"
-      >
-        <ArrowRight className="h-4 w-4 text-white" />
-      </button>
-
-      <div
-        ref={carouselRef}
-        onPointerDown={() => onInteractionStart(carouselId)}
-        className="hide-scrollbar flex snap-x snap-mandatory gap-3 overflow-x-auto px-10 pb-2"
-      >
-        {themes.map((theme, index) => {
-          const selected = selectedTheme === theme.id;
-          // ±1 가상화는 그대로 두되, **선택된 카드는 거리와 무관하게 로드한다.**
-          // 멀리 있는 테마를 눌렀을 때 그 카드가 검은 채로 남으면, 고객은
-          // 자기가 무엇을 골랐는지 볼 수 없다.
-          const loadImage = Math.abs(index - focusIndex) <= 1 || selected;
-          return (
-            <button
-              key={theme.id}
-              type="button"
-              data-theme-id={theme.id}
-              onClick={() => onSelect(theme)}
-              className={`theme-selection-screen__carousel-card relative aspect-[3/4] w-[38%] shrink-0 snap-center rounded-2xl overflow-hidden border-2 transition-[border-color,box-shadow] duration-150 ${
-                selected ? "border-[#c9a227] shadow-[0_0_0_1px_rgba(201,162,39,0.35)]" : "border-transparent"
-              }`}
-            >
-              <ThemeThumb theme={theme} loadImage={loadImage} originalPhoto={originalPhoto} />
-              <div className={`absolute inset-0 bg-gradient-to-b ${theme.gradient} opacity-40 pointer-events-none`} />
-              {theme.requiresGeneration ? (
-                <div className={`absolute left-2 w-5 h-5 rounded-full bg-white/15 border border-white/30 flex items-center justify-center ${selected ? "top-9" : "top-2"}`}>
-                  <Flower2 className="w-3 h-3 text-[#f5d77a]" strokeWidth={2} />
-                </div>
-              ) : null}
-              {selected ? (
-                <div className="absolute top-2 left-2 w-5 h-5 rounded-full bg-[#c9a227] flex items-center justify-center">
-                  <Check className="w-3 h-3 text-[#0a0a0a]" strokeWidth={3} />
-                </div>
-              ) : null}
-              <ThemeOwnershipBadge theme={theme} offers={offers} />
-              <div className="absolute bottom-2 left-0 right-0 text-center px-1">
-                <span className="text-[10px] text-[#F1E5D1] tracking-wide">{themeLabel(theme)}</span>
-              </div>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-});
-
 export function ThemeSelectionScreen({
   cutoutImage,
+  isLibraryFlow = false,
+  libraryPublication = null,
   originalPhoto = null,
   selectedTheme,
   language = "ko",
@@ -278,26 +212,46 @@ export function ThemeSelectionScreen({
   const tc = memorialT(language).theme;
   const themeLabel = (th: MemorialTheme) =>
     themeDisplayName(language === "ko" ? "ko" : "en", th);
-  const freeCarouselRef = useRef<HTMLDivElement | null>(null);
   const ownership = useThemeOwnership();
-  const premiumCarouselRef = useRef<HTMLDivElement | null>(null);
-  const interactionCarouselRef = useRef<"free" | "premium" | null>(null);
-  const [pipelineCutout, setPipelineCutout] = useState<string | null>(null);
-  const [idleVideoUrl, setIdleVideoUrl] = useState<string>("");
-  /** 이 화면이 트는 영상이 배경을 이미 담고 있는가 (Phase 25).
-   *  아래 useEffect 가 **이미 파싱하고 있던** 객체에서 그대로 꺼낸다. */
-  const [idleBaked, setIdleBaked] = useState(false);
+  /** My Library 경로로 들어왔는가 — 발행된 영상만 있고 정적 누끼는 없다.
+   *  그 경우 "업로드·처리 필요" 경고는 틀린 안내다.
+   *  isLibraryFlow prop 으로 **첫 렌더부터** 확정한다 — effect 를 기다리지 않는다. */
+  const [isLibrarySource, setIsLibrarySource] = useState(isLibraryFlow);
   const [highlightTheme, setHighlightTheme] = useState<number | null>(selectedTheme);
+  const [filter, setFilter] = useState<ThemeFilter>("all");
   /** 크레딧이 모자랄 때 여는 팩 시트. 사용자가 눌러야만 열린다. */
   const [showPacks, setShowPacks] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const footerRef = useRef<HTMLDivElement>(null);
 
-  const isInteractionTarget = useCallback(
-    (id: "free" | "premium") => () => interactionCarouselRef.current === id,
-    []
-  );
+  /**
+   * 하단 CTA 는 스크롤 영역의 형제라 화면 아래에 고정된다. 그 높이는 구매 오류나
+   * 잔액 안내가 나타날 때 달라질 수 있으므로 상수로 추측하지 않고 실제 border-box
+   * 높이(이미 safe-area padding 포함)를 스크롤 여백으로 전달한다. 이렇게 하면 마지막
+   * 카드도 CTA 위까지 완전히 올릴 수 있고, 이미지/카드 z-index 를 건드릴 필요가 없다.
+   */
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current;
+    const footer = footerRef.current;
+    if (!scroll || !footer) return;
 
-  const markInteraction = useCallback((id: "free" | "premium") => {
-    interactionCarouselRef.current = id;
+    const syncFooterReserve = () => {
+      scroll.style.setProperty(
+        "--theme-select-footer-reserve",
+        `${Math.ceil(footer.getBoundingClientRect().height)}px`
+      );
+    };
+
+    syncFooterReserve();
+
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", syncFooterReserve);
+      return () => window.removeEventListener("resize", syncFooterReserve);
+    }
+
+    const observer = new ResizeObserver(syncFooterReserve);
+    observer.observe(footer);
+    return () => observer.disconnect();
   }, []);
 
   useEffect(() => {
@@ -311,50 +265,20 @@ export function ThemeSelectionScreen({
   useEffect(() => {
     try {
       const raw = sessionStorage.getItem(ETERNAL_BEAM_PIPELINE_KEY);
-      if (!raw) {
-        setPipelineCutout(null);
-        setIdleVideoUrl("");
-        setIdleBaked(false);
-        return;
-      }
-      const pipeline = JSON.parse(raw) as StoredPipeline;
-      const cutout =
-        cutoutImage ||
-        pipeline.cutout_display_url ||
-        pipeline.dog_only_nobg_url ||
-        null;
-      setPipelineCutout(cutout);
-      setIdleVideoUrl(pipeline.idle_video_url || "");
-      // 영상이 있을 때만 의미가 있다 — 없으면 나가는 것은 정적 누끼다.
-      setIdleBaked(
-        Boolean(pipeline.idle_video_url) && pipeline.background_baked === true
-      );
+      const stored = raw ? (JSON.parse(raw) as StoredPipeline) : null;
+      // 라이브러리 모드에서는 부모가 내려준 발행 메타데이터가 정본이다 —
+      // sessionStorage 가 비었거나(쿼터 실패) 이전 업로드 세션의 잔재를 담고
+      // 있어도 이 값이 이긴다.
+      const pipeline = applyLibraryOverride(stored, isLibraryFlow, libraryPublication);
+      setIsLibrarySource(isLibraryFlow || pipeline?.generation_source === "library");
     } catch {
-      setPipelineCutout(null);
-      setIdleVideoUrl("");
-      setIdleBaked(false);
+      setIsLibrarySource(isLibraryFlow);
     }
-  }, [cutoutImage]);
+  }, [isLibraryFlow, libraryPublication]);
 
-  const selectTheme = useCallback(
-    (theme: MemorialTheme, source: "free" | "premium") => {
-      interactionCarouselRef.current = source;
-      setHighlightTheme(theme.id);
-    },
-    []
-  );
-
-  const snapSelectTheme = useCallback(
-    (themeId: number, source: "free" | "premium") => {
-      if (interactionCarouselRef.current !== source) return;
-      setHighlightTheme(themeId);
-      const theme = (source === "free" ? freeMemorialThemes : premiumMemorialThemes).find(
-        (t) => t.id === themeId
-      );
-      if (!theme) return;
-    },
-    []
-  );
+  const selectTheme = useCallback((theme: MemorialTheme) => {
+    setHighlightTheme(theme.id);
+  }, []);
 
   const activeTheme = highlightTheme ?? selectedTheme;
   const previewTheme = activeTheme != null ? getMemorialTheme(activeTheme) : null;
@@ -363,8 +287,8 @@ export function ThemeSelectionScreen({
   /**
    * 원본을 골랐는데 보여 줄 사진이 없다.
    *
-   * 검은 판을 보여 주고 넘어가게 두지 않는다 — 그 검은 판이 그대로 유료 생성에
-   * 들어가고, 고객은 결제 뒤에야 알게 된다.
+   * 조용히 넘어가게 두지 않는다 — 빈 원본이 그대로 유료 생성에 들어가고,
+   * 고객은 결제 뒤에야 알게 된다.
    */
   const originalMissing = Boolean(previewIsOriginal && !originalPhoto);
   const activeRow = previewTheme ? themeRow(previewTheme, ownership.offers) : null;
@@ -394,6 +318,61 @@ export function ThemeSelectionScreen({
     waitingForCatalog ||
     ownership.buying != null ||
     activeRow?.action === "none";
+
+  /**
+   * 전체 카드 목록을 Included/Owned/Premium/Custom 으로 묶는다. 판정 자체는
+   * lib/theme-groups.ts 의 순수 함수가 하고, 여기서는 필터 알약이 고를 목록만
+   * 만든다 — node --test 로 그룹핑 규칙을 따로 덮을 수 있다.
+   */
+  const { ownedThemes, lockedThemes, customThemes } = useMemo(
+    () => groupPremiumThemes(premiumMemorialThemes, ownership.offers),
+    [ownership.offers]
+  );
+
+  const cards = useMemo<ThemeCard[]>(
+    () => [
+      ...freeMemorialThemes.map((theme) => ({ theme, group: "included" as const })),
+      ...ownedThemes.map((theme) => ({ theme, group: "owned" as const })),
+      ...lockedThemes.map((theme) => ({ theme, group: "premium" as const })),
+      ...customThemes.map((theme) => ({ theme, group: "custom" as const })),
+    ],
+    [ownedThemes, lockedThemes, customThemes]
+  );
+
+  const visibleCards = filter === "all" ? cards : cards.filter((c) => c.group === filter);
+
+  const filterLabel = (id: ThemeFilter): string =>
+    id === "all"
+      ? tc.filterAll
+      : id === "included"
+        ? tc.filterIncluded
+        : id === "owned"
+          ? tc.filterOwned
+          : id === "premium"
+            ? tc.filterPremium
+            : tc.filterCustom;
+
+  const hasPreparedPet = Boolean(cutoutImage);
+  const stepperSteps: CreateFlowStepView[] = useMemo(() => {
+    const statusLabel = { complete: tc.stepComplete, current: tc.stepCurrent, upcoming: tc.stepUpcoming };
+    const label: Record<string, string> = {
+      uploadPhotos: tc.stepUploadPhotos,
+      preparePet: tc.stepPreparePet,
+      chooseTheme: tc.stepChooseTheme,
+      previewCreate: tc.stepPreviewCreate,
+      playOnBeam: tc.stepPlayOnBeam,
+    };
+    return computeCreateFlowSteps(hasPreparedPet).map((step) => ({
+      id: step.id,
+      label: label[step.id],
+      status: step.status,
+      statusLabel: statusLabel[step.status],
+    }));
+  }, [hasPreparedPet, tc]);
+  const currentStepIndex = Math.max(
+    0,
+    stepperSteps.findIndex((s) => s.status === "current")
+  );
 
   const commitTheme = useCallback(
     (theme: MemorialTheme) => {
@@ -442,176 +421,152 @@ export function ThemeSelectionScreen({
     shortfall,
   ]);
   // 커스텀 배경은 getEffectiveBgVideo 가 저장된 사용자 배경을 돌려준다. 아직
-  // 만들지 않았다면 카드 아트(플레이스홀더)가 나오고, 실제 거절은 다음 화면의
-  // 장면 준비에서 일어난다.
+  // 만들지 않았다면 카드는 자리표시자(플레이스홀더)로 보이고, 실제 거절은
+  // 다음 화면의 장면 준비에서 일어난다.
 
   return (
-    <div className="theme-selection-screen flex h-full min-h-0 flex-col overflow-hidden bg-[#0a0a0a]">
-      <header className="shrink-0 px-5 pt-[max(2.75rem,env(safe-area-inset-top,0px))] pb-3 flex items-center relative z-10">
-        <button
-          type="button"
-          onClick={onBack}
-          className="w-10 h-10 rounded-full flex items-center justify-center bg-white/10"
-          aria-label={memorialT(language).common.back}
-        >
-          <ArrowLeft className="w-4 h-4 text-[#E2E2E2]" strokeWidth={1.5} />
-        </button>
-        <h1 className="flex-1 text-center text-lg font-medium text-[#F1E5D1]">{tc.title}</h1>
-        <div className="w-10" />
+    <div className="theme-selection-screen flex h-full min-h-0 flex-col overflow-hidden">
+      <header className="eb-screen-header theme-select__header">
+        <div className="eb-screen-header__leading">
+          <BackButton onClick={onBack} label={memorialT(language).common.back} />
+        </div>
+        <h1 className="eb-screen-header__title theme-select__title">
+          {isLibraryFlow ? tc.changeThemeContext : tc.title}
+        </h1>
+        <div className="eb-screen-header__trailing" />
       </header>
 
-      <div className="theme-selection-screen__scroll hide-scrollbar min-h-0 flex-1 overflow-y-auto">
-        {!cutoutImage ? (
-          <div className="mx-5 mb-2 px-4 py-2.5 rounded-xl text-[13px] bg-amber-900/25 text-[#e8c97a] border border-amber-600/35">
-            {tc.cutoutMissing}
-          </div>
+      <div className="theme-select__body flex-1 min-h-0 flex flex-col overflow-hidden">
+        {/* Create 흐름에서만 — My Library 의 "테마 변경"에는 업로드/처리 단계가
+            없다. 데스크톱은 세로 목록, 모바일은 압축 바(CreateFlowStepper 안의
+            CSS 컨테이너 쿼리가 정한다). */}
+        {!isLibraryFlow ? (
+          <CreateFlowStepper
+            steps={stepperSteps}
+            ariaLabel={tc.stepperAriaLabel}
+            compactSummary={tc.stepperCompactPrefix(currentStepIndex + 1, stepperSteps.length)}
+            className="theme-select__stepper"
+          />
         ) : null}
 
-        <div className="px-5 py-2">
-          <div className="theme-selection-screen__preview relative aspect-[4/3] mx-auto rounded-2xl overflow-hidden border border-white/10 bg-[#0a0a0c]">
-            {/* ── 고른 배경을 **즉시** 보여 준다 ─────────────────────────────
-                예전에는 이 자리가 누끼만 그렸다("배경은 다음 단계에서"). 그래서
-                테마를 눌러도 화면이 바뀌지 않았고, 고객은 무엇을 고르는지 모르는
-                채 다음으로 넘어갔다. 다음 화면의 합성 규칙을 그대로 쓴다 —
-                여기서 본 그림과 미리보기에서 볼 그림이 같아야 한다. */}
-            {originalMissing ? (
-              <div
-                role="alert"
-                className="absolute inset-0 flex items-center justify-center px-6 text-center text-[13px] bg-amber-900/30 text-[#e8c97a]"
-              >
-                {tc.originalMissing}
+        <div className="theme-select__main flex-1 min-h-0 flex flex-col overflow-hidden">
+          <div
+            ref={scrollRef}
+            className="theme-select__scroll hide-scrollbar min-h-0 flex-1 overflow-y-auto"
+          >
+            <div className="theme-select__intro">
+              {!isLibraryFlow ? <p className="theme-select__subtitle eb-caption">{tc.subtitle}</p> : null}
+
+              {ownership.balance != null ? (
+                <div className="theme-select__balance-row">
+                  <span className="eb-balance-pill theme-select__balance-pill">
+                    <span className="eb-balance-pill__label theme-select__balance-pill-label">
+                      {tc.balanceHeading}
+                    </span>
+                    {ownership.balance}
+                  </span>
+                </div>
+              ) : null}
+
+              {/* My Library 경로는 정적 누끼(cutoutImage) 없이 발행된 영상만 갖고
+                  들어온다 — generation_source === "library" 면 업로드 갱신을
+                  요구하는 이 경고는 틀린 안내이므로 보이지 않는다. */}
+              {!cutoutImage && !isLibrarySource ? (
+                <div className="theme-select__notice eb-notice eb-notice--warning">{tc.cutoutMissing}</div>
+              ) : null}
+
+              {originalMissing ? (
+                <div role="alert" className="theme-select__notice eb-notice eb-notice--warning">
+                  {tc.originalMissing}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="theme-select__filters" role="toolbar" aria-label={tc.title}>
+              {FILTER_ORDER.map((id) => (
+                <button
+                  key={id}
+                  type="button"
+                  aria-pressed={filter === id}
+                  className={`eb-pill theme-select__filter-pill${filter === id ? " eb-pill--active" : ""}`}
+                  onClick={() => setFilter(id)}
+                >
+                  {filterLabel(id)}
+                </button>
+              ))}
+            </div>
+
+            {visibleCards.length > 0 ? (
+              <div className="theme-select__grid">
+                {visibleCards.map(({ theme, group }) => (
+                  <ThemeGridCard
+                    key={theme.id}
+                    theme={theme}
+                    group={group}
+                    selected={activeTheme === theme.id}
+                    offers={ownership.offers}
+                    themeLabel={themeLabel}
+                    originalPhoto={originalPhoto}
+                    hasCustomAsset={theme.requiresGeneration ? Boolean(getEffectiveBgVideo(theme)) : true}
+                    tc={tc}
+                    onSelect={() => selectTheme(theme)}
+                  />
+                ))}
               </div>
             ) : (
-              <>
-                {previewIsOriginal ? (
-                  // 원본 갈래에는 펫을 **얹지 않는다** — 사진에 이미 아이가 있다.
-                  <img
-                    src={originalPhoto ?? undefined}
-                    alt=""
-                    className="absolute inset-0 h-full w-full object-cover"
-                  />
-                ) : (
-                  <>
-                    {previewBgVideo ? (
-                      <ThemeBackgroundVideo
-                        key={`theme-sel-bg-${activeTheme}-${previewBgVideo}`}
-                        src={previewBgVideo}
-                        poster={previewTheme?.thumb}
-                      />
-                    ) : previewTheme?.thumb ? (
-                      <div
-                        className="absolute inset-0 bg-center bg-cover"
-                        style={{ backgroundImage: `url(${previewTheme.thumb})` }}
-                      />
-                    ) : null}
-                    {previewTheme ? (
-                      <div
-                        className={`absolute inset-0 bg-gradient-to-b ${previewTheme.gradient} opacity-25`}
-                      />
-                    ) : null}
-                    <CutoutStage plain className="absolute inset-0">
-                      <PetIdleDisplay
-                        idleVideoUrl={idleVideoUrl}
-                        cutoutUrl={cutoutImage || pipelineCutout}
-                        // 테마 선택은 확인 전 단계 — 데모 mp4 폴백 없이 정적 누끼로 보여준다.
-                        allowDemoFallback={false}
-                        // 저장된 파이프라인에 이미 들어 있던 값이다 (Phase 25).
-                        backgroundBaked={idleBaked}
-                        className="cutout-stage__subject"
-                      />
-                    </CutoutStage>
-                  </>
-                )}
-              </>
+              <p className="theme-select__empty eb-caption">{tc.filterEmpty}</p>
             )}
           </div>
-          <p className="mt-2 text-center text-[10px] text-[#666]">
-            {previewIsOriginal ? tc.previewOriginalHint : tc.previewNeutralHint}
-          </p>
-        </div>
 
-        <div className="px-5 pb-3">
-          <p className="text-[11px] uppercase tracking-widest text-[#a8e6a3] mb-1 px-1">{tc.freeSection}</p>
-          <p className="text-[10px] text-[#666] mb-2 px-1">{tc.freeSectionHint}</p>
-          <ThemeCarousel
-            themes={freeMemorialThemes}
-            selectedTheme={activeTheme}
-            themeLabel={themeLabel}
-            carouselRef={freeCarouselRef}
-            carouselId="free"
-            isInteractionTarget={isInteractionTarget("free")}
-            onInteractionStart={markInteraction}
-            offers={ownership.offers}
-            onSelect={(theme) => selectTheme(theme, "free")}
-            onSnapTheme={snapSelectTheme}
-            originalPhoto={originalPhoto}
-          />
-        </div>
-
-        <div className="px-5 pb-2">
-          <p className="text-[11px] uppercase tracking-widest text-[#f5d77a] mb-1 px-1">{tc.premiumSection}</p>
-          <p className="text-[10px] text-[#666] mb-2 px-1">{tc.premiumSectionHint}</p>
-          <ThemeCarousel
-            themes={premiumMemorialThemes}
-            selectedTheme={activeTheme}
-            themeLabel={themeLabel}
-            carouselRef={premiumCarouselRef}
-            carouselId="premium"
-            isInteractionTarget={isInteractionTarget("premium")}
-            onInteractionStart={markInteraction}
-            offers={ownership.offers}
-            onSelect={(theme) => selectTheme(theme, "premium")}
-            onSnapTheme={snapSelectTheme}
-            originalPhoto={originalPhoto}
-          />
-          <p className="mt-2 text-[10px] text-[#888]">{tc.swipeHint}</p>
-        </div>
-      </div>
-
-      <div className="theme-selection-footer shrink-0 px-5 pt-3 space-y-2 relative z-20">
-        {ownership.error ? (
-          <p role="alert" className="text-center text-xs text-red-300">
-            {ownership.error === "UNAUTHENTICATED"
-              ? tc.signInToBuy
-              : ownership.error === "INSUFFICIENT_CREDITS"
-                ? tc.insufficientCredits
-                : tc.purchaseFailed}
-          </p>
-        ) : null}
-        {/* 잔액 · 가격을 CTA 바로 위에 둔다 — "잔액 12 / 가격 5" 를 보고 누르는
-            것이 이 화면의 결정이다. 살 수 있는 테마일 때만 보여 준다. */}
-        {ownership.balance != null && activeRow?.action === "buy" && activePrice ? (
-          <p className="text-center text-[11px] text-[#9a9a9a]">
-            {tc.balanceLabel(ownership.balance)}
-            {shortfall != null ? (
-              <span className="ml-2 text-[#f5d77a]">{tc.needMoreCredits(shortfall)}</span>
+          <div
+            ref={footerRef}
+            className="theme-selection-footer theme-select__footer shrink-0 relative z-20"
+          >
+            {ownership.error ? (
+              <p role="alert" className="eb-field-error text-center">
+                {ownership.error === "UNAUTHENTICATED"
+                  ? tc.signInToBuy
+                  : ownership.error === "INSUFFICIENT_CREDITS"
+                    ? tc.insufficientCredits
+                    : tc.purchaseFailed}
+              </p>
             ) : null}
-          </p>
-        ) : null}
-        <button
-          type="button"
-          onClick={() => void handlePrimaryAction()}
-          disabled={primaryDisabled}
-          className="cta-gold w-full py-3.5 rounded-2xl font-medium text-[15px] disabled:opacity-45 disabled:cursor-not-allowed"
-        >
-          {originalMissing
-            ? tc.originalMissingCta
-            : !previewTheme
-              ? tc.selectFirst
-              : ownership.buying === previewTheme.themeKey
-                ? tc.buying
-                : waitingForCatalog
-                  ? tc.loadingPrice
-                  : activeRow?.action === "buy"
-                    ? shortfall != null
-                      ? tc.getCreditsCta
-                      : tc.buyFor(activePrice ?? "")
-                    : activeRow?.action === "none"
-                      ? tc.comingSoon
-                      : needsCustomBackground
-                        ? tc.createCustomBackground
-                        : tc.continueFree}
-        </button>
+            {/* 잔액 · 가격을 CTA 바로 위에 둔다 — "잔액 12 / 가격 5" 를 보고 누르는
+                것이 이 화면의 결정이다. 살 수 있는 테마일 때만 보여 준다. */}
+            {ownership.balance != null && activeRow?.action === "buy" && activePrice ? (
+              <p className="eb-caption text-center">
+                {tc.balanceLabel(ownership.balance)}
+                {shortfall != null ? (
+                  <span className="theme-select__shortfall">{tc.needMoreCredits(shortfall)}</span>
+                ) : null}
+              </p>
+            ) : null}
+            <button
+              type="button"
+              onClick={() => void handlePrimaryAction()}
+              disabled={primaryDisabled}
+              className="cta-gold eb-btn-label w-full"
+            >
+              {originalMissing
+                ? tc.originalMissingCta
+                : !previewTheme
+                  ? tc.selectFirst
+                  : ownership.buying === previewTheme.themeKey
+                    ? tc.buying
+                    : waitingForCatalog
+                      ? tc.loadingPrice
+                      : activeRow?.action === "buy"
+                        ? shortfall != null
+                          ? tc.getCreditsCta
+                          : tc.buyFor(activePrice ?? "")
+                        : activeRow?.action === "none"
+                          ? tc.comingSoon
+                          : needsCustomBackground
+                            ? tc.createCustomBackground
+                            : tc.continueFree}
+            </button>
+          </div>
+        </div>
       </div>
 
       {showPacks && previewTheme ? (

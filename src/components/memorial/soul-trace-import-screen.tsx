@@ -223,18 +223,23 @@ export function SoulTraceImportScreen() {
     );
   }
 
+  // Phase 10 — 앱 셸 바깥의 착지 페이지. 아이보리 바탕 · 차콜 텍스트 · 가운데
+  // .eb-card 패널. 골드는 기본 CTA 채움과 eyebrow 텍스트에만 쓴다.
   const shell =
-    "relative flex min-h-screen flex-col items-center justify-center px-6 text-center text-[#EDE3CE]";
+    "soul-trace-import-screen relative flex min-h-[100dvh] flex-col items-center justify-center px-6 py-12 text-center bg-[var(--eb-bg)] text-[var(--eb-text)]";
+  const primaryCta = "eb-btn eb-btn--primary eb-btn--block mem-btn-primary mt-2 w-full rounded-2xl px-5 text-base";
+  const secondaryCta =
+    "eb-btn eb-btn--secondary eb-btn--block mem-btn-secondary mt-2 flex w-full rounded-2xl px-5 text-base no-underline";
 
   return (
-    <div className={shell} style={{ background: "#050505" }}>
+    <div className={shell}>
       <HolographicBackground />
-      <div className="relative z-[2] w-full max-w-md space-y-5">
+      <div className="eb-card eb-fade-up relative z-[2] w-full max-w-md space-y-5 px-6 py-8">
         {phase.kind === "loading" || phase.kind === "claiming" ? (
           <>
-            <p className="text-xs uppercase tracking-[0.32em] text-[#C9A227]">SOUL TRACE</p>
-            <h1 className="text-lg font-light">편지를 가져오는 중…</h1>
-            <p className="text-sm font-light text-white/50">
+            <p className="eb-eyebrow text-xs uppercase tracking-[0.32em]">SOUL TRACE</p>
+            <h1 className="eb-title text-lg">편지를 가져오는 중…</h1>
+            <p className="eb-body-sm">
               원본은 Soul Trace 에 그대로 남고, 주문에 쓰일 사본만 안전하게 옮깁니다.
             </p>
           </>
@@ -242,16 +247,16 @@ export function SoulTraceImportScreen() {
 
         {phase.kind === "done" ? (
           <>
-            <p className="text-xs uppercase tracking-[0.32em] text-[#C9A227]">SOUL TRACE</p>
-            <h1 className="text-lg font-light">편지를 가져왔습니다</h1>
-            <p className="text-sm font-light text-white/60">
+            <p className="eb-eyebrow text-xs uppercase tracking-[0.32em]">SOUL TRACE</p>
+            <h1 className="eb-title text-lg">편지를 가져왔습니다</h1>
+            <p className="eb-body-sm">
               이제 실물 편지나 메모리 박스를 주문할 때 이 편지가 그대로 인쇄됩니다.
               아이를 아직 만들지 않았다면 먼저 아이의 영상을 만들어 주세요.
             </p>
             <button
               type="button"
               onClick={() => window.location.assign("/")}
-              className="mt-2 w-full rounded-2xl bg-[#b89a2e] px-5 py-3.5 text-base font-light text-black transition hover:bg-[#a88928]"
+              className={primaryCta}
             >
               계속하기
             </button>
@@ -260,21 +265,21 @@ export function SoulTraceImportScreen() {
 
         {phase.kind === "error" ? (
           <>
-            <p className="text-xs uppercase tracking-[0.32em] text-[#C9A227]">SOUL TRACE</p>
-            <h1 className="text-lg font-light">편지를 가져오지 못했습니다</h1>
-            <p className="text-sm font-light text-white/60">{phase.message}</p>
+            <p className="eb-eyebrow text-xs uppercase tracking-[0.32em]">SOUL TRACE</p>
+            <h1 className="eb-title text-lg">편지를 가져오지 못했습니다</h1>
+            <p className="eb-field-error text-sm">{phase.message}</p>
             {phase.recoverable ? (
               <button
                 type="button"
                 onClick={() => void claim()}
-                className="mt-2 w-full rounded-2xl bg-[#b89a2e] px-5 py-3.5 text-base font-light text-black transition hover:bg-[#a88928]"
+                className={primaryCta}
               >
                 다시 시도
               </button>
             ) : (
               <a
                 href={SOUL_TRACE_URL}
-                className="mt-2 block w-full rounded-2xl border border-[rgba(201,162,39,0.4)] px-5 py-3.5 text-base font-light text-[#F5E6B8] transition hover:bg-white/5"
+                className={secondaryCta}
               >
                 Soul Trace 로 이동
               </a>
@@ -284,15 +289,15 @@ export function SoulTraceImportScreen() {
 
         {phase.kind === "expired" ? (
           <>
-            <p className="text-xs uppercase tracking-[0.32em] text-[#C9A227]">SOUL TRACE</p>
-            <h1 className="text-lg font-light">편지 링크가 만료되었습니다</h1>
-            <p className="text-sm font-light text-white/60">
+            <p className="eb-eyebrow text-xs uppercase tracking-[0.32em]">SOUL TRACE</p>
+            <h1 className="eb-title text-lg">편지 링크가 만료되었습니다</h1>
+            <p className="eb-body-sm">
               보안을 위해 편지 링크는 15분만 유효합니다. 편지는 Soul Trace 에 그대로
               있으니, 다시 열어 &ldquo;이터널빔으로 계속하기&rdquo;를 눌러 주세요.
             </p>
             <a
               href={SOUL_TRACE_URL}
-              className="mt-2 block w-full rounded-2xl bg-[#b89a2e] px-5 py-3.5 text-base font-light text-black transition hover:bg-[#a88928]"
+              className={primaryCta}
             >
               Soul Trace 에서 다시 시작
             </a>
@@ -301,14 +306,14 @@ export function SoulTraceImportScreen() {
 
         {phase.kind === "noHandoff" ? (
           <>
-            <p className="text-xs uppercase tracking-[0.32em] text-[#C9A227]">SOUL TRACE</p>
-            <h1 className="text-lg font-light">가져올 편지가 없습니다</h1>
-            <p className="text-sm font-light text-white/60">
+            <p className="eb-eyebrow text-xs uppercase tracking-[0.32em]">SOUL TRACE</p>
+            <h1 className="eb-title text-lg">가져올 편지가 없습니다</h1>
+            <p className="eb-body-sm">
               Soul Trace 결과 화면에서 &ldquo;이터널빔으로 계속하기&rdquo;를 눌러 주세요.
             </p>
             <a
               href={SOUL_TRACE_URL}
-              className="mt-2 block w-full rounded-2xl border border-[rgba(201,162,39,0.4)] px-5 py-3.5 text-base font-light text-[#F5E6B8] transition hover:bg-white/5"
+              className={secondaryCta}
             >
               Soul Trace 로 이동
             </a>

@@ -16,9 +16,12 @@ from backend.routers import keyframes_v1
 from backend.scenarios.pet_scenarios import ACTION_ORDER, IDLE_EVENTS, PET_ACTIONS
 from backend.services import action_keyframe_service as kf
 from backend.services import action_keyframe_spec as spec_mod
+from backend.services import canonical_image_providers as providers_mod
 from backend.services import canonical_pet_service as canon
+from backend.services import canonical_qa
 from backend.services import durable_provider_jobs
 from backend.services import pet_identity_service as ids
+from backend.services import pet_morphology_service as morph
 from backend.services import pet_reference_service as refs
 from backend.services import pet_reference_set_service as sets
 from backend.services import pet_registry, vlm_identity
@@ -52,10 +55,10 @@ def _mock_backend(monkeypatch):
     monkeypatch.delenv("PET_VLM_IDENTITY_ENABLED", raising=False)
     monkeypatch.delenv("KEYFRAME_ALLOW_REVIEW_CANONICAL", raising=False)
     monkeypatch.setenv("CANONICAL_QA_MIN_RESOLUTION", "100")
-    for m in (refs, pet_registry, ids, sets, canon, kf):
+    for m in (refs, pet_registry, ids, morph, sets, canon, kf):
         m.__reset_for_tests()
     yield
-    for m in (refs, pet_registry, ids, sets, canon, kf):
+    for m in (refs, pet_registry, ids, morph, sets, canon, kf):
         m.__reset_for_tests()
 
 
@@ -157,6 +160,69 @@ def test_durable_keyframe_resumes_one_building_version(storage, monkeypatch):
     assert len(completed.candidates) == 1
 
 
+def test_keyframe_storage_failure_recovers_same_candidate_no_resubmission(storage, monkeypatch):
+    """유료 키프레임 생성 후 raw 저장만 실패해도 같은 후보가 재사용된다 — 재과금 없음."""
+    h, _canonical = _prepare_canonical(monkeypatch, storage)
+    install_kf_vlm(monkeypatch, VLM_KF_OK)
+    monkeypatch.setenv("CANONICAL_MAX_PRIMARY", "2")
+    monkeypatch.setenv("CANONICAL_STOP_AFTER_PASSES", "1")
+
+    from backend.services import supabase_assets
+
+    upload_calls = {"n": 0}
+
+    async def flaky_upload(path, data, content_type):
+        upload_calls["n"] += 1
+        if upload_calls["n"] == 1:
+            raise RuntimeError("storage down")
+        storage[path] = bytes(data)
+        return f"https://storage.test/{path}"
+
+    monkeypatch.setattr(supabase_assets, "upload_asset_to_storage", flaky_upload)
+
+    class DurableRunway(FakeProvider):
+        durable_execution = True
+
+        def __init__(self, name, image):
+            super().__init__(name, [])
+            self._image = image
+            self.submissions = 0
+            self._job_ids: dict[int, str] = {}
+
+        def generate(self, references, prompt, output_spec, metadata):
+            self.calls += 1
+            attempt = metadata.get("attempt")
+            if attempt not in self._job_ids:
+                self.submissions += 1
+                self._job_ids[attempt] = f"{self.name}-job-{attempt}"
+            return CanonicalImageResult(
+                image_bytes=self._image, provider=self.name, model=self.model_name(),
+                external_job_id=self._job_ids[attempt],
+            )
+
+    provider = DurableRunway("runway", GOOD())
+
+    with pytest.raises(durable_provider_jobs.ProviderRecoveryRequired):
+        _build_kf(h, [provider])
+
+    assert provider.calls == 1
+    assert provider.submissions == 1
+    rows = _run(kf._keyframe_rows(PET, "NEUTRAL_IDLE"))
+    assert len(rows) == 1 and rows[0]["status"] == kf.STATUS_BUILDING
+    cands = _run(kf._candidate_rows(str(rows[0]["id"])))
+    assert len(cands) == 1
+    assert cands[0]["error"] == "RAW_STORE_FAILED"
+    assert cands[0]["external_job_id"] == "runway-job-1"
+    assert not cands[0].get("raw_object_path")
+
+    completed = _build_kf(h, [provider])
+    assert completed.status == kf.STATUS_COMPLETE
+    assert provider.calls == 2
+    assert provider.submissions == 1  # 재제출 없음
+    assert len(completed.candidates) == 1
+    assert completed.candidates[0].external_job_id == "runway-job-1"
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 레지스트리 — 네 번째 명명 체계 금지
 # ══════════════════════════════════════════════════════════════════════════
@@ -247,12 +313,22 @@ def test_build_neutral_idle_with_canonical_anchor(storage, monkeypatch):
     assert k.canonical_version_id == canonical.id
     assert k.canonical_version == canonical.version
 
-    # 신원 앵커: 첫 레퍼런스는 항상 정본 raw 다 — 고객 원본에서 재발명하지 않는다.
+    # 신원 앵커: 첫 레퍼런스는 항상 정본 **클린 플레이트**다 — 고객 원본에서
+    # 재발명하지 않고, 그림자/배경이 구워진 raw 를 먹이지도 않는다.
     first_ref = provider.seen_references[0][0]
     anchor = next(c for c in canonical.candidates if c.selected)
     assert first_ref.role == "CANONICAL"
     assert first_ref.reference_id == f"canonical:{anchor.id}"
-    assert first_ref.data == storage[anchor.raw_object_path]
+    assert anchor.plate_object_path and anchor.plate_object_path in storage
+    assert first_ref.data == storage[anchor.plate_object_path]
+    assert first_ref.data != storage[anchor.raw_object_path]  # raw 는 생성에 안 간다
+    # raw 는 파괴되지 않는다 — 증거로 그대로 남는다.
+    assert storage[anchor.raw_object_path]
+    sent_input = (
+        next(c for c in k.candidates if c.selected).generation_metadata["canonical_input"]
+    )
+    assert sent_input["kind"] == "clean_plate"
+    assert sent_input["object_path"] == anchor.plate_object_path
     # 보조 신뢰 레퍼런스는 최대 2장.
     assert len(provider.seen_references[0]) <= 3
 
@@ -260,6 +336,67 @@ def test_build_neutral_idle_with_canonical_anchor(storage, monkeypatch):
     assert sel.input_canonical_candidate_id == anchor.id
     assert sel.qa_result["decision"] == "PASS"
     assert sel.qa_result["pose"]["matches"] == "yes"
+
+
+def test_legacy_canonical_without_plate_is_backfilled_from_its_cutout(storage, monkeypatch):
+    """플레이트 이전에 만들어진 정본: 프로바이더 재호출 없이 누끼에서 채운다."""
+    from backend.services import clean_plate_service as cp
+
+    h, canonical = _prepare_canonical(monkeypatch, storage)
+    install_kf_vlm(monkeypatch, VLM_KF_OK)
+    anchor = next(c for c in canonical.candidates if c.selected)
+
+    # 레거시 행 재현 — 플레이트 컬럼만 지운다 (raw/cutout 은 그대로).
+    for row in canon._MOCK_CANDIDATES:
+        row["plate_bucket"] = None
+        row["plate_object_path"] = None
+    storage.pop(anchor.plate_object_path, None)
+
+    provider = RecordingProvider("runway", [GOOD(), GOOD(), GOOD()])
+    k = _build_kf(h, [provider])
+    assert k.status == kf.STATUS_COMPLETE
+
+    backfilled = cp.plate_object_path(anchor.raw_object_path)
+    assert backfilled in storage                       # 지연 백필됨
+    assert provider.seen_references[0][0].data == storage[backfilled]
+    # 백필된 플레이트도 대장에 남는다 — 근거 없는 생성 입력은 없다.
+    ledger = _run(refs.list_references(user_id=USER, pet_id=PET))
+    assert any(r.object_path == backfilled for r in ledger)
+
+
+def test_keyframe_fails_closed_when_no_plate_can_be_built(storage, monkeypatch):
+    """누끼조차 없으면 raw 로 **조용히 새지 않는다** — 그게 그림자의 경로였다."""
+    h, canonical = _prepare_canonical(monkeypatch, storage)
+    install_kf_vlm(monkeypatch, VLM_KF_OK)
+
+    for row in canon._MOCK_CANDIDATES:
+        row["plate_bucket"] = row["plate_object_path"] = None
+        row["cutout_bucket"] = row["cutout_object_path"] = None
+
+    provider = RecordingProvider("runway", [GOOD(), GOOD(), GOOD()])
+    with pytest.raises(kf.ActionKeyframeError) as e:
+        _build_kf(h, [provider])
+    assert e.value.code == "CANONICAL_PLATE_UNAVAILABLE"
+    assert e.value.status == 503
+    assert provider.calls == 0  # 과금 호출 0회
+
+
+def test_explicit_opt_out_falls_back_to_raw_and_says_so(storage, monkeypatch):
+    """CLEAN_PLATE_REQUIRED=0 은 명시적 탈출구다 — 계보에 raw 라고 적힌다."""
+    h, canonical = _prepare_canonical(monkeypatch, storage)
+    install_kf_vlm(monkeypatch, VLM_KF_OK)
+    monkeypatch.setenv("CLEAN_PLATE_REQUIRED", "0")
+
+    anchor = next(c for c in canonical.candidates if c.selected)
+    for row in canon._MOCK_CANDIDATES:
+        row["plate_bucket"] = row["plate_object_path"] = None
+        row["cutout_bucket"] = row["cutout_object_path"] = None
+
+    provider = RecordingProvider("runway", [GOOD(), GOOD(), GOOD()])
+    k = _build_kf(h, [provider])
+    assert provider.seen_references[0][0].data == storage[anchor.raw_object_path]
+    sent = next(c for c in k.candidates if c.selected).generation_metadata["canonical_input"]
+    assert sent["kind"] == "raw" and sent["fallback_reason"]
 
 
 def test_prompt_contains_pose_and_traits_never_unknowns_or_themes(storage, monkeypatch):
@@ -270,7 +407,10 @@ def test_prompt_contains_pose_and_traits_never_unknowns_or_themes(storage, monke
     k = _build_kf(h, [FakeProvider("runway", [GOOD(), GOOD()])], role="LIE")
 
     prompt = k.prompt or ""
-    assert k.prompt_version == "keyframe-prompt-v1"
+    assert k.prompt_version == "keyframe-prompt-v2"
+    # 그림자 금지는 프롬프트의 계약이다 (알파 억제와 짝을 이룬다).
+    assert "No contact shadow under the pet" in prompt
+    assert "no cast shadow on the background" in prompt
     assert "Requested pose:" in prompt and "lying down naturally" in prompt
     assert "Change only" in prompt  # 최소 변형 원칙
     assert "brown" in prompt.lower()  # 실측 코트 색 제약
@@ -313,7 +453,9 @@ def test_neutral_idle_preserves_canonical_posture_not_a_pose_choice():
     assert spec.video_compat["loopable_base"] is True
     # 버전 범프 — 재사용 게이트(analyzer_versions)가 이 값을 비교하므로, 안
     # 올리면 앉기로 쏠린 기존 NEUTRAL_IDLE 키프레임이 영원히 재사용된다.
-    assert spec_mod.KEYFRAME_SPEC_VERSION == "keyframe-spec-v2"
+    assert spec_mod.KEYFRAME_SPEC_VERSION == "keyframe-spec-v3"
+    # 신원 앵커 소스는 raw 가 아니라 클린 플레이트다 (spec-v3).
+    assert spec.preferred_canonical_source == "clean_plate"
     # 두 프롬프트 빌더 모두에 실제로 실린다 (컴팩트는 Runway 1000자 계약 유지).
     prompt = spec_mod.build_keyframe_prompt(spec, {})
     assert "keeps the pet's existing body posture" in prompt
@@ -387,6 +529,264 @@ def test_stand_ready_builds_on_demand_with_role_scoped_storage(storage, monkeypa
 
 
 # ══════════════════════════════════════════════════════════════════════════
+# Canonical → NEUTRAL_IDLE 재사용 (BREATHING 전용, allow_canonical_reuse)
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class ExplodingProvider(FakeProvider):
+    """generate() 가 호출되면 즉시 실패한다 — 재사용 경로에서는 절대 불려선 안 된다."""
+
+    def generate(self, references, prompt, output_spec, metadata):
+        raise AssertionError("keyframe provider must not be called when Canonical reuse is eligible")
+
+
+def test_eligible_canonical_reuse_skips_keyframe_provider_call(storage, monkeypatch):
+    h, canonical = _prepare_canonical(monkeypatch, storage)
+    install_kf_vlm(monkeypatch, VLM_KF_OK)
+    anchor = next(c for c in canonical.candidates if c.selected)
+
+    k = _build_kf(h, [ExplodingProvider("runway")], allow_canonical_reuse=True)
+
+    assert k.status == kf.STATUS_COMPLETE
+    assert len(k.candidates) == 1
+    sel = k.candidates[0]
+    assert sel.selected is True
+    assert sel.provider == kf.CANONICAL_REUSE_PROVIDER
+    assert sel.decision == canonical_qa.PASS
+    assert sel.qa_result["decision"] == canonical_qa.PASS
+    assert sel.input_canonical_candidate_id == anchor.id
+    assert sel.generation_metadata["reused_from_canonical"] is True
+    assert sel.generation_metadata["generated"] is False
+    assert k.selected_candidate_id == sel.id
+
+
+def test_alias_keyframe_is_complete_pass_with_correct_lineage(storage, monkeypatch):
+    """별칭 후보는 새 업로드 없이 Canonical 의 raw/cutout/plate 객체를 그대로 가리킨다.
+
+    대장(pet_reference_service)에는 새 keyframe_* 행이 추가되지 않는다 — 물리적으로
+    새 자산이 하나도 없기 때문이다(canonical 빌드가 이미 그 정확한 object_path 로
+    canonical_raw/cutout/plate 를 기록해 뒀고, record_generated 는 object_path 로
+    멱등하다). 진짜 키프레임 계보는 candidate 행 자체(input_canonical_candidate_id +
+    generation_metadata.reused_from_canonical)와 keyframe 행(canonical_version_id/
+    canonical_version, selected_candidate_id)이 담당하며, 둘 다 COMPLETE/PASS 로
+    정확히 채워진다."""
+    h, canonical = _prepare_canonical(monkeypatch, storage)
+    install_kf_vlm(monkeypatch, VLM_KF_OK)
+    anchor = next(c for c in canonical.candidates if c.selected)
+    ledger_before = {r.id for r in _run(refs.list_references(user_id=USER, pet_id=PET))}
+    keys_before = set(storage)
+
+    k = _build_kf(h, [ExplodingProvider("runway")], allow_canonical_reuse=True)
+    sel = k.candidates[0]
+
+    # 키프레임 행 자체 — COMPLETE/PASS + 정확한 canonical 계보.
+    assert k.status == kf.STATUS_COMPLETE
+    assert k.canonical_version_id == canonical.id
+    assert k.canonical_version == canonical.version
+    assert k.selected_candidate_id == sel.id
+
+    # 별칭 — 새 스토리지 객체 없이 Canonical 의 raw/cutout/plate 를 그대로 가리킨다.
+    assert sel.raw_object_path == anchor.raw_object_path
+    assert sel.cutout_object_path == anchor.cutout_object_path
+    assert sel.plate_object_path == anchor.plate_object_path
+    assert set(storage) == keys_before  # 새 스토리지 객체 0개 — 재업로드 없음
+
+    # 대장에도 새 행이 생기지 않는다 — 별칭이지 새 생성물이 아니다.
+    ledger_after = {r.id for r in _run(refs.list_references(user_id=USER, pet_id=PET))}
+    assert ledger_after == ledger_before
+    # 대신 canonical 자신의 기존 대장 행이 그대로 그 object_path 들의 근거다.
+    ledger = _run(refs.list_references(user_id=USER, pet_id=PET))
+    canonical_generated = {r.object_path: r for r in ledger if r.role == refs.ROLE_GENERATED}
+    assert canonical_generated[sel.raw_object_path].derived_kind == "canonical_raw"
+    assert canonical_generated[sel.cutout_object_path].derived_kind == "canonical_cutout"
+    assert canonical_generated[sel.plate_object_path].derived_kind == "canonical_plate"
+
+
+def test_unsuitable_canonical_falls_back_to_keyframe_generation(storage, monkeypatch):
+    """Canonical 자체가 NEUTRAL_IDLE 계약을 못 만족하면(포즈 불일치) 재사용을 포기하고
+    평소 키프레임 생성 경로로 폴백한다 — Canonical PASS 만으로는 부족하다."""
+    h, _canonical = _prepare_canonical(monkeypatch, storage)
+
+    # 첫 VLM 호출 = 재사용 적격성 판정(Canonical 자체) — 포즈 불일치로 거절한다.
+    # 이후 호출(실제 생성된 후보들)은 정상 확언 — 두 경로가 완전히 분리돼 있음을
+    # 함께 증명한다: 재사용은 실패하지만 평소 생성은 그대로 성공한다.
+    seen = {"n": 0}
+
+    def vlm_stub(candidate, references, *, required_pose, required_visibility=(), candidate_mime="image/png"):
+        seen["n"] += 1
+        if seen["n"] == 1:
+            return {**VLM_KF_OK, "pose_matches": "no"}
+        return VLM_KF_OK
+
+    monkeypatch.setattr(vlm_identity, "qa_action_keyframe", vlm_stub)
+    provider = RecordingProvider("runway", [GOOD(), GOOD()])
+
+    k = _build_kf(h, [provider], allow_canonical_reuse=True)
+
+    assert provider.calls >= 1  # 재사용이 거절되고 실제 생성으로 폴백했다
+    assert k.status == kf.STATUS_COMPLETE
+    sel = next(c for c in k.candidates if c.selected)
+    assert sel.provider == "runway"
+    assert sel.provider != kf.CANONICAL_REUSE_PROVIDER
+
+
+def test_uncertain_canonical_qa_declines_reuse_and_falls_back(storage, monkeypatch):
+    """VLM 확언이 전혀 없으면(unknown) 재사용 판정도 최대 REVIEW 다 — PASS 가 아니므로
+    재사용하지 않고 평소 경로로 폴백한다(그 경로 역시 REVIEW/FAIL 로 정직하게 남는다)."""
+    h, _canonical = _prepare_canonical(monkeypatch, storage)
+    install_kf_vlm(monkeypatch, None)  # VLM 비활성/무응답 — 모든 판정이 unknown
+    provider = RecordingProvider("runway", [GOOD(), GOOD(), GOOD()])
+
+    k = _build_kf(h, [provider], allow_canonical_reuse=True)
+
+    assert provider.calls >= 1  # 재사용 후보를 만들지 않고 평소 생성을 시도했다
+    assert all(c.provider != kf.CANONICAL_REUSE_PROVIDER for c in k.candidates)
+    assert k.status in (kf.STATUS_REVIEW, kf.STATUS_FAILED)
+
+
+def test_canonical_reuse_only_applies_to_neutral_idle_role(storage, monkeypatch):
+    """다른 역할(LIE 등)은 allow_canonical_reuse=True 를 넘겨도 평소와 똑같이
+    동작한다 — Canonical 자체가 그 포즈(엎드림 등)를 보여줄 수 없으므로 대상이 아니다."""
+    h, _canonical = _prepare_canonical(monkeypatch, storage)
+    install_kf_vlm(monkeypatch, VLM_KF_OK)
+    provider = RecordingProvider("runway", [GOOD(), GOOD()])
+
+    k = _build_kf(h, [provider], role="LIE", allow_canonical_reuse=True)
+
+    assert provider.calls >= 1
+    assert k.status == kf.STATUS_COMPLETE
+    assert all(c.provider != kf.CANONICAL_REUSE_PROVIDER for c in k.candidates)
+
+
+def test_canonical_reuse_off_by_default(storage, monkeypatch):
+    """allow_canonical_reuse 기본값은 False — 기존 호출부(라우터 등)는 아무 것도
+    바뀌지 않는다."""
+    h, _canonical = _prepare_canonical(monkeypatch, storage)
+    install_kf_vlm(monkeypatch, VLM_KF_OK)
+    provider = RecordingProvider("runway", [GOOD(), GOOD()])
+
+    k = _build_kf(h, [provider])  # allow_canonical_reuse 인자 없음
+
+    assert provider.calls >= 1
+    assert all(c.provider != kf.CANONICAL_REUSE_PROVIDER for c in k.candidates)
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Canonical → NEUTRAL_IDLE 재사용 — 레이턴시 최적화 (중복 제거) 계약
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_canonical_reuse_fetches_each_asset_at_most_once(storage, monkeypatch):
+    """
+    요구 3: 같은 객체(정본 raw/누끼)는 재사용 경로 안에서 두 번 다운로드되지
+    않는다. 레거시(플레이트 없음) 정본으로 clean_plate_service.ensure_plate 의
+    백필 분기(누끼 재다운로드 위험 지점)를 강제로 태운다.
+    """
+    from backend.services import clean_plate_service as cp
+
+    h, canonical = _prepare_canonical(monkeypatch, storage)
+    install_kf_vlm(monkeypatch, VLM_KF_OK)
+    anchor = next(c for c in canonical.candidates if c.selected)
+
+    for row in canon._MOCK_CANDIDATES:
+        row["plate_bucket"] = None
+        row["plate_object_path"] = None
+    storage.pop(anchor.plate_object_path, None)
+
+    fetch_counts: dict[str, int] = {}
+    real_fetch = h.kf_fetch
+
+    def counting_fetch(ref):
+        fetch_counts[ref.object_path] = fetch_counts.get(ref.object_path, 0) + 1
+        return real_fetch(ref)
+
+    h.kf_fetch = counting_fetch
+
+    k = _build_kf(h, [ExplodingProvider("runway")], allow_canonical_reuse=True)
+
+    assert k.status == kf.STATUS_COMPLETE
+    assert k.candidates[0].provider == kf.CANONICAL_REUSE_PROVIDER
+    assert fetch_counts.get(anchor.raw_object_path) == 1
+    assert fetch_counts.get(anchor.cutout_object_path) == 1
+    # 백필된 플레이트도 대장에 남는다 — 백필 자체는 그대로 일어난다.
+    backfilled = cp.plate_object_path(anchor.raw_object_path)
+    assert backfilled in storage
+
+
+def test_canonical_reuse_never_signs_provider_urls(storage, monkeypatch):
+    """
+    요구: 재사용이 성공하면 프로바이더 전용 준비물(signed URL)은 절대 만들지
+    않는다 — sign_url_fn 이 한 번도 불리지 않아야 한다.
+    """
+    h, _canonical = _prepare_canonical(monkeypatch, storage)
+    install_kf_vlm(monkeypatch, VLM_KF_OK)
+
+    sign_calls = {"n": 0}
+
+    def counting_sign(ref):
+        sign_calls["n"] += 1
+        return f"https://signed.test/{ref.object_path}"
+
+    k = _run(
+        kf.build_keyframe(
+            user_id=USER, pet_id=PET, keyframe_role="NEUTRAL_IDLE",
+            fetch_bytes=h.kf_fetch, providers=[ExplodingProvider("runway")],
+            cutout_fn=lambda raw: raw, sign_url_fn=counting_sign,
+            allow_canonical_reuse=True,
+        )
+    )
+
+    assert k.status == kf.STATUS_COMPLETE
+    assert k.candidates[0].provider == kf.CANONICAL_REUSE_PROVIDER
+    assert sign_calls["n"] == 0, "재사용 성공 경로는 signed URL 을 만들지 않아야 한다"
+
+
+def test_canonical_reuse_queries_keyframe_rows_once(storage, monkeypatch):
+    """요구: 같은 멱등/재개 판정에 쓰는 _keyframe_rows 조회가 한 번으로 줄었다."""
+    h, _canonical = _prepare_canonical(monkeypatch, storage)
+    install_kf_vlm(monkeypatch, VLM_KF_OK)
+
+    calls = {"n": 0}
+    real_rows = kf._keyframe_rows
+
+    async def counting_rows(pet_id, role=None):
+        calls["n"] += 1
+        return await real_rows(pet_id, role)
+
+    monkeypatch.setattr(kf, "_keyframe_rows", counting_rows)
+
+    k = _build_kf(h, [ExplodingProvider("runway")], allow_canonical_reuse=True)
+
+    assert k.status == kf.STATUS_COMPLETE
+    assert calls["n"] == 1
+
+
+def test_canonical_reuse_retry_is_idempotent_no_second_candidate(storage, monkeypatch):
+    """요구 6: 같은 상태에서 다시 부르면(재시작/재시도 흉내) 새 재사용 후보를
+    또 만들지 않고 이미 완료된 버전을 그대로 돌려준다 — 프로바이더도 다시
+    부르지 않는다."""
+    h, canonical = _prepare_canonical(monkeypatch, storage)
+    install_kf_vlm(monkeypatch, VLM_KF_OK)
+    anchor = next(c for c in canonical.candidates if c.selected)
+
+    first = _build_kf(h, [ExplodingProvider("runway")], allow_canonical_reuse=True)
+    assert first.status == kf.STATUS_COMPLETE
+    assert len(first.candidates) == 1
+
+    second = _build_kf(h, [ExplodingProvider("runway")], allow_canonical_reuse=True)
+
+    assert second.deduplicated is True
+    assert second.id == first.id
+    assert second.version == first.version == 1
+    assert len(second.candidates) == 1
+    assert second.candidates[0].id == first.candidates[0].id
+    assert second.candidates[0].input_canonical_candidate_id == anchor.id
+    # 정확히 한 버전, 한 후보만 저장돼 있다 — 재시도가 중복을 남기지 않았다.
+    assert len(_run(kf._keyframe_rows(PET, "NEUTRAL_IDLE"))) == 1
+    assert len(_run(kf._candidate_rows(first.id))) == 1
+
+
+# ══════════════════════════════════════════════════════════════════════════
 # QA — 포즈 / 구조 / VLM 없음
 # ══════════════════════════════════════════════════════════════════════════
 
@@ -438,6 +838,74 @@ def test_identity_failure_triggers_fallback(storage, monkeypatch):
     assert all(c.decision == "FAIL" for c in k.candidates if c.provider == "runway")
 
 
+def _advisory_pattern_profile():
+    """핵심 신원 검사는 전부 PASS 인데 coat_pattern 만 계열 일치(REVIEW)인 프로필."""
+    from .test_canonical_qa import _seed_strict_profile, _set_pattern
+
+    profile, sig, cutout = _seed_strict_profile()
+    _set_pattern(profile, "golden|tan|golden", confidence="high", supports=2)
+    return profile, sig, cutout
+
+
+def test_advisory_coat_pattern_review_does_not_block_keyframe_pass(storage):
+    """정본 QA 가 자문으로 통과시킨 coat_pattern REVIEW 를 키프레임이 다시
+    재집계해서 REVIEW 로 끌어내리면 안 된다 — 핵심 전부 PASS + 포즈 PASS 다."""
+    from backend.services import canonical_qa
+
+    profile, sig, cutout = _advisory_pattern_profile()
+    qa = kf.evaluate_keyframe_candidate(
+        cutout_rgba=ids.load_rgba(cutout),
+        profile=profile,
+        canonical_signature=sig,
+        reference_signatures=[],
+        spec=spec_mod.KEYFRAME_ROLES["NEUTRAL_IDLE"],
+        vlm_qa=VLM_KF_OK,
+    )
+    assert [qa["checks"][k] for k in canonical_qa.CORE_CHECKS] == [canonical_qa.PASS] * len(
+        canonical_qa.CORE_CHECKS
+    )
+    assert qa["checks"]["pose"] == canonical_qa.PASS
+    # 자문 검사값과 이유는 그대로 남는다 — PASS 로 고쳐 쓰지 않는다.
+    assert qa["checks"]["coat_pattern"] == canonical_qa.REVIEW
+    assert "coat_pattern_family_equivalent_not_exact" in qa["reasons"]
+    assert qa["identity_decision"] == canonical_qa.PASS
+    assert qa["decision"] == canonical_qa.PASS
+
+
+def test_pose_review_still_holds_keyframe_at_review(storage):
+    """신원이 PASS 여도 포즈가 PASS 가 아니면 자동 승인은 없다."""
+    from backend.services import canonical_qa
+
+    profile, sig, cutout = _advisory_pattern_profile()
+    qa = kf.evaluate_keyframe_candidate(
+        cutout_rgba=ids.load_rgba(cutout),
+        profile=profile,
+        canonical_signature=sig,
+        reference_signatures=[],
+        spec=spec_mod.KEYFRAME_ROLES["NEUTRAL_IDLE"],
+        vlm_qa={**VLM_KF_OK, "required_regions_visible": "no"},
+    )
+    assert qa["identity_decision"] == canonical_qa.PASS
+    assert qa["checks"]["pose"] == canonical_qa.REVIEW
+    assert qa["decision"] == canonical_qa.REVIEW
+
+
+def test_pose_fail_blocks_even_when_identity_passes(storage):
+    from backend.services import canonical_qa
+
+    profile, sig, cutout = _advisory_pattern_profile()
+    qa = kf.evaluate_keyframe_candidate(
+        cutout_rgba=ids.load_rgba(cutout),
+        profile=profile,
+        canonical_signature=sig,
+        reference_signatures=[],
+        spec=spec_mod.KEYFRAME_ROLES["NEUTRAL_IDLE"],
+        vlm_qa={**VLM_KF_OK, "pose_matches": "no"},
+    )
+    assert qa["identity_decision"] == canonical_qa.PASS
+    assert qa["decision"] == canonical_qa.FAIL
+
+
 def test_provider_error_distinct_from_qa_fail_and_falls_back(storage, monkeypatch):
     from backend.services.canonical_image_providers import CanonicalProviderError
 
@@ -481,6 +949,10 @@ def test_candidates_persist_raw_and_cutout(storage, monkeypatch):
         assert c.raw_object_path and "/keyframes/neutral_idle/v1/" in c.raw_object_path
         assert c.cutout_object_path and c.cutout_object_path in storage
         assert c.raw_object_path in storage
+        # 클린 플레이트는 raw/cutout 과 **별개 객체**다 — 셋 다 남는다.
+        assert c.plate_object_path and c.plate_object_path.endswith("_plate.png")
+        assert c.plate_object_path in storage
+        assert len({c.raw_object_path, c.cutout_object_path, c.plate_object_path}) == 3
 
 
 def test_deterministic_ranking(storage, monkeypatch):
@@ -518,7 +990,9 @@ def test_provenance_chain_and_generated_role(storage, monkeypatch):
 
     ledger = _run(refs.list_references(user_id=USER, pet_id=PET))
     kf_generated = [r for r in ledger if r.role == refs.ROLE_GENERATED and (r.derived_kind or "").startswith("keyframe")]
-    assert {r.derived_kind for r in kf_generated} == {"keyframe_raw", "keyframe_cutout"}
+    assert {r.derived_kind for r in kf_generated} == {
+        "keyframe_raw", "keyframe_cutout", "keyframe_plate",
+    }
     for g in kf_generated:
         assert g.diagnostics["keyframe_id"] == k.id
         assert g.diagnostics["canonical_version_id"] == canonical.id
@@ -577,7 +1051,9 @@ def test_router_roles_build_get(kf_client, storage, monkeypatch):
     install_kf_vlm(monkeypatch, VLM_KF_OK)
     monkeypatch.setattr(ids, "_default_fetch_bytes", h.kf_fetch)
     monkeypatch.setattr(
-        providers_mod, "resolve_providers", lambda: [FakeProvider("runway", [GOOD(), GOOD(), GOOD()])]
+        providers_mod,
+        "resolve_keyframe_providers",
+        lambda: [FakeProvider("runway", [GOOD(), GOOD(), GOOD()])],
     )
     monkeypatch.setattr(canon, "_default_cutout_fn", lambda raw: raw)
 
@@ -624,3 +1100,71 @@ def test_keyframe_evaluation_extends_phase4_harness(storage, monkeypatch):
     summary = _run(canon.evaluation_summary(user_id=USER))
     assert summary["providers"]["runway"]["count"] == 1
     assert summary["providers"]["runway"]["mean_scores"]["pose_correctness"] == 9.0
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# REVIEW 회복 — QA 재실행 (프로바이더 재호출 없음)
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_qa_rerun_reuses_existing_candidate_and_flips_review_to_pass(storage, monkeypatch):
+    """QA 규칙이 업데이트되면(버전 상승) REVIEW 키프레임을 재구매 없이 재판정한다."""
+    h, _canonical = _prepare_canonical(monkeypatch, storage)
+    install_kf_vlm(monkeypatch, None)  # 포즈 VLM 확언 없음 → REVIEW
+    primary = FakeProvider("runway", [GOOD()])
+
+    k = _build_kf(h, [primary])
+    assert k.status == kf.STATUS_REVIEW
+    calls_after_build = primary.calls
+    stale_candidate_id = k.candidates[0].id
+
+    # QA 규칙 튜닝을 흉내낸다 (버전 상승) — 그리고 이번엔 VLM 이 포즈를 확언한다.
+    monkeypatch.setattr(kf, "KEYFRAME_QA_VERSION", "keyframe-qa-v999-test")
+    install_kf_vlm(monkeypatch, VLM_KF_OK)
+
+    updated = _run(
+        kf.reevaluate_keyframe_candidate(
+            user_id=USER,
+            pet_id=PET,
+            keyframe_id=k.id,
+            candidate_id=stale_candidate_id,
+            fetch_bytes=h.kf_fetch,
+            cutout_fn=lambda raw: raw,
+        )
+    )
+
+    assert updated.status == kf.STATUS_COMPLETE
+    assert updated.selected_candidate_id == stale_candidate_id
+    assert next(c for c in updated.candidates if c.id == stale_candidate_id).decision == "PASS"
+    # No new provider (image generation) call — this is a pure re-judgment.
+    assert primary.calls == calls_after_build
+
+
+def test_qa_rerun_is_idempotent_and_makes_no_provider_call(storage, monkeypatch):
+    """같은 QA 버전으로 다시 부르면 아무 것도 다시 계산하지 않는다 (deduplicated)."""
+    h, _canonical = _prepare_canonical(monkeypatch, storage)
+    install_kf_vlm(monkeypatch, VLM_KF_OK)
+    primary = FakeProvider("runway", [GOOD()])
+
+    k = _build_kf(h, [primary])
+    assert k.status == kf.STATUS_COMPLETE
+    calls_after_build = primary.calls
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("reevaluate_keyframe_candidate must never call an image provider")
+
+    monkeypatch.setattr(providers_mod, "resolve_keyframe_providers", fail_if_called)
+
+    again = _run(
+        kf.reevaluate_keyframe_candidate(
+            user_id=USER,
+            pet_id=PET,
+            keyframe_id=k.id,
+            candidate_id=k.selected_candidate_id,
+            fetch_bytes=h.kf_fetch,
+            cutout_fn=lambda raw: raw,
+        )
+    )
+    assert again.deduplicated is True
+    assert again.status == kf.STATUS_COMPLETE
+    assert primary.calls == calls_after_build

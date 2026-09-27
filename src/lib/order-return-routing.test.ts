@@ -85,7 +85,7 @@ test("복귀 처리가 온보딩·초기화 화면으로 보내지 않는다", (
   assert.ok(i > 0, "handleOrderReturn 이 없다");
   const body = APP.slice(i, i + 1200);
 
-  for (const forbidden of ["qrConnection", "signup", "photoUpload", "onboarding"]) {
+  for (const forbidden of ["getStarted", "qrConnection", "signup", "login", "photoUpload", "onboarding"]) {
     assert.doesNotMatch(
       body,
       new RegExp(forbidden),

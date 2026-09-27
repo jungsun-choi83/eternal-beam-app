@@ -101,28 +101,38 @@ export function CreditPackSheet({
     needed != null && balance != null && needed > balance ? needed - balance : null;
 
   return (
-    <div className="fixed inset-0 z-[90] flex items-end justify-center bg-black/70">
-      <div className="w-full max-w-md rounded-t-3xl bg-[#141416] px-5 pb-[max(1.5rem,env(safe-area-inset-bottom,0px))] pt-5">
+    <div
+      className="fixed inset-0 z-[90] flex items-end justify-center lg:items-center"
+      style={{ background: "rgba(var(--eb-hairline-rgb), 0.45)" }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="eb-credit-pack-title"
+        className="w-full max-w-md rounded-t-[var(--eb-radius-xl)] lg:rounded-[var(--eb-radius-xl)] bg-[var(--eb-surface)] px-5 pb-[var(--eb-footer-bottom)] lg:pb-5 pt-5 shadow-[var(--eb-shadow-3)] border border-[var(--eb-hairline)]"
+      >
         <div className="mb-4 text-center">
-          <h2 className="text-base font-medium text-[#EDE3CE]">크레딧 받기</h2>
+          <h2 id="eb-credit-pack-title" className="eb-title text-base">
+            크레딧 받기
+          </h2>
           {shortfall != null ? (
-            <p className="mt-1 text-xs text-[#f5d77a]">
+            <p className="mt-1 text-xs font-semibold text-[var(--eb-warn-text)]">
               {shortfall} 크레딧이 더 필요합니다
             </p>
           ) : null}
           {balance != null ? (
-            <p className="mt-1 text-[11px] text-[#9a9a9a]">잔액 {balance}</p>
+            <p className="mt-1 eb-caption">잔액 {balance}</p>
           ) : null}
         </div>
 
         {error ? (
-          <p role="alert" className="mb-3 text-center text-xs text-red-300">
+          <p role="alert" className="mb-3 text-center eb-field-error">
             {error}
           </p>
         ) : null}
 
         {packs == null && !error ? (
-          <p className="py-6 text-center text-xs text-white/40">불러오는 중…</p>
+          <p className="py-6 text-center eb-caption">불러오는 중…</p>
         ) : null}
 
         <div className="space-y-2">
@@ -132,15 +142,18 @@ export function CreditPackSheet({
               type="button"
               disabled={busy != null}
               onClick={() => void buy(p.packKey)}
-              className="flex w-full items-center justify-between rounded-2xl border border-white/12 bg-white/[0.04] px-4 py-3 disabled:opacity-45"
+              aria-busy={busy === p.packKey || undefined}
+              className="eb-selector justify-between"
             >
-              <span className="text-sm text-[#EDE3CE]">
+              <span className="text-sm text-[var(--eb-text)] min-w-0">
                 {p.credits} 크레딧
                 {shortfall != null && p.credits >= shortfall ? (
-                  <span className="ml-2 text-[10px] text-[#a8e6a3]">충분해요</span>
+                  <span className="ml-2 text-[11px] font-semibold text-[var(--eb-sage-text)]">
+                    충분해요
+                  </span>
                 ) : null}
               </span>
-              <span className="text-sm text-[#f5d77a]">
+              <span className={`eb-price text-sm shrink-0 ${busy === p.packKey ? "eb-price--muted" : ""}`}>
                 {busy === p.packKey
                   ? "여는 중…"
                   : `₩${p.priceKrw.toLocaleString("ko-KR")}`}
@@ -153,7 +166,7 @@ export function CreditPackSheet({
           type="button"
           onClick={onClose}
           disabled={busy != null}
-          className="mt-4 w-full py-3 text-center text-sm text-[#888] disabled:opacity-45"
+          className="eb-btn eb-btn--ghost eb-btn--block mt-4 text-sm"
         >
           닫기
         </button>

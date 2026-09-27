@@ -12,6 +12,7 @@ import pytest
 from backend.services import action_keyframe_service as kf
 from backend.services import action_keyframe_spec as kf_spec
 from backend.services import canonical_pet_service as canon
+from backend.services import pet_morphology_service as morph
 from backend.services import canonical_prompt as cp
 from backend.services import pet_identity_service as ids
 from backend.services import pet_reference_service as refs
@@ -60,10 +61,10 @@ def _mock_backend(monkeypatch):
     monkeypatch.setenv("HYBRID_USE_SUPABASE", "0")
     monkeypatch.delenv("PET_VLM_IDENTITY_ENABLED", raising=False)
     monkeypatch.setenv("CANONICAL_QA_MIN_RESOLUTION", "100")
-    for m in (refs, pet_registry, ids, sets, canon, kf):
+    for m in (refs, pet_registry, ids, morph, sets, canon, kf):
         m.__reset_for_tests()
     yield
-    for m in (refs, pet_registry, ids, sets, canon, kf):
+    for m in (refs, pet_registry, ids, morph, sets, canon, kf):
         m.__reset_for_tests()
 
 
@@ -107,8 +108,14 @@ def test_compact_keyframe_prompt_fits_1000():
 
 
 def test_compact_drops_whole_trait_lines_never_mid_sentence():
-    tight = cp.build_compact_canonical_prompt(visual_identity=RICH_VISUAL, max_chars=600)
-    assert len(tight) <= 600  # 특성 줄이 전부 떨어져 나가고 베이스만 남는다
+    # 베이스 문구는 프롬프트 개정마다 길이가 변한다 — 상한을 베이스에 묶어
+    # 두면 "특성 줄만 통째로 떨어져 나간다"는 **의미**가 그대로 검증된다.
+    tight_limit = len(cp._COMPACT_BASE) + 20
+    tight = cp.build_compact_canonical_prompt(
+        visual_identity=RICH_VISUAL, max_chars=tight_limit
+    )
+    assert len(tight) <= tight_limit  # 특성 줄이 전부 떨어져 나가고 베이스만 남는다
+    assert tight == cp._COMPACT_BASE
     assert tight.endswith((".",))  # 문장 중간 절단 없음
 
 

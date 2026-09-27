@@ -1,0 +1,292 @@
+/* ==========================================================================
+   Preview / Composer (Phase 6 · restyled Phase 10)
+   Mobile-first; desktop split (stage left / control rail right) reacts to
+   the screen's own rendered width via a container query, not the viewport —
+   same reasoning as theme-selection.css: this screen is reused inside My
+   Library without the wide app-shell stage, and a viewport-only media query
+   would wedge the two-column layout into a 520px box there.
+
+   Consumes brand.css tokens only. The control rail is an off-white card on
+   the ivory page; the stage (theme-preview-frame) is imagery and keeps the
+   inverse media surface.
+   ========================================================================== */
+
+.preview-composer {
+  container-type: inline-size;
+  background: transparent;
+  color: var(--eb-text);
+}
+
+.preview-composer__header {
+  padding-inline: var(--eb-space-6);
+  padding-top: var(--eb-header-top);
+  padding-bottom: var(--eb-space-3);
+}
+
+.preview-composer__heading {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+}
+
+.preview-composer__title {
+  font-family: var(--font-headline);
+  font-size: var(--eb-type-title);
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--eb-text);
+  margin: 0;
+}
+
+.preview-composer__adjust-hint {
+  margin-top: var(--eb-space-1);
+  color: var(--eb-text-2);
+}
+
+.preview-composer__header-actions {
+  display: none;
+}
+
+.preview-composer__change-theme-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--eb-space-2);
+  white-space: nowrap;
+}
+
+.preview-composer__body {
+  min-height: 0;
+}
+
+.preview-composer__stage {
+  flex-shrink: 0;
+  padding: var(--eb-space-2) var(--eb-space-6);
+}
+
+/* Alert drawn INSIDE the dark stage (original photo missing). */
+.preview-composer__stage-alert {
+  background: var(--eb-surface-inverse);
+  color: var(--eb-text-on-inverse);
+  font-size: var(--eb-type-body-sm);
+  line-height: 1.45;
+}
+
+/* Touch hint chip floats over imagery: dark translucent, white text. */
+.preview-composer__touch-chip {
+  border-radius: var(--eb-radius-pill);
+  padding: var(--eb-space-1) var(--eb-space-3);
+  font-size: var(--eb-type-eyebrow);
+  letter-spacing: 0.04em;
+  text-align: center;
+  background: rgba(31, 27, 23, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--eb-text-on-inverse);
+}
+
+/* Theme chip — bottom-left over the imagery, echoing the panel's theme row. */
+.preview-composer__theme-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--eb-space-2);
+  border-radius: var(--eb-radius-pill);
+  padding: var(--eb-space-1) var(--eb-space-3);
+  font-size: var(--eb-type-caption);
+  font-weight: 600;
+  background: rgba(31, 27, 23, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--eb-text-on-inverse);
+}
+
+/* Reset (scale/position) — Create-flow gesture adjustment only, tucked into
+   the stage corner now that the header carries title/subtitle/Change Theme. */
+.preview-composer__reset-btn {
+  background: rgba(31, 27, 23, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--eb-text-on-inverse);
+}
+
+/* Control rail — off-white card, hairline, footer safe-area once. */
+.preview-composer__panel {
+  background: var(--eb-surface);
+  border-top: 1px solid var(--eb-hairline);
+  padding: var(--eb-space-6) var(--eb-space-6) var(--eb-footer-bottom);
+}
+
+.preview-composer__panel > * + * {
+  margin-top: var(--eb-space-4);
+}
+
+/* Mobile-only theme summary/selector row — desktop drops this in favor of
+   the header's Change Theme button + the on-stage chip (see container query
+   below), so the same real onBack action isn't offered three times. */
+.preview-composer__theme-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  border: 1px solid var(--eb-hairline);
+  border-radius: var(--eb-radius-sm);
+  padding: var(--eb-space-3) var(--eb-space-4);
+  background: var(--eb-surface-2);
+  color: var(--eb-text);
+}
+
+.preview-composer__theme-row-label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--eb-space-2);
+  font-size: var(--eb-type-body);
+  font-weight: 600;
+}
+
+.preview-composer__identity {
+  display: flex;
+  align-items: center;
+}
+
+.preview-composer__identity-avatar {
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: var(--eb-radius-pill);
+  object-fit: cover;
+  border: 1px solid var(--eb-hairline);
+}
+
+.preview-composer__motion {
+  display: flex;
+  flex-direction: column;
+  gap: var(--eb-space-1);
+}
+
+.preview-composer__motion-heading {
+  color: var(--eb-text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.preview-composer__motion-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  border: 1px solid var(--eb-hairline);
+  border-radius: var(--eb-radius-sm);
+  padding: var(--eb-space-2) var(--eb-space-4);
+  background: var(--eb-surface);
+  color: var(--eb-text);
+}
+
+.preview-composer__motion-value {
+  font-size: var(--eb-type-body);
+  font-weight: 600;
+  text-transform: capitalize;
+}
+
+.preview-composer__motion-value--static {
+  padding-block: var(--eb-space-2);
+}
+
+.preview-composer__play-web {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--eb-space-2);
+  min-height: 44px;
+}
+
+.preview-composer__status-row {
+  min-height: 1.75rem;
+}
+
+.preview-composer__cta {
+  width: 100%;
+  min-height: 44px;
+}
+
+.preview-composer__hint {
+  font-size: var(--eb-type-caption);
+  line-height: 1.4;
+  color: var(--eb-text-3);
+  text-align: center;
+}
+
+.preview-composer__error {
+  padding: var(--eb-space-3) var(--eb-space-4);
+  border-radius: var(--eb-radius-md);
+  font-size: var(--eb-type-body-sm);
+  line-height: 1.45;
+  text-align: center;
+  background: var(--eb-terracotta-wash);
+  color: var(--eb-terracotta-text);
+  border: 1px solid var(--eb-terracotta-line);
+}
+
+/* ── Desktop-equivalent split (container-driven, see header note) ───────── */
+
+@container (min-width: 860px) {
+  .preview-composer__header-actions {
+    display: flex;
+    /* The global language toggle is an absolutely-positioned overlay fixed
+       near the top-right of every screen (top: 0.625rem, ~48px tall,
+       z-index 60) — it isn't part of this header's flow, so it can't push
+       this trailing button down on its own. This is the only screen with a
+       right-aligned header action at this breakpoint, so it's the only place
+       the two visibly collide. */
+    margin-top: var(--eb-space-4);
+  }
+
+  /* The mobile theme row is redundant once the header button + on-stage
+     chip are visible — same real onBack action, shown once instead of
+     three times. */
+  .preview-composer__theme-row {
+    display: none;
+  }
+
+  .preview-composer__body {
+    flex-direction: row;
+    align-items: stretch;
+    gap: var(--eb-space-8);
+    padding-inline: var(--eb-space-8);
+    padding-bottom: var(--eb-space-6);
+  }
+
+  /* ~65/35 split. The stage takes the larger, landscape-framed share; the
+     panel stays a fixed-width control card (a literal 35% flex-basis would
+     make the card too narrow for the motion select at typical desktop
+     widths). */
+  .preview-composer__stage {
+    flex: 1.86 1 0%;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+    padding: var(--eb-space-2) 0 0;
+  }
+
+  /* Landscape stage per the approved reference. Baked scenes
+     (theme-preview-frame__scene, memorial-premium.css) are real 16:9 media
+     shown via object-fit: contain by design — this frame's ~16:10 is a
+     close match, so it now shows with far less letterboxing than the old
+     3:4 box did. The legacy portrait-cutout branch (theme-preview-frame__pet,
+     also object-fit: contain within its own 62%-height slot) just gets more
+     headroom around it — neither branch crops the real pet. */
+  .preview-composer__stage .preview-gesture-surface {
+    max-height: min(60dvh, 34rem);
+    width: 100%;
+    aspect-ratio: 16 / 10;
+    margin-inline: 0;
+  }
+
+  .preview-composer__panel {
+    width: 23rem;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    border: 1px solid var(--eb-hairline);
+    border-radius: var(--eb-radius-lg);
+    box-shadow: var(--eb-shadow-1);
+    padding: var(--eb-space-8);
+    margin-block: var(--eb-space-2);
+  }
+}

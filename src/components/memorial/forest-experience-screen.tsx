@@ -314,7 +314,9 @@ export function ForestExperienceScreen({
   return (
     <div
       ref={containerRef}
-      className="relative w-full h-full bg-black overflow-hidden select-none"
+      // Phase 10 — 재생 표면은 어둡게 유지한다. 셸이 더는 검정을 상속해 주지
+      // 않으므로 미디어 무대가 자기 바탕(inverse)을 명시한다.
+      className="forest-experience-screen relative w-full h-full bg-[var(--eb-surface-inverse)] text-[var(--eb-text-on-inverse)] overflow-hidden select-none"
       onPointerDown={(e) => {
         e.preventDefault();
         beginAction();
@@ -334,21 +336,23 @@ export function ForestExperienceScreen({
       <video ref={idleRef} className="hidden" playsInline muted preload="auto" />
       <video ref={actionRef} className="hidden" playsInline muted preload="auto" />
 
-      <div className="absolute inset-x-0 top-0 z-[3] flex items-center justify-between px-4 pt-[max(1rem,env(safe-area-inset-top))]">
+      {/* 미디어 위 크롬 — 칩은 .glass-dark, 기본 CTA 만 골드. */}
+      <div className="absolute inset-x-0 top-0 z-[3] flex items-center justify-between gap-2 px-4 pt-[var(--eb-header-top)]">
         <button
           type="button"
           onClick={(e) => {
             e.stopPropagation();
             onBack();
           }}
-          className="flex items-center gap-1.5 rounded-full bg-black/45 px-3 py-2 text-sm text-white/90 backdrop-blur-sm"
+          className="glass-dark flex min-h-[var(--eb-touch)] items-center gap-1.5 rounded-full px-4 py-2 text-sm text-[var(--eb-text-on-inverse)]"
         >
           <ArrowLeft className="h-4 w-4" />
           {t.back}
         </button>
 
         {publicDemo ? (
-          <span className="rounded-full bg-emerald-500/25 px-3 py-1.5 text-xs text-emerald-100 backdrop-blur-sm border border-emerald-400/30">
+          <span className="glass-dark inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs text-[var(--eb-text-on-inverse)]">
+            <span className="eb-status-dot eb-status-dot--success" aria-hidden />
             {t.publicBadge}
           </span>
         ) : null}
@@ -360,14 +364,14 @@ export function ForestExperienceScreen({
               e.stopPropagation();
               onComplete();
             }}
-            className="rounded-full bg-emerald-500/80 px-4 py-2 text-sm font-medium text-white backdrop-blur-sm"
+            className="eb-btn eb-btn--primary rounded-full px-5 text-sm font-medium"
           >
             {t.done}
           </button>
         ) : null}
       </div>
 
-      <div className="absolute inset-x-0 bottom-0 z-[3] px-6 pb-[max(1.5rem,env(safe-area-inset-bottom))] text-center pointer-events-none">
+      <div className="absolute inset-x-0 bottom-0 z-[3] px-6 pb-[var(--eb-footer-bottom)] text-center pointer-events-none">
         <p className="text-sm text-white/85 drop-shadow-md">
           {piSseUrl
             ? language === "ko"
@@ -376,7 +380,10 @@ export function ForestExperienceScreen({
             : t.hintWake(primaryWake)}
         </p>
         <p className="mt-1 flex items-center justify-center gap-1.5 text-xs text-white/55">
-          <Mic className={`h-3.5 w-3.5 ${voiceReady ? "text-emerald-300" : "opacity-50"}`} />
+          <Mic
+            className={`h-3.5 w-3.5 ${voiceReady ? "" : "opacity-50"}`}
+            style={voiceReady ? { color: "var(--eb-sage)" } : undefined}
+          />
           {voiceHint ?? (voiceReady ? t.listening : t.voiceUnavailable)}
         </p>
       </div>

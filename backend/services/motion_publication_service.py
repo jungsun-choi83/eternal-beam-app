@@ -431,6 +431,44 @@ async def _publication_id_for_version(motion_version_id: str) -> Optional[str]:
         return None
 
 
+async def list_breathing_publications(user_id: str, pet_id: str) -> list[dict[str, Any]]:
+    """
+    이 펫의 BREATHING 발행 이력 전부 (최신 버전순). 읽기 전용 — Phase 11 라이브러리.
+
+    ⚠️ 프리미엄 모션(BREATHING 이외)도 이 테이블에 발행 행을 남기지만, 그 소유·
+    표시는 owned_generated_assets 가 이미 담당한다(Phase 7H lineage). 그 표가
+    커버하지 못하는 유일한 무료 모션(BREATHING)만 여기서 뽑는다.
+    """
+    uid = (user_id or "").strip()
+    pid = (pet_id or "").strip()
+    if not uid or not pid:
+        return []
+
+    client = motion_video_service._supabase() if _use_db() else None
+    if client:
+        try:
+            result = (
+                client.table("pet_motion_publications")
+                .select("*")
+                .eq("pet_id", pid)
+                .eq("user_id", uid)
+                .eq("motion_id", BREATHING)
+                .order("motion_version", desc=True)
+                .execute()
+            )
+        except Exception as exc:
+            raise MotionPublicationError(
+                "PUBLICATION_UNAVAILABLE", "발행 이력을 확인하지 못했습니다.", status=503
+            ) from exc
+        return list(getattr(result, "data", None) or [])
+
+    return sorted(
+        (p for p in _MOCK_PUBLICATIONS if p.get("pet_id") == pid and p.get("user_id") == uid),
+        key=lambda p: int(p.get("motion_version") or 0),
+        reverse=True,
+    )
+
+
 async def get_published_breathing(
     *,
     user_id: str,

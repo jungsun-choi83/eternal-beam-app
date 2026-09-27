@@ -125,6 +125,8 @@ class ReferenceSetResponse(BaseModel):
     status: str
     identity_profile_id: str | None = None
     identity_profile_version: int | None = None
+    morphology_profile_id: str | None = None
+    morphology_profile_version: int | None = None
     source_reference_ids: list[str] = []
     items: list[dict[str, Any]] = []
     reference_analysis: dict[str, Any] = {}
@@ -160,6 +162,8 @@ def _set_response(s: pet_reference_set_service.PetReferenceSet) -> ReferenceSetR
         status=s.status,
         identity_profile_id=s.identity_profile_id,
         identity_profile_version=s.identity_profile_version,
+        morphology_profile_id=s.morphology_profile_id,
+        morphology_profile_version=s.morphology_profile_version,
         source_reference_ids=s.source_reference_ids,
         items=s.items,
         reference_analysis=s.reference_analysis,

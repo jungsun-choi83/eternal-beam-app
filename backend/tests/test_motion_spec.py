@@ -17,9 +17,11 @@ from backend.services import action_keyframe_spec as kf_spec
 from backend.services import canonical_pet_service as canon
 from backend.services import motion_spec as ms
 from backend.services import pet_identity_service as ids
+from backend.services import pet_morphology_service as morph
 from backend.services import pet_reference_service as refs
 from backend.services import pet_reference_set_service as sets
 from backend.services import pet_registry
+from types import SimpleNamespace
 
 from .conftest import ASGITestClient
 from .test_canonical_pet_builder import GOOD, FakeProvider
@@ -37,10 +39,10 @@ def _mock_backend(monkeypatch):
     monkeypatch.setenv("HYBRID_USE_SUPABASE", "0")
     monkeypatch.delenv("PET_VLM_IDENTITY_ENABLED", raising=False)
     monkeypatch.setenv("CANONICAL_QA_MIN_RESOLUTION", "100")
-    for m in (refs, pet_registry, ids, sets, canon, kf):
+    for m in (refs, pet_registry, ids, morph, sets, canon, kf):
         m.__reset_for_tests()
     yield
-    for m in (refs, pet_registry, ids, sets, canon, kf):
+    for m in (refs, pet_registry, ids, morph, sets, canon, kf):
         m.__reset_for_tests()
 
 
@@ -77,6 +79,91 @@ def test_every_motion_has_exactly_one_valid_class():
     for m in ms.MOTIONS.values():
         assert m.motion_class in ms.MOTION_CLASSES
     assert len(ms.MOTION_ORDER) == len(set(ms.MOTION_ORDER))  # 중복 모션 id 없음
+
+
+def test_authoritative_registry_requirements_exist_for_each_motion():
+    for mid, m in ms.MOTIONS.items():
+        assert m.motion_type
+        req = m.requirements
+        assert req["registry_contract_version"] == ms.MOTION_REGISTRY_CONTRACT_VERSION
+        assert req["roles"]["required_start_roles"] == [m.start_keyframe_role]
+        if m.requires_target_keyframe:
+            assert req["roles"]["required_end_roles"] == [m.target_keyframe_role]
+        else:
+            assert req["roles"]["required_end_roles"] == []
+        assert req["duration"]["range_sec"] == list(m.duration_range_sec)
+        assert req["loopability"]["loopable"] is m.loopable
+        assert req["interruptibility"]["interruptible"] is m.interruptible
+        assert req["morphology"]["constraint_mode"] == "structural_only"
+        assert "breed_specific_logic" in req["morphology"]["forbidden_logic"]
+        assert "qa" in req and "motion_specific" in req["qa"], mid
+
+
+def test_provider_capability_requirements_are_backward_compatible():
+    # START_END_FRAME 는 end-frame capability 가 필수, 강등 없음.
+    lie_down = ms.MOTIONS["LIE_DOWN"].requirements["provider_capabilities"]
+    assert "supports_end_frame" in lie_down["required_all"]
+    assert lie_down["degrade_allowed"] is False
+    assert lie_down["degrade_to_strategy"] is None
+
+    # motion-ref 선호 모션은 소비 capability 를 선호로 요구하고 I2V 폴백을 유지.
+    run = ms.MOTIONS["RUN"].requirements["provider_capabilities"]
+    assert "supports_motion_reference" in run["preferred_any"]
+    assert run["degrade_allowed"] is True
+    assert run["degrade_to_strategy"] == ms.STRATEGY_I2V
+
+
+def test_registry_morphology_requirements_include_match_fields_and_confidence_floor():
+    run = ms.MOTIONS["RUN"].requirements["morphology"]
+    assert run["confidence_floor"] == "medium"
+    assert "body_build_class" in run["match_fields"]
+
+    pet_head = ms.MOTIONS["PET_HEAD"].requirements["morphology"]
+    assert pet_head["match_fields"] == [
+        "head_proportion_class",
+        "muzzle_proportion_class",
+        "ear_form",
+    ]
+
+
+def test_registry_qa_structural_domain_declares_morphology_consistency_check():
+    run_qa = ms.MOTIONS["RUN"].requirements["qa"]
+    structural = run_qa["structural_anatomy"]
+    required = structural["required_checks"]
+    assert "vlm_anatomy" in required
+    assert "structural_morphology_consistency" in required
+    cfg = structural["morphology_consistency"]
+    assert cfg["check"] == "structural_morphology_consistency"
+    assert "body_length_class" in cfg["compare_fields"]
+    assert cfg["use_sampled_frames"] is True
+
+
+@pytest.mark.parametrize(
+    "motion_id",
+    ["PET_HEAD", "LOOK_UP", "COME_CLOSER", "LIE_DOWN"],
+)
+def test_registry_pose_dependent_morphology_is_advisory_for_every_motion_class(
+    motion_id,
+):
+    structural = ms.MOTIONS[motion_id].requirements["qa"]["structural_anatomy"]
+    cfg = structural["morphology_consistency"]
+
+    assert cfg["pose_dependent_fields"] == [
+        "body_length_class",
+        "leg_length_class",
+        "body_build_class",
+    ]
+    assert cfg["pose_dependent_policy"] == "review_never_fail"
+
+    if motion_id != "LOOK_UP":
+        assert "structural_morphology_consistency" in structural["required_checks"]
+
+
+def test_motion_snapshot_includes_authoritative_registry_fields():
+    snap = ms.motion_snapshot(ms.MOTIONS["BREATHING"])
+    assert snap["registry_contract_version"] == ms.MOTION_REGISTRY_CONTRACT_VERSION
+    assert snap["motion_type"] == ms.MOTIONS["BREATHING"].motion_type
+    assert snap["requirements"]["qa"]["motion_specific"]["required_checks"]
 
 
 def test_triggers_are_not_motions_and_resolve_to_motions():
@@ -260,7 +347,196 @@ def test_resolver_is_deterministic_and_versioned(storage, monkeypatch):
     b = _resolve("BREATHING")
     assert a == b
     assert a["motion_spec_version"] == ms.MOTION_SPEC_VERSION
+    assert a["registry_contract_version"] == ms.MOTION_REGISTRY_CONTRACT_VERSION
     assert a["start_keyframe"]["version"] == 1
+
+
+def test_resolver_exposes_registry_requirements_without_changing_strategy(storage, monkeypatch):
+    _prepare_keyframes(monkeypatch, storage, roles=("STAND_READY",))
+    spec = _resolve("COME_CLOSER")
+    assert spec["motion_type"] == ms.MOTIONS["COME_CLOSER"].motion_type
+    assert spec["requirements"]["provider_capabilities"]["degrade_to_strategy"] == ms.STRATEGY_I2V
+    # 기존 동작 보존: 레퍼런스 미해석 시 폴백 전략은 그대로 I2V.
+    assert spec["video_strategy"] == ms.STRATEGY_I2V
+
+
+def test_resolver_uses_pinned_morphology_profile_when_available(storage, monkeypatch):
+    _prepare_keyframes(monkeypatch, storage, roles=("STAND_READY",))
+
+    async def fake_get_canonical(**kwargs):
+        return SimpleNamespace(reference_set_version=7)
+
+    async def fake_get_set(**kwargs):
+        return SimpleNamespace(morphology_profile_version=9)
+
+    async def fake_get_profile(**kwargs):
+        return SimpleNamespace(
+            id="morph-id",
+            version=9,
+            profile={
+                "traits": {
+                    "species": {"status": "fused", "class": "DOG", "confidence": "high"},
+                    "body_size": {"status": "fused", "class": "medium_in_frame", "confidence": "high"},
+                    "torso_proportion": {"status": "fused", "class": "standard", "confidence": "high"},
+                    "leg_proportion": {"status": "fused", "class": "long", "confidence": "high"},
+                }
+            },
+        )
+
+    monkeypatch.setattr(
+        __import__("backend.services.canonical_pet_service", fromlist=["x"]),
+        "get_canonical",
+        fake_get_canonical,
+    )
+    monkeypatch.setattr(
+        __import__("backend.services.pet_reference_set_service", fromlist=["x"]),
+        "get_set",
+        fake_get_set,
+    )
+    monkeypatch.setattr(morph, "get_profile", fake_get_profile)
+
+    spec = _resolve("RUN")
+    p = spec["pet_motion_profile"]
+    assert p["morphology_profile_version"] == 9
+    # 프레임 점유율(medium_in_frame)은 실제 체급이 아니다 — 체급으로 승격하지
+    # 않고 UNKNOWN 을 유지한다 (실측 소스 없음).
+    assert p["body_size_class"] == "UNKNOWN"
+    assert "body_size" not in p["sources"]
+    assert p["leg_length_class"] == "LONG"
+    # 융합 형태 프로필의 몸통 비율이 정본 — 단일 레퍼런스 신원 측정이 덮어쓰지
+    # 않는다.
+    assert p["body_length_class"] == "STANDARD"
+    assert p["sources"]["body_length"] == "morphology_profile:high"
+    # body_size_class 는 구조 매칭 축에서도 빠진다.
+    assert "body_size_class" not in spec["requirements"]["morphology"]["match_fields"]
+
+
+def test_unavailable_pinned_morphology_does_not_fall_back_to_latest(storage, monkeypatch):
+    """
+    핀된 형태 프로필을 못 읽으면 **UNKNOWN** 이다 — 최신으로 대신하지 않는다.
+
+    예전에는 조용히 `get_profile(version=None)` 로 떨어졌다. 같은 키프레임을 같은
+    계약으로 다시 돌려도 그 사이 프로필이 다시 빌드돼 있으면 다른 몸으로
+    생성됐고, 기록에는 "핀됨" 이라고 남았다.
+    """
+    _prepare_keyframes(monkeypatch, storage, roles=("STAND_READY",))
+
+    async def fake_get_canonical(**kwargs):
+        return SimpleNamespace(reference_set_version=7)
+
+    async def fake_get_set(**kwargs):
+        return SimpleNamespace(morphology_profile_version=9)
+
+    asked: list = []
+
+    async def fake_get_profile(**kwargs):
+        version = kwargs.get("version")
+        asked.append(version)
+        if version == 9:
+            return None  # 핀된 버전이 사라졌다 (정리/마이그레이션)
+        # 최신 프로필은 존재한다 — 예전 코드가 조용히 집어 가던 값.
+        return SimpleNamespace(
+            id="morph-latest",
+            version=12,
+            profile={
+                "traits": {
+                    "species": {"status": "fused", "class": "DOG", "confidence": "high"},
+                    "leg_proportion": {"status": "fused", "class": "short", "confidence": "high"},
+                }
+            },
+        )
+
+    monkeypatch.setattr(
+        __import__("backend.services.canonical_pet_service", fromlist=["x"]),
+        "get_canonical",
+        fake_get_canonical,
+    )
+    monkeypatch.setattr(
+        __import__("backend.services.pet_reference_set_service", fromlist=["x"]),
+        "get_set",
+        fake_get_set,
+    )
+    monkeypatch.setattr(morph, "get_profile", fake_get_profile)
+
+    spec = _resolve("RUN")
+    p = spec["pet_motion_profile"]
+
+    # 핀 버전만 물었고, 최신은 **묻지 않았다**.
+    assert asked == [9], asked
+    assert p.get("morphology_profile_version") in (None, 9)
+    # 최신 프로필의 값(SHORT)이 새어 들어오지 않았다.
+    assert p["leg_length_class"] != "SHORT"
+    # 강등은 조용하지 않다.
+    assert any("pinned morphology profile v9 unavailable" in w for w in spec["warnings"]), spec["warnings"]
+
+
+def test_unpinned_lineage_still_reads_the_latest_morphology_profile(storage, monkeypatch):
+    """핀이 **선언되지 않은** 계보(핀 이전 자산)는 예전처럼 최신을 본다."""
+    _prepare_keyframes(monkeypatch, storage, roles=("STAND_READY",))
+
+    async def fake_get_canonical(**kwargs):
+        return SimpleNamespace(reference_set_version=7)
+
+    async def fake_get_set(**kwargs):
+        return SimpleNamespace(morphology_profile_version=None)
+
+    asked: list = []
+
+    async def fake_get_profile(**kwargs):
+        asked.append(kwargs.get("version"))
+        return SimpleNamespace(
+            id="morph-latest",
+            version=12,
+            profile={
+                "traits": {
+                    "species": {"status": "fused", "class": "DOG", "confidence": "high"},
+                    "leg_proportion": {"status": "fused", "class": "long", "confidence": "high"},
+                }
+            },
+        )
+
+    monkeypatch.setattr(
+        __import__("backend.services.canonical_pet_service", fromlist=["x"]),
+        "get_canonical",
+        fake_get_canonical,
+    )
+    monkeypatch.setattr(
+        __import__("backend.services.pet_reference_set_service", fromlist=["x"]),
+        "get_set",
+        fake_get_set,
+    )
+    monkeypatch.setattr(morph, "get_profile", fake_get_profile)
+
+    spec = _resolve("RUN")
+    assert asked == [None], asked
+    assert spec["pet_motion_profile"]["leg_length_class"] == "LONG"
+    assert not any("pinned morphology" in w for w in spec["warnings"])
+
+
+def test_identity_body_length_is_fallback_when_morphology_has_none(storage, monkeypatch):
+    """형태 프로필이 몸통 비율을 못 주면 그때만 신원 구조 측정으로 폴백한다."""
+    _prepare_keyframes(monkeypatch, storage, roles=("STAND_READY",))
+
+    async def fake_get_profile(**kwargs):
+        return SimpleNamespace(
+            id="morph-id",
+            version=3,
+            profile={
+                "traits": {
+                    "torso_proportion": {
+                        "status": "unknown",
+                        "reason": "insufficient_cross_reference_evidence",
+                    },
+                }
+            },
+        )
+
+    monkeypatch.setattr(morph, "get_profile", fake_get_profile)
+
+    spec = _resolve("RUN")
+    p = spec["pet_motion_profile"]
+    assert p["body_length_class"] in ("COMPACT", "STANDARD", "LONG")
+    assert p["sources"]["body_length"] == "measured"
 
 
 def test_resolver_makes_no_provider_calls(storage, monkeypatch):
@@ -272,6 +548,7 @@ def test_resolver_makes_no_provider_calls(storage, monkeypatch):
         raise AssertionError("리졸버가 프로바이더를 건드렸다")
 
     monkeypatch.setattr(canonical_image_providers, "resolve_providers", boom)
+    monkeypatch.setattr(canonical_image_providers, "resolve_keyframe_providers", boom)
     spec = _resolve("BREATHING")
     assert spec["motion_id"] == "BREATHING"
 

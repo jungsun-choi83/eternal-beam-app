@@ -68,16 +68,20 @@ def preflight() -> bool:
         return "SET" if (os.getenv(name) or "").strip() else "absent"
 
     seedance = vp.get_provider("seedance")
-    kling = vp.get_provider("kling")
+    kling = vp.get_provider("kling_3")
+    wan = vp.get_provider("wan_3_standard")
     rows = [
         ("RUNWAY_API_KEY (runway 트랜스포트)", flag("RUNWAY_API_KEY")),
         ("FAL_KEY (fal 트랜스포트)", flag("FAL_KEY") if os.getenv("FAL_KEY") else flag("FAL_API_KEY")),
-        ("seedance transport", vp.transport_for("seedance")),
+        ("seedance vendor", vp.vendor_for_model("seedance")),
         ("  seedance model", seedance.model_name()),
         ("  seedance available", "yes" if seedance.available() else "NO"),
-        ("kling transport", vp.transport_for("kling")),
+        ("kling_3 vendor", vp.vendor_for_model("kling_3")),
         ("  kling model", kling.model_name()),
         ("  kling available", "yes" if kling.available() else "NO"),
+        ("wan_3_standard vendor", vp.vendor_for_model("wan_3_standard")),
+        ("  wan model", wan.model_name()),
+        ("  wan available", "yes" if wan.available() else "NO"),
         ("(direct 폴백) SEEDANCE_API_KEY/ARK", flag("SEEDANCE_API_KEY") if os.getenv("SEEDANCE_API_KEY") else flag("ARK_API_KEY")),
         ("(direct 폴백) KLING_ACCESS/SECRET", f"{flag('KLING_ACCESS_KEY')}/{flag('KLING_SECRET_KEY')}"),
         ("PHASE6_LIVE_MODE", os.getenv("PHASE6_LIVE_MODE", "off")),

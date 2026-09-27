@@ -15,8 +15,8 @@ VLM 은 보수적으로 답하라고 지시받는다 — unknown 이 구조적 �
       → 정합 후 잔차 = 호흡 신호 (흉곽 밴드 국소성 + 주기성-ish)
 
 ── 판정 계약 ────────────────────────────────────────────────────────────────
-  breathing_detected  흉곽 밴드에 배경 대비 유의한 주기적-ish 잔차 운동,
-                      전역 펄스/드리프트/머리 요동 없음
+  breathing_detected  흉곽 밴드에 배경 대비 유의한 잔차 운동,
+                      전역 펄스/드리프트 없음. 머리 움직임·주기성은 advisory.
   global_pulse        전역 스케일 진동 또는 프레이밍 드리프트가 임계 초과
   unlocalized_motion  운동이 흉곽이 아니라 머리 쪽에 몰려 있다 (head bobbing)
   no_motion           흉곽 잔차가 배경 노이즈 바닥과 구분되지 않는다
@@ -53,7 +53,11 @@ logger = logging.getLogger(__name__)
 #     (자연 클립 K: periodic 0.24, modulation 0.47)
 #   * 중대역(구 1% 초과)은 머리/흉곽 국소성 상한을 1.0 으로 조인다 — 균일
 #     전신 펄스가 중대역으로 통과할 잔여 위험의 완화 (관측 양성 전부 ≤0.83)
-BREATHING_TEMPORAL_QA_VERSION = "breathing-temporal-qa-v2"
+# v3: torso SNR + 가시적 진폭이 호흡의 필수 신호다. head/neck 운동은 자연스러운
+#     동반 운동일 수 있어 head_to_torso_ratio 를 advisory 로 내리고, 짧은 클립의
+#     periodic_score 역시 supporting evidence 로만 기록한다. 전역 이동/스케일/
+#     단조 drift 게이트는 그대로이며 motion_video_qa 에서 hard FAIL 로 소비된다.
+BREATHING_TEMPORAL_QA_VERSION = "breathing-temporal-qa-v3"
 
 #: 분석 해상도(가로). 호흡 신호는 저주파 대비 변화라 다운스케일에 강하고,
 #: 정합·NCC 비용은 해상도 제곱에 비례한다.
@@ -75,6 +79,94 @@ def _f(name: str, default: float) -> float:
         return float(os.getenv(name, str(default)))
     except ValueError:
         return default
+
+
+def _classify_temporal_metrics(
+    metrics: dict[str, float],
+    thresholds: dict[str, float],
+) -> tuple[str, Optional[str], list[dict[str, Any]]]:
+    """Classify BREATHING metrics; only head/rhythm evidence is advisory."""
+    scale_range = float(metrics["scale_range"])
+    scale_oscillation = float(metrics["scale_oscillation"])
+    scale_trend = float(metrics["scale_trend"])
+    drift_frac = float(metrics["translation_drift_frac_of_pet"])
+    snr = float(metrics["torso_snr"])
+    head_ratio = float(metrics["head_to_torso_ratio"])
+    periodic_score = float(metrics["periodic_score"])
+    torso_modulation = float(metrics["torso_energy_modulation"])
+
+    if scale_range > thresholds["scale_pulse_max"]:
+        return (
+            VERDICT_GLOBAL_PULSE,
+            f"scale_range {metrics['scale_range']} > {thresholds['scale_pulse_max']}",
+            [],
+        )
+    if drift_frac > thresholds["drift_max_frac"]:
+        return (
+            VERDICT_GLOBAL_PULSE,
+            f"drift {metrics['translation_drift_frac_of_pet']} > "
+            f"{thresholds['drift_max_frac']}",
+            [],
+        )
+    if scale_trend > thresholds["sag_trend_max"] and scale_trend > scale_oscillation:
+        return (
+            VERDICT_GLOBAL_PULSE,
+            f"monotonic_scale_sag trend {metrics['scale_trend']} > "
+            f"osc {metrics['scale_oscillation']}",
+            [],
+        )
+    if snr < thresholds["torso_snr_min"]:
+        return (
+            VERDICT_NO_MOTION,
+            f"torso_snr {metrics['torso_snr']} < {thresholds['torso_snr_min']}",
+            [],
+        )
+    if scale_oscillation < thresholds["visible_osc_min"]:
+        return (
+            VERDICT_NO_MOTION,
+            f"amplitude_below_visible_floor osc {metrics['scale_oscillation']} < "
+            f"{thresholds['visible_osc_min']}",
+            [],
+        )
+
+    advisories: list[dict[str, Any]] = []
+    midband = scale_range > thresholds["scale_strict"]
+    head_cap = (
+        thresholds["head_ratio_max_midband"]
+        if midband
+        else thresholds["head_ratio_max"]
+    )
+    if head_ratio > head_cap:
+        advisories.append(
+            {
+                "check": "head_to_torso_ratio",
+                "status": "REVIEW",
+                "value": metrics["head_to_torso_ratio"],
+                "threshold": head_cap,
+                "reason": "natural_head_neck_motion_allowed",
+            }
+        )
+    if periodic_score < thresholds["periodic_min"]:
+        advisories.append(
+            {
+                "check": "periodic_score",
+                "status": "REVIEW",
+                "value": metrics["periodic_score"],
+                "threshold": thresholds["periodic_min"],
+                "reason": "supporting_evidence_only",
+            }
+        )
+    if torso_modulation < thresholds["modulation_strong"]:
+        advisories.append(
+            {
+                "check": "torso_energy_modulation",
+                "status": "REVIEW",
+                "value": metrics["torso_energy_modulation"],
+                "threshold": thresholds["modulation_strong"],
+                "reason": "supporting_evidence_only",
+            }
+        )
+    return VERDICT_BREATHING, None, advisories
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -429,53 +521,19 @@ def analyze_frames(
         "pet_height_px": pet_h,
     }
 
-    # ── 판정 (v2) — 스케일은 보조 증거, 여러 신호의 합의로 판정한다 ───────
+    # ── 판정 (v3) ────────────────────────────────────────────────────────
     # 거부(전역 성분): 상한 초과 스케일 / 프레이밍 드리프트 / 단조 침하.
     # 거부(신호 없음): 배경 수준 잔차, 또는 가시성 바닥 미달(동결 클립).
-    # 거부(비국소): 머리 우세 — 중대역(구 1% 초과)은 상한을 1.0 으로 조인다.
-    # 탐지: 가시적 진폭 + 리듬(주기성 **또는** 강한 시간 변조 — 완벽한 주기
-    # 를 요구하지 않는다. 자연 호흡은 불규칙하다).
-    midband = scale_range > thresholds["scale_strict"]
-    head_cap = (
-        thresholds["head_ratio_max_midband"] if midband else thresholds["head_ratio_max"]
-    )
-    rhythm_ok = (
-        periodic_score >= thresholds["periodic_min"]
-        or torso_modulation >= thresholds["modulation_strong"]
-    )
-    if scale_range > thresholds["scale_pulse_max"]:
-        verdict = VERDICT_GLOBAL_PULSE
-        reason = f"scale_range {metrics['scale_range']} > {thresholds['scale_pulse_max']}"
-    elif drift_frac > thresholds["drift_max_frac"]:
-        verdict = VERDICT_GLOBAL_PULSE
-        reason = f"drift {metrics['translation_drift_frac_of_pet']} > {thresholds['drift_max_frac']}"
-    elif scale_trend > thresholds["sag_trend_max"] and scale_trend > scale_oscillation:
-        # 추세가 진동을 지배한다 = 들숨/날숨의 오르내림이 아니라 한 방향
-        # 수축/팽창(침하·설정 이동)이다.
-        verdict = VERDICT_GLOBAL_PULSE
-        reason = f"monotonic_scale_sag trend {metrics['scale_trend']} > osc {metrics['scale_oscillation']}"
-    elif snr < thresholds["torso_snr_min"]:
-        verdict = VERDICT_NO_MOTION
-        reason = f"torso_snr {metrics['torso_snr']} < {thresholds['torso_snr_min']}"
-    elif scale_oscillation < thresholds["visible_osc_min"]:
-        # 잔차가 배경보다 높아도 윤곽 진폭이 가시성 바닥 미달이면 "동결 + 미세
-        # 틱"이다 — 낮은 스케일이 보상이 되지 않는다 (v2 의 핵심 교정).
-        verdict = VERDICT_NO_MOTION
-        reason = f"amplitude_below_visible_floor osc {metrics['scale_oscillation']} < {thresholds['visible_osc_min']}"
-    elif head_ratio > head_cap:
-        verdict = VERDICT_UNLOCALIZED
-        reason = f"head_to_torso {metrics['head_to_torso_ratio']} > {head_cap}"
-    elif rhythm_ok:
-        verdict = VERDICT_BREATHING
-        reason = None
-    else:
-        verdict = VERDICT_INCONCLUSIVE
-        reason = (
-            f"periodic_score {metrics['periodic_score']} < {thresholds['periodic_min']} "
-            f"and modulation {metrics['torso_energy_modulation']} < {thresholds['modulation_strong']}"
-        )
-
-    return {**base, "verdict": verdict, "reason": reason, "metrics": metrics}
+    # 탐지: torso SNR + 가시적 진폭. 머리/목 동반 운동과 짧은 클립의 낮은
+    # periodicity/modulation 은 판정을 막지 않고 advisory evidence 로 남긴다.
+    verdict, reason, advisories = _classify_temporal_metrics(metrics, thresholds)
+    return {
+        **base,
+        "verdict": verdict,
+        "reason": reason,
+        "metrics": metrics,
+        "advisories": advisories,
+    }
 
 
 def analyze(video_bytes: bytes, keyframe_rgb: Optional[np.ndarray]) -> dict[str, Any]:

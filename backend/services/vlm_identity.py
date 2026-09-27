@@ -25,9 +25,13 @@ VLM 시맨틱 특성 분석 (Phase 2) — **격리된** 비전-언어 모델 인
 from __future__ import annotations
 
 import base64
+import copy
+import hashlib
 import json
 import logging
 import os
+import threading
+from collections import OrderedDict
 from typing import Any, Optional, Sequence
 
 logger = logging.getLogger(__name__)
@@ -172,6 +176,209 @@ def model_name() -> str:
     return (os.getenv(_MODEL_ENV) or "").strip() or _DEFAULT_MODEL
 
 
+# ── VLM 결과 캐시 (같은 이미지 중복 과금 방지) ──────────────────────────────
+# 한 번의 인테이크에서 pet_identity_service 와 pet_morphology_service 가 **같은**
+# 원본 레퍼런스를 각각 분석하고(pet_reference_set_service 가 두 프로필을 연달아
+# 빌드한다), 그 세트 빌드가 이어서 같은 레퍼런스를 뷰/포즈로도 분류한다. 캐시가
+# 없으면 이미지 1장당 유료 VLM 호출이 여러 번 나간다.
+#
+# 키는 내용 주소다 — 모델 + 분석기 버전 + 이미지 바이트 해시. 원본이나 모델이
+# 바뀌면 자동으로 무효화되므로 stale 결과가 프로필에 실릴 수 없다. semantic
+# traits 와 reference classification 은 분석기 버전이 서로 달라 키가 절대
+# 겹치지 않는다 — 같은 바이트라도 두 목적의 결과가 섞이지 않는다.
+#
+# 실패(None)는 **캐시하지 않는다**: 일시적 오류를 프로세스 수명 내내 "증거 없음"
+# 으로 굳혀 프로필을 영구 unknown 으로 만드는 쪽이, 실패 경로에서 호출이 한 번 더
+# 나가는 것보다 나쁘다.
+#
+# ── 2단계: in-memory(빠름, 64건, 재시작 시 소실) + durable(느리지만 워커
+# 재시작/여러 프로세스에도 남는다) ─────────────────────────────────────────
+# durable 계층이 없으면 같은 이미지가 배포마다, 워커 프로세스마다 다시 과금된다
+# — in-memory LRU 만으로는 "이 펫은 이미 분석했다"가 프로세스 수명에 갇힌다.
+# durable 조회/기록 실패는 폴백일 뿐이다(호출자는 그냥 다시 계산한다) —
+# 이 캐시가 없어도 기존 동작(직접 호출) 그대로 동작해야 한다.
+#
+# ── single-flight (동시 요청 중복 호출 방지) ────────────────────────────────
+# 캐시는 "이미 끝난" 호출만 막는다. identity/morphology 프로필 빌드를 동시에
+# 돌리면(레퍼런스 다운로드/분석 레이턴시를 줄이려는 게 이 병렬화 작업의 목적
+# 이다) 같은 이미지에 대해 **둘 다 캐시 미스**를 보고 동시에 유료 호출을 내보낼
+# 수 있다 — 캐시 딕셔너리 접근만 잠갔을 뿐 "지금 이 키를 누군가 계산 중"이라는
+# 상태는 없었기 때문이다. 키별 락으로 두 번째 호출자를 첫 번째 뒤에 세우고,
+# 첫 번째가 캐시에 쓴 값을 그대로 재사용하게 한다. 참조 카운트로 락을 정리해
+# 딕셔너리가 무한정 자라지 않는다.
+_RESULT_CACHE_MAX = 64
+_result_cache: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
+_result_cache_lock = threading.Lock()
+
+_semantic_inflight_locks: dict[str, threading.Lock] = {}
+_semantic_inflight_refcount: dict[str, int] = {}
+_semantic_inflight_guard = threading.Lock()
+
+
+def _durable_cache_table() -> str:
+    return os.getenv("PET_VLM_ANALYSIS_CACHE_TABLE", "pet_vlm_analysis_cache")
+
+
+def _durable_cache_use_db() -> bool:
+    return os.getenv("HYBRID_USE_SUPABASE", "1").strip().lower() not in ("0", "false", "no")
+
+
+def _durable_cache_client():
+    from ..models.content import _supabase_client
+
+    return _supabase_client()
+
+
+#: HYBRID_USE_SUPABASE=0 이거나 supabase 클라이언트가 없을 때 쓰는 목업 저장소
+#: (다른 서비스들의 _MOCK_PROFILES 관례와 동일).
+_MOCK_DURABLE_CACHE: dict[str, dict[str, Any]] = {}
+
+
+def _durable_cache_get(cache_key: str) -> Optional[dict[str, Any]]:
+    if _durable_cache_use_db():
+        client = _durable_cache_client()
+        if not client:
+            return None
+        try:
+            r = (
+                client.table(_durable_cache_table())
+                .select("result")
+                .eq("cache_key", cache_key)
+                .limit(1)
+                .execute()
+            )
+            rows = getattr(r, "data", None) or []
+            return copy.deepcopy(rows[0]["result"]) if rows else None
+        except Exception:
+            logger.warning("VLM durable 캐시 조회 실패 — 재계산으로 폴백", exc_info=True)
+            return None
+    row = _MOCK_DURABLE_CACHE.get(cache_key)
+    return copy.deepcopy(row["result"]) if row else None
+
+
+def _durable_cache_put(
+    cache_key: str, *, kind: str, analyzer_version: str, result: dict[str, Any]
+) -> None:
+    row = {
+        "cache_key": cache_key,
+        "kind": kind,
+        "analyzer_version": analyzer_version,
+        "model": model_name(),
+        "result": result,
+    }
+    if _durable_cache_use_db():
+        client = _durable_cache_client()
+        if not client:
+            return
+        try:
+            client.table(_durable_cache_table()).upsert(row, on_conflict="cache_key").execute()
+        except Exception:
+            # 순수 캐시 — 기록 실패는 다음 호출이 다시 계산하게 둔다.
+            logger.warning("VLM durable 캐시 기록 실패", exc_info=True)
+        return
+    _MOCK_DURABLE_CACHE[cache_key] = dict(row)
+
+
+def __reset_durable_cache_for_tests() -> None:
+    _MOCK_DURABLE_CACHE.clear()
+
+
+class _InflightLock:
+    """참조 카운트로 스스로를 청소하는 키별 락 — with 문으로 쓴다."""
+
+    def __init__(self, key: str):
+        self._key = key
+        with _semantic_inflight_guard:
+            _semantic_inflight_refcount[key] = _semantic_inflight_refcount.get(key, 0) + 1
+            self._lock = _semantic_inflight_locks.setdefault(key, threading.Lock())
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+
+    def __exit__(self, *exc_info: Any) -> None:
+        self._lock.release()
+        with _semantic_inflight_guard:
+            remaining = _semantic_inflight_refcount.get(self._key, 1) - 1
+            if remaining <= 0:
+                _semantic_inflight_refcount.pop(self._key, None)
+                _semantic_inflight_locks.pop(self._key, None)
+            else:
+                _semantic_inflight_refcount[self._key] = remaining
+
+
+def _mem_cache_get(cache_key: str) -> Optional[dict[str, Any]]:
+    with _result_cache_lock:
+        cached = _result_cache.get(cache_key)
+        if cached is not None:
+            _result_cache.move_to_end(cache_key)
+            return copy.deepcopy(cached)
+    return None
+
+
+def _mem_cache_put(cache_key: str, result: dict[str, Any]) -> None:
+    with _result_cache_lock:
+        _result_cache[cache_key] = copy.deepcopy(result)
+        _result_cache.move_to_end(cache_key)
+        while len(_result_cache) > _RESULT_CACHE_MAX:
+            _result_cache.popitem(last=False)
+
+
+def _cached_result(cache_key: str) -> Optional[dict[str, Any]]:
+    """in-memory(빠름) → durable(프로세스 경계를 넘음) 순으로 조회."""
+    cached = _mem_cache_get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        durable = _durable_cache_get(cache_key)
+    except Exception:
+        # 순수 캐시 — 조회 자체가 죽어도 호출자는 그냥 다시 계산해야 한다.
+        logger.warning("VLM durable 캐시 조회 중 예외 — 재계산으로 폴백", exc_info=True)
+        return None
+    if durable is not None:
+        _mem_cache_put(cache_key, durable)
+        return copy.deepcopy(durable)
+    return None
+
+
+def _store_result(
+    cache_key: str, *, kind: str, analyzer_version: str, result: dict[str, Any]
+) -> None:
+    _mem_cache_put(cache_key, result)
+    _durable_cache_put(cache_key, kind=kind, analyzer_version=analyzer_version, result=result)
+
+
+def _semantic_cache_key(images: Sequence[tuple[bytes, str]]) -> str:
+    h = hashlib.sha256()
+    h.update(model_name().encode("utf-8"))
+    h.update(b"\0")
+    h.update(VLM_ANALYZER_VERSION.encode("utf-8"))
+    for data, mime in images:
+        h.update(b"\0")
+        h.update(mime.encode("utf-8"))
+        h.update(b"\0")
+        h.update(hashlib.sha256(data).digest())
+    return h.hexdigest()
+
+
+def _classification_cache_key(data: bytes, mime_type: str) -> str:
+    h = hashlib.sha256()
+    h.update(model_name().encode("utf-8"))
+    h.update(b"\0")
+    h.update(VLM_CLASSIFIER_VERSION.encode("utf-8"))
+    h.update(b"\0")
+    h.update((mime_type or "image/jpeg").encode("utf-8"))
+    h.update(b"\0")
+    h.update(hashlib.sha256(data).digest())
+    return h.hexdigest()
+
+
+def clear_semantic_cache() -> None:
+    """VLM 결과 캐시를 비운다 (테스트/운영 훅) — in-memory + durable(목업) 둘 다."""
+    with _result_cache_lock:
+        _result_cache.clear()
+    __reset_durable_cache_for_tests()
+
+
 def analyze_semantic_traits(
     images: Sequence[tuple[bytes, str]],
 ) -> Optional[dict[str, Any]]:
@@ -186,64 +393,85 @@ def analyze_semantic_traits(
     if not images:
         return None
 
-    try:
-        import anthropic
-    except ImportError:
-        logger.warning("PET_VLM_IDENTITY_ENABLED=1 이지만 anthropic 패키지가 없습니다.")
+    prepared: list[tuple[bytes, str]] = [
+        (data, (mime or "image/jpeg")) for data, mime in images[:MAX_IMAGES] if data
+    ]
+    if not prepared:
         return None
+    used = len(prepared)
 
-    content: list[dict[str, Any]] = []
-    used = 0
-    for data, mime in images[:MAX_IMAGES]:
-        if not data:
-            continue
-        content.append(
+    # 같은 이미지에 대한 앞선 성공 결과가 있으면 유료 호출을 건너뛴다.
+    cache_key = _semantic_cache_key(prepared)
+    cached = _cached_result(cache_key)
+    if cached is not None:
+        return cached
+
+    # identity/morphology 프로필 빌드를 동시에 돌릴 때, 같은 이미지에 대한
+    # 두 번째 호출자를 여기서 첫 번째 뒤에 세운다 — 그러지 않으면 위 캐시
+    # 체크를 둘 다 통과한 뒤 유료 호출을 각자 내보낼 수 있다.
+    with _InflightLock(cache_key):
+        # 락을 기다리는 동안 다른 스레드가 채웠을 수 있다 — 재확인.
+        cached = _cached_result(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            import anthropic
+        except ImportError:
+            logger.warning("PET_VLM_IDENTITY_ENABLED=1 이지만 anthropic 패키지가 없습니다.")
+            return None
+
+        content: list[dict[str, Any]] = [
             {
                 "type": "image",
                 "source": {
                     "type": "base64",
-                    "media_type": (mime or "image/jpeg"),
+                    "media_type": mime,
                     "data": base64.standard_b64encode(data).decode("ascii"),
                 },
             }
+            for data, mime in prepared
+        ]
+        content.append({"type": "text", "text": _PROMPT})
+
+        try:
+            client = anthropic.Anthropic()
+            response = client.messages.create(
+                model=model_name(),
+                max_tokens=4096,
+                messages=[{"role": "user", "content": content}],
+                output_config={
+                    "format": {"type": "json_schema", "schema": SEMANTIC_TRAITS_SCHEMA}
+                },
+            )
+        except Exception:
+            logger.warning("VLM 시맨틱 분석 호출 실패", exc_info=True)
+            return None
+
+        # 거절은 "증거 제공 불가"로 처리한다 — 호출자가 unknown 으로 기록한다.
+        if getattr(response, "stop_reason", None) == "refusal":
+            logger.warning(
+                "VLM 시맨틱 분석이 거절됨 (stop_details=%s)", getattr(response, "stop_details", None)
+            )
+            return None
+
+        try:
+            text = next(b.text for b in response.content if b.type == "text")
+            traits = json.loads(text)
+        except Exception:
+            logger.warning("VLM 응답 파싱 실패", exc_info=True)
+            return None
+
+        result = {
+            "traits": traits,
+            "model": getattr(response, "model", model_name()),
+            "analyzer": VLM_ANALYZER_VERSION,
+            "image_count": used,
+        }
+        _store_result(
+            cache_key, kind="semantic_traits", analyzer_version=VLM_ANALYZER_VERSION, result=result
         )
-        used += 1
-    if not used:
-        return None
-    content.append({"type": "text", "text": _PROMPT})
-
-    try:
-        client = anthropic.Anthropic()
-        response = client.messages.create(
-            model=model_name(),
-            max_tokens=4096,
-            messages=[{"role": "user", "content": content}],
-            output_config={
-                "format": {"type": "json_schema", "schema": SEMANTIC_TRAITS_SCHEMA}
-            },
-        )
-    except Exception:
-        logger.warning("VLM 시맨틱 분석 호출 실패", exc_info=True)
-        return None
-
-    # 거절은 "증거 제공 불가"로 처리한다 — 호출자가 unknown 으로 기록한다.
-    if getattr(response, "stop_reason", None) == "refusal":
-        logger.warning("VLM 시맨틱 분석이 거절됨 (stop_details=%s)", getattr(response, "stop_details", None))
-        return None
-
-    try:
-        text = next(b.text for b in response.content if b.type == "text")
-        traits = json.loads(text)
-    except Exception:
-        logger.warning("VLM 응답 파싱 실패", exc_info=True)
-        return None
-
-    return {
-        "traits": traits,
-        "model": getattr(response, "model", model_name()),
-        "analyzer": VLM_ANALYZER_VERSION,
-        "image_count": used,
-    }
+        return result
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -326,57 +554,79 @@ def classify_reference(data: bytes, mime_type: str = "image/jpeg") -> Optional[d
     """
     원본 1장 → {view_label, pose_label, visibility, ...}. 실패/비활성은 None —
     호출자는 결정론적 UNKNOWN 폴백을 쓴다.
+
+    analyze_semantic_traits 와 같은 내용-주소 캐시(§ VLM 결과 캐시)를 쓴다 —
+    이 함수는 전에 캐시가 전혀 없었다: 세트가 다시 빌드될 때마다(원본이
+    하나 추가되기만 해도) 바뀌지 않은 레퍼런스까지 매번 재과금됐다.
     """
     if not is_enabled() or not data:
         return None
-    try:
-        import anthropic
-    except ImportError:
-        logger.warning("PET_VLM_IDENTITY_ENABLED=1 이지만 anthropic 패키지가 없습니다.")
-        return None
 
-    try:
-        client = anthropic.Anthropic()
-        response = client.messages.create(
-            model=model_name(),
-            max_tokens=2048,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": (mime_type or "image/jpeg"),
-                                "data": base64.standard_b64encode(data).decode("ascii"),
+    mime = mime_type or "image/jpeg"
+    cache_key = _classification_cache_key(data, mime)
+    cached = _cached_result(cache_key)
+    if cached is not None:
+        return cached
+
+    with _InflightLock(cache_key):
+        cached = _cached_result(cache_key)
+        if cached is not None:
+            return cached
+
+        try:
+            import anthropic
+        except ImportError:
+            logger.warning("PET_VLM_IDENTITY_ENABLED=1 이지만 anthropic 패키지가 없습니다.")
+            return None
+
+        try:
+            client = anthropic.Anthropic()
+            response = client.messages.create(
+                model=model_name(),
+                max_tokens=2048,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image",
+                                "source": {
+                                    "type": "base64",
+                                    "media_type": mime,
+                                    "data": base64.standard_b64encode(data).decode("ascii"),
+                                },
                             },
-                        },
-                        {"type": "text", "text": _CLASSIFY_PROMPT},
-                    ],
-                }
-            ],
-            output_config={
-                "format": {"type": "json_schema", "schema": REFERENCE_CLASSIFICATION_SCHEMA}
-            },
+                            {"type": "text", "text": _CLASSIFY_PROMPT},
+                        ],
+                    }
+                ],
+                output_config={
+                    "format": {"type": "json_schema", "schema": REFERENCE_CLASSIFICATION_SCHEMA}
+                },
+            )
+        except Exception:
+            logger.warning("VLM 레퍼런스 분류 호출 실패", exc_info=True)
+            return None
+
+        if getattr(response, "stop_reason", None) == "refusal":
+            return None
+
+        try:
+            text = next(b.text for b in response.content if b.type == "text")
+            result = json.loads(text)
+        except Exception:
+            logger.warning("VLM 분류 응답 파싱 실패", exc_info=True)
+            return None
+
+        result["source"] = VLM_CLASSIFIER_VERSION
+        result["model"] = getattr(response, "model", model_name())
+        _store_result(
+            cache_key,
+            kind="reference_classification",
+            analyzer_version=VLM_CLASSIFIER_VERSION,
+            result=result,
         )
-    except Exception:
-        logger.warning("VLM 레퍼런스 분류 호출 실패", exc_info=True)
-        return None
-
-    if getattr(response, "stop_reason", None) == "refusal":
-        return None
-
-    try:
-        text = next(b.text for b in response.content if b.type == "text")
-        result = json.loads(text)
-    except Exception:
-        logger.warning("VLM 분류 응답 파싱 실패", exc_info=True)
-        return None
-
-    result["source"] = VLM_CLASSIFIER_VERSION
-    result["model"] = getattr(response, "model", model_name())
-    return result
+        return result
 
 
 # ══════════════════════════════════════════════════════════════════════════

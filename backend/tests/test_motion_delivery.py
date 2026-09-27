@@ -211,6 +211,46 @@ def test_theme_composition_a_b_c_no_gray_no_halo():
         assert not bool(gray_leak[~pet_box].any()), name
 
 
+def _frame_with_contact_shadow() -> np.ndarray:
+    """펫 + 발밑 접지 그림자(배경의 감광 버전) — 실제 산출물의 최소 모형."""
+    f = _frame()
+    f[80:88, 12:52] = (GRAY.astype(np.float32) * 0.65).astype(np.uint8)
+    return f
+
+
+def test_contact_shadow_does_not_become_foreground_alpha():
+    """거리 키잉은 그림자를 불투명 전경으로 만들었다 — v3 가 색조로 걸러낸다."""
+    frames = [_frame_with_contact_shadow() for _ in range(6)]
+    alphas, diag = delivery.matte_bgmodel(frames)
+
+    assert diag["shadow_reject"]["applied"] is True
+    a = alphas[3]
+    assert a[84, 32] < 0.05   # 발밑 그림자 — 전경이 아니다
+    assert a[55, 32] > 0.95   # 펫 — 그대로 불투명
+    assert a[5, 5] < 0.05     # 배경 모서리
+
+
+def test_shadow_reject_never_erodes_a_pet_that_matches_the_background_hue():
+    """배경과 같은 색조의 회색 펫: 지울 양이 과하면 클립 전체에서 포기한다."""
+    frames = []
+    for _ in range(4):
+        f = np.tile(GRAY, (H, W, 1)).astype(np.uint8)
+        f[20:90, 8:56] = (GRAY.astype(np.float32) * 0.7).astype(np.uint8)  # 회색 펫
+        frames.append(f)
+    alphas, diag = delivery.matte_bgmodel(frames)
+
+    assert diag["shadow_reject"]["applied"] is False
+    assert diag["shadow_reject"]["reason"] == "would_erode_subject"
+    assert alphas[0][55, 32] > 0.95  # 펫은 한 픽셀도 깎이지 않는다
+
+
+def test_shadow_reject_can_be_turned_off(monkeypatch):
+    monkeypatch.setattr(delivery, "SHADOW_REJECT_ENABLED", False)
+    alphas, diag = delivery.matte_bgmodel([_frame_with_contact_shadow()] * 3)
+    assert diag["shadow_reject"] == {"applied": False, "reason": "disabled"}
+    assert alphas[0][84, 32] > 0.95  # v2 거동: 그림자가 전경으로 남는다
+
+
 def test_temporal_stabilization_fills_single_frame_hole():
     """한 프레임만 매트가 뚫려도(깜빡임) 시간 중앙값이 메운다."""
     frames = _frames(7)

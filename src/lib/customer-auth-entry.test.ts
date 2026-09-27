@@ -12,7 +12,7 @@ function screenBlock(name: "signup" | "login"): string {
 }
 
 describe("고객 인증 진입", () => {
-  it("첫 인증 화면에서 로그인과 회원가입을 모두 선택할 수 있다", () => {
+  it("첫 인증 화면은 잠겨 있지 않다 — 폼 안에서 로그인/회원가입을 오갈 수 있다", () => {
     const signup = screenBlock("signup");
     assert.match(signup, /initialMode="signup"/);
     assert.doesNotMatch(
@@ -20,6 +20,7 @@ describe("고객 인증 진입", () => {
       /lockMode="signup"/,
       "회원가입으로 잠겨 있어 기존 사용자가 로그인할 수 없다",
     );
+    assert.match(auth, /switchMode\(isSignup \? "login" : "signup"\)/);
   });
 
   it("AuthScreen 이 완료된 인증 모드를 호출자에게 돌려준다", () => {

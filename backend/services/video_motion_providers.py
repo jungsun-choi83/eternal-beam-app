@@ -3,8 +3,8 @@
 
 ── 계약 ────────────────────────────────────────────────────────────────────
 VideoGenerationProvider.generate(request) → MotionVideoResult(video_bytes …)
-프로바이더별 요청 형태는 어댑터 안에만 산다. 비즈니스 로직에는 프로바이더
-이름이 등장하지 않는다 — 라우팅은 아래 routing_for_class() 하나가 정본이다.
+프로바이더별 요청 형태는 어댑터 안에만 산다. 모션별 우선순위의 정본은
+motion_spec 이고, 이 모듈은 안정적인 registry id 를 실제 adapter 로 해석한다.
 
 ── 어댑터 (초기 2개 + mock) ────────────────────────────────────────────────
 seedance  Seedance 2.5 (BytePlus Ark 태스크 API). first/last frame 이미지 입력.
@@ -33,9 +33,22 @@ logger = logging.getLogger(__name__)
 
 PROVIDER_SEEDANCE = "seedance"
 PROVIDER_KLING = "kling"
+PROVIDER_KLING_3 = "kling_3"
+PROVIDER_WAN_3_STANDARD = "wan_3_standard"
 PROVIDER_WAN = "wan"  # 레퍼런스 조건부 경로 (Phase 6.7) — 클래스 라우팅 표에는 없다
 PROVIDER_WAN_FLF = "wan_flf"  # wan 계열 first-last-frame — TRANSITION 벤치 전용
 PROVIDER_MOCK = "mock"
+
+MODEL_WAN_2_2_TURBO = "wan_2_2_turbo"
+MODEL_WAN_2_1_FLF = "wan_2_1_flf"
+MODEL_WAN_3_MOTION_REFERENCE = "wan_3_motion_reference"
+
+VENDOR_RUNWAY = "runway"
+VENDOR_FAL = "fal"
+VENDOR_BYTEPLUS = "byteplus"
+VENDOR_KLING = "kling"
+VENDOR_DIRECT = "direct"  # Wan 3 future direct binding id.
+VENDOR_MOCK = "mock"
 
 
 class VideoProviderError(Exception):
@@ -81,6 +94,9 @@ class MotionVideoResult:
 
 class VideoGenerationProvider:
     name: str = "abstract"
+    logical_model_id: str = "abstract"
+    vendor_id: str = "unknown"
+    adapter_id: str = "VideoGenerationProvider"
     supports_durable_jobs: bool = False
     supports_end_frame: bool = False
     supports_motion_reference: bool = False
@@ -93,8 +109,44 @@ class VideoGenerationProvider:
     def model_name(self) -> str:  # pragma: no cover
         return ""
 
+    @property
+    def vendor_model_id(self) -> str:
+        return self.model_name()
+
+    def identity(self) -> dict[str, str]:
+        return {
+            "logical_model": self.logical_model_id,
+            "vendor": self.vendor_id,
+            "adapter": self.adapter_id,
+            "vendor_model": self.vendor_model_id,
+        }
+
     def generate(self, request: MotionVideoRequest) -> MotionVideoResult:  # pragma: no cover
         raise NotImplementedError
+
+
+def provider_identity(provider: Any) -> dict[str, str]:
+    """Stable logical/vendor provenance for real adapters and injected test doubles."""
+    logical_model = getattr(provider, "logical_model_id", None)
+    if not logical_model or logical_model == "abstract":
+        logical_model = getattr(provider, "name", "")
+    vendor_model = getattr(provider, "vendor_model_id", None)
+    if not vendor_model:
+        model_name = getattr(provider, "model_name", None)
+        vendor_model = model_name() if callable(model_name) else ""
+    return {
+        "logical_model": str(logical_model),
+        "vendor": str(getattr(provider, "vendor_id", None) or "unknown"),
+        "adapter": str(
+            (
+                None
+                if getattr(provider, "adapter_id", None) == "VideoGenerationProvider"
+                else getattr(provider, "adapter_id", None)
+            )
+            or type(getattr(provider, "delegate", provider)).__name__
+        ),
+        "vendor_model": str(vendor_model or ""),
+    }
 
 
 def _download(url: str) -> bytes:
@@ -113,6 +165,9 @@ def _download(url: str) -> bytes:
 
 class SeedanceProvider(VideoGenerationProvider):
     name = PROVIDER_SEEDANCE
+    logical_model_id = PROVIDER_SEEDANCE
+    vendor_id = VENDOR_BYTEPLUS
+    adapter_id = "SeedanceProvider"
     supports_end_frame = True   # first_frame / last_frame 이미지 역할
     supports_motion_reference = False  # 레퍼런스 영상 워크플로는 라이브 검증 후 개방
     reference_budget = 0
@@ -214,7 +269,10 @@ class SeedanceProvider(VideoGenerationProvider):
 
 
 class KlingProvider(VideoGenerationProvider):
-    name = PROVIDER_KLING
+    name = PROVIDER_KLING_3
+    logical_model_id = PROVIDER_KLING_3
+    vendor_id = VENDOR_KLING
+    adapter_id = "KlingProvider"
     supports_end_frame = True  # image + image_tail
     supports_motion_reference = False
     reference_budget = 0
@@ -278,7 +336,11 @@ class KlingProvider(VideoGenerationProvider):
         task_id = str(((r.json() or {}).get("data") or {}).get("task_id") or "")
         if not task_id:
             raise VideoProviderError("PROVIDER_NO_JOB_ID", "Kling 이 task id 를 주지 않았습니다.")
-        logger.info("[motion-receipt] provider=kling model=%s external_id=%s", self.model_name(), task_id)
+        logger.info(
+            "[motion-receipt] model=kling_3 vendor=kling vendor_model=%s external_id=%s",
+            self.model_name(),
+            task_id,
+        )
 
         deadline = time.monotonic() + float(os.getenv("KLING_POLL_MAX_SEC", "600"))
         while time.monotonic() < deadline:
@@ -331,6 +393,10 @@ class KlingProvider(VideoGenerationProvider):
 #     입력: prompt, start_image_url, end_image_url?, duration(기본 "5"),
 #           generate_audio(기본 true → 명시 false). aspect_ratio 파라미터 없음.
 #     출력: {"video": {"url": ...}}
+#   Wan 3.0 I2V       alibaba/wan-3.0/image-to-video
+#     입력: prompt?, start_image_url, end_image_url?, resolution(480p|720p|1080p),
+#           aspect_ratio, duration(2..30 정수), audio
+#     출력: {"video": {"url": ...}, "seed": ..., "duration": ...}
 # 문서와 실 응답이 다르면 PROVIDER_SCHEMA 로 멈춘다 — 추측 파싱 금지.
 
 
@@ -359,6 +425,8 @@ def extract_fal_video_url(result: dict[str, Any]) -> str:
 class FalVideoProvider(VideoGenerationProvider):
     """fal 큐 공통 트랜스포트. 서브클래스가 모델/페이로드만 정의한다."""
 
+    vendor_id = VENDOR_FAL
+    supports_durable_jobs = False
     model_env: str = ""
     default_model: str = ""
 
@@ -446,7 +514,9 @@ class FalVideoProvider(VideoGenerationProvider):
     def build_payload(self, request: MotionVideoRequest) -> dict[str, Any]:  # pragma: no cover
         raise NotImplementedError
 
-    def generate(self, request: MotionVideoRequest) -> MotionVideoResult:
+    def submit(self, request: MotionVideoRequest):
+        from .provider_job_contract import PENDING, ProviderSubmission
+
         import httpx
 
         if not request.start_image_url:
@@ -487,59 +557,147 @@ class FalVideoProvider(VideoGenerationProvider):
         request_id = str(body.get("request_id") or body.get("requestId") or "")
         if not request_id:
             raise VideoProviderError("PROVIDER_NO_JOB_ID", "fal 이 request_id 를 주지 않았습니다.")
-        # fal 이 준 URL 을 그대로 쓴다 (wan_service 와 같은 방어).
         status_url = body.get("status_url") or f"{self._queue_base()}/{mdl}/requests/{request_id}/status"
         response_url = body.get("response_url") or f"{self._queue_base()}/{mdl}/requests/{request_id}"
         logger.info("[motion-receipt] provider=%s(fal) model=%s external_id=%s", self.name, mdl, request_id)
+        return ProviderSubmission(
+            external_job_id=request_id,
+            provider_status=str(body.get("status") or PENDING).upper(),
+            metadata={
+                "status_url": str(status_url),
+                "response_url": str(response_url),
+            },
+        )
 
+    def _job_urls(
+        self, external_job_id: str, metadata: Optional[dict[str, Any]] = None
+    ) -> tuple[str, str]:
+        mdl = self.model_name()
+        saved = metadata or {}
+        return (
+            str(
+                saved.get("status_url")
+                or f"{self._queue_base()}/{mdl}/requests/{external_job_id}/status"
+            ),
+            str(
+                saved.get("response_url")
+                or f"{self._queue_base()}/{mdl}/requests/{external_job_id}"
+            ),
+        )
+
+    def check_persisted(
+        self, external_job_id: str, metadata: Optional[dict[str, Any]] = None
+    ):
+        from .provider_job_contract import FAILED, PENDING, SUCCEEDED, ProviderJobCheck
+
+        import httpx
+
+        status_url, response_url = self._job_urls(external_job_id, metadata)
+        headers = {"Authorization": f"Key {self._key()}", "Content-Type": "application/json"}
+        try:
+            response = httpx.get(status_url, headers=headers, timeout=30.0)
+        except Exception as exc:
+            raise VideoProviderError("PROVIDER_TRANSPORT", f"fal 폴링 실패: {exc}") from exc
+        if response.status_code >= 300:
+            raise VideoProviderError(
+                "PROVIDER_TRANSPORT",
+                f"fal 상태 조회 HTTP {response.status_code}: {response.text[:300]}",
+            )
+        body = response.json() or {}
+        provider_status = str(body.get("status") or "").upper()
+        persisted = {
+            "status_url": status_url,
+            "response_url": response_url,
+        }
+        if provider_status == "COMPLETED":
+            return ProviderJobCheck(SUCCEEDED, provider_status, metadata=persisted)
+        if provider_status in ("FAILED", "ERROR", "CANCELLED"):
+            return ProviderJobCheck(
+                FAILED,
+                provider_status,
+                error=str(body.get("error") or body.get("detail") or "fal job failed")[:300],
+                metadata=persisted,
+            )
+        return ProviderJobCheck(PENDING, provider_status or PENDING, metadata=persisted)
+
+    def check(self, external_job_id: str):
+        return self.check_persisted(external_job_id)
+
+    def collect_persisted(
+        self, external_job_id: str, metadata: Optional[dict[str, Any]] = None
+    ) -> MotionVideoResult:
+        import httpx
+
+        _status_url, response_url = self._job_urls(external_job_id, metadata)
+        headers = {"Authorization": f"Key {self._key()}", "Content-Type": "application/json"}
+        try:
+            response = httpx.get(response_url, headers=headers, timeout=60.0)
+        except Exception as exc:
+            raise VideoProviderError("PROVIDER_TRANSPORT", f"fal 결과 조회 실패: {exc}") from exc
+        if response.status_code >= 300:
+            code = (
+                "PROVIDER_REJECTED"
+                if 400 <= response.status_code < 500
+                else "PROVIDER_TRANSPORT"
+            )
+            raise VideoProviderError(
+                code,
+                f"fal 결과 조회 HTTP {response.status_code}: {response.text[:300]}",
+            )
+        result = response.json() or {}
+        logger.info(
+            "[motion-receipt] provider=%s(fal) result_shape=%s",
+            self.name,
+            sanitize_json_shape(result),
+        )
+        url = extract_fal_video_url(result)
+        if not url:
+            raise VideoProviderError(
+                "PROVIDER_SCHEMA",
+                f"fal 결과가 문서화된 스키마와 다릅니다 — shape={sanitize_json_shape(result)}",
+            )
+        usage: dict[str, Any] = {}
+        if result.get("seed") is not None:
+            usage["seed"] = result["seed"]
+        return MotionVideoResult(
+            video_bytes=_download(url),
+            provider=self.logical_model_id,
+            model=self.vendor_model_id,
+            external_job_id=external_job_id,
+            usage=usage,
+        )
+
+    def collect(self, external_job_id: str) -> MotionVideoResult:
+        return self.collect_persisted(external_job_id)
+
+    def generate(self, request: MotionVideoRequest) -> MotionVideoResult:
+        from .provider_job_contract import FAILED, SUCCEEDED
+
+        started = time.monotonic()
+        submission = self.submit(request)
+        metadata = dict(submission.metadata)
         deadline = time.monotonic() + float(os.getenv("FAL_VIDEO_POLL_MAX_SEC", "600"))
         while time.monotonic() < deadline:
-            try:
-                s = httpx.get(status_url, headers=headers, timeout=30.0)
-            except Exception as e:
-                raise VideoProviderError("PROVIDER_TRANSPORT", f"fal 폴링 실패: {e}") from e
-            sb = s.json() if s.status_code < 300 else {}
-            status = str(sb.get("status") or "").upper()
-            if status == "COMPLETED":
-                try:
-                    res = httpx.get(response_url, headers=headers, timeout=60.0)
-                except Exception as e:
-                    raise VideoProviderError("PROVIDER_TRANSPORT", f"fal 결과 조회 실패: {e}") from e
-                # 결과 조회 실패를 빈 결과({})로 삼키지 않는다 — BREATHING V2 의
-                # PROVIDER_EMPTY 오진 원인. 4xx 는 프로바이더가 요청/입력을 거절한
-                # 것(예: 콘텐츠 모더레이션 422)이고, 그 외는 전송 장애다.
-                if res.status_code >= 300:
-                    code = "PROVIDER_REJECTED" if 400 <= res.status_code < 500 else "PROVIDER_TRANSPORT"
-                    raise VideoProviderError(
-                        code,
-                        f"fal 결과 조회 HTTP {res.status_code}: {res.text[:300]}",
-                    )
-                result = res.json() or {}
-                logger.info(
-                    "[motion-receipt] provider=%s(fal) result_shape=%s",
-                    self.name, sanitize_json_shape(result),
-                )
-                url = extract_fal_video_url(result)
-                if not url:
-                    # 문서화된 스키마({"video":{"url":...}})와 다르다 — 추측하지
-                    # 않고 sanitize 된 형태를 남기고 멈춘다 (어댑터 계약 실패).
-                    raise VideoProviderError(
-                        "PROVIDER_SCHEMA",
-                        f"fal 결과가 문서화된 스키마와 다릅니다 — shape={sanitize_json_shape(result)}",
-                    )
-                usage: dict[str, Any] = {"latency_sec": round(time.monotonic() - started, 1)}
-                if result.get("seed") is not None:
-                    usage["seed"] = result["seed"]
+            check = self.check_persisted(submission.external_job_id, metadata)
+            metadata.update(check.metadata)
+            if check.status == SUCCEEDED:
+                result = self.collect_persisted(submission.external_job_id, metadata)
                 return MotionVideoResult(
-                    video_bytes=_download(url),
-                    provider=self.name,
-                    model=mdl,
-                    external_job_id=request_id,
-                    usage=usage,
+                    video_bytes=result.video_bytes,
+                    provider=result.provider,
+                    model=result.model,
+                    external_job_id=result.external_job_id,
+                    duration_sec=result.duration_sec,
+                    resolution=result.resolution,
+                    usage={
+                        **result.usage,
+                        "latency_sec": round(time.monotonic() - started, 1),
+                    },
                 )
-            if status in ("FAILED", "ERROR", "CANCELLED"):
+            if check.status == FAILED:
                 raise VideoProviderError(
-                    "PROVIDER_FAILED", f"fal {status}: {str(sb.get('error') or sb.get('detail'))[:300]}"
+                    "PROVIDER_FAILED",
+                    f"fal {check.provider_status}: {check.error or 'provider failed'}",
                 )
             time.sleep(float(os.getenv("FAL_VIDEO_POLL_INTERVAL_SEC", "5")))
         raise VideoProviderError("PROVIDER_TIMEOUT", "fal 폴링 시간 초과")
@@ -547,6 +705,9 @@ class FalVideoProvider(VideoGenerationProvider):
 
 class FalSeedanceProvider(FalVideoProvider):
     name = PROVIDER_SEEDANCE
+    logical_model_id = PROVIDER_SEEDANCE
+    adapter_id = "FalSeedanceProvider"
+    supports_durable_jobs = True
     model_env = "FAL_SEEDANCE_MODEL"
     default_model = "bytedance/seedance-2.5/image-to-video"
 
@@ -581,7 +742,10 @@ class FalSeedanceProvider(FalVideoProvider):
 
 
 class FalKlingProvider(FalVideoProvider):
-    name = PROVIDER_KLING
+    name = PROVIDER_KLING_3
+    logical_model_id = PROVIDER_KLING_3
+    adapter_id = "FalKlingProvider"
+    supports_durable_jobs = True
     model_env = "FAL_KLING_MODEL"
     default_model = "fal-ai/kling-video/v3/standard/image-to-video"
     supports_end_frame = True
@@ -600,6 +764,64 @@ class FalKlingProvider(FalVideoProvider):
         return payload
 
 
+class FalWan3StandardProvider(FalVideoProvider):
+    """Exact fal Wan 3.0 I2V adapter; never aliases a legacy Wan endpoint."""
+
+    name = PROVIDER_WAN_3_STANDARD
+    logical_model_id = PROVIDER_WAN_3_STANDARD
+    adapter_id = "FalWan3StandardProvider"
+    supports_durable_jobs = True
+    supports_end_frame = True
+    default_model = "alibaba/wan-3.0/image-to-video"
+
+    def model_name(self) -> str:
+        # This binding intentionally cannot drift to Wan 2.2/2.1 through env.
+        return self.default_model
+
+    def build_payload(self, request: MotionVideoRequest) -> dict[str, Any]:
+        spec = request.output_spec
+        resolution = str(spec.get("resolution") or "720p")
+        if resolution not in ("480p", "720p", "1080p"):
+            raise VideoProviderError(
+                "PROVIDER_CONTRACT",
+                f"fal Wan 3.0 resolution 은 480p/720p/1080p 만 지원합니다: {resolution}",
+            )
+
+        raw_duration = spec.get("duration_sec", 5)
+        try:
+            numeric_duration = float(raw_duration)
+        except (TypeError, ValueError) as exc:
+            raise VideoProviderError(
+                "PROVIDER_CONTRACT",
+                f"fal Wan 3.0 duration 은 2..30 정수여야 합니다: {raw_duration!r}",
+            ) from exc
+        if not numeric_duration.is_integer() or not 2 <= numeric_duration <= 30:
+            raise VideoProviderError(
+                "PROVIDER_CONTRACT",
+                f"fal Wan 3.0 duration 은 2..30 정수여야 합니다: {raw_duration!r}",
+            )
+
+        aspect_ratio = str(spec.get("aspect_ratio") or "adaptive")
+        allowed_ratios = ("adaptive", "16:9", "4:3", "1:1", "3:4", "9:16")
+        if aspect_ratio not in allowed_ratios:
+            raise VideoProviderError(
+                "PROVIDER_CONTRACT",
+                f"fal Wan 3.0 aspect_ratio 가 지원되지 않습니다: {aspect_ratio}",
+            )
+
+        payload: dict[str, Any] = {
+            "prompt": request.prompt,
+            "resolution": resolution,
+            "aspect_ratio": aspect_ratio,
+            "duration": int(numeric_duration),
+            "audio": bool(spec.get("audio", False)),
+            "start_image_url": request.start_image_url,
+        }
+        if request.end_image_url:
+            payload["end_image_url"] = request.end_image_url
+        return payload
+
+
 class FalWanProvider(FalVideoProvider):
     """
     Wan 2.2 A14B turbo I2V (fal) — **저비용 프롬프트 반복 실험 전용**.
@@ -612,13 +834,15 @@ class FalWanProvider(FalVideoProvider):
     turbo 변형은 duration/num_frames 를 노출하지 않는다 — 출력 길이는 모델
     기본(~5s)이고 출력 규격 검증의 길이 허용 오차(±2s) 안에 든다.
 
-    ⚠️ 상용 라우팅 표(_DEFAULT_ROUTING)에는 **없다**. PHASE6_PROVIDER_<CLASS>=wan
-    명시 오버라이드로만 선택된다 — 다른 모델의 프롬프트 순응은 Seedance 와
+    ⚠️ motion_spec 상용 라우팅에는 **없다**. registry id "wan" 을 명시한
+    벤치/스모크에서만 선택된다 — 다른 모델의 프롬프트 순응은 Seedance 와
     다르므로, 여기서의 결과는 반복 실험 근거이지 상용 증거가 아니다. durable
-    미지원이라 생성 실행(run) 경로에도 들어올 수 없다 — 벤치/스모크 전용.
+    미지원이라 생성 실행(run) 경로에도 들어올 수 없다.
     """
 
     name = PROVIDER_WAN
+    logical_model_id = MODEL_WAN_2_2_TURBO
+    adapter_id = "FalWanProvider"
     model_env = "FAL_WAN_MODEL"
     default_model = "fal-ai/wan/v2.2-a14b/image-to-video/turbo"
     supports_end_frame = False  # turbo I2V 는 end frame 이 스키마에 없다
@@ -659,13 +883,15 @@ class FalWanFlfProvider(FalVideoProvider):
     5.06s)에 기대지 않는다는 기존 원칙 그대로다. 표현 불가능한 길이는
     PROVIDER_CONTRACT 로 **과금 전에** 멈춘다.
 
-    ⚠️ 라우팅 표에 없다. PHASE6_PROVIDER_<CLASS>=wan_flf 명시 오버라이드로만
-    선택된다. 모델 계열이 wan 2.1 이라 2.2-turbo 실험 결과와 직접 비교되지
-    않는다 — 벤치 근거이지 상용 증거가 아니다. durable 미지원이라 생성 실행(run)
-    경로에도 들어올 수 없다.
+    ⚠️ motion_spec 라우팅 표에 없다. registry id "wan_flf" 를 명시한
+    벤치에서만 선택된다. 모델 계열이 wan 2.1 이라 2.2-turbo 실험 결과와 직접
+    비교되지 않는다 — 벤치 근거이지 상용 증거가 아니다. durable 미지원이라
+    생성 실행(run) 경로에도 들어올 수 없다.
     """
 
     name = PROVIDER_WAN_FLF
+    logical_model_id = MODEL_WAN_2_1_FLF
+    adapter_id = "FalWanFlfProvider"
     model_env = "FAL_WAN_FLF_MODEL"
     default_model = "fal-ai/wan-flf2v"
     supports_end_frame = True
@@ -739,6 +965,7 @@ _RUNWAY_SEEDANCE_RATIOS: dict[tuple[str, str], str] = {
 class RunwayVideoProvider(VideoGenerationProvider):
     """Runway Dev API 공통 태스크 플로 — 서브클래스가 모델/페이로드만 정의한다."""
 
+    vendor_id = VENDOR_RUNWAY
     supports_durable_jobs = True
 
     def _key(self) -> str:
@@ -879,6 +1106,8 @@ class RunwayVideoProvider(VideoGenerationProvider):
 
 class RunwaySeedanceProvider(RunwayVideoProvider):
     name = PROVIDER_SEEDANCE
+    logical_model_id = PROVIDER_SEEDANCE
+    adapter_id = "RunwaySeedanceProvider"
     supports_end_frame = True  # promptImage position first/last (키프레임 모드)
     supports_motion_reference = False
     reference_budget = 0
@@ -924,6 +1153,57 @@ class RunwaySeedanceProvider(RunwayVideoProvider):
         }
 
 
+# ── Runway Wan 3 standard I2V ─────────────────────────────────────────────
+# motion-reference 전용 adapter 와 분리한다. standard 경로에는 referenceVideos 를
+# 보내지 않으며, 현재 검증된 계약은 단일 시작 이미지만 지원하므로 end-frame
+# capability 를 선언하지 않는다. TRANSITION 라우팅에서는 capability filter 가
+# 이 adapter 를 안전하게 제거한다.
+class RunwayWanStandardProvider(RunwayVideoProvider):
+    name = PROVIDER_WAN_3_STANDARD
+    logical_model_id = PROVIDER_WAN_3_STANDARD
+    adapter_id = "RunwayWanStandardProvider"
+    supports_end_frame = False
+    supports_motion_reference = False
+    reference_budget = 0
+
+    MIN_DURATION_SEC = 2
+    MAX_DURATION_SEC = 30
+
+    def model_name(self) -> str:
+        return (os.getenv("RUNWAY_WAN_MODEL") or "wan3").strip()
+
+    def build_payload(self, request: MotionVideoRequest) -> dict[str, Any]:
+        if request.end_image_url:
+            raise VideoProviderError(
+                "END_FRAME_UNSUPPORTED",
+                "wan3 standard adapter 는 검증된 end-frame 계약이 없습니다.",
+            )
+        spec = request.output_spec
+        duration = int(spec.get("duration_sec", 4))
+        if not (self.MIN_DURATION_SEC <= duration <= self.MAX_DURATION_SEC):
+            raise VideoProviderError(
+                "PROVIDER_CONTRACT",
+                f"Runway wan3 duration 은 {self.MIN_DURATION_SEC}..{self.MAX_DURATION_SEC}s 다 "
+                f"— {duration}s 요청은 계약 위반.",
+            )
+        aspect = str(spec.get("aspect_ratio") or "9:16")
+        resolution = str(spec.get("resolution") or "720p")
+        ratio = _RUNWAY_WAN_RATIOS.get((aspect, resolution))
+        if not ratio:
+            raise VideoProviderError(
+                "PROVIDER_CONTRACT",
+                f"Runway wan3 ratio 매핑 없음: aspect={aspect} resolution={resolution}",
+            )
+        return {
+            "model": self.model_name(),
+            "promptImage": request.start_image_url,
+            "promptText": request.prompt,
+            "ratio": ratio,
+            "duration": duration,
+            "audio": bool(spec.get("audio", False)),
+        }
+
+
 # ── Runway Wan 3 — 실제 모션 레퍼런스 소비 경로 (Phase 6.7) ─────────────────
 # openapi.json 검증: image_to_video model="wan3" 는 referenceVideos
 # ([{type:"video", uri}], ≤5개, 합계 ≤15초) 를 **실제로** 입력으로 받는다.
@@ -948,6 +1228,8 @@ RUNWAY_WAN_MAX_REFERENCE_SEC = 15.0
 
 class RunwayWanMotionRefProvider(RunwayVideoProvider):
     name = PROVIDER_WAN
+    logical_model_id = MODEL_WAN_3_MOTION_REFERENCE
+    adapter_id = "RunwayWanMotionRefProvider"
     supports_end_frame = False
     supports_motion_reference = True  # 유일하게 레퍼런스 비디오를 소비한다
     reference_budget = 0
@@ -1003,6 +1285,9 @@ class RunwayWanMotionRefProvider(RunwayVideoProvider):
 
 class MockVideoProvider(VideoGenerationProvider):
     name = PROVIDER_MOCK
+    logical_model_id = PROVIDER_MOCK
+    vendor_id = VENDOR_MOCK
+    adapter_id = "MockVideoProvider"
     supports_end_frame = True
     supports_motion_reference = True  # mock 모드에서도 레퍼런스 경로가 통과되게
     reference_budget = 3
@@ -1028,75 +1313,128 @@ class MockVideoProvider(VideoGenerationProvider):
 # 라우팅 정책 + 라이브 안전
 # ══════════════════════════════════════════════════════════════════════════
 
-#: 트랜스포트별 인스턴스. 프로바이더 **이름**(seedance/kling)은 동일하다 —
-#: 라우팅 표는 트랜스포트를 모르고, 트랜스포트는 아래 transport_for() 가 정한다.
-_DIRECT: dict[str, VideoGenerationProvider] = {
-    PROVIDER_SEEDANCE: SeedanceProvider(),
-    PROVIDER_KLING: KlingProvider(),
+#: logical model → vendor → adapter. motion_spec 은 왼쪽 id 만 안다.
+_MODEL_VENDOR_ADAPTERS: dict[str, dict[str, VideoGenerationProvider]] = {
+    PROVIDER_SEEDANCE: {
+        VENDOR_RUNWAY: RunwaySeedanceProvider(),
+        VENDOR_FAL: FalSeedanceProvider(),
+        VENDOR_BYTEPLUS: SeedanceProvider(),
+    },
+    PROVIDER_KLING_3: {
+        VENDOR_FAL: FalKlingProvider(),
+        VENDOR_KLING: KlingProvider(),
+    },
+    PROVIDER_WAN_3_STANDARD: {
+        VENDOR_RUNWAY: RunwayWanStandardProvider(),
+        VENDOR_FAL: FalWan3StandardProvider(),
+        # direct 는 정확한 Wan 3 standard adapter 가 생기기 전까지 미지원.
+    },
+    MODEL_WAN_2_2_TURBO: {VENDOR_FAL: FalWanProvider()},
+    MODEL_WAN_2_1_FLF: {VENDOR_FAL: FalWanFlfProvider()},
 }
-_FAL: dict[str, VideoGenerationProvider] = {
-    PROVIDER_SEEDANCE: FalSeedanceProvider(),
-    PROVIDER_KLING: FalKlingProvider(),
-    # 테스트 전용 저비용 어댑터 — 라우팅 표에 없고 env 오버라이드로만 선택된다.
-    PROVIDER_WAN: FalWanProvider(),
-    # TRANSITION 벤치 전용 (start+end) — 마찬가지로 명시 오버라이드 전용.
-    PROVIDER_WAN_FLF: FalWanFlfProvider(),
+
+_MODEL_ALIASES: dict[str, str] = {
+    PROVIDER_KLING: PROVIDER_KLING_3,
+    PROVIDER_WAN: MODEL_WAN_2_2_TURBO,
+    PROVIDER_WAN_FLF: MODEL_WAN_2_1_FLF,
 }
-_RUNWAY: dict[str, VideoGenerationProvider] = {
-    PROVIDER_SEEDANCE: RunwaySeedanceProvider(),  # Kling 은 Runway 에 없다 — fal 유지
+
+_MODEL_VENDOR_ENV: dict[str, str] = {
+    PROVIDER_SEEDANCE: "MOTION_VENDOR_SEEDANCE",
+    PROVIDER_KLING_3: "MOTION_VENDOR_KLING_3",
+    PROVIDER_WAN_3_STANDARD: "MOTION_VENDOR_WAN_3_STANDARD",
 }
-_TRANSPORTS: dict[str, dict[str, VideoGenerationProvider]] = {
-    "runway": _RUNWAY,
-    "fal": _FAL,
-    "direct": _DIRECT,
+_LEGACY_TRANSPORT_ENV: dict[str, str] = {
+    PROVIDER_SEEDANCE: "SEEDANCE_TRANSPORT",
+    PROVIDER_KLING_3: "KLING_TRANSPORT",
+    PROVIDER_WAN_3_STANDARD: "WAN_3_STANDARD_TRANSPORT",
 }
-#: auto 우선순위 — 프로바이더별. Seedance 는 Runway 가 정본 경로다 (fal 경로는
-#: partner_validation_failed 전면 차단 — 어댑터는 보존, 기본 사용 안 함).
-_AUTO_ORDER: dict[str, tuple[str, ...]] = {
-    PROVIDER_SEEDANCE: ("runway", "fal", "direct"),
-    PROVIDER_KLING: ("fal", "direct"),
-    PROVIDER_WAN: ("fal",),  # I2V wan 은 fal 뿐 (Runway wan3 는 모션 레퍼런스 전용)
-    PROVIDER_WAN_FLF: ("fal",),
+_ALLOWED_VENDORS: dict[str, tuple[str, ...]] = {
+    PROVIDER_SEEDANCE: (VENDOR_RUNWAY, VENDOR_FAL, VENDOR_BYTEPLUS),
+    PROVIDER_KLING_3: (VENDOR_FAL, VENDOR_KLING),
+    PROVIDER_WAN_3_STANDARD: (VENDOR_RUNWAY, VENDOR_FAL, VENDOR_DIRECT),
+    MODEL_WAN_2_2_TURBO: (VENDOR_FAL,),
+    MODEL_WAN_2_1_FLF: (VENDOR_FAL,),
+}
+_AUTO_VENDOR_ORDER: dict[str, tuple[str, ...]] = {
+    PROVIDER_SEEDANCE: (VENDOR_RUNWAY, VENDOR_FAL, VENDOR_BYTEPLUS),
+    PROVIDER_KLING_3: (VENDOR_FAL, VENDOR_KLING),
+    PROVIDER_WAN_3_STANDARD: (VENDOR_RUNWAY, VENDOR_FAL),
+    MODEL_WAN_2_2_TURBO: (VENDOR_FAL,),
+    MODEL_WAN_2_1_FLF: (VENDOR_FAL,),
 }
 _MOCK = MockVideoProvider()
 
 
-def transport_for(name: str) -> str:
-    """
-    'runway' | 'fal' | 'direct'. 우선순위:
-      1. <NAME>_TRANSPORT (예: SEEDANCE_TRANSPORT=fal)
-      2. PHASE6_VIDEO_TRANSPORT (전역)
-      3. auto — _AUTO_ORDER 에서 자격 증명이 있는 첫 트랜스포트
-         (seedance: runway → fal → direct / kling: fal → direct)
-    """
+def _logical_model_id(name: str) -> str:
     key = (name or "").strip().lower()
-    explicit = (
-        os.getenv(f"{key.upper()}_TRANSPORT")
-        or os.getenv("PHASE6_VIDEO_TRANSPORT")
-        or "auto"
-    ).strip().lower()
-    if explicit in _TRANSPORTS and key in _TRANSPORTS[explicit]:
-        return explicit
-    for t in _AUTO_ORDER.get(key, ("direct",)):
-        p = _TRANSPORTS[t].get(key)
-        if p and p.available():
-            return t
-    return _AUTO_ORDER.get(key, ("direct",))[-1]
+    return _MODEL_ALIASES.get(key, key)
 
-#: 모션 클래스 → (primary, fallback). 이 표가 라우팅의 유일한 정본이다.
-#: env 로 클래스별 오버라이드: PHASE6_PROVIDER_<CLASS>, PHASE6_FALLBACK_<CLASS>.
-_DEFAULT_ROUTING: dict[str, tuple[str, Optional[str]]] = {
-    "MICRO": (PROVIDER_SEEDANCE, PROVIDER_KLING),
-    # TRANSITION 폴백 = Seedance (2026-09-08): RunwaySeedanceProvider 가
-    # promptImage [{uri,position:first|last}] 로 start/end 계약을 실제로
-    # 지원한다(openapi 검증, supports_end_frame=True). 이것이 없으면 durable
-    # 실행 경로(Runway 전용 필터)에서 TRANSITION 의 프로바이더가 0개가 되어
-    # LIE_DOWN 류 실행이 DURABLE_PROVIDER_NOT_CONFIGURED 로 죽는다.
-    "TRANSITION": (PROVIDER_KLING, PROVIDER_SEEDANCE),
-    "LOCOMOTION": (PROVIDER_SEEDANCE, PROVIDER_KLING),
-    "INTERACTION": (PROVIDER_KLING, PROVIDER_SEEDANCE),
-}
 
+def _legacy_transport_vendor(logical_model_id: str, value: str) -> str:
+    if value != "direct":
+        return value
+    if logical_model_id == PROVIDER_SEEDANCE:
+        return VENDOR_BYTEPLUS
+    if logical_model_id == PROVIDER_KLING_3:
+        return VENDOR_KLING
+    return VENDOR_DIRECT
+
+
+def vendor_for_model(name: str) -> str:
+    """Resolve one logical model to one vendor; explicit invalid config is fatal."""
+    logical_model_id = _logical_model_id(name)
+    adapters = _MODEL_VENDOR_ADAPTERS.get(logical_model_id)
+    if not adapters:
+        raise VideoProviderError(
+            "UNKNOWN_LOGICAL_MODEL",
+            f"알 수 없는 motion logical model 입니다: {name}",
+        )
+
+    explicit_raw = ""
+    env_name = _MODEL_VENDOR_ENV.get(logical_model_id)
+    if env_name:
+        explicit_raw = (os.getenv(env_name) or "").strip().lower()
+    if not explicit_raw:
+        legacy_name = _LEGACY_TRANSPORT_ENV.get(logical_model_id)
+        if legacy_name:
+            explicit_raw = (os.getenv(legacy_name) or "").strip().lower()
+    if not explicit_raw:
+        explicit_raw = (os.getenv("PHASE6_VIDEO_TRANSPORT") or "").strip().lower()
+
+    if explicit_raw and explicit_raw != "auto":
+        vendor = _legacy_transport_vendor(logical_model_id, explicit_raw)
+        allowed = _ALLOWED_VENDORS.get(logical_model_id, ())
+        if vendor not in allowed:
+            raise VideoProviderError(
+                "UNKNOWN_VENDOR",
+                f"{logical_model_id} 에 알 수 없는 vendor={explicit_raw!r}; "
+                f"허용값={', '.join(allowed)}",
+            )
+        if vendor not in adapters:
+            raise VideoProviderError(
+                "UNSUPPORTED_MODEL_VENDOR",
+                f"{logical_model_id} 은 vendor={vendor} adapter 를 지원하지 않습니다.",
+            )
+        return vendor
+
+    order = _AUTO_VENDOR_ORDER.get(logical_model_id, ())
+    for vendor in order:
+        provider = adapters.get(vendor)
+        if provider and provider.available():
+            return vendor
+    if order:
+        return order[-1]  # adapter 를 반환하되 service availability gate 에서 닫는다.
+    raise VideoProviderError(
+        "UNSUPPORTED_MODEL_VENDOR",
+        f"{logical_model_id} 에 등록된 vendor 순서가 없습니다.",
+    )
+
+
+def transport_for(name: str) -> str:
+    """Legacy compatibility name; use vendor_for_model for new code."""
+    vendor = vendor_for_model(name)
+    return "direct" if vendor in (VENDOR_BYTEPLUS, VENDOR_KLING, VENDOR_DIRECT) else vendor
 
 def _mock_enabled() -> bool:
     return os.getenv("VIDEO_GENERATION_MOCK", "0").strip().lower() in ("1", "true", "yes")
@@ -1108,10 +1446,11 @@ def get_provider(name: Optional[str]) -> Optional[VideoGenerationProvider]:
     key = name.strip().lower()
     if key == PROVIDER_MOCK:
         return _MOCK
-    # 이름은 어느 트랜스포트에든 존재하면 유효하다 — wan 은 fal 에만 있다.
-    if not any(key in table for table in _TRANSPORTS.values()):
+    logical_model_id = _logical_model_id(key)
+    adapters = _MODEL_VENDOR_ADAPTERS.get(logical_model_id)
+    if not adapters:
         return None
-    return _TRANSPORTS[transport_for(key)].get(key)
+    return adapters.get(vendor_for_model(logical_model_id))
 
 
 #: 레퍼런스 비디오를 실제로 소비하는 프로바이더 (Phase 6.7). 클래스 라우팅
@@ -1126,20 +1465,30 @@ def reference_capable_providers() -> list[VideoGenerationProvider]:
     return [p for p in _REFERENCE_CAPABLE if p.available()]
 
 
-def routing_for_class(motion_class: str) -> list[VideoGenerationProvider]:
-    """[primary, fallback?] — mock 모드면 mock 하나만."""
+def resolve_provider_order(provider_order: tuple[str, ...] | list[str]) -> list[VideoGenerationProvider]:
+    """Registry id 순서를 adapter 순서로 해석한다.
+
+    알 수 없는 id 는 건너뛰어 다음 fallback 을 살리고, 모두 알 수 없으면 빈
+    목록을 반환해 호출자가 fail-closed 한다. 자격 증명/capability 필터는 생성
+    서비스의 기존 게이트가 계속 담당한다.
+    """
     if _mock_enabled():
         return [_MOCK]
-    cls = (motion_class or "").strip().upper()
-    primary_name, fallback_name = _DEFAULT_ROUTING.get(cls, (PROVIDER_SEEDANCE, None))
-    primary_name = os.getenv(f"PHASE6_PROVIDER_{cls}", primary_name)
-    fallback_name = os.getenv(f"PHASE6_FALLBACK_{cls}", fallback_name or "") or None
     out: list[VideoGenerationProvider] = []
-    for name in (primary_name, fallback_name):
-        p = get_provider(name)
-        if p and p not in out:
+    seen: set[str] = set()
+    for provider_id in provider_order:
+        p = get_provider(provider_id)
+        if p and p.name not in seen:
             out.append(p)
+            seen.add(p.name)
     return out
+
+
+def routing_for_class(motion_class: str) -> list[VideoGenerationProvider]:
+    """호환용 class resolver. 정책 자체는 motion_spec 에서만 읽는다."""
+    from . import motion_spec
+
+    return resolve_provider_order(motion_spec.provider_order_for_class(motion_class))
 
 
 def live_generation_allowed(pet_id: str, providers: list[VideoGenerationProvider]) -> tuple[bool, str]:

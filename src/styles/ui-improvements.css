@@ -1,57 +1,50 @@
-/* UI 개선 — 디자인 톤(다크 골드 #E8B84B) 유지, 기존 로직/구조 영향 없음 */
+/* UI 개선 레이어 — Phase 10: 최종 브랜드(아이보리·차콜·샴페인 골드) 토큰으로 통일.
+   기존 로직/구조 영향 없음. 색·간격·라운드는 전부 brand.css 토큰을 쓴다. */
 
 /* ───────────────── 1. 타이포그래피 ───────────────── */
 h1,
 h2 {
   letter-spacing: -0.02em;
-  font-weight: 700;
+  font-weight: 600;
 }
 
 p,
 span {
-  line-height: 1.65;
-  letter-spacing: 0.01em;
+  line-height: 1.6;
+  letter-spacing: 0;
 }
 
 /* 서브 컬러(골드 소제목) 텍스트 */
-.gold-subtitle,
-.logo-subtitle {
+.gold-subtitle {
   font-weight: 500;
-  opacity: 0.85;
+  color: var(--eb-gold-text);
 }
 
-/* ───────────────── 3. 황금 CTA 버튼 텍스처 ───────────────── */
+/* ───────────────── 3. Primary CTA (cta-gold / mem-btn-primary) ─────────────
+   시각(배경·그림자·색)은 brand.css 의 .eb-btn--primary 규칙과 공유한다.
+   여기서는 예전 그라데이션·글로우를 걷어내고 크기 계약만 맞춘다. */
 .cta-gold {
-  background: linear-gradient(180deg, #f0c84e 0%, #c89b2a 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.25),
-    0 4px 16px rgba(200, 155, 42, 0.45);
-  border-radius: 14px;
-  transition: transform 0.12s ease, box-shadow 0.25s ease;
+  min-height: var(--eb-touch);
+  border-radius: var(--eb-radius-md);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition:
+    transform var(--eb-dur-fast) var(--eb-ease),
+    background var(--eb-dur) var(--eb-ease),
+    box-shadow var(--eb-dur) var(--eb-ease),
+    opacity var(--eb-dur) var(--eb-ease);
 }
 
-.cta-gold:active {
-  transform: scale(0.97);
+.cta-gold:active:not(:disabled) {
+  transform: scale(0.98);
 }
 
-/* 공통 Primary 버튼도 동일 텍스처/라운드로 통일 */
-.mem-btn-primary {
-  border-radius: 14px;
+.cta-gold:disabled {
+  cursor: not-allowed;
 }
 
-.mem-btn-primary:not(:disabled) {
-  background: linear-gradient(180deg, #f0c84e 0%, #c89b2a 100%);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.25),
-    0 4px 16px rgba(200, 155, 42, 0.45);
-  transition: transform 0.12s ease, box-shadow 0.25s ease;
-}
-
-.mem-btn-primary:not(:disabled):active {
-  transform: scale(0.97);
-}
-
-/* ───────────────── 5. 홈 배경 골드 파티클 ───────────────── */
+/* ───────────────── 5. 배경 파티클 — 아이보리 위에서는 아주 희미한 금빛 점만 ── */
 @keyframes home-dot-rise {
   0% {
     transform: translateY(0);
@@ -73,8 +66,8 @@ span {
   position: absolute;
   bottom: 0;
   border-radius: 50%;
-  background: #e8b84b;
-  box-shadow: 0 0 8px rgba(232, 184, 75, 0.75);
+  background: var(--eb-gold);
+  box-shadow: 0 0 6px rgba(184, 150, 62, 0.35);
   animation: home-dot-rise var(--dot-dur, 8s) linear infinite;
   animation-delay: var(--dot-delay, 0s);
   will-change: transform, opacity;
@@ -86,6 +79,7 @@ span {
   z-index: 1;
   pointer-events: none;
   overflow: hidden;
+  opacity: 0.35;
 }
 
 .memorial-sparkle-field .home-dot {
@@ -108,7 +102,7 @@ span {
 }
 
 .eb-logo-symbol {
-  filter: drop-shadow(0 0 16px rgba(212, 175, 55, 0.45));
+  filter: drop-shadow(0 4px 12px rgba(184, 150, 62, 0.28));
 }
 
 /* 하단·배지 아이콘 — 작은 크기에서 blur/찌그러짐 방지 */
@@ -121,154 +115,21 @@ span {
 }
 
 .eb-logo-hero .logo-title--holo {
-  background: linear-gradient(180deg, #f5ecd4 0%, #d4af37 48%, #b8922a 100%);
+  background: linear-gradient(180deg, #a3832f 0%, #7a5f1c 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-}
-
-.splash-logo {
-  width: min(11.5rem, 70vw) !important;
-}
-
-.splash-logo-wrap {
-  border-radius: 0;
-  background: transparent;
-  overflow: visible;
-  isolation: isolate;
-}
-
-/* 1P 스플래시 — 로고만, 박스·그림자·PNG 없음 */
-.splash-brand-mark {
-  background: transparent;
-  overflow: visible;
-}
-
-.splash-brand-symbol {
-  display: block;
-  filter: none !important;
-  background: transparent !important;
-  box-shadow: none !important;
-}
-
-.splash-brand-title {
-  font-family: var(--font-headline);
-  font-weight: 500;
-  letter-spacing: 0.24em;
-  text-transform: uppercase;
-  font-size: clamp(0.8125rem, 3.4vw, 0.9375rem);
-  background: linear-gradient(
-    180deg,
-    #f8f0dc 0%,
-    #e8d5a3 38%,
-    #d4af37 72%,
-    #b8922a 100%
-  );
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-  text-shadow: none;
-  animation: none !important;
-}
-
-.splash-logo-hero .logo-title--splash {
-  background: linear-gradient(
-    180deg,
-    #f8f0dc 0%,
-    #e8d5a3 38%,
-    #d4af37 72%,
-    #b8922a 100%
-  );
-  -webkit-background-clip: text;
-  background-clip: text;
-  -webkit-text-fill-color: transparent;
-  color: transparent;
-  animation: none !important;
-  text-shadow: none;
-  letter-spacing: 0.24em;
-  font-size: clamp(0.8125rem, 3.4vw, 0.9375rem);
-  font-weight: 500;
-}
-
-/* 스플래시 — 심볼만 선명, 상단 네모 글로우/그림자 없음 */
-.splash-logo-hero .eb-logo-symbol {
-  filter: none;
-  background: transparent !important;
-}
-
-.splash-logo-hero .eb-logo-hero,
-.splash-logo-hero {
-  background: transparent;
-  overflow: visible;
-}
-
-/* 1P 스플래시 — 순수 검정, 상단 초록/홀로 배경 없음 */
-.splash-screen {
-  background: #050505 !important;
-}
-
-.memorial-ui:has(.splash-screen) {
-  background: #050505 !important;
-}
-
-.memorial-ui:has(.splash-screen) .memorial-sparkle-field {
-  display: none;
-}
-
-.splash-logo-full {
-  display: block;
-  width: min(16.5rem, 78vw);
-  height: auto;
-  object-fit: contain;
-  background: transparent;
-  animation: none !important;
-  filter: none !important;
-  box-shadow: none !important;
-  -webkit-user-select: none;
-  user-select: none;
-}
-
-/* 2P 회원가입 — 로고 없이 폼·푸터 분리 */
-.auth-screen-header {
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  width: 100%;
-  padding-top: max(3.25rem, env(safe-area-inset-top, 0px));
-  padding-bottom: 0.75rem;
-  padding-inline: 1.25rem;
-  text-align: center;
-}
-
-.auth-screen-header .screen-title {
-  width: 100%;
-  max-width: none;
-  text-align: center;
-}
-
-.auth-form-card {
-  border-radius: 1.25rem;
-  padding: 1.25rem 1rem 1rem;
-  background: linear-gradient(
-    145deg,
-    rgba(60, 60, 65, 0.72) 0%,
-    rgba(28, 28, 30, 0.88) 100%
-  );
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(24px);
-  -webkit-backdrop-filter: blur(24px);
 }
 
 .auth-field-hint {
-  font-size: 0.6875rem;
+  font-size: var(--eb-type-caption);
   line-height: 1.45;
-  color: #888;
+  color: var(--eb-text-3);
 }
 
 .auth-field-error {
-  font-size: 0.6875rem;
-  color: #e8a0a0;
+  font-size: var(--eb-type-caption);
+  color: var(--eb-terracotta-text);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -286,25 +147,26 @@ span {
 .upload-guide-cards {
   display: flex;
   justify-content: center;
-  gap: 10px;
+  gap: var(--eb-space-3);
 }
 
 .guide-card {
   position: relative;
   width: 45%;
   aspect-ratio: 1 / 1;
-  border-radius: 12px;
+  border-radius: var(--eb-radius-sm);
   overflow: hidden;
   display: flex;
   flex-direction: column;
+  background: var(--eb-surface-2);
 }
 
 .guide-card--good {
-  border: 2px solid rgba(52, 199, 89, 0.6);
+  border: 1px solid var(--eb-sage-line);
 }
 
 .guide-card--bad {
-  border: 2px solid rgba(255, 69, 58, 0.55);
+  border: 1px solid var(--eb-terracotta-line);
 }
 
 .guide-card__badge {
@@ -321,12 +183,12 @@ span {
 }
 
 .guide-card__badge--good {
-  background: #34c759;
-  color: #0a0a0a;
+  background: var(--eb-sage);
+  color: #ffffff;
 }
 
 .guide-card__badge--bad {
-  background: #ff453a;
+  background: var(--eb-terracotta);
   color: #ffffff;
 }
 
@@ -335,24 +197,24 @@ span {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(255, 255, 255, 0.06);
-  color: rgba(255, 255, 255, 0.35);
+  background: var(--eb-surface-2);
+  color: var(--eb-text-3);
 }
 
 .guide-card__label {
   text-align: center;
-  font-size: var(--text-xs);
+  font-size: var(--eb-type-caption);
   font-weight: 600;
   padding: 6px 4px;
   line-height: 1.3;
 }
 
 .guide-card__label--good {
-  color: #5dd879;
-  background: rgba(52, 199, 89, 0.12);
+  color: var(--eb-sage-text);
+  background: var(--eb-sage-wash);
 }
 
 .guide-card__label--bad {
-  color: #ff8a80;
-  background: rgba(255, 69, 58, 0.1);
+  color: var(--eb-terracotta-text);
+  background: var(--eb-terracotta-wash);
 }

@@ -12,13 +12,18 @@ from __future__ import annotations
 
 from typing import Any
 
-MOTION_VIDEO_PROMPT_VERSION = "motion-video-prompt-v1"
+# v2 (2026-09-17): 그림자 금지 절 추가. I2V 는 정지 그림자를 **움직이는**
+# 그림자로 살려내고, packed-alpha 매트가 그것을 전경으로 삼킨다.
+MOTION_VIDEO_PROMPT_VERSION = "motion-video-prompt-v2"
 
 _IDENTITY_LOCK = (
     "The exact same pet as in the supplied reference image(s). Do not alter the "
     "face, fur colors, markings, ears, body proportions, paws or tail at any point "
     "in the video. No new objects, no other animals, no scenery. The plain neutral "
-    "background stays exactly as in the reference. Camera and framing remain "
+    "background stays exactly as in the reference: a single flat tone, with no "
+    "contact shadow under the pet, no cast shadow on the background and no "
+    "reflection appearing at any point — not even while the pet moves or its paws "
+    "touch the ground. Camera and framing remain "
     "completely fixed. No text, no stylization."
 )
 
@@ -58,7 +63,9 @@ def _locomotion(spec_contract: dict[str, Any], description: str) -> str:
             _IDENTITY_LOCK,
             f"The pet performs this whole-body motion: {description}.",
             "Leg movement is anatomically correct with natural gait timing; paws "
-            "contact the ground plausibly. The body may move within the frame, but "
+            "contact the ground plausibly, but the ground itself stays the flat "
+            "neutral background — no contact shadow, cast shadow or ground plane "
+            "appears under the paws. The body may move within the frame, but "
             "the camera itself does not move.",
         ]
     )

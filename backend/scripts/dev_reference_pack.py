@@ -86,6 +86,59 @@ def _version_summary(v: Any) -> dict[str, Any]:
     }
 
 
+async def register_one_reference(
+    path: str,
+    data: bytes,
+    mime: str,
+    *,
+    user_id: str,
+    cid: str,
+    reference_cutout: Callable[[bytes], Optional[bytes]],
+    log: Callable[[str], None] = print,
+) -> dict[str, Any]:
+    """
+    사진 1장을 대장에 등록한다: 원본 저장 + (있으면) 누끼 저장/연결.
+
+    원본 저장(record_original, 스토리지 왕복)과 누끼 생성(로컬 SAM2/ViTMatte,
+    무료·CPU-bound)은 서로의 결과에 의존하지 않으므로 동시에 돌린다 — 사진
+    1장의 등록 레이턴시를 줄인다. 누끼를 스토리지에 올리는 다음 단계만
+    ref.content_hash(원본 저장 결과)가 있어야 시작할 수 있다.
+
+    독립 함수로 뽑아 둔 이유: `prepare_reference_pack` 여러 장을 바운드된
+    동시성으로 등록할 때 이 함수 하나를 여러 번 동시에 돌린다 — 사진마다
+    완전히 독립적인 단위여야 한다.
+    """
+    from backend.services import pet_reference_service, supabase_assets
+
+    ref, cut_bytes = await asyncio.gather(
+        pet_reference_service.record_original(
+            user_id=user_id,
+            content_id=cid,
+            data=data,
+            mime_type=mime,
+            original_filename=os.path.basename(path),
+        ),
+        asyncio.to_thread(reference_cutout, data),
+    )
+    entry: dict[str, Any] = {"id": ref.id, "object_path": ref.object_path}
+    if cut_bytes:
+        cut_path = f"{user_id}/{cid}/references/cutout_{ref.content_hash[:16]}.png"
+        await supabase_assets.upload_asset_to_storage(cut_path, cut_bytes, "image/png")
+        derived = await pet_reference_service.record_derived(
+            user_id=user_id,
+            content_id=cid,
+            object_path=cut_path,
+            derived_kind="cutout_reference",
+            parent_reference_id=ref.id,
+            mime_type="image/png",
+        )
+        entry["cutout_object_path"] = derived.object_path
+    else:
+        log(f"[ref] ⚠️ 누끼 실패 — 신원 QA 가 REVIEW 로 남을 수 있다: {path}")
+    log(f"[ref] {os.path.basename(path)} → {ref.object_path}")
+    return entry
+
+
 async def prepare_reference_pack(
     *,
     user_id: str,
@@ -108,7 +161,6 @@ async def prepare_reference_pack(
         action_keyframe_service,
         canonical_pet_service,
         durable_provider_jobs,
-        pet_reference_service,
     )
 
     report: dict[str, Any] = {
@@ -124,37 +176,36 @@ async def prepare_reference_pack(
     # 원본 + 짝지은 누끼(cutout_reference) 를 함께 남긴다 — Phase 1 업로드
     # 훅(routers/assets.py)과 같은 계보다. 누끼가 없으면 신원 시그니처가
     # 계산되지 않아 정본 QA 가 전부 REVIEW 로 남는다 (라이브에서 실측).
-    from backend.services import supabase_assets
     from backend.services.canonical_pet_service import _default_cutout_fn
 
     reference_cutout = cutout_fn or _default_cutout_fn
     cid = pet_id[4:] if pet_id.startswith("pet_") else pet_id
-    for path, data, mime in images:
-        ref = await pet_reference_service.record_original(
-            user_id=user_id,
-            content_id=cid,
-            data=data,
-            mime_type=mime,
-            original_filename=os.path.basename(path),
+
+    if images:
+        from backend.services.concurrency import gather_bounded
+
+        # 서로 다른 사진은 독립이라 바운드된 동시성으로 등록한다 — 실패는
+        # 사진별로 격리한다(return_exceptions=True): 한 장이 실패해도 나머지
+        # 사진의 등록은 계속되고, 실패한 자리만 report 에 에러로 남는다.
+        results = await gather_bounded(
+            [
+                (
+                    lambda p=path, d=data, m=mime: register_one_reference(
+                        p, d, m,
+                        user_id=user_id, cid=cid,
+                        reference_cutout=reference_cutout, log=log,
+                    )
+                )
+                for path, data, mime in images
+            ],
+            return_exceptions=True,
         )
-        entry: dict[str, Any] = {"id": ref.id, "object_path": ref.object_path}
-        cut_bytes = reference_cutout(data)
-        if cut_bytes:
-            cut_path = f"{user_id}/{cid}/references/cutout_{ref.content_hash[:16]}.png"
-            await supabase_assets.upload_asset_to_storage(cut_path, cut_bytes, "image/png")
-            derived = await pet_reference_service.record_derived(
-                user_id=user_id,
-                content_id=cid,
-                object_path=cut_path,
-                derived_kind="cutout_reference",
-                parent_reference_id=ref.id,
-                mime_type="image/png",
-            )
-            entry["cutout_object_path"] = derived.object_path
-        else:
-            log(f"[ref] ⚠️ 누끼 실패 — 신원 QA 가 REVIEW 로 남을 수 있다: {path}")
-        report["references"].append(entry)
-        log(f"[ref] {os.path.basename(path)} → {ref.object_path}")
+        for (path, _data, _mime), result in zip(images, results):
+            if isinstance(result, BaseException):
+                log(f"[ref] ⚠️ 등록 실패 (다른 사진에는 영향 없음): {path} ({result})")
+                report["references"].append({"path": path, "error": str(result)})
+                continue
+            report["references"].append(result)
 
     if images:
         # 신원 프로필을 강제 재빌드한다 — 프로필 dedup 은 **원본 집합**만 보므로,
@@ -291,7 +342,9 @@ async def _preflight(user_id: str, pet_id: str) -> None:
     from backend.services import action_keyframe_service, canonical_image_providers, canonical_pet_service
 
     providers = [p for p in canonical_image_providers.resolve_providers() if p.available()]
-    print(f"image providers: {[f'{p.name}:{p.model_name()}' for p in providers] or '없음 (라이브 불가)'}")
+    kf_providers = [p for p in canonical_image_providers.resolve_keyframe_providers() if p.available()]
+    print(f"canonical image providers: {[f'{p.name}:{p.model_name()}' for p in providers] or '없음 (라이브 불가)'}")
+    print(f"keyframe image providers: {[f'{p.name}:{p.model_name()}' for p in kf_providers] or '없음 (라이브 불가)'}")
     print(f"VLM QA: {'enabled' if os.getenv('PET_VLM_IDENTITY_ENABLED') == '1' else 'DISABLED — 전부 REVIEW 로 남는다'}")
     canonical = await canonical_pet_service.get_canonical(user_id=user_id, pet_id=pet_id)
     print(f"canonical: {f'v{canonical.version} {canonical.status}' if canonical else '없음'}")

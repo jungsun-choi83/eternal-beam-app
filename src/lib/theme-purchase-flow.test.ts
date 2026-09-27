@@ -43,7 +43,7 @@ test("Toss 왕복 상태는 선택 테마를 보존하고 confirm 전후를 구�
 test("프리미엄 카드 탭은 강조만 하고 구매는 하단 버튼에서 시작한다", () => {
   const screen = readFileSync("src/components/memorial/theme-selection-screen.tsx", "utf8");
   const start = screen.indexOf("const selectTheme");
-  const end = screen.indexOf("const snapSelectTheme", start);
+  const end = screen.indexOf("const activeTheme =", start);
   const tapBody = screen.slice(start, end);
   assert.match(tapBody, /setHighlightTheme\(theme\.id\)/);
   assert.doesNotMatch(tapBody, /ownership\.buy|onContinue|onSelectTheme/);

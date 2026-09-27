@@ -22,6 +22,7 @@ from backend.scripts.dev_reference_pack import (
 )
 from backend.services import action_keyframe_service as kf
 from backend.services import canonical_pet_service as canon
+from backend.services import pet_morphology_service as morph
 from backend.services import motion_video_service as mv
 from backend.services import pet_identity_service as ids
 from backend.services import pet_reference_service as refs
@@ -44,10 +45,10 @@ def _mock_backend(monkeypatch):
     monkeypatch.setenv("HYBRID_USE_SUPABASE", "0")
     monkeypatch.delenv("PET_VLM_IDENTITY_ENABLED", raising=False)
     monkeypatch.setenv("CANONICAL_QA_MIN_RESOLUTION", "100")
-    for m in (refs, pet_registry, ids, sets, canon, kf):
+    for m in (refs, pet_registry, ids, morph, sets, canon, kf):
         m.__reset_for_tests()
     yield
-    for m in (refs, pet_registry, ids, sets, canon, kf):
+    for m in (refs, pet_registry, ids, morph, sets, canon, kf):
         m.__reset_for_tests()
 
 

@@ -9,10 +9,11 @@ CanonicalImageProvider.generate(references, prompt, output_spec, metadata)
 파일 밖으로 새지 않는다. 모델 교체/추가는 어댑터 하나를 더하는 일이다.
 
 ── 어댑터 (초기 2개 + mock) ────────────────────────────────────────────────
-runway     Runway Gen-4 Image / References (PRIMARY).
+gpt_image  OpenAI GPT-Image-2 (PRIMARY). POST /v1/images/edits 멀티파트.
+           동기 응답 이미지는 durable receipt 에 보존해 워커 재개가 가능하다.
+runway     Runway Gen-4 Image / References (FALLBACK).
            POST {base}/text_to_image → task id → GET {base}/tasks/{id} 폴링.
            referenceImages 는 최대 3장 (Phase 4 설계와 일치).
-gpt_image  OpenAI GPT-Image-2 (FALLBACK). POST /v1/images/edits 멀티파트.
 mock       로컬 개발용 — 첫 레퍼런스 바이트를 그대로 돌려준다. 과금 없음.
 
 두 실서비스 API 는 스키마가 움직이는 외부 계약이므로 모델 id·버전·베이스 URL 을
@@ -90,7 +91,7 @@ class CanonicalImageProvider:
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# Runway Gen-4 Image / References (PRIMARY)
+# Runway Gen-4 Image / References (FALLBACK)
 # ══════════════════════════════════════════════════════════════════════════
 
 
@@ -248,12 +249,21 @@ class RunwayImageProvider(CanonicalImageProvider):
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# OpenAI GPT-Image-2 (FALLBACK)
+# OpenAI GPT-Image-2 (PRIMARY)
 # ══════════════════════════════════════════════════════════════════════════
 
 
 class GptImageProvider(CanonicalImageProvider):
     name = PROVIDER_GPT_IMAGE
+    # GPT Image edits returns the completed image synchronously.  Durable
+    # execution is implemented by submit() returning that completed result in
+    # ProviderSubmission.metadata; DurableImageProvider persists the metadata
+    # on the existing provider-job receipt before a later worker tick collects
+    # it.  A crash while the HTTP request is in flight leaves SUBMITTING, which
+    # the durable layer never auto-resubmits.
+    supports_durable_jobs = True
+
+    _DURABLE_RESULT_KEY = "completed_image_result"
 
     def _key(self) -> str:
         return (os.getenv("OPENAI_API_KEY") or "").strip()
@@ -267,7 +277,7 @@ class GptImageProvider(CanonicalImageProvider):
     def available(self) -> bool:
         return bool(self._key())
 
-    def generate(self, references, prompt, output_spec, metadata) -> CanonicalImageResult:
+    def _request(self, references, prompt, output_spec) -> CanonicalImageResult:
         import httpx
 
         if not self.available():
@@ -314,6 +324,84 @@ class GptImageProvider(CanonicalImageProvider):
             usage=dict(body.get("usage") or {}),
         )
 
+    def generate(self, references, prompt, output_spec, metadata) -> CanonicalImageResult:
+        """Direct/debug path. Durable workers use submit/check/collect_persisted."""
+        return self._request(references, prompt, output_spec)
+
+    def submit(self, references, prompt, output_spec, metadata):
+        """
+        Execute the synchronous paid request once and return a serializable
+        completed result.  The durable wrapper has already persisted PREPARED
+        and moved the receipt to SUBMITTING before entering this method.
+        """
+        import uuid
+
+        from .provider_job_contract import SUCCEEDED, ProviderSubmission
+
+        result = self._request(references, prompt, output_spec)
+        external_id = result.external_job_id or f"gpt-image-sync-{uuid.uuid4()}"
+        return ProviderSubmission(
+            external_job_id=external_id,
+            provider_status=SUCCEEDED,
+            metadata={
+                self._DURABLE_RESULT_KEY: {
+                    "image_b64": base64.b64encode(result.image_bytes).decode("ascii"),
+                    "provider": result.provider,
+                    "model": result.model,
+                    "model_version": result.model_version,
+                    "external_job_id": external_id,
+                    "usage": dict(result.usage or {}),
+                }
+            },
+        )
+
+    def check(self, external_job_id: str):
+        """
+        A receipt with an external id exists only after the synchronous response
+        and its completed result were persisted together as SUBMITTED.
+        """
+        from .provider_job_contract import SUCCEEDED, ProviderJobCheck
+
+        return ProviderJobCheck(SUCCEEDED, SUCCEEDED)
+
+    def collect(self, external_job_id: str) -> CanonicalImageResult:
+        """GPT has no remote result endpoint; collection requires receipt data."""
+        raise CanonicalProviderError(
+            "PROVIDER_EMPTY",
+            "GPT Image 동기 결과는 durable provider 영수증에서만 수집할 수 있습니다.",
+        )
+
+    def collect_persisted(
+        self, external_job_id: str, result_metadata: dict[str, Any]
+    ) -> CanonicalImageResult:
+        """Rehydrate the completed image from the durable provider-job receipt."""
+        payload = result_metadata.get(self._DURABLE_RESULT_KEY)
+        if not isinstance(payload, dict) or not payload.get("image_b64"):
+            raise CanonicalProviderError(
+                "PROVIDER_EMPTY",
+                "GPT Image 완료 영수증에 복구 가능한 이미지 결과가 없습니다.",
+            )
+        try:
+            image_bytes = base64.b64decode(str(payload["image_b64"]), validate=True)
+        except Exception as exc:
+            raise CanonicalProviderError(
+                "PROVIDER_SCHEMA",
+                "GPT Image 완료 영수증의 이미지 결과가 손상되었습니다.",
+            ) from exc
+        if not image_bytes:
+            raise CanonicalProviderError(
+                "PROVIDER_EMPTY",
+                "GPT Image 완료 영수증의 이미지 결과가 비어 있습니다.",
+            )
+        return CanonicalImageResult(
+            image_bytes=image_bytes,
+            provider=str(payload.get("provider") or self.name),
+            model=str(payload.get("model") or self.model_name()),
+            model_version=(str(payload["model_version"]) if payload.get("model_version") else None),
+            external_job_id=str(payload.get("external_job_id") or external_job_id),
+            usage=dict(payload.get("usage") or {}),
+        )
+
 
 # ══════════════════════════════════════════════════════════════════════════
 # Mock (로컬 개발 — 과금 없음)
@@ -349,22 +437,68 @@ _REGISTRY: dict[str, CanonicalImageProvider] = {
 }
 
 
+#: 코드 기본값 — 정본/키프레임 모두 이 순서에서 출발한다. 운영 순서는 .env 가
+#: 정한다(CANONICAL_IMAGE_PROVIDER / KEYFRAME_IMAGE_PROVIDER …). 코드를 고쳐서
+#: 순서를 바꾸지 않는다.
+DEFAULT_PRIMARY = PROVIDER_GPT_IMAGE
+DEFAULT_FALLBACK = PROVIDER_RUNWAY
+
+
+def _flag(name: str, default: str = "0") -> bool:
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes")
+
+
 def _mock_enabled() -> bool:
-    return os.getenv("CANONICAL_GENERATION_MOCK", "0").strip().lower() in ("1", "true", "yes")
+    return _flag("CANONICAL_GENERATION_MOCK")
+
+
+def _keyframe_mock_enabled() -> bool:
+    """키프레임 전용 mock 스위치 — 없으면 정본 스위치를 그대로 따른다."""
+    return _flag("KEYFRAME_GENERATION_MOCK") or _mock_enabled()
 
 
 def get_provider(name: str) -> Optional[CanonicalImageProvider]:
     return _REGISTRY.get((name or "").strip().lower())
 
 
-def resolve_providers() -> list[CanonicalImageProvider]:
-    """[primary, fallback] — 설정 순서대로. mock 모드면 mock 하나만."""
-    if _mock_enabled():
-        return [_REGISTRY[PROVIDER_MOCK]]
-    primary = get_provider(os.getenv("CANONICAL_IMAGE_PROVIDER", PROVIDER_RUNWAY))
-    fallback = get_provider(os.getenv("CANONICAL_IMAGE_FALLBACK_PROVIDER", PROVIDER_GPT_IMAGE))
+def _order(primary: Optional[str], fallback: Optional[str]) -> list[CanonicalImageProvider]:
+    """[primary, fallback] — 같은 프로바이더를 두 번 태우지 않는다.
+
+    모르는 이름은 조용히 다른 프로바이더로 바뀌지 않고 **빠진다**. 둘 다 빠지면
+    빈 리스트 → 호출부가 과금 전에 PROVIDER_NOT_CONFIGURED 로 닫는다.
+    """
     out: list[CanonicalImageProvider] = []
-    for p in (primary, fallback):
+    for name in (primary, fallback):
+        p = get_provider(name or "")
         if p and p not in out:
             out.append(p)
     return out
+
+
+def resolve_providers() -> list[CanonicalImageProvider]:
+    """정본 이미지 [primary, fallback] — CANONICAL_IMAGE_PROVIDER /
+    CANONICAL_IMAGE_FALLBACK_PROVIDER. mock 모드면 mock 하나만."""
+    if _mock_enabled():
+        return [_REGISTRY[PROVIDER_MOCK]]
+    return _order(
+        os.getenv("CANONICAL_IMAGE_PROVIDER", DEFAULT_PRIMARY),
+        os.getenv("CANONICAL_IMAGE_FALLBACK_PROVIDER", DEFAULT_FALLBACK),
+    )
+
+
+def resolve_keyframe_providers() -> list[CanonicalImageProvider]:
+    """키프레임 이미지 [primary, fallback] — KEYFRAME_IMAGE_PROVIDER /
+    KEYFRAME_IMAGE_FALLBACK_PROVIDER.
+
+    키프레임은 정본과 **다른 순서로 돌릴 수 있다**. 키프레임 변수가 비어 있으면
+    정본 설정을 그대로 물려받는다 — 예전처럼 한 벌만 설정해도 동작이 안 바뀐다.
+    모션 영상 라우팅(video_motion_providers)은 이 함수와 무관하다.
+    """
+    if _keyframe_mock_enabled():
+        return [_REGISTRY[PROVIDER_MOCK]]
+    return _order(
+        os.getenv("KEYFRAME_IMAGE_PROVIDER")
+        or os.getenv("CANONICAL_IMAGE_PROVIDER", DEFAULT_PRIMARY),
+        os.getenv("KEYFRAME_IMAGE_FALLBACK_PROVIDER")
+        or os.getenv("CANONICAL_IMAGE_FALLBACK_PROVIDER", DEFAULT_FALLBACK),
+    )

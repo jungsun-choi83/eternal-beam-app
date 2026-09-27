@@ -24,6 +24,7 @@ from PIL import Image, ImageFilter
 from backend.routers import assets as assets_router
 from backend.routers import pet_references_v1
 from backend.services import pet_identity_service as ids
+from backend.services import pet_morphology_service as morph
 from backend.services import pet_reference_service as refs
 from backend.services import pet_reference_set_service as sets
 from backend.services import pet_registry, vlm_identity
@@ -62,10 +63,10 @@ VIS_KEYS = (
 def _mock_backend(monkeypatch):
     monkeypatch.setenv("HYBRID_USE_SUPABASE", "0")
     monkeypatch.delenv("PET_VLM_IDENTITY_ENABLED", raising=False)
-    for svc in (refs, pet_registry, ids, sets):
+    for svc in (refs, pet_registry, ids, morph, sets):
         svc.__reset_for_tests()
     yield
-    for svc in (refs, pet_registry, ids, sets):
+    for svc in (refs, pet_registry, ids, morph, sets):
         svc.__reset_for_tests()
 
 
@@ -434,6 +435,80 @@ def test_idempotent_when_unchanged(uploads, monkeypatch):
     assert second.deduplicated is True and second.version == first.version == 1
 
 
+def test_force_propagates_to_identity_and_morphology_profiles(uploads, monkeypatch):
+    """
+    force 는 세트만이 아니라 **근거가 되는 두 프로필까지** 다시 분석시킨다.
+
+    예전에는 두 빌드 호출이 skip_if_unchanged=True 로 못 박혀 있어서, 운영자가
+    재분석을 요청해도 세트만 새 버전이 되고 신원/형태는 옛 분석 그대로였다 —
+    재분석을 요청할 수단이 아예 없었다는 뜻이다.
+    """
+    h = Harness()
+    h.seed(cutout=make_pet_cutout_png(), classification=cls(view="FRONT", face_visible="yes"))
+    h.install_vlm(monkeypatch)
+
+    v1 = h.build()
+    assert (v1.identity_profile_version, v1.morphology_profile_version) == (1, 1)
+
+    v2 = h.build(force=True)
+    assert v2.version == 2
+    assert v2.identity_profile_version == 2
+    assert v2.morphology_profile_version == 2
+    # 핀은 실제로 존재하는 새 버전을 가리킨다.
+    assert v2.identity_profile_id != v1.identity_profile_id
+    assert v2.morphology_profile_id != v1.morphology_profile_id
+    assert _run(ids.get_profile(user_id=USER, pet_id=PET, version=2)).id == v2.identity_profile_id
+    assert _run(morph.get_profile(user_id=USER, pet_id=PET, version=2)).id == v2.morphology_profile_id
+    # append-only: 옛 프로필 버전도 그대로 남는다.
+    assert _run(ids.get_profile(user_id=USER, pet_id=PET, version=1)).id == v1.identity_profile_id
+
+
+def test_default_build_still_reuses_profiles_without_new_versions(uploads, monkeypatch):
+    """force 가 아니면 프로필은 그대로다 — 재분석 비용을 매 호출 물지 않는다."""
+    h = Harness()
+    h.seed(cutout=make_pet_cutout_png(), classification=cls(view="FRONT", face_visible="yes"))
+    h.install_vlm(monkeypatch)
+
+    v1 = h.build()
+    v2 = h.build()
+    assert v2.deduplicated is True
+    assert (v2.identity_profile_version, v2.morphology_profile_version) == (1, 1)
+    assert _run(ids.get_profile(user_id=USER, pet_id=PET)).version == 1
+    assert _run(morph.get_profile(user_id=USER, pet_id=PET)).version == 1
+    assert v1.identity_profile_id == v2.identity_profile_id
+
+
+def test_late_cutout_unblocks_a_previously_unusable_reference(uploads, monkeypatch):
+    """
+    누끼 없이 들어온 원본이 나중에 누끼를 얻으면, 세트도 그것을 반영해야 한다.
+
+    프로필 재사용 키가 계보를 보게 되면서 신원/형태가 새 버전이 되고, 세트의
+    멱등 키는 그 버전들을 비교하므로 자동으로 풀린다.
+    """
+    h = Harness()
+    h.seed(cutout=make_pet_cutout_png(), classification=cls(view="FRONT", face_visible="yes"))
+    late = h.seed(classification=cls(view="LEFT", full_body_visible="yes"))
+    h.install_vlm(monkeypatch)
+
+    v1 = h.build()
+    assert v1.reference_analysis[str(late.id)]["selectable"] is False
+
+    cut_path = f"{USER}/{CID}/references/cutout_{late.content_hash[:16]}.png"
+    derived = _run(
+        refs.record_derived(
+            user_id=USER, content_id=CID, object_path=cut_path,
+            derived_kind="cutout_reference", parent_reference_id=late.id,
+            mime_type="image/png",
+        )
+    )
+    h.bytes_by_path[derived.object_path] = make_pet_cutout_png()
+
+    v2 = h.build()
+    assert v2.deduplicated is False and v2.version == 2
+    assert sorted(v2.source_reference_ids) == sorted(v1.source_reference_ids)
+    assert v2.reference_analysis[str(late.id)]["selectable"] is True
+
+
 def test_selection_is_deterministic(uploads, monkeypatch):
     h = Harness()
     _seed_excellent(h)
@@ -527,6 +602,8 @@ def test_router_build_list_get(refs_client, uploads, monkeypatch):
     assert res.status_code == 200
     body = res.json()
     assert body["version"] == 1
+    assert body["morphology_profile_id"]
+    assert body["morphology_profile_version"] == 1
     assert body["coverage"]["face"] in ("GOOD", "PARTIAL")
     assert body["items"] and body["items"][0]["selection_reason"]
 

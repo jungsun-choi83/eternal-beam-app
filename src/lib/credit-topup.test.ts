@@ -92,17 +92,20 @@ test('설정 화면이 크레딧 대신 멤버십을 보여 준다', () => {
   assert.doesNotMatch(line, /showSubscriptionTest|showIdleTest/, '토글 뒤에 숨어 있다')
 })
 
-test('재생 화면이 크레딧 카드 대신 멤버십 카드를 띄운다', () => {
-  const code = strip(PLAY)
-  assert.match(code, /<MembershipCard/)
-  assert.doesNotMatch(code, /<UnlockFeaturesCard/)
+test('멤버십은 설정/라이브러리에 있고 레거시 재생 화면과 분리된다', () => {
+  const play = strip(PLAY)
+  const settings = strip(SETTINGS)
+  const library = strip(readFileSync('src/components/memorial/my-library-screen.tsx', 'utf8'))
+  assert.match(settings, /<MembershipSection/)
+  assert.match(library, /onOpenMembership/)
+  assert.doesNotMatch(play, /<MembershipCard|<UnlockFeaturesCard/)
 })
 
 test('앱 라우팅이 크레딧이 아니라 멤버십으로 간다', () => {
   const code = strip(APP)
   assert.match(
     code,
-    /onOpenMembership=\{\(\) => openSettings\('devicePlay', \{ focusMembership: true \}\)\}/
+    /onOpenMembership=\{\(\) => openSettings\('preview', \{ focusMembership: true \}\)\}/
   )
   assert.doesNotMatch(code, /focusCredits/, '크레딧 포커스 경로가 남아 있다')
 })

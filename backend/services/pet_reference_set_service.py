@@ -26,8 +26,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import threading
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -535,6 +537,8 @@ class PetReferenceSet:
     status: str
     identity_profile_id: Optional[str] = None
     identity_profile_version: Optional[int] = None
+    morphology_profile_id: Optional[str] = None
+    morphology_profile_version: Optional[int] = None
     source_reference_ids: list[str] = field(default_factory=list)
     items: list[dict[str, Any]] = field(default_factory=list)
     reference_analysis: dict[str, Any] = field(default_factory=dict)
@@ -548,6 +552,7 @@ class PetReferenceSet:
 
 _SELECT = (
     "id, pet_id, user_id, version, status, identity_profile_id, identity_profile_version, "
+    "morphology_profile_id, morphology_profile_version, "
     "source_reference_ids, items, reference_analysis, coverage, completeness_tier, "
     "completeness_score, analyzer_versions, created_at"
 )
@@ -562,6 +567,10 @@ def _to_set(row: dict[str, Any], *, deduplicated: bool = False) -> PetReferenceS
         status=str(row.get("status") or STATUS_PARTIAL),
         identity_profile_id=(str(row["identity_profile_id"]) if row.get("identity_profile_id") else None),
         identity_profile_version=row.get("identity_profile_version"),
+        morphology_profile_id=(
+            str(row["morphology_profile_id"]) if row.get("morphology_profile_id") else None
+        ),
+        morphology_profile_version=row.get("morphology_profile_version"),
         source_reference_ids=list(row.get("source_reference_ids") or []),
         items=list(row.get("items") or []),
         reference_analysis=dict(row.get("reference_analysis") or {}),
@@ -580,14 +589,17 @@ async def _set_rows(pet_id: str) -> list[dict[str, Any]]:
         return []
     if _use_db() and _supabase():
         try:
-            r = (
-                _supabase()
-                .table(_table())
-                .select(_SELECT)
-                .eq("pet_id", pid)
-                .order("version", desc=False)
-                .execute()
-            )
+            def _select():
+                return (
+                    _supabase()
+                    .table(_table())
+                    .select(_SELECT)
+                    .eq("pet_id", pid)
+                    .order("version", desc=False)
+                    .execute()
+                )
+
+            r = await asyncio.to_thread(_select)
             return getattr(r, "data", None) or []
         except Exception as e:
             logger.exception("레퍼런스 세트 조회 실패 (pet=%s)", pid)
@@ -629,7 +641,7 @@ async def get_set(
 async def _insert_set_row(row: dict[str, Any]) -> tuple[bool, Optional[Exception]]:
     if _use_db() and _supabase():
         try:
-            _supabase().table(_table()).insert(row).execute()
+            await asyncio.to_thread(lambda: _supabase().table(_table()).insert(row).execute())
             return True, None
         except Exception as e:  # noqa: BLE001
             return False, e
@@ -638,6 +650,89 @@ async def _insert_set_row(row: dict[str, Any]) -> tuple[bool, Optional[Exception
             return False, PetReferenceSetError("DUPLICATE", "duplicate version")
     _MOCK_SETS.append(dict(row))
     return True, None
+
+
+def _shared_fetch_key(ref: Any) -> str:
+    return f"{getattr(ref, 'bucket', '') or ''}::{getattr(ref, 'object_path', '') or ''}"
+
+
+def _make_shared_fetch(
+    fetch_bytes: Optional[Callable[[Any], Optional[bytes]]],
+) -> Callable[[Any], Optional[bytes]]:
+    """
+    한 번의 build_reference_set 호출 동안 identity/morphology 프로필 빌드와
+    이 모듈 자신의 레퍼런스 분석이 **같은 바이트를 세 번 내려받지 않도록**
+    감싸는 메모이즈 래퍼.
+
+    호출마다 새로 만든다(빌드 하나 범위) — 프로세스 전역 캐시가 아니라서
+    무한정 자라지 않는다. 키별 락으로 동시 호출도 같은 객체를 한 번만
+    내려받게 한다(single-flight) — 다운로드는 유료가 아니지만, 중복 왕복은
+    그대로 레이턴시다.
+    """
+    from . import pet_identity_service
+
+    base_fetch = fetch_bytes or pet_identity_service._default_fetch_bytes
+    cache: dict[str, Optional[bytes]] = {}
+    locks: dict[str, threading.Lock] = {}
+    guard = threading.Lock()
+
+    def shared_fetch(ref: Any) -> Optional[bytes]:
+        key = _shared_fetch_key(ref)
+        with guard:
+            if key in cache:
+                return cache[key]
+            lock = locks.setdefault(key, threading.Lock())
+        with lock:
+            with guard:
+                if key in cache:
+                    return cache[key]
+            data = base_fetch(ref)
+            with guard:
+                cache[key] = data
+            return data
+
+    return shared_fetch
+
+
+def _analyze_one_reference_for_set(
+    ref: Any,
+    cut: Any,
+    eligibility: Optional[dict[str, Any]],
+    fetch: Callable[[Any], Optional[bytes]],
+) -> dict[str, Any]:
+    """
+    build_reference_set 자신의 레퍼런스 1건 분석 — 순수 동기 워커. 다른
+    레퍼런스와 독립이라 asyncio.to_thread 로 동시에 돌린다. Phase 2 프로필이
+    이미 적격성을 계산해 뒀으면(대부분의 경우) 여기서는 재계산하지 않는다 —
+    그 재사용 자체는 병렬화 전과 동일하다.
+    """
+    from . import pet_identity_service, vlm_identity
+
+    cut_rgba = None
+    if cut is not None:
+        cut_bytes = fetch(cut)
+        if cut_bytes:
+            cut_rgba = pet_identity_service.load_rgba(cut_bytes)
+    if eligibility is None:
+        eligibility = pet_identity_service.evaluate_reference_eligibility(
+            ref,
+            cut_rgba,
+            strict_lineage_ok=bool(cut and cut.parent_reference_id and cut.parent_reference_id == ref.id),
+            cutout_reference=cut,
+        )
+    signature = eligibility.get("signature") or (
+        pet_identity_service.compute_reference_signature(cut_rgba) if cut_rgba is not None else None
+    )
+
+    original_bytes = fetch(ref) if vlm_identity.is_enabled() else None
+    classification = classify_reference_view_pose(original_bytes, ref.mime_type)
+
+    return {
+        "eligibility": eligibility,
+        "signature": signature,
+        "classification": classification,
+        "quality": quality_components(ref, eligibility, cut_rgba),
+    }
 
 
 async def build_reference_set(
@@ -650,13 +745,15 @@ async def build_reference_set(
     """
     원본 + Phase 2 프로필 → 새 신뢰 레퍼런스 세트 버전.
 
-    * Phase 2 프로필을 먼저 보장한다 (멱등 빌드 — 프로필의 레퍼런스별 적격성과
-      시그니처를 그대로 재사용해 분석을 중복하지 않는다).
+    * Phase 2 신원 프로필과 Phase 3.5 형태 프로필을 먼저 보장한다 (프로필의
+      레퍼런스별 적격성과 시그니처를 그대로 재사용해 분석을 중복하지 않는다).
     * skip_if_unchanged=True: 최신 세트가 같은 원본 집합 + 같은 분석기 버전 +
       같은 프로필 버전이면 새 버전을 만들지 않는다.
+    * skip_if_unchanged 는 **두 프로필 빌드에도 그대로 전달된다** — force 로
+      세트를 다시 빌드하면 근거가 되는 프로필도 다시 분석된다.
     * 레퍼런스 대장과 스토리지는 읽기 전용이다.
     """
-    from . import pet_identity_service, pet_reference_service
+    from . import pet_identity_service, pet_morphology_service, pet_reference_service
 
     uid = (user_id or "").strip()
     pid = (pet_id or "").strip()
@@ -681,13 +778,51 @@ async def build_reference_set(
             status=409,
         )
 
-    # ── Phase 2 프로필 보장 (멱등) — 적격성/시그니처의 단일 출처 ─────────
-    try:
-        profile = await pet_identity_service.build_identity_profile(
-            user_id=uid, pet_id=pid, fetch_bytes=fetch_bytes, skip_if_unchanged=True
-        )
-    except pet_identity_service.PetIdentityError as e:
-        raise PetReferenceSetError(e.code, e.message, status=e.status) from e
+    # ── Phase 2 + Phase 3.5 프로필 보장 (멱등, 동시) ──────────────────────
+    #
+    # skip_if_unchanged 를 **그대로 넘긴다.** 예전에는 여기서 True 로 못 박혀
+    # 있어서, force=true 로 세트를 다시 빌드해도 근거가 되는 두 프로필은 절대
+    # 다시 분석되지 않았다 — 운영자가 재분석을 요청할 방법이 없었다는 뜻이다.
+    #
+    # 두 프로필은 서로 다른 테이블에 독립적으로 append-only 쓰기만 하고
+    # 서로의 결과를 읽지 않으므로 동시에 돌려도 안전하다. 같은 원본/누끼
+    # 바이트를 두 번 내려받지 않도록, 그리고(VLM 이 켜져 있다면) 같은 이미지의
+    # 시맨틱 분석을 두 번 유료 호출하지 않도록 **같은** 메모이즈 fetch 를
+    # 공유한다 — 유료 호출 중복 방지는 vlm_identity 의 single-flight 캐시가
+    # 한 번 더 보장한다(두 프로필이 정말로 같은 순간에 같은 이미지를 건드려도).
+    shared_fetch = _make_shared_fetch(fetch_bytes)
+    profile_result, morphology_result = await asyncio.gather(
+        pet_identity_service.build_identity_profile(
+            user_id=uid,
+            pet_id=pid,
+            fetch_bytes=shared_fetch,
+            skip_if_unchanged=skip_if_unchanged,
+        ),
+        pet_morphology_service.build_morphology_profile(
+            user_id=uid,
+            pet_id=pid,
+            fetch_bytes=shared_fetch,
+            skip_if_unchanged=skip_if_unchanged,
+        ),
+        return_exceptions=True,
+    )
+    # 우선순위는 순차 버전과 동일하게 identity 먼저 — 둘 다 실패해도 identity
+    # 쪽 에러가 보고된다. return_exceptions=True 로 둘 다 끝까지 기다리므로
+    # (gather 가 하나의 실패로 나머지를 취소하지 않는다) 실패한 쪽만 버려도
+    # 이미 끝난 쪽이 허공에 매달린 태스크로 남지 않는다.
+    if isinstance(profile_result, BaseException):
+        if isinstance(profile_result, pet_identity_service.PetIdentityError):
+            raise PetReferenceSetError(
+                profile_result.code, profile_result.message, status=profile_result.status
+            ) from profile_result
+        raise profile_result
+    if isinstance(morphology_result, BaseException):
+        if isinstance(morphology_result, pet_morphology_service.PetMorphologyError):
+            raise PetReferenceSetError(
+                morphology_result.code, morphology_result.message, status=morphology_result.status
+            ) from morphology_result
+        raise morphology_result
+    profile, morphology = profile_result, morphology_result
 
     versions = analyzer_versions()
     source_ids = sorted(str(r.id) for r in originals if r.id)
@@ -700,49 +835,49 @@ async def build_reference_set(
                 sorted(latest.source_reference_ids) == source_ids
                 and latest.analyzer_versions == versions
                 and latest.identity_profile_version == profile.version
+                and latest.morphology_profile_version == morphology.version
             ):
                 return _to_set(
                     max(rows, key=lambda r: int(r.get("version") or 0)), deduplicated=True
                 )
 
-    fetch = fetch_bytes or pet_identity_service._default_fetch_bytes
+    # identity/morphology 가 이미 내려받은 바이트를 여기서 또 받지 않도록 같은
+    # 메모이즈 fetch 를 계속 쓴다.
+    fetch = shared_fetch
     pairing = pet_reference_service.pair_cutouts(refs)
 
     # ── 레퍼런스별 분석 (안정 순서: created_at → id) ─────────────────────
+    # 다운로드+분석 자체는 레퍼런스마다 독립이라 동시에 돌린다 — analyses 는
+    # rid 로 키가 잡혀 있어 완료 순서가 결과에 영향을 주지 않는다(아래
+    # select_roles 에도 안정 순서인 `order` 를 별도로 넘긴다).
     ordered = sorted(originals, key=lambda r: (r.created_at or "", str(r.id)))
     order = [str(r.id) for r in ordered]
 
+    from .concurrency import gather_bounded
+
+    per_ref_results = await gather_bounded(
+        [
+            (
+                lambda r=ref, c=pairing.get(str(ref.id)), e=profile.reference_eligibility.get(
+                    str(ref.id)
+                ): asyncio.to_thread(_analyze_one_reference_for_set, r, c, e, fetch)
+            )
+            for ref in ordered
+        ]
+    )
+
     analyses: dict[str, dict[str, Any]] = {}
     signatures: dict[str, Optional[dict[str, Any]]] = {}
-    from . import vlm_identity
-
-    for ref in ordered:
+    for ref, res in zip(ordered, per_ref_results):
         rid = str(ref.id)
-        eligibility = profile.reference_eligibility.get(rid)
-        cut = pairing.get(rid)
-        cut_rgba = None
-        if cut is not None:
-            cut_bytes = fetch(cut)
-            if cut_bytes:
-                cut_rgba = pet_identity_service.load_rgba(cut_bytes)
-        if eligibility is None:
-            eligibility = pet_identity_service.evaluate_reference_eligibility(ref, cut_rgba)
-        signatures[rid] = eligibility.get("signature") or (
-            pet_identity_service.compute_reference_signature(cut_rgba)
-            if cut_rgba is not None
-            else None
-        )
-
-        original_bytes = fetch(ref) if vlm_identity.is_enabled() else None
-        classification = classify_reference_view_pose(original_bytes, ref.mime_type)
-
+        signatures[rid] = res["signature"]
         analyses[rid] = {
             "reference_id": rid,
             "content_id": ref.content_id,
             "object_path": ref.object_path,
-            "eligibility": eligibility,
-            "classification": classification,
-            "quality": quality_components(ref, eligibility, cut_rgba),
+            "eligibility": res["eligibility"],
+            "classification": res["classification"],
+            "quality": res["quality"],
         }
 
     consistency = assess_consistency(signatures)
@@ -772,6 +907,8 @@ async def build_reference_set(
         "status": STATUS_COMPLETE if items else STATUS_PARTIAL,
         "identity_profile_id": profile.id,
         "identity_profile_version": profile.version,
+        "morphology_profile_id": morphology.id,
+        "morphology_profile_version": morphology.version,
         "source_reference_ids": source_ids,
         "items": items,
         "reference_analysis": analyses,

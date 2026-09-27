@@ -72,6 +72,7 @@ from .routers import (
   pet_v1,
   premium_v1,
   device_v1,
+  device_ws_v1,
   payment_v1,
   subscription_v1,
 )
@@ -184,6 +185,7 @@ app.include_router(pet_v1.router, prefix="/api", tags=["pet-v1"])
 # 없고, 대신 모든 요청이 검증된 토큰과 소유권 검사를 통과해야 한다.
 app.include_router(premium_v1.router, prefix="/api", tags=["pet-premium"])
 app.include_router(device_v1.router, prefix="/api", tags=["device-v1"])
+app.include_router(device_ws_v1.router, prefix="/api", tags=["external-device-v1"])
 app.include_router(payment_v1.router, prefix="/api", tags=["payment-v1"])
 app.include_router(subscription_v1.router, prefix="/api", tags=["subscription-v1"])
 
@@ -271,6 +273,12 @@ app.include_router(keyframes_v1.router, prefix="/api", tags=["pet-keyframes"])
 from .routers import motion_videos_v1  # noqa: E402
 
 app.include_router(motion_videos_v1.router, prefix="/api", tags=["pet-motions"])
+
+# My Library 데이터 기반 (Phase 11). BREATHING(무료) + 소유/멤버십 생성 모션을
+# 하나의 읽기 전용 목록으로 합친다. 생성·발행·과금을 하지 않는다.
+from .routers import library_v1  # noqa: E402
+
+app.include_router(library_v1.router, prefix="/api", tags=["library"])
 
 # 모션 레퍼런스 라이브러리 (Phase 6.6). 종/형태 기반 매칭 — 내부/디버그 용도.
 from .routers import motion_references_v1  # noqa: E402

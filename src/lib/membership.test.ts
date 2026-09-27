@@ -105,13 +105,11 @@ test('멤버십 UI 는 아무것도 생성하지 않는다 — Behavior Library 
   }
 })
 
-test('멤버십 UI 에 크레딧·잔액 개념이 없다', () => {
-  for (const [name, src] of [['card', CARD], ['section', SECTION], ['hook', HOOK]] as const) {
-    const code = strip(src)
-    for (const needle of ['credit', 'wallet', 'balance', '크레딧']) {
-      assert.doesNotMatch(code, new RegExp(needle, 'i'), `${name} 에 ${needle} 이 남아 있다`)
-    }
-  }
+test('Account 멤버십 섹션은 실제 Beam Credits 잔액도 함께 조회한다', () => {
+  const code = strip(SECTION)
+  assert.match(code, /fetchWallet\(\{ accessToken: auth\.token \}\)/)
+  assert.match(code, /t\.beamCredits/)
+  assert.doesNotMatch(strip(CARD) + strip(HOOK), /fetchWallet\(/, '재생 카드/훅이 지갑을 중복 조회한다')
 })
 
 test('공유 조회원은 GET 만 한다 — 마운트가 결제나 생성을 일으키지 않는다', () => {

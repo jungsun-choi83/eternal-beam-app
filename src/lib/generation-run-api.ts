@@ -14,6 +14,15 @@
 
 import { getPremiumAccessToken } from "./premium-auth-token.ts";
 
+/** durable_provider_jobs.summary_for_run() 이 돌려주는 job 요약 하나. */
+export interface GenerationRunProviderJob {
+  provider_operation?: string | null;
+  provider_status?: string | null;
+  submitted_at?: string | null;
+  last_polled_at?: string | null;
+  [key: string]: unknown;
+}
+
 export interface GenerationRun {
   run_id: string;
   status: string;
@@ -23,6 +32,8 @@ export interface GenerationRun {
   selected_candidate_id?: string | null;
   publication_id?: string | null;
   last_error?: { code?: string; message?: string } | null;
+  /** job id → 요약. UI 진행 화면은 lib/generation-progress.ts 로 이 값을 해석한다. */
+  provider_state?: Record<string, GenerationRunProviderJob> | null;
   [key: string]: unknown;
 }
 

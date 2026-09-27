@@ -11,10 +11,13 @@ import { afterEach, test } from "node:test";
 
 import {
   ORIGINAL_REFERENCE_MAX_BYTES,
+  buildPhase1IntakeReceipt,
   decodeDataUrl,
   Phase1IntakeError,
   persistPhase1Intake,
   persistOriginalReference,
+  type Phase1IntakeReceipt,
+  type ReadyIntakePair,
 } from "./original-reference.ts";
 
 const realFetch = globalThis.fetch;
@@ -236,4 +239,77 @@ test("persistPhase1Intake: unauthenticated writes never start", async () => {
       error instanceof Phase1IntakeError && error.code === "UNAUTHENTICATED",
   );
   assert.equal(calls.length, 0);
+});
+
+// ── Phase 7B 영수증: 준비된 쌍 전부가 세션으로 넘어간다 ────────────────────
+
+function pair(n: number, petId = "pet_a"): ReadyIntakePair {
+  return { petId, referenceId: `orig-${n}`, cutoutReferenceId: `cut-${n}` };
+}
+
+/** 영수증이 없으면 그 자리에서 실패한다 — 이후 단언이 null 을 만나지 않게. */
+function requireReceipt(
+  receipt: Phase1IntakeReceipt | null,
+  label = "영수증이 만들어져야 한다",
+): Phase1IntakeReceipt {
+  if (!receipt) throw new Error(label);
+  return receipt;
+}
+
+test("receipt carries every ready pair for 1, 2, and 3 images", () => {
+  for (const count of [1, 2, 3]) {
+    const pairs = Array.from({ length: count }, (_, i) => pair(i + 1));
+    const receipt = requireReceipt(
+      buildPhase1IntakeReceipt("pet_a", pairs),
+      `${count}장 영수증이 만들어져야 한다`,
+    );
+    assert.equal(receipt.status, "ready");
+    assert.equal(receipt.pet_id, "pet_a");
+    assert.deepEqual(
+      receipt.original_reference_ids,
+      pairs.map((p) => p.referenceId),
+    );
+    assert.deepEqual(
+      receipt.cutout_reference_ids,
+      pairs.map((p) => p.cutoutReferenceId),
+    );
+    assert.equal(receipt.original_reference_ids.length, count);
+    // 하위 호환: 단수 필드는 여전히 첫 쌍이다.
+    assert.equal(receipt.original_reference_id, "orig-1");
+    assert.equal(receipt.cutout_reference_id, "cut-1");
+  }
+});
+
+test("receipt keeps original/cutout aligned by index", () => {
+  const receipt = requireReceipt(buildPhase1IntakeReceipt("pet_a", [pair(1), pair(2), pair(3)]));
+  receipt.original_reference_ids.forEach((id, i) => {
+    assert.equal(receipt.cutout_reference_ids[i], id.replace("orig-", "cut-"));
+  });
+});
+
+test("receipt never mixes in another pet slot's references", () => {
+  const receipt = requireReceipt(buildPhase1IntakeReceipt("pet_a", [
+    pair(1),
+    pair(2, "pet_b"),
+    pair(3),
+  ]));
+  assert.deepEqual(receipt.original_reference_ids, ["orig-1", "orig-3"]);
+  assert.deepEqual(receipt.cutout_reference_ids, ["cut-1", "cut-3"]);
+});
+
+test("receipt drops unpaired entries and de-duplicates idempotent re-uploads", () => {
+  const receipt = requireReceipt(buildPhase1IntakeReceipt("pet_a", [
+    pair(1),
+    { petId: "pet_a", referenceId: "orig-2", cutoutReferenceId: "" },
+    { petId: "pet_a", referenceId: "", cutoutReferenceId: "cut-9" },
+    pair(1),
+  ]));
+  assert.deepEqual(receipt.original_reference_ids, ["orig-1"]);
+  assert.deepEqual(receipt.cutout_reference_ids, ["cut-1"]);
+});
+
+test("receipt is null when nothing is ready for the active pet", () => {
+  assert.equal(buildPhase1IntakeReceipt("pet_a", []), null);
+  assert.equal(buildPhase1IntakeReceipt("", [pair(1)]), null);
+  assert.equal(buildPhase1IntakeReceipt("pet_a", [pair(1, "pet_b")]), null);
 });

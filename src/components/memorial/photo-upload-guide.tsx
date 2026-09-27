@@ -11,7 +11,7 @@ export function PhotoUploadGuide({ language = "ko" }: PhotoUploadGuideProps) {
   const g = memorialT(language).upload.guide;
 
   return (
-    <section className="upload-guide mb-5" aria-labelledby="upload-guide-title">
+    <section className="upload-guide" aria-labelledby="upload-guide-title">
       <h3 id="upload-guide-title" className="upload-guide-title">
         {g.title}
       </h3>

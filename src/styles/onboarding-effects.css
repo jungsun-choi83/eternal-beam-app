@@ -1,4 +1,6 @@
-/* 온보딩 화면 전용 효과 - CSS 키프레임으로 항상 동작 */
+/* 온보딩 화면 전용 효과 — Phase 10: 아이보리 위의 은은한 샴페인 골드.
+   글로우 알파 ≤ 0.14, 링은 골드 헤어라인, 파티클/유성은 ≤ 0.4.
+   키프레임·클래스 이름은 그대로 두고 색만 브랜드 골드(184,150,62)로 맞춘다. */
 
 @keyframes onboarding-particle-float {
   0% {
@@ -6,10 +8,10 @@
     opacity: 0;
   }
   10% {
-    opacity: 0.6;
+    opacity: 0.4;
   }
   90% {
-    opacity: 0.6;
+    opacity: 0.4;
   }
   100% {
     transform: translateY(-100vh);
@@ -20,7 +22,7 @@
 @keyframes onboarding-pulse-ring {
   0% {
     transform: scale(1);
-    opacity: 0.6;
+    opacity: 0.4;
   }
   100% {
     transform: scale(2.5);
@@ -31,11 +33,11 @@
 @keyframes onboarding-aurora {
   0%,
   100% {
-    opacity: 0.6;
+    opacity: 0.4;
     transform: scale(1);
   }
   50% {
-    opacity: 1;
+    opacity: 0.7;
     transform: scale(1.15);
   }
 }
@@ -62,23 +64,23 @@
   0%,
   100% {
     box-shadow:
-      0 0 72px 28px rgba(200, 155, 42, 0.07),
-      0 0 120px 48px rgba(180, 130, 30, 0.04);
+      0 0 72px 28px rgba(184, 150, 62, 0.06),
+      0 0 120px 48px rgba(184, 150, 62, 0.03);
   }
   50% {
     box-shadow:
-      0 0 100px 42px rgba(244, 208, 63, 0.14),
-      0 0 160px 64px rgba(201, 162, 39, 0.08);
+      0 0 100px 42px rgba(184, 150, 62, 0.12),
+      0 0 160px 64px rgba(184, 150, 62, 0.06);
   }
 }
 
 @keyframes ob-ring-expand {
   0% {
     transform: scale(0.78);
-    opacity: 0.55;
+    opacity: 0.45;
   }
   65% {
-    opacity: 0.18;
+    opacity: 0.15;
   }
   100% {
     transform: scale(1.12);
@@ -90,13 +92,13 @@
   0%,
   100% {
     box-shadow:
-      inset 0 0 18px rgba(212, 175, 55, 0.12),
-      0 0 24px rgba(201, 162, 39, 0.08);
+      inset 0 0 18px rgba(184, 150, 62, 0.1),
+      0 0 24px rgba(184, 150, 62, 0.06);
   }
   50% {
     box-shadow:
-      inset 0 0 32px rgba(244, 208, 63, 0.22),
-      0 0 36px rgba(201, 162, 39, 0.16);
+      inset 0 0 32px rgba(184, 150, 62, 0.14),
+      0 0 36px rgba(184, 150, 62, 0.12);
   }
 }
 
@@ -107,6 +109,7 @@
 .ob-ring-pulse {
   animation: ob-ring-expand 3.4s ease-out infinite;
   transform-origin: center center;
+  border: 1px solid var(--eb-gold-line);
 }
 
 .ob-ring-pulse--d1 {
@@ -119,6 +122,8 @@
 
 .ob-center-disc {
   animation: ob-center-light 3.8s ease-in-out infinite;
+  background: linear-gradient(135deg, var(--eb-gold-wash) 0%, rgba(184, 150, 62, 0.05) 100%);
+  border: 1px solid var(--eb-gold-line);
 }
 
 .ob-center-num {
@@ -126,7 +131,82 @@
   font-size: 2rem;
   font-weight: 300;
   letter-spacing: 0.04em;
-  color: #d4af37;
+  color: var(--eb-gold-text);
+}
+
+/* ── 온보딩 크롬: 건너뛰기 링크 · 페이지 점 ── */
+
+/* 텍스트 링크지만 44px 터치 타깃을 지킨다. */
+.eb-skip-text {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: var(--eb-touch);
+  padding: 0 var(--eb-space-3);
+  border-radius: var(--eb-radius-pill);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--eb-text-2);
+  font-size: var(--eb-type-body-sm);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  transition:
+    color var(--eb-dur) var(--eb-ease),
+    background var(--eb-dur) var(--eb-ease);
+}
+
+.eb-skip-text:hover {
+  color: var(--eb-text);
+  background: var(--eb-surface-2);
+}
+
+.eb-skip-text:focus-visible {
+  outline: none;
+  box-shadow: var(--eb-focus-ring);
+}
+
+/* 점 자체는 8px, 버튼은 44px 히트 영역. 활성 점만 골드. */
+.eb-page-dot {
+  width: 36px;
+  height: var(--eb-touch);
+  margin: 0;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  border-radius: var(--eb-radius-pill);
+  cursor: pointer;
+}
+
+.eb-page-dot::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: var(--eb-radius-pill);
+  background: var(--eb-surface-3);
+  box-shadow: inset 0 0 0 1px var(--eb-hairline);
+  transition:
+    width var(--eb-dur) var(--eb-ease),
+    background var(--eb-dur) var(--eb-ease),
+    box-shadow var(--eb-dur) var(--eb-ease);
+}
+
+.eb-page-dot:hover::before {
+  background: var(--eb-hairline-strong);
+}
+
+.eb-page-dot--active::before {
+  width: 20px;
+  background: var(--eb-gold);
+  box-shadow: none;
+}
+
+.eb-page-dot:focus-visible {
+  outline: none;
+  box-shadow: var(--eb-focus-ring);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -144,6 +224,6 @@
   }
 
   .ob-onboarding-glow {
-    box-shadow: 0 0 80px 32px rgba(200, 155, 42, 0.08);
+    box-shadow: 0 0 80px 32px rgba(184, 150, 62, 0.06);
   }
 }

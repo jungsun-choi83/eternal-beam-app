@@ -19,6 +19,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { PrimaryButton, SecondaryButton } from "@/components/ui/buttons";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { getPremiumAccessToken } from "@/lib/premium-auth-token";
 import { readThemeReturnParams, themeReturnEntry } from "@/lib/app-entry";
 import { ThemeStoreError, confirmThemePayment } from "@/lib/theme-store-api";
@@ -102,38 +104,52 @@ export function ThemePurchaseReturnScreen() {
     window.location.replace("/");
   }, []);
 
+  // Phase 10 — 앱 셸 바깥에서 그려지므로 아이보리 페이지를 스스로 깐다.
+  // 결과는 가운데 .eb-card 패널 하나. fixed 오버레이가 아니다.
   return (
-    <div className="fixed inset-0 flex flex-col items-center justify-center gap-4 bg-[#0a0a0a] px-8 text-center">
-      {phase.kind === "working" && (
-        <p className="text-sm text-white/50">결제를 확인하는 중…</p>
-      )}
+    <div className="theme-purchase-return-screen flex min-h-[100dvh] w-full flex-col items-center justify-center gap-4 bg-[var(--eb-bg)] px-6 py-12 text-center text-[var(--eb-text)]">
+      <section
+        className="eb-card eb-fade-up flex w-full max-w-[420px] flex-col items-center gap-4 px-6 py-8"
+        aria-live="polite"
+      >
+        {phase.kind === "working" && (
+          <>
+            <StatusBadge tone="loading">확인 중</StatusBadge>
+            <p className="eb-body-sm">결제를 확인하는 중…</p>
+          </>
+        )}
 
-      {phase.kind === "done" && (
-        <>
-          <p className="text-base font-medium text-[#EDE3CE]">
-            {phase.alreadyOwned ? "이미 보유한 테마입니다" : "테마를 구매했습니다"}
-          </p>
-          <p className="text-xs text-white/45">{phase.themeKey}</p>
-          <p className="text-xs text-white/45">테마 선택 화면으로 돌아가는 중…</p>
-        </>
-      )}
+        {phase.kind === "done" && (
+          <>
+            <StatusBadge tone="success">구매 완료</StatusBadge>
+            <p className="eb-title text-base font-medium">
+              {phase.alreadyOwned ? "이미 보유한 테마입니다" : "테마를 구매했습니다"}
+            </p>
+            <p className="eb-caption font-mono">{phase.themeKey}</p>
+            <p className="eb-caption">테마 선택 화면으로 돌아가는 중…</p>
+          </>
+        )}
 
-      {phase.kind === "failed" && (
-        <>
-          <p className="text-base font-medium text-white/90">결제를 완료하지 못했습니다</p>
-          <p className="max-w-xs text-sm leading-relaxed text-white/55">{phase.message}</p>
-        </>
-      )}
+        {phase.kind === "failed" && (
+          <>
+            <StatusBadge tone="error">결제 실패</StatusBadge>
+            <p className="eb-title text-base font-medium">결제를 완료하지 못했습니다</p>
+            <p className="eb-body-sm max-w-xs leading-relaxed">{phase.message}</p>
+          </>
+        )}
 
-      {phase.kind !== "working" && (
-        <button
-          type="button"
-          onClick={goBack}
-          className="mt-2 rounded-full border border-white/20 px-5 py-2 text-sm text-white/80 active:bg-white/10"
-        >
-          {phase.kind === "done" ? "테마 선택으로" : "테마 선택으로 돌아가기"}
-        </button>
-      )}
+        {phase.kind !== "working" && (
+          phase.kind === "done" ? (
+            <PrimaryButton block className="mt-2" onClick={goBack}>
+              테마 선택으로
+            </PrimaryButton>
+          ) : (
+            <SecondaryButton block className="mt-2" onClick={goBack}>
+              테마 선택으로 돌아가기
+            </SecondaryButton>
+          )
+        )}
+      </section>
     </div>
   );
 }

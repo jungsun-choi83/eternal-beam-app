@@ -66,8 +66,8 @@ test("Preview ensures both fresh and restored READY pets and retries on auth res
 test("app-wide session restoration repairs a stored READY pet even after Preview unmounts", () => {
   const source = readFileSync("src/app/EternalBeamApp.tsx", "utf8");
   const registry = readFileSync("src/lib/pet-registry-api.ts", "utf8");
-  assert.match(source, /onAuthStateChange\(\(signedIn\) =>/);
-  assert.match(source, /if \(!signedIn\) return/);
+  assert.match(source, /onAuthStateChange\(\(signedIn, profile, isPasswordRecovery\) =>/);
+  assert.match(source, /if \(!signedIn \|\| isPasswordRecovery\) return/);
   assert.match(source, /ensureStoredReadyPetRegistered\(\)/);
   assert.match(registry, /sessionStorage\.getItem\("eternal_beam_pipeline_v1"\)/);
 });

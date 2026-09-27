@@ -43,7 +43,7 @@ export function EternalBeamLogoHero({
   language = "ko",
 }: EternalBeamLogoHeroProps) {
   const symbolPx = size === "splash" ? 132 : size === "hero" ? 92 : 56;
-  const subtitle = memorialT(language).auth.subtitle;
+  const subtitle = memorialT(language).auth.brandLine2;
   const titleClass =
     titleVariant === "brand"
       ? "logo-title logo-title--splash m-0"
@@ -57,7 +57,7 @@ export function EternalBeamLogoHero({
           className="absolute left-1/2 top-[20%] -translate-x-1/2 w-[150%] aspect-square pointer-events-none"
           style={{
             background:
-              "radial-gradient(circle, rgba(212, 175, 55, 0.42) 0%, rgba(212, 175, 55, 0.08) 45%, transparent 70%)",
+              "radial-gradient(circle, rgba(184, 150, 62, 0.12) 0%, rgba(184, 150, 62, 0.04) 45%, transparent 70%)",
             filter: "blur(20px)",
           }}
           aria-hidden
@@ -94,7 +94,7 @@ interface EternalBeamBrandMarkProps {
 export function EternalBeamBrandMark({
   language = "ko",
   className = "",
-  textClassName = "text-[11px] text-[#888] tracking-wide",
+  textClassName = "text-[11px] tracking-wide text-[var(--eb-text-2)]",
 }: EternalBeamBrandMarkProps) {
   const label = memorialT(language).brand;
 

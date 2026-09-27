@@ -4,10 +4,12 @@ import type { ReactNode } from "react";
 import { MEDIA_FILE_ACCEPT } from "@/lib/media-file-kind";
 
 type MediaFileTriggerProps = {
-  onFile: (file: File) => void;
+  onFile?: (file: File) => void;
+  onFiles?: (files: File[]) => void;
   accept?: string;
   className?: string;
   disabled?: boolean;
+  multiple?: boolean;
   children: ReactNode;
 };
 
@@ -17,25 +19,31 @@ type MediaFileTriggerProps = {
  */
 export function MediaFileTrigger({
   onFile,
+  onFiles,
   accept = MEDIA_FILE_ACCEPT,
   className = "",
   disabled = false,
+  multiple = false,
   children,
 }: MediaFileTriggerProps) {
   return (
     <label
-      className={`relative block ${disabled ? "pointer-events-none opacity-50" : "cursor-pointer"} ${className}`}
+      className={`relative block overflow-hidden ${disabled ? "pointer-events-none opacity-50" : "cursor-pointer"} ${className}`}
       style={{ WebkitTapHighlightColor: "transparent" }}
     >
       <input
         type="file"
         accept={accept}
         disabled={disabled}
-        className="absolute inset-0 z-[200] h-full w-full opacity-[0.02] cursor-pointer"
-        style={{ fontSize: 16, touchAction: "manipulation" }}
+        multiple={multiple}
+        className="absolute inset-0 z-[200] h-full w-full cursor-pointer opacity-0"
+        style={{ color: "transparent", fontSize: 0, touchAction: "manipulation" }}
         onChange={(e) => {
-          const file = e.target.files?.[0];
-          if (file) onFile(file);
+          const files = Array.from(e.target.files ?? []);
+          if (files.length > 0) {
+            if (onFiles) onFiles(files);
+            else if (onFile) onFile(files[0]);
+          }
           e.target.value = "";
         }}
       />

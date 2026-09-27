@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { motion } from "framer-motion";
-import { Crown, RefreshCw } from "lucide-react";
+import { Coins, Crown, RefreshCw } from "lucide-react";
 
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { fetchSubscriptionStatus } from "@/lib/subscription-mock";
@@ -18,6 +18,8 @@ import {
   type BillingStatus,
 } from "@/lib/toss-billing";
 import type { SubscriptionStatusResult } from "@/app/services/videoProcessingApi";
+import { fetchWallet } from "@/lib/credits-api";
+import { getPremiumAccessToken } from "@/lib/premium-auth-token";
 
 /** Memorial 의 "멤버십" 진입이 이 섹션으로 스크롤·포커스할 때 쓰는 앵커. */
 export const MEMBERSHIP_SECTION_ID = "eb-membership-section";
@@ -29,20 +31,22 @@ interface MembershipSectionProps {
 }
 
 /**
- * 설정 화면의 **상시 노출** 멤버십 섹션 — 크레딧 섹션을 대체한다.
+ * 설정 화면의 **상시 노출** 멤버십 섹션.
  *
- * 예전에는 여기에 지갑 잔액과 "테스트 크레딧 추가" 버튼이 있었다. 소비자에게
- * 크레딧은 더 이상 제품 개념이 아니므로 노출하지 않는다. 남은 크레딧은 레거시
- * 기기 팩(IDLE/TOUCH/VOICE/NFC)이 계속 쓰지만, 그 재원은 이제 멤버십 갱신이
- * 자동으로 채운다 — 사용자가 직접 관리할 것이 없다.
+ * 소비자에게 보이는 상태는 **멤버인가 아닌가** 하나다. 레거시 기기 팩의 재원은
+ * 멤버십 갱신이 자동으로 채우므로 사용자가 직접 관리할 것이 없다.
  *
  * 실제 가입/해지는 스토어 결제(IAP)가 담당한다. 이 섹션은 **상태를 보여 준다**.
  * 목업 환경에서의 상태 전환은 구독 테스트 패널이 따로 담당한다.
+ *
+ * Phase 10: 프리미엄 악센트는 gold-line 테두리 + gold-text 만 — 카드 전체를
+ * 금색으로 물들이지 않는다. 강조(focusOnMount)는 .eb-card--selected 링으로.
  */
 export function MembershipSection({ language = "ko", focusOnMount }: MembershipSectionProps) {
   const t = memorialT(language).membership;
   const [status, setStatus] = useState<SubscriptionStatusResult | null>(null);
   const [billing, setBilling] = useState<BillingStatus | null>(null);
+  const [walletBalance, setWalletBalance] = useState<number | null>(null);
   const [testMode, setTestMode] = useState(false);
   const [configured, setConfigured] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,6 +64,16 @@ export function MembershipSection({ language = "ko", focusOnMount }: MembershipS
     } catch (e) {
       setStatus(null);
       setError(e instanceof Error ? e.message : String(e));
+    }
+    try {
+      const auth = await getPremiumAccessToken();
+      if (auth.token) {
+        const wallet = await fetchWallet({ accessToken: auth.token });
+        setWalletBalance(wallet.balance);
+      }
+    } catch {
+      // 크레딧 조회 실패가 멤버십 상태/관리를 막지 않는다.
+      setWalletBalance(null);
     }
     // 청구 상태는 별개로 읽는다 — 자격(구독)과 청구(결제 수단·해지 예약)는
     // 서로 다른 계층이고, 한쪽이 실패해도 다른 쪽은 보여 줄 수 있어야 한다.
@@ -158,50 +172,39 @@ export function MembershipSection({ language = "ko", focusOnMount }: MembershipS
     <motion.div
       id={MEMBERSHIP_SECTION_ID}
       ref={ref}
-      animate={
-        highlight
-          ? { boxShadow: "0 0 0 2px rgba(201,162,39,0.55)" }
-          : { boxShadow: "0 0 0 0px rgba(201,162,39,0)" }
-      }
-      transition={{ duration: 0.4 }}
-      className="mx-2 mb-4 rounded-2xl p-4"
-      style={{
-        background: "rgba(201, 162, 39, 0.06)",
-        border: "1px solid rgba(201, 162, 39, 0.22)",
-      }}
+      className={`eb-card mx-2 mb-4 p-4${highlight ? " eb-card--selected" : ""}`}
+      style={{ borderColor: highlight ? undefined : "var(--eb-gold-line)" }}
     >
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          <Crown className="w-4 h-4" style={{ color: "#d4af37" }} strokeWidth={1.5} />
-          <p className="text-sm font-light" style={{ color: "#d4af37" }}>
-            {t.sectionTitle}
-          </p>
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <Crown className="w-4 h-4 shrink-0 text-[var(--eb-gold-text)]" strokeWidth={1.5} />
+          <p className="eb-section-title truncate">{t.sectionTitle}</p>
         </div>
-        <button type="button" onClick={() => void refresh()} className="p-1" aria-label={t.refresh}>
-          <RefreshCw
-            className={`w-3.5 h-3.5 ${busy ? "animate-spin" : ""}`}
-            style={{ color: "#A1A1A6" }}
-          />
+        <button
+          type="button"
+          onClick={() => void refresh()}
+          className="mem-icon-btn -mr-2 shrink-0"
+          aria-label={t.refresh}
+          aria-busy={busy || undefined}
+        >
+          <RefreshCw className={`w-4 h-4 text-[var(--eb-text-2)] ${busy ? "animate-spin" : ""}`} />
         </button>
       </div>
 
-      <div className="p-3 rounded-xl space-y-1.5" style={{ background: "rgba(0,0,0,0.25)" }}>
+      <div className="p-3 rounded-[var(--eb-radius-sm)] space-y-1.5 bg-[var(--eb-surface-2)]">
         <div className="flex items-baseline justify-between gap-2">
-          <span className="text-[12px]" style={{ color: "#A1A1A6" }}>
-            {t.stateLabel}
-          </span>
+          <span className="text-[12px] text-[var(--eb-text-2)]">{t.stateLabel}</span>
           <span
-            className="text-sm font-medium"
-            style={{ color: entitled ? "#d4af37" : "#F5F5F7" }}
+            className={`text-sm font-semibold text-right ${
+              entitled ? "text-[var(--eb-gold-text)]" : "text-[var(--eb-text)]"
+            }`}
           >
             {label}
           </span>
         </div>
         <div className="flex items-baseline justify-between gap-2">
-          <span className="text-[12px]" style={{ color: "#A1A1A6" }}>
-            {t.planLabel}
-          </span>
-          <span className="text-[12px]" style={{ color: "#F5F5F7" }}>
+          <span className="text-[12px] text-[var(--eb-text-2)]">{t.planLabel}</span>
+          <span className="text-[12px] text-[var(--eb-text)] text-right">
             {status?.display_name ?? t.planStandard}
             {status?.price_krw_monthly
               ? ` · ${t.perMonth(status.price_krw_monthly)}`
@@ -210,14 +213,23 @@ export function MembershipSection({ language = "ko", focusOnMount }: MembershipS
         </div>
         {status?.next_billing_date ? (
           <div className="flex items-baseline justify-between gap-2">
-            <span className="text-[12px]" style={{ color: "#A1A1A6" }}>
+            <span className="text-[12px] text-[var(--eb-text-2)]">
               {status.status === "canceled" ? t.endsOn : t.nextBilling}
             </span>
-            <span className="text-[12px]" style={{ color: "#F5F5F7" }}>
+            <span className="text-[12px] text-[var(--eb-text)] tabular-nums">
               {status.next_billing_date.slice(0, 10)}
             </span>
           </div>
         ) : null}
+        <div className="flex items-center justify-between gap-2 pt-1 border-t border-[var(--eb-hairline)]">
+          <span className="flex items-center gap-1.5 text-[12px] text-[var(--eb-text-2)]">
+            <Coins className="w-3.5 h-3.5 text-[var(--eb-gold-text)]" aria-hidden />
+            {t.beamCredits}
+          </span>
+          <span className="text-[12px] font-semibold text-[var(--eb-text)] tabular-nums">
+            {walletBalance ?? t.stateUnknown}
+          </span>
+        </div>
       </div>
 
       {/* ── 결제 액션 (Toss) ─────────────────────────────────────────────── */}
@@ -228,18 +240,14 @@ export function MembershipSection({ language = "ko", focusOnMount }: MembershipS
               type="button"
               disabled={action != null}
               onClick={() => void run("start", startMembershipCheckout)}
-              className="w-full py-2.5 rounded-xl text-[13px] font-medium tracking-wide disabled:opacity-50"
-              style={{
-                background:
-                  "linear-gradient(135deg, #b8860b 0%, #c9a227 30%, #d4af37 50%, #f5d77a 70%, #d4af37 100%)",
-                color: "#0a0a0a",
-              }}
+              aria-busy={action === "start" || action === "confirm" || undefined}
+              className="eb-btn eb-btn--primary mem-btn-primary eb-btn--block text-sm"
             >
               {action === "start" ? t.starting : action === "confirm" ? t.confirming : t.startCta}
             </button>
           ) : billing?.billing?.cancel_at_period_end ? (
             <>
-              <p className="text-[11px]" style={{ color: "#A1A1A6" }}>
+              <p className="eb-caption">
                 {t.cancelScheduled(
                   (billing.billing.current_period_end ?? "").slice(0, 10) || "—"
                 )}
@@ -248,12 +256,8 @@ export function MembershipSection({ language = "ko", focusOnMount }: MembershipS
                 type="button"
                 disabled={action != null}
                 onClick={() => void run("resume", resumeMembership)}
-                className="w-full py-2.5 rounded-xl text-[13px] font-medium disabled:opacity-50"
-                style={{
-                  background: "rgba(201, 162, 39, 0.16)",
-                  border: "1px solid rgba(201, 162, 39, 0.45)",
-                  color: "#F1E5D1",
-                }}
+                aria-busy={action === "resume" || undefined}
+                className="eb-btn eb-btn--secondary mem-btn-secondary eb-btn--block text-sm"
               >
                 {t.resumeCta2}
               </button>
@@ -263,42 +267,28 @@ export function MembershipSection({ language = "ko", focusOnMount }: MembershipS
               type="button"
               disabled={action != null}
               onClick={() => void run("cancel", cancelMembership)}
-              className="w-full py-2 rounded-xl text-[12px] font-light disabled:opacity-50"
-              style={{
-                background: "rgba(255,255,255,0.06)",
-                border: "1px solid rgba(255,255,255,0.14)",
-                color: "#A1A1A6",
-              }}
+              aria-busy={action === "cancel" || undefined}
+              className="eb-btn eb-btn--ghost eb-btn--block text-sm"
             >
               {action === "cancel" ? t.canceling : t.cancelCta}
             </button>
           )}
 
-          {testMode ? (
-            <p className="text-[10px] font-light" style={{ color: "#8a8a8a" }}>
-              {t.testModeHint}
-            </p>
-          ) : null}
+          {testMode ? <p className="eb-caption">{t.testModeHint}</p> : null}
         </div>
       ) : (
-        <p className="mt-3 text-[11px] font-light" style={{ color: "#8a8a8a" }}>
-          {t.notConfigured}
-        </p>
+        <p className="mt-3 eb-caption">{t.notConfigured}</p>
       )}
 
       {notice ? (
-        <p className="mt-2 text-[11px]" style={{ color: "#d4af37" }}>
-          {notice}
-        </p>
+        <p className="mt-2 text-[12px] text-[var(--eb-sage-text)]">{notice}</p>
       ) : null}
 
       {/* 만료 불안을 여기서도 한 번 더 눌러 준다. */}
-      <p className="mt-2 text-[10px] font-light" style={{ color: "#8a8a8a" }}>
-        {t.assetsKeptHint}
-      </p>
+      <p className="mt-2 eb-caption">{t.assetsKeptHint}</p>
 
       {error ? (
-        <p className="mt-1.5 text-[11px] font-light" style={{ color: "#A1A1A6" }}>
+        <p className="mt-1.5 eb-field-error" role="alert">
           {error}
         </p>
       ) : null}

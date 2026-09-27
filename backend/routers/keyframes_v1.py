@@ -87,6 +87,8 @@ class CandidateOut(BaseModel):
     external_job_id: str | None = None
     raw_object_path: str | None = None
     cutout_object_path: str | None = None
+    #: 하류 모션 생성이 실제로 먹은 입력 (raw 아님).
+    plate_object_path: str | None = None
     input_canonical_candidate_id: str | None = None
     input_reference_ids: list[str] = []
     qa_result: dict[str, Any] = {}
@@ -141,6 +143,7 @@ def _out(k: svc.ActionKeyframe) -> KeyframeOut:
                 external_job_id=c.external_job_id,
                 raw_object_path=c.raw_object_path,
                 cutout_object_path=c.cutout_object_path,
+                plate_object_path=c.plate_object_path,
                 input_canonical_candidate_id=c.input_canonical_candidate_id,
                 input_reference_ids=c.input_reference_ids,
                 qa_result=c.qa_result,

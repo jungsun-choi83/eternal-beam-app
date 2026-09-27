@@ -46,6 +46,12 @@ def _load_environment() -> None:
 
 def _stop(signum, frame) -> None:  # noqa: ARG001
     global _STOP
+    # Only flip the flag here. The loop below finishes whatever tick is
+    # already in flight (its lease is fenced by execution_token and kept
+    # alive by _LeaseHeartbeater) and then simply stops claiming new work —
+    # no DB write happens from the signal handler itself, so a slow or
+    # re-entrant signal can never corrupt a lease.
+    logger.info("shutdown signal received (signum=%s); stopping after current tick", signum)
     _STOP = True
 
 
@@ -67,28 +73,57 @@ async def _run() -> None:
     if not enabled:
         raise RuntimeError("PET_GENERATION_WORKER_ENABLED=1 is required")
 
-    logger.info("Phase 7D worker started: worker_id=%s", worker_id)
+    heartbeat_every = max(1, int(os.getenv("PET_GENERATION_WORKER_HEARTBEAT_TICKS", "30")))
+    logger.info(
+        "Phase 7D worker started: worker_id=%s pid=%s poll_sec=%s lease_sec=%s "
+        "generation_mock=%s luma_mock=%s",
+        worker_id,
+        os.getpid(),
+        poll_seconds,
+        os.getenv("GENERATION_RUN_LEASE_SECONDS", "300"),
+        os.getenv("GENERATION_MOCK", "0"),
+        os.getenv("LUMA_MOCK", "0"),
+    )
+    idle_ticks = 0
     while not _STOP:
         try:
             result = await run_once(worker_id)
             if result:
+                idle_ticks = 0
+                # A run was claimed and advanced this tick (including one that
+                # was released back to WAITING_PROVIDER). Its lease/worker_id
+                # are already cleared by _progress(), so another ready run
+                # (QUEUED, or a different WAITING_PROVIDER run whose
+                # next_attempt_at is due) may already be claimable. Loop
+                # immediately instead of blocking this worker on a fixed
+                # sleep; claim_next_pet_generation_run's next_attempt_at
+                # check is what actually gates re-polling the same run, so
+                # no timer is needed here to enforce that.
                 logger.info(
                     "run advanced: run_id=%s stage=%s status=%s",
                     result.id,
                     result.current_stage,
                     result.status,
                 )
-                if result.status == "WAITING_PROVIDER":
-                    await asyncio.sleep(poll_seconds)
                 continue
         except Exception:
             logger.exception("generation worker tick failed")
+        # Nothing was claimable (or the tick errored): back off before
+        # re-polling so an idle/erroring worker doesn't busy-loop the claim
+        # RPC.
+        idle_ticks += 1
+        if idle_ticks % heartbeat_every == 0:
+            # Liveness signal for the deploy logs: on an idle queue this is
+            # the only line that proves the process is still up and polling,
+            # as opposed to having exited or hung silently.
+            logger.info("worker alive: worker_id=%s idle_ticks=%s", worker_id, idle_ticks)
         await asyncio.sleep(poll_seconds)
-    logger.info("Phase 7D worker stopped")
+    logger.info("Phase 7D worker stopped: worker_id=%s", worker_id)
 
 
 def main() -> None:
     _load_environment()
+    logger.info("pet_generation_worker booting: pid=%s", os.getpid())
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
     asyncio.run(_run())

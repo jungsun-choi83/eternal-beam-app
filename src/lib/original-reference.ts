@@ -230,3 +230,63 @@ export async function persistOriginalReference(params: {
     return null;
   }
 }
+
+/** 한 장의 인테이크가 끝나 **원본과 누끼가 서버에서 짝지어진** 결과. */
+export type ReadyIntakePair = {
+  petId: string;
+  referenceId: string;
+  cutoutReferenceId: string;
+};
+
+/**
+ * 세션에 실리는 Phase 7B 영수증.
+ *
+ * 단수 필드는 기존 소비자를 위해 그대로 남는다(준비된 **첫** 쌍). 복수 필드가
+ * 실제 계약이다 — 활성 펫에서 준비 완료된 모든 원본/누끼 쌍(1–3장)이다.
+ */
+export type Phase1IntakeReceipt = {
+  status: "ready";
+  pet_id: string;
+  original_reference_id: string;
+  cutout_reference_id: string;
+  original_reference_ids: string[];
+  cutout_reference_ids: string[];
+};
+
+/**
+ * 준비 완료된 쌍들을 영수증 하나로 모은다. **순수 함수**.
+ *
+ * - 활성 pet_id 와 다른 쌍은 버린다 — 다른 펫 슬롯의 레퍼런스가 섞이면 안 된다.
+ * - 원본/누끼 한쪽만 있는 것은 쌍이 아니므로 싣지 않는다.
+ * - 같은 원본 id 재등장(서버 멱등 재업로드)은 한 번만 싣는다.
+ * - 실을 것이 하나도 없으면 null — 빈 영수증을 만들지 않는다.
+ */
+export function buildPhase1IntakeReceipt(
+  petId: string,
+  ready: readonly ReadyIntakePair[],
+): Phase1IntakeReceipt | null {
+  const activePetId = (petId || "").trim();
+  if (!activePetId) return null;
+
+  const originals: string[] = [];
+  const cutouts: string[] = [];
+  for (const pair of ready || []) {
+    if (!pair || (pair.petId || "").trim() !== activePetId) continue;
+    const original = (pair.referenceId || "").trim();
+    const cutout = (pair.cutoutReferenceId || "").trim();
+    if (!original || !cutout) continue;
+    if (originals.includes(original)) continue;
+    originals.push(original);
+    cutouts.push(cutout);
+  }
+  if (originals.length === 0) return null;
+
+  return {
+    status: "ready",
+    pet_id: activePetId,
+    original_reference_id: originals[0],
+    cutout_reference_id: cutouts[0],
+    original_reference_ids: originals,
+    cutout_reference_ids: cutouts,
+  };
+}

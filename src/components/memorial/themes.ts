@@ -213,6 +213,27 @@ export const memorialThemes: MemorialTheme[] = [
   },
 ];
 
+/**
+ * 테마 카드(선택 그리드의 썸네일)가 그릴 이미지 주소 — **카탈로그가 한 곳에서 푼다.**
+ *
+ * - 원본 사진 테마: 고객이 올린 사진 자체. 없으면 "" 를 돌려 주고 카드는 빈
+ *   자리표시자를 그린다(고정 에셋을 두면 다른 사진처럼 보인다).
+ * - 그 외 모든 테마(유료·커스텀 포함): 카탈로그의 `thumb`. 커스텀 배경도 생성 전에
+ *   보여 줄 자기 자리표시자 에셋(custom_photo_bg_placeholder.jpg)을 갖고 있다.
+ *
+ * 화면이 `/theme-thumbs/...` 경로를 따로 들고 있지 않게 하려는 것이다 — 경로는
+ * 위 목록만이 안다.
+ */
+export function getThemeCardThumb(
+  theme: MemorialTheme,
+  originalPhoto?: string | null
+): string {
+  if (theme.themeKey === ORIGINAL_PHOTO_THEME_KEY) {
+    return originalPhoto || theme.thumb;
+  }
+  return theme.thumb;
+}
+
 export function getMemorialTheme(id: number | null): MemorialTheme | undefined {
   if (id == null) return undefined;
   return memorialThemes.find((t) => t.id === id);

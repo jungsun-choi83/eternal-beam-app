@@ -152,6 +152,86 @@ def test_framing_drift_is_rejected():
     assert r["metrics"]["translation_drift_frac_of_pet"] > 0.020
 
 
+_CLASSIFIER_THRESHOLDS = {
+    "scale_pulse_max": 0.020,
+    "scale_strict": 0.010,
+    "drift_max_frac": 0.020,
+    "sag_trend_max": 0.010,
+    "visible_osc_min": 0.003,
+    "torso_snr_min": 1.6,
+    "periodic_min": 0.25,
+    "modulation_strong": 0.45,
+    "head_ratio_max": 1.6,
+    "head_ratio_max_midband": 1.2,
+}
+
+_CLEAR_TORSO_METRICS = {
+    "scale_range": 0.008,
+    "scale_oscillation": 0.004,
+    "scale_trend": 0.001,
+    "translation_drift_frac_of_pet": 0.002,
+    "torso_snr": 2.98,
+    "head_to_torso_ratio": 0.8,
+    "torso_energy_modulation": 0.50,
+    "periodic_score": 0.40,
+}
+
+
+def test_subtle_torso_breathing_with_small_head_motion_passes_with_advisory():
+    metrics = {
+        **_CLEAR_TORSO_METRICS,
+        "head_to_torso_ratio": 2.231,
+        "periodic_score": 0.127,
+    }
+    verdict, reason, advisories = bt._classify_temporal_metrics(
+        metrics, _CLASSIFIER_THRESHOLDS
+    )
+
+    assert verdict == bt.VERDICT_BREATHING
+    assert reason is None
+    assert {item["check"] for item in advisories} >= {
+        "head_to_torso_ratio",
+        "periodic_score",
+    }
+
+
+def test_weak_periodic_score_with_clear_torso_signal_passes():
+    metrics = {
+        **_CLEAR_TORSO_METRICS,
+        "periodic_score": 0.127,
+        "torso_energy_modulation": 0.20,
+    }
+    verdict, _reason, advisories = bt._classify_temporal_metrics(
+        metrics, _CLASSIFIER_THRESHOLDS
+    )
+
+    assert verdict == bt.VERDICT_BREATHING
+    assert any(item["check"] == "periodic_score" for item in advisories)
+
+
+def test_no_torso_signal_remains_no_motion():
+    metrics = {**_CLEAR_TORSO_METRICS, "torso_snr": 1.2}
+    verdict, reason, _advisories = bt._classify_temporal_metrics(
+        metrics, _CLASSIFIER_THRESHOLDS
+    )
+
+    assert verdict == bt.VERDICT_NO_MOTION
+    assert "torso_snr" in (reason or "")
+
+
+def test_large_whole_body_translation_remains_blocking():
+    metrics = {
+        **_CLEAR_TORSO_METRICS,
+        "translation_drift_frac_of_pet": 0.04,
+    }
+    verdict, reason, _advisories = bt._classify_temporal_metrics(
+        metrics, _CLASSIFIER_THRESHOLDS
+    )
+
+    assert verdict == bt.VERDICT_GLOBAL_PULSE
+    assert "drift" in (reason or "")
+
+
 def test_unmeasurable_paths_claim_nothing():
     assert bt.analyze_frames([], FPS, KEYFRAME)["verdict"] == bt.VERDICT_UNMEASURABLE
     flat = np.full((H, W, 3), 200, dtype=np.uint8)  # 펫 없음 → 마스크 실패
@@ -207,9 +287,33 @@ def test_vlm_no_still_fails_despite_temporal_evidence():
 
 def test_global_pulse_blocks_promotion_even_when_vlm_says_yes():
     out = _evaluate("yes", {"verdict": bt.VERDICT_GLOBAL_PULSE, "reason": "scale_range"})
+    assert out["checks"]["temporal_breathing"] == "FAIL"
+    assert out["decision"] == "FAIL"
+    assert any("temporal_global_pulse" in r for r in out["reasons"])
+
+
+def test_camera_drift_remains_hard_fail():
+    img = KEYFRAME
+    out = qa.evaluate_motion_video(
+        frames=[img, img, img],
+        spec_contract=_CONTRACT,
+        start_keyframe_rgb=img,
+        target_keyframe_rgb=None,
+        vlm_qa={**_vlm("yes"), "camera_stable": "no"},
+        temporal_qa={
+            "verdict": bt.VERDICT_GLOBAL_PULSE,
+            "reason": "camera_translation_drift",
+        },
+    )
+
+    assert out["checks"]["temporal_breathing"] == "FAIL"
+    assert out["decision"] == "FAIL"
+
+
+def test_no_torso_motion_caps_vlm_confirmed_clip_at_review():
+    out = _evaluate("yes", {"verdict": bt.VERDICT_NO_MOTION, "reason": "torso_snr"})
     assert out["checks"]["temporal_breathing"] == "REVIEW"
     assert out["decision"] == "REVIEW"
-    assert any("temporal_global_pulse" in r for r in out["reasons"])
 
 
 def test_inconclusive_temporal_never_blocks_a_vlm_confirmed_pass():

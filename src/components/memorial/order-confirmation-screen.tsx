@@ -19,6 +19,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { PrimaryButton, SecondaryButton } from "@/components/ui/buttons";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { orderReturnEntry, readThemeReturnParams } from "@/lib/app-entry";
 import { getPremiumAccessToken } from "@/lib/premium-auth-token";
 import {
@@ -140,84 +142,88 @@ export function OrderConfirmationScreen({
   // order-return-routing.test.ts 가 그것을 지킨다.
   const goBack = useCallback(() => onContinue(), [onContinue]);
 
+  // Phase 10 — 부모(<main>)가 아이보리 바탕을 깔아 준다. 이 화면은 그 위에
+  // 결과 패널(.eb-card) 하나를 가운데 놓는다. fixed 오버레이가 아니다.
   return (
-    <div className="fixed inset-0 flex flex-col items-center justify-center gap-4 bg-[#0a0a0a] px-8">
-      {phase.kind === "working" && (
-        <p className="text-sm text-white/50">결제를 확인하는 중…</p>
-      )}
+    <div className="order-confirmation-screen flex w-full flex-col items-center justify-center gap-4 bg-[var(--eb-bg)] px-6 py-12 text-[var(--eb-text)]">
+      <section
+        className="eb-card eb-fade-up flex w-full max-w-[480px] flex-col items-center gap-4 px-6 py-8 text-center"
+        aria-live="polite"
+      >
+        {phase.kind === "working" && (
+          <>
+            <StatusBadge tone="loading">확인 중</StatusBadge>
+            <p className="eb-body-sm">결제를 확인하는 중…</p>
+          </>
+        )}
 
-      {phase.kind === "done" && (
-        <>
-          <p className="text-base font-medium text-[#EDE3CE]">
-            {phase.alreadyPaid ? "이미 접수된 주문입니다" : "주문이 접수되었습니다"}
-          </p>
-
-          {phase.order && (
-            <dl className="mt-1 w-full max-w-sm rounded-2xl border border-white/12 bg-white/[0.03] px-4 py-4 text-[12px]">
-              <Row label="주문번호" value={phase.order.orderId} mono />
-              <Row
-                label="제품"
-                value={PRODUCT_LABEL[phase.order.productType] ?? phase.order.productType}
-              />
-              <Row label="금액" value={formatKrw(phase.order.amount)} accent />
-              <Row label="아이" value={phase.order.petId} mono />
-              {phase.order.soulTraceLetterId && (
-                <Row label="편지" value={phase.order.soulTraceLetterId} mono />
-              )}
-              <Row label="상태" value={fulfillmentLabel(fulfillmentStage(phase.order))} />
-            </dl>
-          )}
-
-          {/*
-            생산 완결은 결제 확인 뒤에 **비동기로** 돈다. 아직 pending 이어도
-            결제는 끝났으므로 "준비 중"이라고 말한다 — 여기서 실패처럼 보이면
-            고객이 다시 결제하고, 그것이 이중 청구가 된다.
-          */}
-          <p className="max-w-xs text-[11px] leading-relaxed text-white/40">
-            {phase.order && fulfillmentStage(phase.order) === "preparing"
-              ? "결제가 완료되었습니다. 제작 준비가 곧 시작되며, 진행 상황은 기념품 화면에서 볼 수 있습니다."
-              : "제작·배송 진행 상황은 기념품 화면에서 볼 수 있습니다."}
-          </p>
-        </>
-      )}
-
-      {phase.kind === "failed" && (
-        <>
-          <p className="text-base font-medium text-white/90">결제를 완료하지 못했습니다</p>
-          <p className="max-w-xs text-sm leading-relaxed text-white/55">{phase.message}</p>
-          {phase.reconciling && (
-            // 결제가 실제로 승인됐다면 다음 방문에서 주문이 정리된다.
-            <p className="max-w-xs text-[11px] leading-relaxed text-white/35">
-              결제가 이미 승인되었다면 잠시 후 자동으로 주문에 반영됩니다.
-              중복 결제하지 마시고 기념품 화면에서 확인해 주세요.
+        {phase.kind === "done" && (
+          <>
+            <StatusBadge tone="success">결제 완료</StatusBadge>
+            <p className="eb-title text-base font-medium">
+              {phase.alreadyPaid ? "이미 접수된 주문입니다" : "주문이 접수되었습니다"}
             </p>
-          )}
-        </>
-      )}
 
-      {/*
-        나가는 길이 **두 개**다. 예전에는 "돌아가기" 하나뿐이었고 그마저 루트
-        새로고침이었다. 결제를 마친 고객이 하고 싶은 일은 둘 중 하나다 —
-        아이에게 돌아가거나, 방금 산 것을 확인하거나.
-      */}
-      {phase.kind !== "working" && (
-        <div className="mt-2 flex flex-col items-center gap-2">
-          <button
-            type="button"
-            onClick={goBack}
-            className="rounded-full bg-[#c9a227] px-6 py-2.5 text-sm font-semibold text-[#0a0a0a] active:opacity-90"
-          >
-            아이에게 돌아가기
-          </button>
-          <button
-            type="button"
-            onClick={onViewOrders}
-            className="rounded-full border border-white/20 px-5 py-2 text-sm text-white/80 active:bg-white/10"
-          >
-            주문 보기 · 다른 상품
-          </button>
-        </div>
-      )}
+            {phase.order && (
+              <dl className="eb-card eb-card--muted mt-1 w-full max-w-sm rounded-2xl border px-4 py-4 text-left text-[13px]">
+                <Row label="주문번호" value={phase.order.orderId} mono />
+                <Row
+                  label="제품"
+                  value={PRODUCT_LABEL[phase.order.productType] ?? phase.order.productType}
+                />
+                <Row label="금액" value={formatKrw(phase.order.amount)} accent />
+                <Row label="아이" value={phase.order.petId} mono />
+                {phase.order.soulTraceLetterId && (
+                  <Row label="편지" value={phase.order.soulTraceLetterId} mono />
+                )}
+                <Row label="상태" value={fulfillmentLabel(fulfillmentStage(phase.order))} />
+              </dl>
+            )}
+
+            {/*
+              생산 완결은 결제 확인 뒤에 **비동기로** 돈다. 아직 pending 이어도
+              결제는 끝났으므로 "준비 중"이라고 말한다 — 여기서 실패처럼 보이면
+              고객이 다시 결제하고, 그것이 이중 청구가 된다.
+            */}
+            <p className="eb-caption max-w-xs leading-relaxed">
+              {phase.order && fulfillmentStage(phase.order) === "preparing"
+                ? "결제가 완료되었습니다. 제작 준비가 곧 시작되며, 진행 상황은 기념품 화면에서 볼 수 있습니다."
+                : "제작·배송 진행 상황은 기념품 화면에서 볼 수 있습니다."}
+            </p>
+          </>
+        )}
+
+        {phase.kind === "failed" && (
+          <>
+            <StatusBadge tone="error">결제 실패</StatusBadge>
+            <p className="eb-title text-base font-medium">결제를 완료하지 못했습니다</p>
+            <p className="eb-body-sm max-w-xs leading-relaxed">{phase.message}</p>
+            {phase.reconciling && (
+              // 결제가 실제로 승인됐다면 다음 방문에서 주문이 정리된다.
+              <p className="eb-notice eb-notice--warning max-w-xs text-left text-[13px] leading-relaxed">
+                결제가 이미 승인되었다면 잠시 후 자동으로 주문에 반영됩니다.
+                중복 결제하지 마시고 기념품 화면에서 확인해 주세요.
+              </p>
+            )}
+          </>
+        )}
+
+        {/*
+          나가는 길이 **두 개**다. 예전에는 "돌아가기" 하나뿐이었고 그마저 루트
+          새로고침이었다. 결제를 마친 고객이 하고 싶은 일은 둘 중 하나다 —
+          아이에게 돌아가거나, 방금 산 것을 확인하거나.
+        */}
+        {phase.kind !== "working" && (
+          <div className="mt-2 flex w-full flex-col items-stretch gap-2">
+            <PrimaryButton block onClick={goBack}>
+              아이에게 돌아가기
+            </PrimaryButton>
+            <SecondaryButton block onClick={onViewOrders}>
+              주문 보기 · 다른 상품
+            </SecondaryButton>
+          </div>
+        )}
+      </section>
     </div>
   );
 }
@@ -235,10 +241,11 @@ function Row({
 }) {
   return (
     <div className="flex gap-3 py-1">
-      <dt className="w-16 shrink-0 text-white/40">{label}</dt>
+      <dt className="w-16 shrink-0 text-[var(--eb-text-2)]">{label}</dt>
       <dd
-        className={`flex-1 break-all ${mono ? "font-mono text-[11px]" : ""}`}
-        style={{ color: accent ? "#f5d77a" : "#D8D8D8" }}
+        className={`flex-1 break-all ${mono ? "font-mono text-[11px] text-[var(--eb-text-2)]" : ""} ${
+          accent ? "eb-price" : "text-[var(--eb-text)]"
+        }`}
       >
         {value}
       </dd>

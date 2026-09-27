@@ -77,6 +77,18 @@ export function commitMainMedia(kind: MediaKind, url: string): void {
   }
 }
 
+/**
+ * 활성 펫에 미디어가 없을 때 — 세 칸을 **함께** 비운다.
+ *
+ * 펫을 바꿨는데 새 펫이 아직 아무것도 올리지 않았다면, 남아 있는 값은 전부
+ * 직전 펫의 것이다. 하나라도 남기면 "지금 올린 것이 무엇인가"에 남의 답이 나온다.
+ */
+export function clearMainMedia(): void {
+  safeRemove(MEDIA_TYPE_KEY);
+  safeRemove(MAIN_PHOTO_KEY);
+  safeRemove(MAIN_VIDEO_KEY);
+}
+
 export function readMainPhoto(): string | null {
   return safeGet(MAIN_PHOTO_KEY);
 }

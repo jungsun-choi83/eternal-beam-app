@@ -17,9 +17,11 @@ from backend.routers import motion_videos_v1
 from backend.services import action_keyframe_service as kf
 from backend.services import canonical_pet_service as canon
 from backend.services import durable_provider_jobs
+from backend.services import motion_spec as ms
 from backend.services import motion_video_qa as qa_mod
 from backend.services import motion_video_service as mv
 from backend.services import pet_identity_service as ids
+from backend.services import pet_morphology_service as morph
 from backend.services import pet_reference_service as refs
 from backend.services import pet_reference_set_service as sets
 from backend.services import pet_registry, vlm_identity
@@ -46,10 +48,10 @@ def _mock_backend(monkeypatch):
     # 레거시 하네스는 200×150 가짜 프레임을 그대로 공급한다 — 앵커는 전용
     # 테스트(test_video_anchor_*)에서 켜서 검증한다.
     monkeypatch.setenv("PHASE6_VIDEO_ANCHOR", "0")
-    for m in (refs, pet_registry, ids, sets, canon, kf, mv):
+    for m in (refs, pet_registry, ids, morph, sets, canon, kf, mv):
         m.__reset_for_tests()
     yield
-    for m in (refs, pet_registry, ids, sets, canon, kf, mv):
+    for m in (refs, pet_registry, ids, morph, sets, canon, kf, mv):
         m.__reset_for_tests()
 
 
@@ -126,8 +128,20 @@ class FakeVideoProvider(VideoGenerationProvider):
 
 
 def sampler_identical(video_bytes: bytes):
-    """"영상"(실은 시작 키프레임 PNG) → 동일 프레임 5장 — 완벽한 안정 클립."""
-    rgb = mv._rgb_from_bytes(video_bytes)
+    """"영상"(실은 시작 키프레임 PNG) → 동일 프레임 5장 — 완벽한 안정 클립.
+
+    프로바이더에 실제로 보내는 입력은 **클린 플레이트**(누끼 + 고정 중립 배경)
+    이므로, 돌아오는 프레임도 같은 중립 배경 위에 있다. 테스트의 가짜 "영상"은
+    RGBA 누끼 PNG 라서 여기서 같은 규칙으로 합성해 준다 — 안 하면 QA 가 비교
+    하는 두 이미지의 배경이 서로 달라 테스트만 어긋난다.
+    """
+    from backend.services import clean_plate_service as _cp
+
+    try:
+        plate, _meta = _cp.build_clean_plate(video_bytes)
+    except _cp.CleanPlateError:
+        plate = video_bytes
+    rgb = mv._rgb_from_bytes(plate)
     return [rgb] * 5 if rgb is not None else None
 
 
@@ -193,35 +207,132 @@ def test_durable_motion_resumes_one_building_version(storage, monkeypatch):
     assert len(completed.candidates) == 1
 
 
+class _DurableJobVideoProvider(FakeVideoProvider):
+    """유료 생성은 attempt 당 한 번만 — 재호출은 같은 영수증을 재사용한다.
+
+    calls = generate() 호출 수, submissions = 실제 신규 결제(=신규 external
+    job id 발급) 수. 실제 DurableVideoProvider 는 (phase_version_id, attempt,
+    fingerprint) 로 중복 제출을 막는다 — 이 더블은 그 계약을 흉내 낸다.
+    """
+
+    durable_execution = True
+
+    def __init__(self, name: str, video_bytes: bytes):
+        super().__init__(name, [])
+        self._video_bytes = video_bytes
+        self.submissions = 0
+        self._job_ids: dict[int, str] = {}
+
+    def generate(self, request):
+        self.calls += 1
+        self.requests.append(request)
+        attempt = request.metadata.get("attempt")
+        if attempt not in self._job_ids:
+            self.submissions += 1
+            self._job_ids[attempt] = f"{self.name}-job-{attempt}"
+        return MotionVideoResult(
+            video_bytes=self._video_bytes, provider=self.name, model=self.model_name(),
+            external_job_id=self._job_ids[attempt],
+        )
+
+
+def test_motion_storage_failure_recovers_same_candidate_no_resubmission(storage, monkeypatch):
+    """유료 모션 생성 후 raw 저장만 실패해도 같은 후보가 재사용된다 — 재과금 없음."""
+    h, _canonical = _prepare_pipeline(monkeypatch, storage)
+    monkeypatch.setenv("PHASE6_MAX_PRIMARY", "2")
+    monkeypatch.setenv("PHASE6_STOP_AFTER_PASSES", "1")
+
+    from backend.services import supabase_assets
+
+    upload_calls = {"n": 0}
+
+    async def flaky_upload(path, data, content_type):
+        upload_calls["n"] += 1
+        if upload_calls["n"] == 1:
+            raise RuntimeError("storage down")
+        storage[path] = bytes(data)
+        return f"https://storage.test/{path}"
+
+    monkeypatch.setattr(supabase_assets, "upload_asset_to_storage", flaky_upload)
+
+    provider = _DurableJobVideoProvider("seedance", GOOD())
+
+    with pytest.raises(durable_provider_jobs.ProviderRecoveryRequired):
+        _build_motion(h, "BREATHING", [provider])
+
+    # 1) 유료 생성은 정확히 한 번 — 저장 실패는 같은 후보에 기록되고, 버전은
+    #    BUILDING 으로 남아 재개 가능하다 (다음 유료 후보로 넘어가지 않는다).
+    assert provider.calls == 1
+    assert provider.submissions == 1
+    rows = _run(mv._version_rows(PET, "BREATHING"))
+    assert len(rows) == 1 and rows[0]["status"] == mv.STATUS_BUILDING
+    cands = _run(mv._candidate_rows(str(rows[0]["id"])))
+    assert len(cands) == 1
+    assert cands[0]["decision"] == "ERROR"
+    assert cands[0]["error"] == "RAW_STORE_FAILED"
+    assert cands[0]["provider_job_id"] == "seedance-job-1"  # provider job id 보존
+    assert not cands[0].get("raw_video_path")
+
+    # 2) 재시작/재개 — 같은 candidate/영수증을 재사용해 저장만 재시도한다.
+    completed = _build_motion(h, "BREATHING", [provider])
+    assert completed.status == mv.STATUS_COMPLETE
+    assert provider.calls == 2        # 영수증 재사용을 위한 재호출
+    assert provider.submissions == 1  # 새 결제는 없다 — 재제출 없음 증거
+    assert len(completed.candidates) == 1
+    assert completed.candidates[0].provider_job_id == "seedance-job-1"
+    assert len(_run(mv._version_rows(PET, "BREATHING"))) == 1  # 새 버전/후보 없음
+
+
+def test_motion_repeated_storage_failure_ends_recoverable_without_extra_paid_generation(storage, monkeypatch):
+    """저장이 계속 실패해도 재시도마다 유료 후보가 늘지 않고 recoverable 상태에 머문다."""
+    h, _canonical = _prepare_pipeline(monkeypatch, storage)
+    monkeypatch.setenv("PHASE6_MAX_PRIMARY", "2")
+
+    from backend.services import supabase_assets
+
+    async def always_fails(path, data, content_type):
+        raise RuntimeError("storage down")
+
+    monkeypatch.setattr(supabase_assets, "upload_asset_to_storage", always_fails)
+
+    provider = _DurableJobVideoProvider("seedance", GOOD())
+
+    for _ in range(3):
+        with pytest.raises(durable_provider_jobs.ProviderRecoveryRequired):
+            _build_motion(h, "BREATHING", [provider])
+
+    assert provider.submissions == 1  # 반복 실패해도 새 유료 후보로 넘어가지 않는다
+    rows = _run(mv._version_rows(PET, "BREATHING"))
+    assert len(rows) == 1 and rows[0]["status"] == mv.STATUS_BUILDING
+    cands = _run(mv._candidate_rows(str(rows[0]["id"])))
+    assert len(cands) == 1  # 후보가 늘어나지 않았다
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 라우팅 정책
 # ══════════════════════════════════════════════════════════════════════════
 
 
 def test_routing_by_motion_class(monkeypatch):
-    assert [p.name for p in vp.routing_for_class("MICRO")] == ["seedance", "kling"]
-    assert [p.name for p in vp.routing_for_class("TRANSITION")] == ["kling", "seedance"]
-    assert [p.name for p in vp.routing_for_class("LOCOMOTION")] == ["seedance", "kling"]
-    assert [p.name for p in vp.routing_for_class("INTERACTION")] == ["kling", "seedance"]
-    monkeypatch.setenv("PHASE6_PROVIDER_MICRO", "kling")
-    assert vp.routing_for_class("MICRO")[0].name == "kling"
+    assert [p.name for p in vp.routing_for_class("MICRO")] == ["wan_3_standard", "seedance"]
+    assert [p.name for p in vp.routing_for_class("TRANSITION")] == ["kling_3", "wan_3_standard"]
+    assert [p.name for p in vp.routing_for_class("LOCOMOTION")] == ["kling_3", "wan_3_standard"]
+    assert [p.name for p in vp.routing_for_class("INTERACTION")] == ["seedance", "kling_3"]
     monkeypatch.setenv("VIDEO_GENERATION_MOCK", "1")
     assert [p.name for p in vp.routing_for_class("MICRO")] == ["mock"]
 
 
-def test_wan_is_env_only_test_adapter(monkeypatch):
-    """Wan(fal turbo)은 저비용 프롬프트 실험 전용 — 기본 라우팅에 절대 없고,
-    PHASE6_PROVIDER_<CLASS>=wan 명시로만 선택되며, durable 실행 경로에 못 들어온다."""
+def test_legacy_wan_is_explicit_registry_only_test_adapter(monkeypatch):
+    """Wan(fal turbo)은 저비용 프롬프트 실험 전용 — motion_spec 기본 라우팅의
+    wan_3_standard 와 별개이며, 명시 registry 해석으로만 선택된다."""
     from backend.services import durable_provider_jobs
 
-    # 기본 라우팅 불변 — wan 은 어떤 클래스에도 없다.
+    # 기본 라우팅에는 Wan 3 standard 만 있고 레거시 "wan" 은 없다.
     for cls in ("MICRO", "TRANSITION", "LOCOMOTION", "INTERACTION"):
         assert "wan" not in [p.name for p in vp.routing_for_class(cls)]
 
-    # 명시 오버라이드로만 온다 (트랜스포트는 fal 하나뿐).
-    monkeypatch.setenv("PHASE6_PROVIDER_MICRO", "wan")
-    monkeypatch.setenv("PHASE6_FALLBACK_MICRO", "")
-    routed = vp.routing_for_class("MICRO")
+    # 명시 registry id 로만 온다 (트랜스포트는 fal 하나뿐).
+    routed = vp.resolve_provider_order(["wan"])
     assert [p.name for p in routed] == ["wan"]
     assert isinstance(routed[0], vp.FalWanProvider)
 
@@ -293,6 +404,25 @@ def test_micro_breathing_success(storage, monkeypatch):
     assert v.canonical_version_id == canonical.id
 
 
+def test_candidate_persists_logical_model_vendor_adapter_provenance(storage, monkeypatch):
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+    provider = FakeVideoProvider("seedance", [GOOD()], model="seedance2_5")
+    provider.logical_model_id = "seedance"
+    provider.vendor_id = "runway"
+    provider.adapter_id = "RunwaySeedanceProvider"
+
+    version = _build_motion(h, "BREATHING", [provider])
+    candidate = next(item for item in version.candidates if item.selected)
+    assert candidate.provider == "seedance"
+    assert candidate.model == "seedance2_5"
+    assert candidate.generation_metadata["provider_identity"] == {
+        "logical_model": "seedance",
+        "vendor": "runway",
+        "adapter": "RunwaySeedanceProvider",
+        "vendor_model": "seedance2_5",
+    }
+
+
 def test_prompts_by_class_and_no_themes(storage, monkeypatch):
     from backend.services.motion_video_prompts import build_motion_video_prompt
     from backend.services.theme_catalog import ALL_THEME_KEYS
@@ -303,7 +433,10 @@ def test_prompts_by_class_and_no_themes(storage, monkeypatch):
 
     assert "returned to exactly the starting pose" in breath.prompt
     assert "End exactly in the supplied target pose" in lie.prompt
-    assert breath.prompt_version == "motion-video-prompt-v1"
+    assert breath.prompt_version == "motion-video-prompt-v2"
+    for p_ in (breath.prompt, lie.prompt):
+        assert "no contact shadow under the pet" in p_
+        assert "no cast shadow on the background" in p_
     for p in (breath.prompt, lie.prompt):
         low = p.lower()
         for key in ALL_THEME_KEYS:
@@ -320,6 +453,44 @@ def test_prompts_by_class_and_no_themes(storage, monkeypatch):
 # ══════════════════════════════════════════════════════════════════════════
 # TRANSITION — LIE_DOWN
 # ══════════════════════════════════════════════════════════════════════════
+
+
+def test_provider_receives_the_keyframe_clean_plate_not_the_raw_keyframe(storage, monkeypatch):
+    """그림자 잔재의 경로를 끊는 핵심 계약 — I2V 입력은 plate 다."""
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+    provider = FakeVideoProvider("seedance", [GOOD()])
+
+    v = _build_motion(h, "BREATHING", [provider])
+    assert v.status == mv.STATUS_COMPLETE
+
+    keyframe = _run(kf.get_keyframe(user_id=USER, pet_id=PET, keyframe_role="NEUTRAL_IDLE"))
+    sel = next(c for c in keyframe.candidates if c.selected)
+    assert sel.plate_object_path and sel.plate_object_path in storage
+
+    sent = provider.requests[0].start_image_bytes
+    assert sent == storage[sel.plate_object_path]
+    assert sent != storage[sel.raw_object_path]   # raw 는 생성에 들어가지 않는다
+    assert storage[sel.raw_object_path]           # …그러나 증거로 보존된다
+
+    # 계보에도 "무엇을 보냈는가"가 적힌다.
+    cand = next(c for c in v.candidates if c.selected)
+    start_ref = next(r for r in cand.input_references if r["kind"] == "start_keyframe")
+    assert start_ref["sent_input"]["kind"] == "clean_plate"
+    assert start_ref["sent_input"]["object_path"] == sel.plate_object_path
+
+
+def test_motion_fails_closed_when_no_keyframe_plate_can_be_built(storage, monkeypatch):
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+    for row in kf._MOCK_CANDIDATES:
+        row["plate_bucket"] = row["plate_object_path"] = None
+        row["cutout_bucket"] = row["cutout_object_path"] = None
+
+    provider = FakeVideoProvider("seedance", [GOOD()])
+    with pytest.raises(mv.MotionVideoError) as e:
+        _build_motion(h, "BREATHING", [provider])
+    assert e.value.code == "KEYFRAME_PLATE_UNAVAILABLE"
+    assert e.value.status == 503
+    assert provider.calls == 0  # 과금 호출 0회
 
 
 def test_transition_sends_both_frames(storage, monkeypatch):
@@ -499,6 +670,81 @@ def test_video_anchor_applied_for_non_916_keyframe(storage, monkeypatch):
     assert any(p.endswith("_anchor9x16.png") for p in storage)
 
 
+def test_clean_plate_available_skips_raw_keyframe_download(storage, monkeypatch):
+    """
+    확인된 지연 병목의 회귀 가드: 키프레임 클린 플레이트가 이미 있으면(정상
+    경로) raw 키프레임 바이트는 한 번도 내려받지 않는다 — 예전에는 존재 확인
+    용도로만 raw 전체를 받고 버렸다.
+    """
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+
+    keyframe = _run(kf.get_keyframe(user_id=USER, pet_id=PET, keyframe_role="NEUTRAL_IDLE"))
+    selected = next(c for c in keyframe.candidates if c.id == keyframe.selected_candidate_id)
+    assert selected.plate_object_path  # 전제: 정상 빌드는 플레이트를 만들어 둔다
+
+    fetch_counts: dict[str, int] = {}
+    real_fetch = h.kf_fetch
+
+    def counting_fetch(ref):
+        fetch_counts[ref.object_path] = fetch_counts.get(ref.object_path, 0) + 1
+        return real_fetch(ref)
+
+    primary = FakeVideoProvider("seedance", [GOOD()])
+    v = _run(
+        mv.build_motion_video(
+            user_id=USER, pet_id=PET, motion_id="BREATHING",
+            fetch_bytes=counting_fetch, providers=[primary],
+            frame_sampler=sampler_identical, conformance_fn=conformance_ok,
+        )
+    )
+    assert v.status == mv.STATUS_COMPLETE
+    assert fetch_counts.get(selected.raw_object_path, 0) == 0
+    assert fetch_counts.get(selected.plate_object_path, 0) >= 1
+
+
+def test_video_anchor_reused_without_rebuild_or_reupload(storage, monkeypatch):
+    """
+    확인된 지연 병목의 회귀 가드: 같은 키프레임+종횡비로 두 번째 모션 버전을
+    만들 때, 9:16 앵커는 결정론적 object_path 로 재사용된다 — PIL 재인코딩도
+    스토리지 재업로드도 없다. 프로바이더가 받는 시작 이미지 바이트는 그대로다.
+    """
+    monkeypatch.setenv("PHASE6_VIDEO_ANCHOR", "1")
+    monkeypatch.setenv("PHASE6_ASPECT_RATIO", "9:16")
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+
+    from backend.services import supabase_assets
+
+    orig_upload = supabase_assets.upload_asset_to_storage
+    upload_calls = {"n": 0}
+
+    async def counting_upload(path, data, content_type):
+        upload_calls["n"] += 1
+        return await orig_upload(path, data, content_type)
+
+    monkeypatch.setattr(supabase_assets, "upload_asset_to_storage", counting_upload)
+
+    primary1 = FakeVideoProvider("seedance", [GOOD()])
+    v1 = _build_motion(h, "BREATHING", [primary1])
+    assert v1.status == mv.STATUS_COMPLETE
+    n_after_first = upload_calls["n"]
+
+    anchor_path = next(p for p in storage if p.endswith("_anchor9x16.png"))
+    start_bytes_first = primary1.requests[0].start_image_bytes
+
+    primary2 = FakeVideoProvider("seedance", [GOOD()])
+    v2 = _build_motion(h, "BREATHING", [primary2], skip_if_unchanged=False)
+    assert v2.status == mv.STATUS_COMPLETE
+    assert v2.version == 2
+
+    # 두 번째 빌드는 같은 앵커 경로를 그대로 재사용한다 — 업로드 횟수는 새
+    # raw 영상 하나만큼만 늘어난다 (앵커 재빌드/재업로드 없음).
+    assert upload_calls["n"] - n_after_first == 1
+    anchor_paths = [p for p in storage if p.endswith("_anchor9x16.png")]
+    assert anchor_paths == [anchor_path]  # 두 번째 앵커 경로가 새로 생기지 않았다
+    # 프로바이더가 받는 시작 이미지는 재사용된 앵커와 바이트 단위로 동일하다.
+    assert primary2.requests[0].start_image_bytes == start_bytes_first
+
+
 def test_progressive_generation_qa_gates_each_next_attempt(storage, monkeypatch):
     """점진적 생성: 후보 1 FAIL → 그때서야 후보 2 → PASS → 즉시 중단.
 
@@ -673,6 +919,495 @@ def test_qa_without_vlm_caps_at_review():
 def test_qa_vlm_anatomy_failure_fails():
     r = _eval([_good_frame()] * 5, vlm={**VLM_MV_OK, "anatomy_plausible_all_frames": "no"})
     assert r["decision"] == "FAIL"
+
+
+def _structural_contract(*, expected_profile: dict[str, str], min_support: int = 2):
+    return {
+        "motion_class": "LOCOMOTION",
+        "video_compat": {},
+        "pet_motion_profile": expected_profile,
+        "requirements": {
+            "morphology": {"confidence_floor": "medium"},
+            "qa": {
+                "structural_anatomy": {
+                    "required_checks": ["vlm_anatomy", "structural_morphology_consistency"],
+                    "morphology_consistency": {
+                        "check": "structural_morphology_consistency",
+                        "compare_fields": [
+                            "body_length_class",
+                            "leg_length_class",
+                            "head_proportion_class",
+                            "muzzle_proportion_class",
+                            "ear_form",
+                            "tail_form",
+                        ],
+                        "minimum_support_frames": min_support,
+                        "strong_contradiction_ratio": 0.7,
+                        "pose_dependent_fields": [
+                            "body_length_class",
+                            "leg_length_class",
+                            "body_build_class",
+                        ],
+                        "pose_dependent_policy": "review_never_fail",
+                    },
+                },
+                "identity": {"required_checks": ["identity_over_time", "vlm_same_pet"]},
+                "motion_specific": {
+                    "required_checks": ["vlm_motion", "temporal_stability", "vlm_composition"]
+                },
+            },
+        },
+    }
+
+
+def _obs(*, body="LONG", leg="LONG", head="STANDARD", muzzle="STANDARD", head_vis=True,
+         tail_vis=True, limb_bad=False, joint_bad=False, joint_samples=3, aspect=1.7):
+    """limb_bad=None 은 '그 프레임에서 사지를 잴 수 없었다'를 뜻한다(붕괴가 아니다)."""
+    return {
+        "measurable": True,
+        "morphology": {
+            "body_length_class": body,
+            "leg_length_class": leg,
+            "head_proportion_class": head,
+            "muzzle_proportion_class": muzzle,
+            "ear_form": "ERECT",
+            "tail_form": "CURLED",
+            "body_build_class": "BALANCED",
+            "body_size_class": "MEDIUM",
+        },
+        "visibility": {"head_visible": head_vis, "tail_visible": tail_vis},
+        "silhouette": {"bbox_aspect_ratio": aspect, "area_fraction": 0.2},
+        "anatomy": {
+            "joint_samples": int(joint_samples),
+            "joint_implausible": bool(joint_bad),
+            "limb_count_contradiction": None if limb_bad is None else bool(limb_bad),
+            "limb_points_visible": 0 if limb_bad is None else 4,
+        },
+    }
+
+
+def test_qa_structural_domain_separated_and_passes_when_consistent(monkeypatch):
+    contract = _structural_contract(
+        expected_profile={
+            "body_length_class": "LONG",
+            "leg_length_class": "LONG",
+            "head_proportion_class": "STANDARD",
+            "muzzle_proportion_class": "STANDARD",
+            "ear_form": "ERECT",
+            "tail_form": "CURLED",
+            "sources": {
+                "body_length": "morphology_profile:high",
+                "leg_length": "morphology_profile:high",
+                "head_proportion": "morphology_profile:high",
+                "muzzle_proportion": "morphology_profile:high",
+                "ear_form": "morphology_profile:high",
+                "tail_form": "morphology_profile:high",
+            },
+        }
+    )
+    queue = [_obs() for _ in range(5)]
+    monkeypatch.setattr(qa_mod, "_frame_structural_observation", lambda _f: queue.pop(0))
+
+    frames = [_approach_frame(s) for s in _APPROACH_SIZES[:5]]
+    r = qa_mod.evaluate_motion_video(
+        frames=frames,
+        spec_contract=contract,
+        start_keyframe_rgb=_approach_frame(20),
+        target_keyframe_rgb=None,
+        vlm_qa=VLM_MV_OK,
+    )
+    assert r["checks"]["structural_morphology_consistency"] == "PASS"
+    assert r["domains"]["identity"]["status"] == "PASS"
+    assert r["domains"]["structural_anatomy"]["status"] == "PASS"
+    assert r["domains"]["motion_execution"]["status"] == "PASS"
+    assert r["decision"] == "PASS"
+
+
+def test_qa_structural_missing_evidence_is_review_unknown_not_fail(monkeypatch):
+    contract = _structural_contract(
+        expected_profile={
+            "body_length_class": "LONG",
+            "head_proportion_class": "STANDARD",
+            "ear_form": "ERECT",
+            "sources": {
+                "body_length": "morphology_profile:high",
+                "head_proportion": "morphology_profile:high",
+                "ear_form": "morphology_profile:high",
+            },
+        },
+        min_support=3,
+    )
+    queue = [
+        {"measurable": False, "reason": "foreground_unmeasurable"},
+        _obs(head_vis=False, tail_vis=False),
+        _obs(head_vis=False, tail_vis=False),
+        {"measurable": False, "reason": "foreground_unmeasurable"},
+        _obs(head_vis=False, tail_vis=False),
+    ]
+    monkeypatch.setattr(qa_mod, "_frame_structural_observation", lambda _f: queue.pop(0))
+
+    frames = [_good_frame()] * 5
+    r = qa_mod.evaluate_motion_video(
+        frames=frames,
+        spec_contract=contract,
+        start_keyframe_rgb=_good_frame(),
+        target_keyframe_rgb=None,
+        vlm_qa=VLM_MV_OK,
+    )
+    assert r["checks"]["structural_morphology_consistency"] == "REVIEW"
+    assert r["checks"]["anatomy_limb_count_placement"] == "PASS"
+    assert r["checks"]["anatomy_joint_plausibility"] == "PASS"
+    assert r["decision"] == "REVIEW"
+    assert any("insufficient_visibility" in reason for reason in r["reasons"])
+
+
+def test_qa_non_pose_structural_contradiction_still_fails(monkeypatch):
+    contract = _structural_contract(
+        expected_profile={
+            "body_length_class": "LONG",
+            "leg_length_class": "LONG",
+            "head_proportion_class": "LARGE",
+            "sources": {
+                "body_length": "morphology_profile:high",
+                "leg_length": "morphology_profile:high",
+                "head_proportion": "morphology_profile:high",
+            },
+        }
+    )
+    queue = [
+        _obs(body="COMPACT", leg="SHORT", head="SMALL"),
+        _obs(body="COMPACT", leg="SHORT", head="SMALL"),
+        _obs(body="COMPACT", leg="SHORT", head="SMALL"),
+        _obs(body="LONG", leg="LONG", head="LARGE"),
+        _obs(body="COMPACT", leg="SHORT", head="SMALL"),
+    ]
+    monkeypatch.setattr(qa_mod, "_frame_structural_observation", lambda _f: queue.pop(0))
+
+    frames = [_good_frame()] * 5
+    r = qa_mod.evaluate_motion_video(
+        frames=frames,
+        spec_contract=contract,
+        start_keyframe_rgb=_good_frame(),
+        target_keyframe_rgb=None,
+        vlm_qa=VLM_MV_OK,
+    )
+    assert r["checks"]["structural_morphology_consistency"] == "FAIL"
+    summary = r["domains"]["structural_anatomy"]["morphology_consistency"]["trait_summary"]
+    assert summary["body_length_class"]["status"] == "REVIEW"
+    assert summary["leg_length_class"]["status"] == "REVIEW"
+    assert summary["head_proportion_class"]["status"] == "FAIL"
+    assert r["domains"]["structural_anatomy"]["status"] == "FAIL"
+    assert r["decision"] == "FAIL"
+
+
+def _transition_structural_contract(expected_profile: dict[str, str]):
+    contract = _structural_contract(expected_profile=expected_profile)
+    contract["motion_class"] = "TRANSITION"
+    morph_req = contract["requirements"]["qa"]["structural_anatomy"]["morphology_consistency"]
+    morph_req["pose_dependent_fields"] = [
+        "body_length_class",
+        "leg_length_class",
+        "body_build_class",
+    ]
+    morph_req["pose_dependent_policy"] = "review_never_fail"
+    contract["requirements"]["qa"]["structural_anatomy"]["required_checks"] = [
+        "starts_at_start_pose",
+        "reaches_target_pose",
+        "vlm_anatomy",
+        "structural_morphology_consistency",
+    ]
+    contract["requirements"]["qa"]["motion_specific"]["required_checks"] = [
+        "vlm_motion",
+        "vlm_target_pose",
+        "temporal_stability",
+        "vlm_composition",
+    ]
+    return contract
+
+
+def test_qa_transition_pose_change_is_pass_with_advisory(monkeypatch):
+    """
+    앉기/서기/눕기 전환에서는 몸통 비율·다리 길이가 자세와 함께 바뀌는 게
+    정상이다 — 요청한 동작 자체를 구조 붕괴로 하드 FAIL 하지 않는다.
+    """
+    expected = {
+        "body_length_class": "LONG",
+        "leg_length_class": "LONG",
+        "sources": {
+            "body_length": "morphology_profile:high",
+            "leg_length": "morphology_profile:high",
+        },
+    }
+    queue = [_obs(body="COMPACT", leg="SHORT") for _ in range(5)]
+    monkeypatch.setattr(qa_mod, "_frame_structural_observation", lambda _f: queue.pop(0))
+
+    g = _good_frame()
+    r = qa_mod.evaluate_motion_video(
+        frames=[g] * 5,
+        spec_contract=_transition_structural_contract(expected),
+        start_keyframe_rgb=g,
+        target_keyframe_rgb=g,
+        vlm_qa=VLM_MV_OK,
+    )
+    assert r["checks"]["structural_morphology_consistency"] == "REVIEW"
+    assert r["domains"]["structural_anatomy"]["status"] == "PASS"
+    assert r["decision"] == "PASS"
+    assert "structural_morphology_consistency" in r["advisories"]["checks"]
+    assert any("pose_dependent_change_advisory" in reason for reason in r["reasons"])
+
+    # LOCOMOTION 도 bbox/실루엣 기반 pose-dependent 축만으로 하드 FAIL 하지 않는다.
+    queue2 = [_obs(body="COMPACT", leg="SHORT") for _ in range(5)]
+    monkeypatch.setattr(qa_mod, "_frame_structural_observation", lambda _f: queue2.pop(0))
+    loco = qa_mod.evaluate_motion_video(
+        frames=[g] * 5,
+        spec_contract=_structural_contract(expected_profile=expected),
+        start_keyframe_rgb=g,
+        target_keyframe_rgb=None,
+        vlm_qa=VLM_MV_OK,
+    )
+    assert loco["checks"]["structural_morphology_consistency"] == "REVIEW"
+    assert loco["decision"] == "PASS"
+
+
+def _registry_qa_contract(motion_id: str, expected_profile: dict[str, object]):
+    return {
+        **ms.motion_snapshot(ms.MOTIONS[motion_id]),
+        "pet_motion_profile": expected_profile,
+    }
+
+
+def _compact_profile():
+    return {
+        "body_length_class": "COMPACT",
+        "sources": {"body_length": "morphology_profile:high"},
+    }
+
+
+def _seven_of_nine_body_mismatches():
+    return [
+        *[_obs(body="LONG") for _ in range(7)],
+        *[_obs(body="COMPACT") for _ in range(2)],
+    ]
+
+
+def test_qa_pet_head_body_length_contradiction_passes_with_advisory(monkeypatch):
+    queue = _seven_of_nine_body_mismatches()
+    monkeypatch.setattr(qa_mod, "_frame_structural_observation", lambda _f: queue.pop(0))
+    g = _good_frame()
+
+    result = qa_mod.evaluate_motion_video(
+        frames=[g] * 9,
+        spec_contract=_registry_qa_contract("PET_HEAD", _compact_profile()),
+        start_keyframe_rgb=g,
+        target_keyframe_rgb=None,
+        vlm_qa=VLM_MV_OK,
+    )
+
+    summary = result["domains"]["structural_anatomy"]["morphology_consistency"][
+        "trait_summary"
+    ]
+    assert summary["body_length_class"]["mismatch_frames"] == 7
+    assert summary["body_length_class"]["status"] == "REVIEW"
+    assert result["checks"]["structural_morphology_consistency"] == "REVIEW"
+    assert result["domains"]["structural_anatomy"]["status"] == "PASS"
+    assert result["decision"] == "PASS"
+    assert result["advisories"]["checks"] == ["structural_morphology_consistency"]
+    assert result["advisories"]["findings"][0]["trait"] == "body_length_class"
+    assert any(
+        reason.startswith("advisory_checks_not_blocking:")
+        for reason in result["reasons"]
+    )
+
+
+def test_qa_kling_one_of_nine_body_length_drift_passes_with_advisory(monkeypatch):
+    queue = [_obs(body="LONG"), *[_obs(body="COMPACT") for _ in range(8)]]
+    monkeypatch.setattr(qa_mod, "_frame_structural_observation", lambda _f: queue.pop(0))
+    g = _good_frame()
+
+    result = qa_mod.evaluate_motion_video(
+        frames=[g] * 9,
+        spec_contract=_registry_qa_contract("PET_HEAD", _compact_profile()),
+        start_keyframe_rgb=g,
+        target_keyframe_rgb=None,
+        vlm_qa=VLM_MV_OK,
+    )
+
+    summary = result["domains"]["structural_anatomy"]["morphology_consistency"][
+        "trait_summary"
+    ]["body_length_class"]
+    assert summary["mismatch_frames"] == 1
+    assert summary["status"] == "REVIEW"
+    assert result["decision"] == "PASS"
+    assert result["advisories"]["findings"][0]["reason"] == "pose_dependent_drift"
+
+
+def test_qa_pet_head_pose_deformation_passes_with_advisory(monkeypatch):
+    aspects = [1.0, 2.2, 1.0, 2.2, 1.0]
+    queue = [_obs(body="COMPACT", aspect=aspect) for aspect in aspects]
+    monkeypatch.setattr(qa_mod, "_frame_structural_observation", lambda _f: queue.pop(0))
+    g = _good_frame()
+
+    result = qa_mod.evaluate_motion_video(
+        frames=[g] * len(aspects),
+        spec_contract=_registry_qa_contract("PET_HEAD", _compact_profile()),
+        start_keyframe_rgb=g,
+        target_keyframe_rgb=None,
+        vlm_qa=VLM_MV_OK,
+    )
+
+    assert result["checks"]["structural_morphology_consistency"] == "PASS"
+    assert result["checks"]["anatomy_body_deformation"] == "REVIEW"
+    assert result["decision"] == "PASS"
+    assert "anatomy_body_deformation" in result["advisories"]["checks"]
+    assert any(
+        finding["reason"] == "pose_dependent_deformation"
+        for finding in result["advisories"]["findings"]
+    )
+
+
+def test_qa_look_up_body_length_profile_cannot_hard_fail(monkeypatch):
+    # MICRO does not require structural_morphology_consistency. The shared
+    # registry policy is still advisory if that check is enabled in the future.
+    queue = _seven_of_nine_body_mismatches()
+    monkeypatch.setattr(qa_mod, "_frame_structural_observation", lambda _f: queue.pop(0))
+    g = _good_frame()
+    contract = _registry_qa_contract("LOOK_UP", _compact_profile())
+
+    result = qa_mod.evaluate_motion_video(
+        frames=[g] * 9,
+        spec_contract=contract,
+        start_keyframe_rgb=g,
+        target_keyframe_rgb=None,
+        vlm_qa=VLM_MV_OK,
+    )
+
+    policy = contract["requirements"]["qa"]["structural_anatomy"][
+        "morphology_consistency"
+    ]["pose_dependent_policy"]
+    assert policy == "review_never_fail"
+    assert "structural_morphology_consistency" not in result["checks"]
+    assert result["decision"] == "PASS"
+
+
+def test_qa_locomotion_pose_dependent_contradiction_passes_with_advisory(monkeypatch):
+    queue = _seven_of_nine_body_mismatches()
+    monkeypatch.setattr(qa_mod, "_frame_structural_observation", lambda _f: queue.pop(0))
+    g = _good_frame()
+
+    result = qa_mod.evaluate_motion_video(
+        frames=[g] * 9,
+        spec_contract=_registry_qa_contract("COME_CLOSER", _compact_profile()),
+        start_keyframe_rgb=g,
+        target_keyframe_rgb=None,
+        vlm_qa=VLM_MV_OK,
+    )
+
+    assert result["checks"]["structural_morphology_consistency"] == "REVIEW"
+    assert result["decision"] == "PASS"
+
+
+def test_qa_pose_advisory_does_not_mask_vlm_anatomy_failure(monkeypatch):
+    queue = _seven_of_nine_body_mismatches()
+    monkeypatch.setattr(qa_mod, "_frame_structural_observation", lambda _f: queue.pop(0))
+    g = _good_frame()
+
+    result = qa_mod.evaluate_motion_video(
+        frames=[g] * 9,
+        spec_contract=_registry_qa_contract("PET_HEAD", _compact_profile()),
+        start_keyframe_rgb=g,
+        target_keyframe_rgb=None,
+        vlm_qa={**VLM_MV_OK, "anatomy_plausible_all_frames": "no"},
+    )
+
+    assert result["checks"]["structural_morphology_consistency"] == "REVIEW"
+    assert result["checks"]["vlm_anatomy"] == "FAIL"
+    assert result["decision"] == "FAIL"
+
+
+def test_qa_pose_advisory_does_not_mask_identity_failure(monkeypatch):
+    queue = _seven_of_nine_body_mismatches()
+    monkeypatch.setattr(qa_mod, "_frame_structural_observation", lambda _f: queue.pop(0))
+    g = _good_frame()
+
+    result = qa_mod.evaluate_motion_video(
+        frames=[g] * 9,
+        spec_contract=_registry_qa_contract("PET_HEAD", _compact_profile()),
+        start_keyframe_rgb=g,
+        target_keyframe_rgb=None,
+        vlm_qa={**VLM_MV_OK, "same_pet_all_frames": "no"},
+    )
+
+    assert result["checks"]["structural_morphology_consistency"] == "REVIEW"
+    assert result["checks"]["vlm_same_pet"] == "FAIL"
+    assert result["decision"] == "FAIL"
+
+
+def test_qa_real_limb_and_joint_corruption_fails_even_when_not_required(monkeypatch):
+    """
+    advisory 는 REVIEW 에만 적용된다. 실제 측정된 사지 FAIL 은 required 목록에
+    명시되지 않았어도 후보를 차단한다.
+    """
+    expected = {
+        "body_length_class": "LONG",
+        "sources": {"body_length": "morphology_profile:high"},
+    }
+    queue = [_obs(limb_bad=True, joint_bad=True) for _ in range(5)]
+    monkeypatch.setattr(qa_mod, "_frame_structural_observation", lambda _f: queue.pop(0))
+
+    r = qa_mod.evaluate_motion_video(
+        frames=[_good_frame()] * 5,
+        spec_contract=_structural_contract(expected_profile=expected),
+        start_keyframe_rgb=_good_frame(),
+        target_keyframe_rgb=None,
+        vlm_qa=VLM_MV_OK,
+    )
+    assert r["checks"]["anatomy_limb_count_placement"] == "FAIL"
+    assert r["checks"]["anatomy_joint_plausibility"] == "FAIL"
+    assert r["checks"]["structural_morphology_consistency"] == "PASS"
+    assert r["domains"]["structural_anatomy"]["status"] == "FAIL"
+    assert r["decision"] == "FAIL"
+    assert not any("advisory_structural_fail_not_blocking" in reason for reason in r["reasons"])
+
+    queue2 = [_obs(limb_bad=True, joint_bad=True) for _ in range(5)]
+    monkeypatch.setattr(qa_mod, "_frame_structural_observation", lambda _f: queue2.pop(0))
+    hard = qa_mod.evaluate_motion_video(
+        frames=[_good_frame()] * 5,
+        spec_contract=_structural_contract(expected_profile=expected),
+        start_keyframe_rgb=_good_frame(),
+        target_keyframe_rgb=None,
+        vlm_qa={**VLM_MV_OK, "anatomy_plausible_all_frames": "no"},
+    )
+    assert hard["decision"] == "FAIL"
+
+
+def test_qa_frame_occupancy_is_not_a_structural_comparison_axis(monkeypatch):
+    """레거시 계약이 body_size_class 를 남겨 두어도 비교 축이 되지 않는다."""
+    contract = _structural_contract(
+        expected_profile={
+            "body_size_class": "SMALL",
+            "body_length_class": "LONG",
+            "sources": {
+                "body_size": "morphology_profile:high",
+                "body_length": "morphology_profile:high",
+            },
+        }
+    )
+    contract["requirements"]["qa"]["structural_anatomy"]["morphology_consistency"][
+        "compare_fields"
+    ] = ["body_size_class", "body_length_class"]
+    queue = [_obs() for _ in range(5)]
+    monkeypatch.setattr(qa_mod, "_frame_structural_observation", lambda _f: queue.pop(0))
+
+    r = qa_mod.evaluate_motion_video(
+        frames=[_good_frame()] * 5,
+        spec_contract=contract,
+        start_keyframe_rgb=_good_frame(),
+        target_keyframe_rgb=None,
+        vlm_qa=VLM_MV_OK,
+    )
+    summary = r["domains"]["structural_anatomy"]["morphology_consistency"]["trait_summary"]
+    assert "body_size_class" not in summary
+    assert "body_length_class" in summary
 
 
 def test_qa_sampling_unavailable_is_review_not_pass():
@@ -860,7 +1595,8 @@ def test_router_build_get_list(client, storage, monkeypatch):
     h, _ = _prepare_pipeline(monkeypatch, storage)
     monkeypatch.setattr(ids, "_default_fetch_bytes", h.kf_fetch)
     monkeypatch.setattr(
-        vp, "routing_for_class", lambda cls: [FakeVideoProvider("seedance", [GOOD()] * 3)]
+        vp, "resolve_provider_order",
+        lambda order: [FakeVideoProvider("seedance", [GOOD()] * 3)],
     )
     monkeypatch.setattr(mv, "sampler_identical", sampler_identical, raising=False)
     monkeypatch.setattr(qa_mod, "sample_frames", sampler_identical)
@@ -961,7 +1697,7 @@ def test_qa_locomotion_close_approach_passes_with_normalized_identity():
     assert r["identity_evaluation"]["rule"] == "locomotion_mean_consistency"
     assert r["checks"]["identity_over_time"] == "PASS"
     assert r["decision"] == "PASS"
-    assert r["qa_version"] == "motion-video-qa-v6"
+    assert r["qa_version"] == qa_mod.MOTION_VIDEO_QA_VERSION
 
 
 def test_qa_micro_uses_normalized_signature_but_keeps_worst_frame_rule():
@@ -1095,3 +1831,139 @@ def test_qa_locomotion_falls_back_to_full_frame_when_unmeasurable(monkeypatch):
     )
     assert r["identity_evaluation"]["mode"] == "full_frame"
     assert r["checks"]["identity_over_time"] == "PASS"  # 동일 프레임 — 평균 1.0
+
+
+# ── 측정 불가한 해부학 증거는 FAIL 근거가 아니다 ───────────────────────────
+
+
+def _plain_expected():
+    return {
+        "body_length_class": "LONG",
+        "sources": {"body_length": "morphology_profile:high"},
+    }
+
+
+def test_frame_without_pose_keypoints_makes_no_limb_claim():
+    """
+    루트 원인 회귀 가드: 포즈 백엔드가 키포인트를 하나도 못 낸 프레임은
+    '다리가 없다'가 아니라 '잴 수 없었다' 다 — 실제 관측 함수로 확인한다.
+    """
+    obs = qa_mod._frame_structural_observation(_good_frame())
+    assert obs["measurable"] is True
+    vis = obs["visibility"]
+    assert vis["visible_paw_points"] == 0 and vis["visible_prox_points"] == 0
+    anatomy = obs["anatomy"]
+    assert anatomy["limb_points_visible"] == 0
+    assert anatomy["limb_count_contradiction"] is None
+
+
+def test_qa_unmeasurable_limb_evidence_never_fails_and_leaves_no_reason(monkeypatch):
+    """1) 사지를 잴 수 없으면 FAIL 도, 부정적 사유도 남기지 않는다."""
+    queue = [_obs(limb_bad=None) for _ in range(5)]
+    monkeypatch.setattr(qa_mod, "_frame_structural_observation", lambda _f: queue.pop(0))
+
+    r = qa_mod.evaluate_motion_video(
+        frames=[_good_frame()] * 5,
+        spec_contract=_structural_contract(expected_profile=_plain_expected()),
+        start_keyframe_rgb=_good_frame(),
+        target_keyframe_rgb=None,
+        vlm_qa=VLM_MV_OK,
+    )
+    # required 가 아닌 신호는 아예 실리지 않는다 — UNKNOWN 으로도 PASS 를 막지 않는다.
+    assert "anatomy_limb_count_placement" not in r["checks"]
+    assert not any("limb" in reason for reason in r["reasons"])
+    assert r["checks"]["structural_morphology_consistency"] == "PASS"
+    assert r["decision"] == "PASS"
+    signals = r["domains"]["structural_anatomy"]["morphology_consistency"]["anatomy_signals"]
+    assert signals["limb_evidence_frames"] == 0
+    assert signals["limb_count_contradictions"] == 0
+    assert "anatomy_limb_count_placement" in signals["unmeasurable_signals"]
+
+
+def test_qa_unmeasurable_limb_evidence_is_unknown_when_registry_requires_it(monkeypatch):
+    """계약이 그 신호를 required 로 요구하면 fail-closed 로 UNKNOWN — 그래도 FAIL 은 아니다."""
+    contract = _structural_contract(expected_profile=_plain_expected())
+    contract["requirements"]["qa"]["structural_anatomy"]["required_checks"] = [
+        "vlm_anatomy",
+        "structural_morphology_consistency",
+        "anatomy_limb_count_placement",
+    ]
+    queue = [_obs(limb_bad=None) for _ in range(5)]
+    monkeypatch.setattr(qa_mod, "_frame_structural_observation", lambda _f: queue.pop(0))
+
+    r = qa_mod.evaluate_motion_video(
+        frames=[_good_frame()] * 5,
+        spec_contract=contract,
+        start_keyframe_rgb=_good_frame(),
+        target_keyframe_rgb=None,
+        vlm_qa=VLM_MV_OK,
+    )
+    assert r["checks"]["anatomy_limb_count_placement"] == "unknown"
+    assert r["decision"] == "REVIEW"
+    assert not any("limb" in reason for reason in r["reasons"])
+
+
+def test_qa_insufficient_support_frames_stay_neutral(monkeypatch):
+    """2) 근거 프레임이 min_support 에 못 미치면 사지/관절 모두 중립이다."""
+    contract = _structural_contract(expected_profile=_plain_expected(), min_support=3)
+    # 5장 중 2장만 사지/관절 증거가 있다 — 그 2장이 붕괴를 가리켜도 주장하지 않는다.
+    queue = [
+        _obs(limb_bad=True, joint_bad=True, joint_samples=3),
+        _obs(limb_bad=True, joint_bad=True, joint_samples=3),
+        _obs(limb_bad=None, joint_samples=0),
+        _obs(limb_bad=None, joint_samples=0),
+        _obs(limb_bad=None, joint_samples=0),
+    ]
+    monkeypatch.setattr(qa_mod, "_frame_structural_observation", lambda _f: queue.pop(0))
+
+    r = qa_mod.evaluate_motion_video(
+        frames=[_good_frame()] * 5,
+        spec_contract=contract,
+        start_keyframe_rgb=_good_frame(),
+        target_keyframe_rgb=None,
+        vlm_qa=VLM_MV_OK,
+    )
+    assert "anatomy_limb_count_placement" not in r["checks"]
+    assert "anatomy_joint_plausibility" not in r["checks"]
+    assert r["decision"] != "FAIL"
+    assert not any("limb" in reason or "joint" in reason for reason in r["reasons"])
+    signals = r["domains"]["structural_anatomy"]["morphology_consistency"]["anatomy_signals"]
+    assert signals["limb_evidence_frames"] == 2
+    assert signals["joint_evidence_frames"] == 2
+
+
+def test_qa_supported_limb_and_joint_corruption_still_fails(monkeypatch):
+    """3) 실제로 측정된 붕괴 근거가 min_support 만큼 모이면 종전대로 FAIL 이다."""
+    contract = _structural_contract(expected_profile=_plain_expected(), min_support=2)
+    contract["requirements"]["qa"]["structural_anatomy"]["required_checks"] = [
+        "vlm_anatomy",
+        "structural_morphology_consistency",
+        "anatomy_limb_count_placement",
+        "anatomy_joint_plausibility",
+    ]
+    queue = [
+        _obs(limb_bad=True, joint_bad=True),
+        _obs(limb_bad=True, joint_bad=True),
+        _obs(limb_bad=True, joint_bad=True),
+        _obs(limb_bad=None, joint_samples=0),
+        _obs(limb_bad=False),
+    ]
+    monkeypatch.setattr(qa_mod, "_frame_structural_observation", lambda _f: queue.pop(0))
+
+    r = qa_mod.evaluate_motion_video(
+        frames=[_good_frame()] * 5,
+        spec_contract=contract,
+        start_keyframe_rgb=_good_frame(),
+        target_keyframe_rgb=None,
+        vlm_qa=VLM_MV_OK,
+    )
+    assert r["checks"]["anatomy_limb_count_placement"] == "FAIL"
+    assert r["checks"]["anatomy_joint_plausibility"] == "FAIL"
+    assert "anatomy_limb_count_or_placement_corrupted" in r["reasons"]
+    assert "anatomy_joint_implausible" in r["reasons"]
+    assert r["domains"]["structural_anatomy"]["status"] == "FAIL"
+    assert r["decision"] == "FAIL"
+    # 측정 불가 프레임은 분모에 들어가지 않는다 — 근거 프레임만 센다.
+    signals = r["domains"]["structural_anatomy"]["morphology_consistency"]["anatomy_signals"]
+    assert signals["limb_evidence_frames"] == 4
+    assert signals["limb_count_contradictions"] == 3

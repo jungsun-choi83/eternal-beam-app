@@ -17,6 +17,7 @@
 규칙은 backend/tests/test_paypal_data_excluded.py 가 강제한다.
 """
 
+import asyncio
 import os
 import re
 from typing import Optional
@@ -61,37 +62,53 @@ BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "user-assets")
 
 
 async def upload_asset_to_storage(object_path: str, data: bytes, content_type: str) -> str:
-    """Storage에 업로드 후 public URL 또는 signed URL 반환."""
+    """
+    Storage에 업로드 후 public URL 또는 signed URL 반환.
+
+    supabase-py 는 동기 클라이언트라, 실제 네트워크 왕복은 `asyncio.to_thread` 로
+    스레드에 넘긴다 — 그러지 않으면 이 "async" 함수가 사실 이벤트 루프를 그대로
+    막아, 여러 사진을 동시에 올려도 서버 쪽에서 한 장씩 직렬로 처리된다(동시
+    인테이크의 실제 병목이 여기였다).
+    """
     supabase = _client()
     if not supabase:
         raise RuntimeError("Supabase가 설정되지 않았습니다.")
 
-    supabase.storage.from_(BUCKET).upload(
-        object_path,
-        data,
-        {"content-type": content_type, "upsert": "true"},
-    )
-    # private bucket일 가능성이 높아 signed URL을 우선 시도.
-    # get_public_url()은 private여도 문자열을 반환할 수 있어, 브라우저 GET 시 400/403이 날 수 있다.
-    try:
-        res = supabase.storage.from_(BUCKET).create_signed_url(object_path, 604800)
-        if isinstance(res, dict):
-            for k in ("signedURL", "signedUrl", "signed_url", "url"):
-                v = res.get(k)
-                if isinstance(v, str) and v:
-                    return v
-            data = res.get("data")
-            if isinstance(data, dict):
+    def _sync() -> str:
+        supabase.storage.from_(BUCKET).upload(
+            object_path,
+            data,
+            {"content-type": content_type, "upsert": "true"},
+        )
+        # private bucket일 가능성이 높아 signed URL을 우선 시도.
+        # get_public_url()은 private여도 문자열을 반환할 수 있어, 브라우저 GET 시 400/403이 날 수 있다.
+        try:
+            res = supabase.storage.from_(BUCKET).create_signed_url(object_path, 604800)
+            if isinstance(res, dict):
                 for k in ("signedURL", "signedUrl", "signed_url", "url"):
-                    v = data.get(k)
+                    v = res.get(k)
                     if isinstance(v, str) and v:
                         return v
+                nested = res.get("data")
+                if isinstance(nested, dict):
+                    for k in ("signedURL", "signedUrl", "signed_url", "url"):
+                        v = nested.get(k)
+                        if isinstance(v, str) and v:
+                            return v
+        except Exception:
+            pass
+
+        # 공개 버킷이면 public URL fallback
+        return supabase.storage.from_(BUCKET).get_public_url(object_path)
+
+    return await asyncio.to_thread(_sync)
+
+
+def _ensure_user_asset_row_sync(supabase: Client, row: dict) -> None:
+    try:
+        supabase.table("user_assets").insert(row).execute()
     except Exception:
         pass
-
-    # 공개 버킷이면 public URL fallback
-    pub = supabase.storage.from_(BUCKET).get_public_url(object_path)
-    return pub
 
 
 async def ensure_user_asset_row(
@@ -112,10 +129,7 @@ async def ensure_user_asset_row(
         "url": url,
         "theme_id": theme_id,
     }
-    try:
-        supabase.table("user_assets").insert(row).execute()
-    except Exception:
-        pass
+    await asyncio.to_thread(_ensure_user_asset_row_sync, supabase, row)
 
 
 # ── record_theme_purchase 는 삭제됐다 (Phase 11) ─────────────────────────────
@@ -128,16 +142,19 @@ async def ensure_user_asset_row(
 # 근거·재검증 방법: docs/PAYPAL_LEGACY.md
 
 
+def _get_purchased_themes_sync(supabase: Client, user_id: str) -> list[str]:
+    r = supabase.table("purchased_slots").select("theme_id").eq("user_id", user_id).eq("payment_status", True).execute()
+    if r.data:
+        return [x["theme_id"] for x in r.data if x.get("theme_id")]
+    return []
+
+
 async def get_purchased_themes(user_id: str) -> list[str]:
     """purchased_slots에서 해당 유저의 결제 완료된 theme_id 목록."""
     supabase = _client()
     if not supabase:
         return []
-
-    r = supabase.table("purchased_slots").select("theme_id").eq("user_id", user_id).eq("payment_status", True).execute()
-    if r.data:
-        return [x["theme_id"] for x in r.data if x.get("theme_id")]
-    return []
+    return await asyncio.to_thread(_get_purchased_themes_sync, supabase, user_id)
 
 
 def check_payment_for_theme(user_id: str, theme_id: str, paid_theme_ids: list[str]) -> bool:

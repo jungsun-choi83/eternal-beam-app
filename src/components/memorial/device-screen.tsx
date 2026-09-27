@@ -1,197 +1,195 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
-import { ChevronLeft, Wifi, Battery, HardDrive, RefreshCw, Trash2, CheckCircle2 } from "lucide-react";
+import {
+  ChevronLeft,
+  Wifi,
+  WifiOff,
+  RefreshCw,
+  Loader2,
+  AlertTriangle,
+  LogIn,
+} from "lucide-react";
+import { demoDeviceId } from "@/lib/device-command-api";
+import {
+  getRecentBeamCommands,
+  reconcileAckedCommand,
+  type BeamActivityEntry,
+} from "@/lib/beam-activity-log";
+import { StatusBadge, StatusDot, type StatusTone } from "@/components/ui/status-badge";
+import { useDeviceConnection } from "./use-device-connection";
+import { memorialLang, memorialT } from "./memorial-i18n";
+import { formatRelative } from "@/lib/relative-time";
+import { BEAM_STATUS_TONE, beamDisplayStatus, beamStatusLabel } from "@/lib/beam-status";
 
 interface DeviceScreenProps {
   onBack: () => void;
-  onReconnect: () => void;
+  language?: string;
 }
 
-export function DeviceScreen({ onBack, onReconnect }: DeviceScreenProps) {
-  const [isConnected, setIsConnected] = useState(true);
+const DELIVERY_TONE: Record<BeamActivityEntry["delivery"], StatusTone> = {
+  acked: "success",
+  sent: "waiting",
+  pending: "waiting",
+  failed: "error",
+};
 
-  const deviceInfo = {
-    name: "Eternal Beam Pro",
-    model: "EB-2024",
-    firmware: "v2.1.3",
-    storage: { used: 2.4, total: 8 },
-    battery: 78,
-    wifi: "Home_WiFi_5G",
-  };
+function activityLabel(entry: BeamActivityEntry, t: ReturnType<typeof memorialT>["device"]): string {
+  const kind = entry.event === "theme_play" ? t.activityTheme : t.activityPet;
+  const delivery =
+    entry.delivery === "acked"
+      ? t.activityAcked
+      : entry.delivery === "sent"
+        ? t.activitySent
+        : entry.delivery === "pending"
+          ? t.activityPending
+          : t.activityFailed;
+  return `${kind} · ${delivery}`;
+}
+
+export function DeviceScreen({ onBack, language = "ko" }: DeviceScreenProps) {
+  const lang = memorialLang(language);
+  const t = memorialT(language).device;
+  const deviceId = useMemo(() => demoDeviceId(), []);
+  const { status, state, unavailableReason, isChecking, retry } = useDeviceConnection(deviceId);
+  const [activity, setActivity] = useState<BeamActivityEntry[]>([]);
+
+  useEffect(() => {
+    setActivity(state?.last_ack ? reconcileAckedCommand(state.last_ack) : getRecentBeamCommands());
+  }, [status, state?.last_ack]);
+
+  const displayStatus = beamDisplayStatus(status, isChecking);
+  const reconnecting = displayStatus === "reconnecting";
+  const tone: StatusTone = BEAM_STATUS_TONE[displayStatus] ?? "neutral";
+  const statusLabel = beamStatusLabel(displayStatus, unavailableReason, t);
+
+  const retryLabel = isChecking
+    ? t.retryChecking
+    : status === "connected"
+      ? t.retryConnected
+      : status === "offline"
+        ? t.retryOffline
+        : t.retryUnavailable;
+
+  const StatusIcon =
+    displayStatus === "connected" ? Wifi : displayStatus === "reconnecting" ? Loader2 : WifiOff;
 
   return (
-    <div className="h-full flex flex-col relative overflow-hidden">
-      {/* Header */}
-      <header className="px-6 pt-14 pb-4 flex items-center relative">
-        <button onClick={onBack} className="p-2 -ml-2">
-          <ChevronLeft className="w-5 h-5" style={{ color: "#F5F5F7" }} />
+    <div className="h-full flex flex-col relative overflow-hidden eb-beam">
+      <header className="px-6 pt-[var(--eb-header-top)] pb-4 flex items-center relative shrink-0">
+        <button onClick={onBack} className="mem-icon-btn eb-back-btn -ml-2" aria-label="Back">
+          <ChevronLeft className="w-5 h-5" />
         </button>
-        <h1 className="text-xl font-light absolute left-1/2 -translate-x-1/2" style={{ color: "#F5F5F7" }}>
-          Device
-        </h1>
+        <h1 className="screen-title eb-title absolute left-1/2 -translate-x-1/2">{t.title}</h1>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-4 pb-8">
-        {/* Device Card */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="p-6 rounded-3xl mb-6"
-          style={{
-            background: "rgba(255, 255, 255, 0.03)",
-            border: "1px solid rgba(255, 255, 255, 0.06)",
-          }}
-        >
-          {/* Device Visual */}
-          <div className="flex justify-center mb-6">
-            <div 
-              className="w-32 h-32 rounded-3xl flex items-center justify-center relative"
-              style={{
-                background: "linear-gradient(135deg, rgba(212, 175, 55, 0.1) 0%, rgba(201, 162, 39, 0.05) 100%)",
-                border: "1px solid rgba(212, 175, 55, 0.2)",
-              }}
+      <div className="flex-1 min-h-0 overflow-y-auto px-4 pb-[var(--eb-footer-bottom)] eb-beam__scroll">
+        <div className="eb-beam__grid">
+          {/* Connection overview */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="eb-beam__card eb-card eb-beam__overview"
+          >
+            <div className="eb-beam__badge-wrap">
+              <div className="eb-beam__badge" data-tone={tone}>
+                <StatusIcon
+                  className={`w-9 h-9 ${displayStatus === "reconnecting" ? "animate-spin" : ""}`}
+                />
+              </div>
+            </div>
+
+            <p className="eb-beam__device-label">{t.deviceIdLabel}</p>
+            <h2 className="eb-beam__device-id">{deviceId}</h2>
+
+            <div className="eb-beam__status-row" role="status">
+              <StatusBadge tone={tone}>{statusLabel}</StatusBadge>
+            </div>
+
+            {status === "unavailable" && unavailableReason === "not_provisioned" ? (
+              <div className="eb-beam__notice eb-notice eb-notice--warning">
+                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                <div>
+                  <p className="eb-beam__notice-title">{t.notSetUpTitle}</p>
+                  <p className="eb-beam__notice-body">{t.notSetUpBody}</p>
+                </div>
+              </div>
+            ) : null}
+
+            {status === "unavailable" && unavailableReason === "auth" ? (
+              <div className="eb-beam__notice eb-notice eb-notice--warning">
+                <LogIn className="w-4 h-4 shrink-0 mt-0.5" />
+                <div>
+                  <p className="eb-beam__notice-title">{t.signInRequiredTitle}</p>
+                  <p className="eb-beam__notice-body">{t.signInRequiredBody}</p>
+                </div>
+              </div>
+            ) : null}
+
+            <button
+              onClick={retry}
+              disabled={isChecking}
+              aria-busy={isChecking || undefined}
+              className="eb-beam__retry-btn eb-btn eb-btn--secondary mem-btn-secondary eb-btn--block"
             >
-              <motion.div
-                className="absolute inset-4 rounded-2xl"
-                style={{ background: "linear-gradient(135deg, #d4af37 0%, #c9a227 100%)", opacity: 0.1 }}
-                animate={{ opacity: [0.1, 0.2, 0.1] }}
-                transition={{ duration: 3, repeat: Infinity }}
-              />
-              {isConnected && (
-                <motion.div
-                  className="absolute -top-1 -right-1"
-                  initial={{ scale: 0 }}
-                  animate={{ scale: 1 }}
-                >
-                  <CheckCircle2 className="w-6 h-6" style={{ color: "#34C759" }} />
-                </motion.div>
-              )}
-            </div>
-          </div>
+              <RefreshCw className={`w-4 h-4 ${isChecking ? "animate-spin" : ""}`} />
+              <span>{retryLabel}</span>
+            </button>
+          </motion.div>
 
-          {/* Device Name */}
-          <h2 className="text-xl font-light text-center mb-1" style={{ color: "#F5F5F7" }}>
-            {deviceInfo.name}
-          </h2>
-          <p className="text-sm text-center mb-4" style={{ color: "#A1A1A6" }}>
-            {deviceInfo.model} | Firmware {deviceInfo.firmware}
-          </p>
-
-          {/* Connection Status */}
-          <div 
-            className="flex items-center justify-center gap-2 py-2 px-4 rounded-full mx-auto w-fit"
-            style={{
-              background: isConnected ? "rgba(52, 199, 89, 0.1)" : "rgba(255, 59, 48, 0.1)",
-            }}
-          >
-            <div 
-              className="w-2 h-2 rounded-full"
-              style={{ background: isConnected ? "#34C759" : "#FF3B30" }}
-            />
-            <span 
-              className="text-sm"
-              style={{ color: isConnected ? "#34C759" : "#FF3B30" }}
+          {/* Status detail panel (desktop: side-by-side with overview) */}
+          {state ? (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.05 }}
+              className="eb-beam__card eb-card eb-beam__detail"
             >
-              {isConnected ? "Connected" : "Disconnected"}
-            </span>
-          </div>
-        </motion.div>
-
-        {/* Device Stats */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="rounded-2xl overflow-hidden mb-6"
-          style={{
-            background: "rgba(255, 255, 255, 0.03)",
-            border: "1px solid rgba(255, 255, 255, 0.06)",
-          }}
-        >
-          {/* Storage */}
-          <div className="p-4 border-b" style={{ borderColor: "rgba(255, 255, 255, 0.06)" }}>
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-3">
-                <HardDrive className="w-5 h-5" style={{ color: "#A1A1A6" }} />
-                <span className="text-sm" style={{ color: "#F5F5F7" }}>Storage</span>
+              <div className="eb-beam__detail-row">
+                <span className="eb-beam__detail-label">{t.connectedSinceLabel}</span>
+                <span className="eb-beam__detail-value">
+                  {formatRelative(state.connected_at, lang, t.never)}
+                </span>
               </div>
-              <span className="text-sm" style={{ color: "#A1A1A6" }}>
-                {deviceInfo.storage.used} / {deviceInfo.storage.total} GB
-              </span>
-            </div>
-            <div className="h-1.5 rounded-full overflow-hidden" style={{ background: "rgba(255, 255, 255, 0.1)" }}>
-              <motion.div
-                className="h-full rounded-full"
-                style={{ 
-                  background: "linear-gradient(90deg, #d4af37, #c9a227)",
-                  width: `${(deviceInfo.storage.used / deviceInfo.storage.total) * 100}%`,
-                }}
-                initial={{ width: 0 }}
-                animate={{ width: `${(deviceInfo.storage.used / deviceInfo.storage.total) * 100}%` }}
-                transition={{ duration: 1, delay: 0.3 }}
-              />
-            </div>
-          </div>
-
-          {/* Battery */}
-          <div className="p-4 border-b" style={{ borderColor: "rgba(255, 255, 255, 0.06)" }}>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <Battery className="w-5 h-5" style={{ color: "#A1A1A6" }} />
-                <span className="text-sm" style={{ color: "#F5F5F7" }}>Battery</span>
+              <div className="eb-beam__detail-row">
+                <span className="eb-beam__detail-label">{t.lastSeenLabel}</span>
+                <span className="eb-beam__detail-value">
+                  {formatRelative(state.last_seen, lang, t.never)}
+                </span>
               </div>
-              <span className="text-sm" style={{ color: "#34C759" }}>
-                {deviceInfo.battery}%
-              </span>
-            </div>
-          </div>
+            </motion.div>
+          ) : null}
 
-          {/* Wi-Fi */}
-          <div className="p-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <Wifi className="w-5 h-5" style={{ color: "#A1A1A6" }} />
-                <span className="text-sm" style={{ color: "#F5F5F7" }}>Wi-Fi</span>
-              </div>
-              <span className="text-sm" style={{ color: "#A1A1A6" }}>
-                {deviceInfo.wifi}
-              </span>
-            </div>
-          </div>
-        </motion.div>
-
-        {/* Actions */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="space-y-3"
-        >
-          <button
-            onClick={onReconnect}
-            className="w-full py-4 rounded-2xl flex items-center justify-center gap-2"
-            style={{
-              background: "rgba(255, 255, 255, 0.03)",
-              border: "1px solid rgba(255, 255, 255, 0.06)",
-            }}
+          {/* Recent playback / control — sourced only from commands this browser sent */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.1 }}
+            className="eb-beam__card eb-card eb-beam__activity"
           >
-            <RefreshCw className="w-5 h-5" style={{ color: "#d4af37" }} />
-            <span style={{ color: "#F5F5F7" }}>Reconnect Device</span>
-          </button>
-
-          <button
-            className="w-full py-4 rounded-2xl flex items-center justify-center gap-2"
-            style={{
-              background: "rgba(255, 59, 48, 0.1)",
-              border: "1px solid rgba(255, 59, 48, 0.2)",
-            }}
-          >
-            <Trash2 className="w-5 h-5 text-red-400" />
-            <span className="text-red-400">Remove Device</span>
-          </button>
-        </motion.div>
+            <h3 className="eb-beam__section-title eb-section-title">{t.recentActivityTitle}</h3>
+            {activity.length === 0 ? (
+              <p className="eb-beam__empty">{t.noRecentActivity}</p>
+            ) : (
+              <ul className="eb-beam__activity-list">
+                {activity.map((entry, index) => (
+                  <li key={`${entry.at}-${index}`} className="eb-beam__activity-row">
+                    <StatusDot
+                      tone={DELIVERY_TONE[entry.delivery] ?? "neutral"}
+                      pulse={entry.delivery === "pending" || entry.delivery === "sent"}
+                      className="eb-beam__activity-dot"
+                    />
+                    <span className="eb-beam__activity-text">{activityLabel(entry, t)}</span>
+                    <span className="eb-beam__activity-time">
+                      {formatRelative(entry.at, lang, t.never)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </motion.div>
+        </div>
       </div>
     </div>
   );

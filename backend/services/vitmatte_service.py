@@ -128,6 +128,43 @@ DEBUG_ARTIFACTS_ENABLED = os.getenv("CUTOUT_DEBUG_ENABLED", "0").strip().lower()
     "yes",
 )
 
+# --- 접지/투영 그림자 알파 억제 ------------------------------------------------
+# ViTMatte 는 트라이맵의 미확정 밴드 안에서 "반투명한 것"을 성실하게 살린다.
+# 발밑 접지 그림자와 바닥에 드리운 투영 그림자는 정확히 그 성질이라 **전경
+# 알파로 살아남았고**, 하류(키프레임·모션·packed-alpha)까지 얼룩으로 번졌다.
+#
+# 여기서 하는 일은 "그림자는 배경의 감광(減光) 버전"이라는 물리적 사실 하나를
+# 증거로 쓰는 것뿐이다: 색조(chromaticity)는 배경과 같고 휘도만 낮다. 털은
+# 자기 색을 가지므로 이 조건에 걸리지 않는다. 판정은 세그멘테이션 **코어 밖**
+# 에서만 이뤄지고, 지우려는 양이 임계를 넘으면 아무것도 하지 않는다 —
+# 피사체를 깎느니 그림자를 남긴다 (Phase 6.7: 측정 불가 ≠ 손상).
+SHADOW_SUPPRESSION_ENABLED = os.getenv(
+    "CUTOUT_SHADOW_SUPPRESSION", "1"
+).strip().lower() in ("1", "true", "yes")
+
+#: 세그멘테이션 마스크를 이만큼 침식한 영역 = 절대 건드리지 않는 펫 코어.
+SHADOW_CORE_ERODE_PX = int(os.getenv("CUTOUT_SHADOW_CORE_ERODE_PX", "6"))
+
+#: 이보다 불투명한 알파는 손대지 않는다 (확실한 전경).
+SHADOW_MAX_ALPHA = float(os.getenv("CUTOUT_SHADOW_MAX_ALPHA", "0.92"))
+
+#: 배경 대비 휘도비 하한 — 이보다 어두우면 그림자가 아니라 검은 털/코다.
+SHADOW_MIN_LUMA_RATIO = float(os.getenv("CUTOUT_SHADOW_MIN_LUMA_RATIO", "0.35"))
+
+#: 배경 대비 휘도비 상한 — 이보다 밝으면 그림자가 아니다(그림자는 어둡다).
+SHADOW_MAX_LUMA_RATIO = float(os.getenv("CUTOUT_SHADOW_MAX_LUMA_RATIO", "0.97"))
+
+#: 배경과의 정규화 색조 거리 상한. 그림자는 배경의 색조를 보존한다.
+SHADOW_MAX_CHROMA_DELTA = float(os.getenv("CUTOUT_SHADOW_MAX_CHROMA_DELTA", "0.055"))
+
+#: 전체 알파 질량의 이 비율을 넘게 지우려 하면 억제를 통째로 포기한다.
+SHADOW_MAX_REMOVED_FRACTION = float(
+    os.getenv("CUTOUT_SHADOW_MAX_REMOVED_FRACTION", "0.30")
+)
+
+#: 배경 행 모델을 만들 때 한 행에 필요한 최소 배경 픽셀 수.
+_SHADOW_MIN_ROW_BG_PX = 8
+
 # --- Phase 2A: SAM2 후보 선택 -------------------------------------------------
 # SAM2 는 박스 프롬프트 1개에 대해 서로 다른 해석 3개를 낸다(예: 개 전체 / 몸통만 /
 # 개+바닥). Phase 1 은 multimask_output=False 로 첫 번째만 받아썼다. 여기서는 셋을
@@ -1019,6 +1056,163 @@ def _draw_box(rgb: np.ndarray, bbox: BBox, color: tuple[int, int, int]) -> np.nd
     return out
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# 접지/투영 그림자 알파 억제
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _erode_binary(mask: np.ndarray, iterations: int) -> np.ndarray:
+    """3×3 최소 필터 반복 침식 — 순수 numpy (cv2 없이도 동작한다).
+
+    테두리는 edge 복제로 패딩한다: 프레임에 닿은 몸통이 테두리에서만 깎여
+    코어가 뚫리는 일을 막는다.
+    """
+    out = mask > 0
+    for _ in range(max(0, int(iterations))):
+        p = np.pad(out, 1, mode="edge")
+        out = (
+            p[:-2, :-2] & p[:-2, 1:-1] & p[:-2, 2:]
+            & p[1:-1, :-2] & p[1:-1, 1:-1] & p[1:-1, 2:]
+            & p[2:, :-2] & p[2:, 1:-1] & p[2:, 2:]
+        )
+    return out
+
+
+def _dilate_binary(mask: np.ndarray, iterations: int) -> np.ndarray:
+    """3×3 최대 필터 반복 팽창 — 배경 샘플에서 피사체 후광을 빼기 위한 것."""
+    out = mask > 0
+    for _ in range(max(0, int(iterations))):
+        p = np.pad(out, 1, mode="edge")
+        out = (
+            p[:-2, :-2] | p[:-2, 1:-1] | p[:-2, 2:]
+            | p[1:-1, :-2] | p[1:-1, 1:-1] | p[1:-1, 2:]
+            | p[2:, :-2] | p[2:, 1:-1] | p[2:, 2:]
+        )
+    return out
+
+
+def _luma(rgb: np.ndarray) -> np.ndarray:
+    return (
+        rgb[..., 0] * 0.299 + rgb[..., 1] * 0.587 + rgb[..., 2] * 0.114
+    ).astype(np.float32)
+
+
+def rowwise_background_rgb(rgb: np.ndarray, bg_mask: np.ndarray) -> np.ndarray:
+    """
+    행별 배경색 (H,3). 배경이 한 색이 아니라 벽→바닥 세로 그라디언트인 실제
+    산출물에서도 "이 행의 배경"을 맞힌다 (motion_delivery_service 와 같은 모델).
+    """
+    f = rgb.astype(np.float32)
+    h = f.shape[0]
+    flat = f.reshape(-1, 3)
+    global_bg = (
+        np.median(flat[bg_mask.reshape(-1)], axis=0)
+        if bool(bg_mask.any())
+        else np.median(flat, axis=0)
+    )
+    rows = np.empty((h, 3), dtype=np.float32)
+    for y in range(h):
+        m = bg_mask[y]
+        rows[y] = np.median(f[y][m], axis=0) if int(m.sum()) >= _SHADOW_MIN_ROW_BG_PX else global_bg
+    k = 15
+    pad = np.pad(rows, ((k // 2, k // 2), (0, 0)), mode="edge")
+    kernel = np.ones(k, dtype=np.float32) / k
+    return np.stack(
+        [np.convolve(pad[:, c], kernel, mode="valid") for c in range(3)], axis=1
+    ).astype(np.float32)
+
+
+def suppress_cast_shadow_alpha(
+    rgb: np.ndarray, alpha: np.ndarray, fg_binary: np.ndarray
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """
+    ViTMatte 알파에서 **펫이 아닌 그림자**만 0 으로 만든다.
+
+    그림자로 판정하려면 다음을 **전부** 만족해야 한다:
+      1. 세그멘테이션 코어(침식된 전경) 밖 — 몸통은 정의상 제외된다.
+      2. 알파가 완전 불투명이 아니다 (α < SHADOW_MAX_ALPHA).
+      3. 같은 행의 배경보다 어둡다 — 그림자는 배경을 밝히지 않는다.
+      4. 지나치게 어둡지는 않다 — 검은 털/코/눈은 그림자가 아니다.
+      5. 색조가 배경과 같다 — 그림자는 배경의 감광 버전이다.
+
+    안전장치: 위 판정이 전체 알파 질량의 SHADOW_MAX_REMOVED_FRACTION 을 넘게
+    지우려 하면 **아무것도 하지 않는다**. 털/발을 깎느니 그림자를 남긴다.
+
+    Returns: (알파, 진단). 알파는 항상 float32 0..1 이다.
+    """
+    a = alpha.astype(np.float32)
+    diag: dict[str, Any] = {
+        "version": "shadow-suppression-v1",
+        "applied": False,
+        "reason": None,
+        "thresholds": {
+            "core_erode_px": SHADOW_CORE_ERODE_PX,
+            "max_alpha": SHADOW_MAX_ALPHA,
+            "min_luma_ratio": SHADOW_MIN_LUMA_RATIO,
+            "max_luma_ratio": SHADOW_MAX_LUMA_RATIO,
+            "max_chroma_delta": SHADOW_MAX_CHROMA_DELTA,
+            "max_removed_fraction": SHADOW_MAX_REMOVED_FRACTION,
+        },
+    }
+    if not SHADOW_SUPPRESSION_ENABLED:
+        diag["reason"] = "disabled"
+        return a, diag
+
+    total = float(a.sum())
+    if total <= 0.0:
+        diag["reason"] = "empty_alpha"
+        return a, diag
+
+    core = _erode_binary(fg_binary, SHADOW_CORE_ERODE_PX)
+    bg_mask = ~_dilate_binary(fg_binary, max(1, SHADOW_CORE_ERODE_PX))
+    if not bool(bg_mask.any()):
+        diag["reason"] = "no_background_sample"
+        return a, diag
+
+    f = rgb.astype(np.float32)
+    bg_rows = rowwise_background_rgb(rgb, bg_mask)          # (H,3)
+    bg = np.broadcast_to(bg_rows[:, None, :], f.shape)      # (H,W,3)
+
+    px_luma = np.maximum(_luma(f), 1.0)
+    bg_luma = np.maximum(_luma(bg), 1.0)
+    ratio = px_luma / bg_luma
+
+    chroma_px = f / px_luma[..., None]
+    chroma_bg = bg / bg_luma[..., None]
+    chroma_delta = np.abs(chroma_px - chroma_bg).max(axis=2)
+
+    shadow = (
+        (~core)
+        & (a < SHADOW_MAX_ALPHA)
+        & (a > 0.0)
+        & (ratio < SHADOW_MAX_LUMA_RATIO)
+        & (ratio > SHADOW_MIN_LUMA_RATIO)
+        & (chroma_delta < SHADOW_MAX_CHROMA_DELTA)
+    )
+
+    removed = float(a[shadow].sum())
+    fraction = removed / total
+    diag["candidate_pixels"] = int(shadow.sum())
+    diag["removed_alpha_fraction"] = round(fraction, 5)
+    diag["background_rgb_mean"] = [int(c) for c in bg_rows.mean(axis=0)]
+
+    if fraction > SHADOW_MAX_REMOVED_FRACTION:
+        # 그림자라기엔 너무 많다 — 회색 털 피사체를 깎고 있을 가능성이 크다.
+        diag["reason"] = "would_erode_subject"
+        logger.info(
+            "shadow suppression skipped: removal fraction %.3f > %.3f",
+            fraction,
+            SHADOW_MAX_REMOVED_FRACTION,
+        )
+        return a, diag
+
+    out = a.copy()
+    out[shadow] = 0.0
+    diag["applied"] = True
+    diag["reason"] = "shadow_pixels_zeroed"
+    return out, diag
+
+
 def matte_foreground_with_meta(
     image_bytes: bytes,
     *,
@@ -1215,6 +1409,11 @@ def matte_foreground_with_meta(
 
     alpha = _run_vitmatte(rgb, seg.trimap, resolved_model, resolved_device)
 
+    # 접지/투영 그림자는 전경이 아니다 — 알파에서 증거 기반으로만 걷어낸다.
+    alpha_before_shadow = alpha
+    alpha, shadow_diag = suppress_cast_shadow_alpha(rgb, alpha, seg.fg_binary)
+    diag.extra["shadow_suppression"] = shadow_diag
+
     alpha_u8 = (alpha * 255.0).astype(np.uint8)
     alpha_stats = analyze_mask(alpha_u8, threshold=ALPHA_PRESENCE_THRESHOLD)
     diag.alpha_area_fraction = alpha_stats.area_fraction
@@ -1222,6 +1421,9 @@ def matte_foreground_with_meta(
     rgba = np.dstack([rgb, alpha_u8])
 
     if collect_debug:
+        debug_artifacts["05a_alpha_before_shadow_suppression.png"] = _png_bytes(
+            (alpha_before_shadow * 255.0).astype(np.uint8), "L"
+        )
         debug_artifacts["05_alpha.png"] = _png_bytes(alpha_u8, "L")
         debug_artifacts["06_checkerboard.png"] = _png_bytes(
             _checkerboard_composite(rgba), "RGB"

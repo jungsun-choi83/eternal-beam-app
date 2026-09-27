@@ -34,8 +34,12 @@ from .luma_idle_templates import IDLE_TEMPLATE_ORDER
 # v2 확장 (같은 날, Phase 4 — v2 아티팩트가 생성되기 전이라 버전 재범프 없음):
 # STAND_READY 역할 신설(이동/기립 전이의 명시적 서기 시작점, COME_CLOSER +
 # LIE_DOWN 이관), SLEEP 서술에 LIE 와의 신체 구성 차이(머리 내림/말림) 명시.
-KEYFRAME_SPEC_VERSION = "keyframe-spec-v2"
-KEYFRAME_PROMPT_VERSION = "keyframe-prompt-v1"
+# v3 (2026-09-17): preferred_canonical_source 가 "raw" → "clean_plate". 정본
+# raw 에는 모델이 그린 접지/투영 그림자가 들어 있고, 그걸 앵커로 먹이면
+# 키프레임이 같은 얼룩을 물려받는다 (clean_plate_service 참고).
+KEYFRAME_SPEC_VERSION = "keyframe-spec-v3"
+# v2 (2026-09-17): 그림자 금지 절 추가 — canonical-prompt-v2 와 같은 이유.
+KEYFRAME_PROMPT_VERSION = "keyframe-prompt-v2"
 
 #: 웹 홈 상태 id (pet-runtime-events.ts IDLE_HOME_STATE 미러 — TS 와 동일 문자열).
 BREATHING_HOME_STATE = "BREATHING"
@@ -50,7 +54,8 @@ class KeyframeRole:
     required_visibility: tuple[str, ...]
     #: 이후 영상 모션의 크기 (Phase 6 계획용): micro | small | medium
     body_motion_complexity: str
-    #: 신원 앵커로 쓸 정본 소스: "raw" (정본 원본) — cutout 은 보조.
+    #: 신원 앵커로 쓸 정본 소스: "clean_plate" (누끼 + 고정 중립 배경).
+    #: raw 는 증거로만 남는다 — 그림자/배경이 하류로 새지 않도록 (spec-v3).
     preferred_canonical_source: str
     #: Phase 6 영상 생성 호환 메타.
     video_compat: dict[str, Any]
@@ -98,7 +103,7 @@ KEYFRAME_ROLES: dict[str, KeyframeRole] = {
         ),
         required_visibility=("face", "full_body", "ears", "front_paws"),
         body_motion_complexity="micro",
-        preferred_canonical_source="raw",
+        preferred_canonical_source="clean_plate",
         video_compat={"loopable_base": True, "motion_class": "idle"},
         supported_action_ids=_NEUTRAL_ACTIONS,
     ),
@@ -115,7 +120,7 @@ KEYFRAME_ROLES: dict[str, KeyframeRole] = {
         ),
         required_visibility=("face", "full_body", "front_paws"),
         body_motion_complexity="medium",
-        preferred_canonical_source="raw",
+        preferred_canonical_source="clean_plate",
         video_compat={"loopable_base": False, "motion_class": "locomotion"},
         supported_action_ids=_STAND_READY_ACTIONS,
     ),
@@ -127,7 +132,7 @@ KEYFRAME_ROLES: dict[str, KeyframeRole] = {
         ),
         required_visibility=("face", "full_body", "front_paws"),
         body_motion_complexity="micro",
-        preferred_canonical_source="raw",
+        preferred_canonical_source="clean_plate",
         video_compat={"loopable_base": True, "motion_class": "idle"},
         # 자세 전이 상용화 (2026-09-08): LIE 에서 **시작**하는 액션들.
         supported_action_ids=_LIE_START_ACTIONS,
@@ -144,7 +149,7 @@ KEYFRAME_ROLES: dict[str, KeyframeRole] = {
         ),
         required_visibility=("full_body",),
         body_motion_complexity="micro",
-        preferred_canonical_source="raw",
+        preferred_canonical_source="clean_plate",
         video_compat={"loopable_base": True, "motion_class": "sleep"},
         supported_action_ids=(),
     ),
@@ -156,7 +161,7 @@ KEYFRAME_ROLES: dict[str, KeyframeRole] = {
         ),
         required_visibility=("face", "full_body", "ears"),
         body_motion_complexity="small",
-        preferred_canonical_source="raw",
+        preferred_canonical_source="clean_plate",
         video_compat={"loopable_base": False, "motion_class": "gesture"},
         supported_action_ids=(),
     ),
@@ -168,7 +173,7 @@ KEYFRAME_ROLES: dict[str, KeyframeRole] = {
         ),
         required_visibility=("face", "full_body", "ears"),
         body_motion_complexity="small",
-        preferred_canonical_source="raw",
+        preferred_canonical_source="clean_plate",
         video_compat={"loopable_base": False, "motion_class": "gesture"},
         supported_action_ids=(),
     ),
@@ -222,7 +227,11 @@ _PROMPT_BASE = (
     "appearance, exactly as in the supplied images.\n"
     "Change only: the pose, head direction and limb placement required by the "
     "requested pose, and expression only where the pose requires it.\n"
-    "Plain solid neutral light-gray background. Even neutral lighting. No beds, "
+    "Plain solid neutral light-gray background: a single flat tone with no gradient, "
+    "no floor plane and no horizon line. Even neutral lighting. "
+    "No contact shadow under the pet, no cast shadow on the background, no reflection "
+    "and no darkening around the paws, even where the pose puts weight on the ground. "
+    "No beds, "
     "furniture, toys, scenery or any environmental objects. No accessories unless "
     "clearly part of the pet's identity in the supplied images. No additional "
     "animals. No human. No text. No stylization."
@@ -245,7 +254,7 @@ def build_keyframe_prompt(spec: KeyframeRole, visual_identity: dict[str, Any]) -
 
 
 # ── 컴팩트 키프레임 프롬프트 (Runway promptText ≤ 1000자 — 라이브 검증 계약) ──
-KEYFRAME_COMPACT_PROMPT_VERSION = "keyframe-prompt-compact-v1"
+KEYFRAME_COMPACT_PROMPT_VERSION = "keyframe-prompt-compact-v2"
 
 _COMPACT_PROMPT_BASE = (
     "The first supplied image is the canonical reference of a specific pet; any "
@@ -253,7 +262,8 @@ _COMPACT_PROMPT_BASE = (
     "still of the EXACT SAME pet — a pose change only, not a new interpretation. "
     "Preserve face, coat colors, markings, ear shape, body proportions, paws and "
     "tail exactly as supplied; invent nothing. Natural anatomy. Plain solid "
-    "neutral light-gray background, even lighting. No objects, no scenery, no "
+    "neutral light-gray background (one flat tone, no floor plane), even "
+    "lighting. No contact shadow, no cast shadow. No objects, no scenery, no "
     "other animals, no human, no text, no stylization."
 )
 

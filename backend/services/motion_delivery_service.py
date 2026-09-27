@@ -60,7 +60,10 @@ logger = logging.getLogger(__name__)
 DELIVERY_PACKED_ALPHA = "packed_alpha"
 # v2: 행별 배경 모델 — 실제 산출물의 벽→바닥 세로 그라디언트에서 바닥면이
 #     전경으로 남던 결함(라이브 v3 실측, 회색 바닥 슬래브) 수정.
-PACKAGING_VERSION = "motion-delivery-v2"
+# v3: 그림자 거부 — 거리 키잉은 접지/투영 그림자를 **완전 불투명 전경**으로
+#     만들었다(배경 대비 거리가 크니까). 그림자는 배경의 감광 버전이라
+#     색조가 배경과 같다는 사실로만 걸러낸다. 지울 양이 과하면 포기한다.
+PACKAGING_VERSION = "motion-delivery-v3"
 BREATHING = "BREATHING"
 
 #: 포장 대상 모션 (Phase 7H 확장). BREATHING + 기존 상용 5종 — 전부 Phase 6 의
@@ -82,6 +85,17 @@ PACKAGEABLE_MOTIONS: tuple[str, ...] = (
     # 자세 전이 3종 (2026-09-08). DB CHECK 는 migration 20261025.
     "LIE_DOWN", "STAND_UP", "LIE_IDLE",
 )
+
+# --- 그림자 거부 (v3) ---------------------------------------------------------
+#: 끄면 v2 거동(그림자도 전경)으로 되돌아간다.
+SHADOW_REJECT_ENABLED = os.getenv(
+    "MOTION_DELIVERY_SHADOW_REJECT", "1"
+).strip().lower() in ("1", "true", "yes")
+
+#: 임계값은 _shadow_mask 안에서 _env_float 로 읽는다 (테스트가 env 로 조정):
+#:   MOTION_DELIVERY_SHADOW_MIN_LUMA_RATIO / _MAX_LUMA_RATIO — 휘도비 구간
+#:   MOTION_DELIVERY_SHADOW_MAX_CHROMA_DELTA — 배경과의 정규화 색조 거리 상한
+#:   MOTION_DELIVERY_SHADOW_MAX_REMOVED_FRACTION — 이 이상 지워야 하면 포기
 
 #: 브라우저 판정 상수의 서버측 거울 (packed-alpha-canvas.ts). 포장 결과가 이
 #: 임계를 만족하지 못하면 재생기가 packed 로 인식하지 못할 수 있다 — 인코딩
@@ -252,13 +266,36 @@ def _probe_stream(path: str) -> dict[str, Any]:
     return {"width": width, "height": height, "fps": fps, "duration": duration, "has_audio": has_audio}
 
 
-def decode_video(video_bytes: bytes) -> tuple[list[np.ndarray], float]:
-    """원본 mp4 → (RGB uint8 프레임 목록, fps). 테스트에서는 decode_fn 주입으로 대체."""
+def _usable_reused_probe(probe: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """QA 가 이미 계산한 probe 를 여기서 믿고 써도 되는지 — 필드가 다 있을 때만."""
+    if not isinstance(probe, dict):
+        return None
+    try:
+        width, height, fps = int(probe.get("width") or 0), int(probe.get("height") or 0), float(probe.get("fps") or 0)
+    except (TypeError, ValueError):
+        return None
+    if width <= 0 or height <= 0 or fps <= 0:
+        return None
+    return {"width": width, "height": height, "fps": fps}
+
+
+def decode_video(video_bytes: bytes, *, probe: Optional[dict[str, Any]] = None) -> tuple[list[np.ndarray], float]:
+    """
+    원본 mp4 → (RGB uint8 프레임 목록, fps). 테스트에서는 decode_fn 주입으로 대체.
+
+    `probe`: 이 **같은 불변** raw 바이트에 대해 QA(motion_video_qa.verify_
+    output_conformance)가 이미 뽑아 둔 {width,height,fps,...} 가 있으면 넘긴다
+    — 그러면 여기서 같은 영상을 또 ffprobe 하지 않는다(픽셀 디코딩 자체는
+    QA 가 안 하므로 그대로 한다 — QA 는 희소 프레임만 보고, 포장은 전체
+    프레임이 필요해서 디코딩을 대체할 수는 없다). 필드가 불완전하면 늘
+    그랬듯 자체 probe 로 안전하게 되돌아간다.
+    """
+    reused = _usable_reused_probe(probe)
     with tempfile.TemporaryDirectory(prefix="eb_delivery_dec_") as td:
         src = os.path.join(td, "input.mp4")
         with open(src, "wb") as f:
             f.write(video_bytes)
-        meta = _probe_stream(src)
+        meta = reused or _probe_stream(src)
         w, h = meta["width"], meta["height"]
         try:
             proc = subprocess.run(
@@ -359,27 +396,84 @@ def _box_blur3(a: np.ndarray) -> np.ndarray:
     ) / 9.0
 
 
+def _shadow_mask(f: np.ndarray, bg: np.ndarray) -> np.ndarray:
+    """
+    "배경의 감광 버전" 판정 (v3). 그림자는 배경보다 어둡지만 **색조는 같다**.
+
+    거리 키잉만으로는 그림자가 전경이 된다 — 배경과의 색 거리가 크기 때문이다.
+    여기서는 거리가 아니라 색조를 본다: 정규화 chromaticity 가 배경과 같고
+    휘도만 낮은 픽셀만 그림자다. 자기 색을 가진 털은 걸리지 않는다.
+    """
+    lo_ratio = _env_float("MOTION_DELIVERY_SHADOW_MIN_LUMA_RATIO", 0.35)
+    hi_ratio = _env_float("MOTION_DELIVERY_SHADOW_MAX_LUMA_RATIO", 0.97)
+    max_chroma = _env_float("MOTION_DELIVERY_SHADOW_MAX_CHROMA_DELTA", 0.055)
+
+    bg_full = np.broadcast_to(bg[:, None, :], f.shape)
+    w = np.array([0.299, 0.587, 0.114], dtype=np.float32)
+    px_luma = np.maximum(f @ w, 1.0)
+    bg_luma = np.maximum(bg_full @ w, 1.0)
+    ratio = px_luma / bg_luma
+    chroma_delta = np.abs(
+        f / px_luma[..., None] - bg_full / bg_luma[..., None]
+    ).max(axis=2)
+    return (ratio > lo_ratio) & (ratio < hi_ratio) & (chroma_delta < max_chroma)
+
+
 def matte_bgmodel(frames: list[np.ndarray]) -> tuple[list[np.ndarray], dict[str, Any]]:
     """
     계약 기반 배경 모델 키잉. Phase 6 배경 = 평탄한 중립 회색(프레임 테두리가
     곧 배경 샘플)이라는 사실에 기댄다. 반환 알파는 float32 0..1.
+
+    v3: 거리 키잉 뒤에 **그림자 거부**를 한 번 더 건다. 판정은 클립 전체에서
+    한 번만 내린다(프레임별로 켜졌다 꺼지면 깜빡인다). 지우려는 양이
+    임계를 넘으면 클립 전체에서 포기한다 — 펫을 깎느니 그림자를 남긴다.
     """
     lo = _env_float("MOTION_DELIVERY_KEY_LO", 10.0)
     hi = _env_float("MOTION_DELIVERY_KEY_HI", 34.0)
-    alphas: list[np.ndarray] = []
+    max_removed = _env_float("MOTION_DELIVERY_SHADOW_MAX_REMOVED_FRACTION", 0.30)
+    raw_alphas: list[np.ndarray] = []
+    shadows: list[np.ndarray] = []
     backgrounds: list[list[int]] = []
     for frame in frames:
         f = frame.astype(np.float32)
         bg = _rowwise_background(frame)  # v2 — 행별 모델 (그라디언트 배경 대응)
         backgrounds.append([int(c) for c in bg.mean(axis=0)])
         dist = np.abs(f - bg[:, None, :]).max(axis=2)
-        alpha = np.clip((dist - lo) / max(1.0, hi - lo), 0.0, 1.0)
-        alphas.append(_box_blur3(alpha).astype(np.float32))
+        raw_alphas.append(np.clip((dist - lo) / max(1.0, hi - lo), 0.0, 1.0))
+        shadows.append(_shadow_mask(f, bg) if SHADOW_REJECT_ENABLED else None)
+
+    shadow_diag: dict[str, Any] = {"applied": False, "reason": "disabled"}
+    if SHADOW_REJECT_ENABLED:
+        total = float(sum(float(a.sum()) for a in raw_alphas))
+        removed = float(
+            sum(float(a[m].sum()) for a, m in zip(raw_alphas, shadows) if m is not None)
+        )
+        fraction = (removed / total) if total > 0 else 0.0
+        shadow_diag = {
+            "applied": False,
+            "reason": "empty_alpha" if total <= 0 else "would_erode_subject",
+            "removed_alpha_fraction": round(fraction, 5),
+            "max_removed_fraction": max_removed,
+        }
+        if 0.0 < fraction <= max_removed:
+            for a, m in zip(raw_alphas, shadows):
+                a[m] = 0.0
+            shadow_diag["applied"] = True
+            shadow_diag["reason"] = "shadow_pixels_zeroed"
+        elif total > 0 and fraction == 0.0:
+            shadow_diag["reason"] = "no_shadow_pixels"
+        elif fraction > max_removed:
+            logger.info(
+                "delivery shadow reject skipped: %.3f > %.3f", fraction, max_removed
+            )
+
+    alphas = [_box_blur3(a).astype(np.float32) for a in raw_alphas]
     diag = {
         "backend": "bgmodel",
         "key_lo": lo,
         "key_hi": hi,
         "background_rgb_first": backgrounds[0] if backgrounds else None,
+        "shadow_reject": shadow_diag,
     }
     return alphas, diag
 
@@ -685,7 +779,18 @@ async def package_breathing_for_delivery(
             "CANDIDATE_ASSET_UNAVAILABLE", "저장된 raw 영상을 불러오지 못했습니다.", status=503
         )
 
-    frames, fps = (decode_fn or decode_video)(raw)
+    if decode_fn is not None:
+        frames, fps = decode_fn(raw)
+    else:
+        # QA(motion_video_qa.verify_output_conformance)가 이 **같은 불변**
+        # raw 바이트에 대해 이미 뽑아 둔 width/height/fps 가 candidate 에
+        # 남아 있으면 재사용한다 — decode_video 가 같은 영상을 다시
+        # ffprobe 하지 않는다. 없거나 불완전하면 decode_video 가 스스로
+        # 안전하게 자체 probe 로 되돌아간다.
+        reused_probe = (
+            (candidate.get("qa_result") or {}).get("output_conformance") or {}
+        ).get("probe")
+        frames, fps = decode_video(raw, probe=reused_probe)
     if not frames:
         raise MotionDeliveryError("DELIVERY_DECODE_FAILED", "원본에서 프레임을 얻지 못했습니다.")
 

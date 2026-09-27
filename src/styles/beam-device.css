@@ -1,0 +1,266 @@
+/* My Beam (device-screen.tsx) — mobile: stacked compact cards, large touch
+   targets. Desktop (1024px+, app-shell wide): overview + status side by
+   side, recent playback below, without excess vertical scroll.
+   Phase 10: all colour / spacing / radius / shadow from brand.css tokens. */
+
+.eb-beam__scroll {
+  -webkit-overflow-scrolling: touch;
+}
+
+.eb-beam__grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--eb-space-4);
+}
+
+.eb-beam__card {
+  padding: var(--eb-space-6);
+  border-radius: var(--eb-radius-lg);
+  background: var(--eb-surface);
+  border: 1px solid var(--eb-hairline);
+  box-shadow: var(--eb-shadow-1);
+  color: var(--eb-text);
+}
+
+/* Big status glyph — tone comes from data-tone (icon colour only). */
+.eb-beam__badge {
+  width: 5.5rem;
+  height: 5.5rem;
+  border-radius: var(--eb-radius-xl);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--eb-surface-2);
+  border: 1px solid var(--eb-hairline);
+  color: var(--eb-text-3);
+  transition:
+    color var(--eb-dur) var(--eb-ease),
+    border-color var(--eb-dur) var(--eb-ease),
+    background var(--eb-dur) var(--eb-ease);
+}
+
+.eb-beam__badge[data-tone="connected"] {
+  color: var(--eb-gold);
+  border-color: var(--eb-gold-line);
+  background: var(--eb-gold-wash);
+}
+
+.eb-beam__badge[data-tone="waiting"] {
+  color: var(--eb-warn);
+  border-color: var(--eb-warn-line);
+  background: var(--eb-warn-wash);
+}
+
+.eb-beam__badge[data-tone="error"] {
+  color: var(--eb-terracotta);
+  border-color: var(--eb-terracotta-line);
+  background: var(--eb-terracotta-wash);
+}
+
+.eb-beam__badge[data-tone="loading"] {
+  color: var(--eb-blue);
+  border-color: var(--eb-blue-line);
+  background: var(--eb-blue-wash);
+}
+
+.eb-beam__badge-wrap {
+  display: flex;
+  justify-content: center;
+  margin-bottom: var(--eb-space-6);
+}
+
+.eb-beam__device-label {
+  margin: 0 0 var(--eb-space-1);
+  text-align: center;
+  font-size: var(--eb-type-caption);
+  color: var(--eb-text-2);
+}
+
+.eb-beam__device-id {
+  margin: 0 0 var(--eb-space-4);
+  text-align: center;
+  font-family: var(--font-headline);
+  font-size: var(--eb-type-body);
+  font-weight: 600;
+  color: var(--eb-text);
+  overflow-wrap: anywhere;
+}
+
+.eb-beam__status-row {
+  display: flex;
+  justify-content: center;
+}
+
+.eb-beam__status-row .eb-status-badge {
+  white-space: normal;
+  text-align: center;
+  min-height: 2rem;
+  padding: var(--eb-space-1) var(--eb-space-3);
+}
+
+/* Inline warning notice — shares .eb-notice--warning tones. */
+.eb-beam__notice {
+  margin-top: var(--eb-space-4);
+  text-align: left;
+}
+
+.eb-beam__notice-title {
+  font-size: var(--eb-type-body-sm);
+  font-weight: 600;
+  color: var(--eb-text);
+  margin: 0 0 2px;
+}
+
+.eb-beam__notice-body {
+  font-size: var(--eb-type-caption);
+  color: var(--eb-text-2);
+  margin: 0;
+  line-height: 1.45;
+}
+
+/* Retry — secondary button look; label may wrap on narrow screens. */
+.eb-beam__retry-btn {
+  width: 100%;
+  margin-top: var(--eb-space-6);
+  min-height: var(--eb-touch);
+  padding: var(--eb-space-3) var(--eb-space-4);
+  white-space: normal;
+  text-align: center;
+  touch-action: manipulation;
+}
+
+.eb-beam__retry-btn > svg {
+  flex-shrink: 0;
+  color: var(--eb-text-2);
+}
+
+.eb-beam__detail-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--eb-space-3);
+  min-height: var(--eb-touch);
+  padding: var(--eb-space-3) 0;
+  border-bottom: 1px solid var(--eb-hairline);
+}
+
+.eb-beam__detail-row:last-child {
+  border-bottom: none;
+}
+
+.eb-beam__detail-label {
+  font-size: var(--eb-type-body-sm);
+  color: var(--eb-text-2);
+}
+
+.eb-beam__detail-value {
+  font-size: var(--eb-type-body-sm);
+  font-weight: 500;
+  color: var(--eb-text);
+  text-align: right;
+}
+
+.eb-beam__section-title {
+  font-size: var(--eb-type-section);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 1.3;
+  color: var(--eb-text-2);
+  margin: 0 0 var(--eb-space-3);
+  text-transform: uppercase;
+}
+
+.eb-beam__empty {
+  font-size: var(--eb-type-body-sm);
+  color: var(--eb-text-3);
+  margin: 0;
+}
+
+.eb-beam__activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.eb-beam__activity-row {
+  display: flex;
+  align-items: center;
+  gap: var(--eb-space-3);
+  min-height: var(--eb-touch);
+  padding: var(--eb-space-2) 0;
+  border-bottom: 1px solid var(--eb-hairline);
+}
+
+.eb-beam__activity-row:last-child {
+  border-bottom: none;
+}
+
+.eb-beam__activity-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: var(--eb-radius-pill);
+  flex-shrink: 0;
+}
+
+.eb-beam__activity-text {
+  flex: 1;
+  font-size: var(--eb-type-body-sm);
+  color: var(--eb-text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.eb-beam__activity-time {
+  font-size: var(--eb-type-caption);
+  color: var(--eb-text-3);
+  flex-shrink: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (min-width: 1024px) {
+  .eb-beam__grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      "overview detail"
+      "activity activity";
+    gap: var(--eb-space-6);
+    align-items: start;
+    max-width: 1120px;
+    margin-inline: auto;
+  }
+
+  .eb-beam__overview {
+    grid-area: overview;
+  }
+
+  /* No device detail yet (signed out / not provisioned): let the overview
+     take the full row instead of leaving an empty column beside it. */
+  .eb-beam__grid:not(:has(.eb-beam__detail)) {
+    grid-template-areas:
+      "overview overview"
+      "activity activity";
+  }
+
+  .eb-beam__grid:not(:has(.eb-beam__detail)) .eb-beam__overview {
+    max-width: 40rem;
+    width: 100%;
+    justify-self: center;
+  }
+
+  .eb-beam__detail {
+    grid-area: detail;
+  }
+
+  .eb-beam__activity {
+    grid-area: activity;
+  }
+
+  .eb-beam__card {
+    padding: var(--eb-space-8);
+  }
+}

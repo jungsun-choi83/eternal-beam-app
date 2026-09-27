@@ -24,7 +24,7 @@ import logging
 import math
 import os
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import numpy as np
 
@@ -117,11 +117,24 @@ async def ensure_video_anchor(
     keyframe: dict[str, Any],
     image_bytes: bytes,
     aspect_ratio: str,
+    source_object_path: Optional[str] = None,
+    fetch_bytes: Optional[Callable[[Any], Optional[bytes]]] = None,
+    sign_url_fn: Optional[Callable[[Any], Optional[str]]] = None,
 ) -> Optional[Any]:
     """
     키프레임이 요청 종횡비가 아니면 앵커를 만들고 업로드/대장 기록 후
     SimpleNamespace(bytes, url, object_path, meta) 를 돌려준다.
     이미 맞는 종횡비면 None (앵커 불필요 — 키프레임을 그대로 쓴다).
+
+    source_object_path: 실제로 패딩되는 이미지의 객체 경로. 생략하면 키프레임
+    raw 경로를 쓴다. 클린 플레이트를 보낼 때는 **플레이트 경로**를 넘겨야
+    앵커 파일명과 계보가 실제 입력을 가리킨다 (raw 를 가리키면 거짓말이 된다).
+
+    fetch_bytes/sign_url_fn: 주어지면 재빌드 전에 결정론적 object_path 에
+    이미 같은 앵커가 있는지 먼저 확인한다(clean_plate_service.ensure_plate 의
+    plate_object_path_hint 재사용과 같은 패턴). object_path 는 source_path +
+    aspect_ratio 로만 결정되므로, 같은 입력으로 이전에 만든 앵커가 있으면
+    PIL 재인코딩과 스토리지 업로드 없이 그대로 재사용한다.
     """
     from PIL import Image
 
@@ -132,11 +145,36 @@ async def ensure_video_anchor(
     if not needs_anchor(src_w, src_h, aspect_ratio):
         return None
 
-    anchor_bytes, meta = build_anchor_image(image_bytes, aspect_ratio=aspect_ratio)
-    source_path = ((keyframe.get("raw") or {}).get("object_path")) or ""
+    source_path = (source_object_path or "").strip() or (
+        (keyframe.get("raw") or {}).get("object_path")
+    ) or ""
     if not source_path:
         raise ValueError("keyframe payload has no raw object_path")
     object_path = _anchor_path(source_path, aspect_ratio)
+
+    if fetch_bytes is not None:
+        existing_obj = SimpleNamespace(
+            bucket=supabase_assets.BUCKET, object_path=object_path, mime_type="image/png"
+        )
+        existing_bytes = fetch_bytes(existing_obj)
+        if existing_bytes:
+            # 재사용은 진짜 재사용이다 — 서명이 안 되면(예: 로컬/모의 환경) 그걸
+            # 메우려고 같은 바이트를 다시 업로드하지 않는다. url 없이 bytes 만
+            # 돌려주는 것은 raw/플레이트 시작 이미지가 이미 쓰는 것과 같은,
+            # 안전한 폴백이다(공급자에는 언제나 bytes 가 함께 간다).
+            url = sign_url_fn(existing_obj) if sign_url_fn else None
+            return SimpleNamespace(
+                bytes=existing_bytes,
+                url=url,
+                object_path=object_path,
+                meta={
+                    "anchor_version": VIDEO_ANCHOR_VERSION,
+                    "aspect_ratio": aspect_ratio,
+                    "reused": True,
+                },
+            )
+
+    anchor_bytes, meta = build_anchor_image(image_bytes, aspect_ratio=aspect_ratio)
 
     url = await supabase_assets.upload_asset_to_storage(object_path, anchor_bytes, "image/png")
     # DERIVED 대장 기록은 필수다 (근거 없는 앵커로 생성하지 않는다) — 실패는 전파.
@@ -152,6 +190,7 @@ async def ensure_video_anchor(
             "source_keyframe_version": keyframe.get("version"),
             "source_candidate_id": keyframe.get("candidate_id"),
             "source_object_path": source_path,
+            "source_keyframe_raw_object_path": (keyframe.get("raw") or {}).get("object_path"),
         },
     )
 

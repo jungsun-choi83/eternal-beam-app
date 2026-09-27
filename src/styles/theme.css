@@ -27,7 +27,8 @@ body {
   letter-spacing: 0;
   margin: 0;
   min-height: 100vh;
-  background: #000;
+  background: var(--eb-bg);
+  color: var(--eb-text);
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
 }
@@ -36,7 +37,8 @@ body {
   font-family: var(--font-body);
   font-size: var(--text-base);
   line-height: var(--leading-normal);
-  color: #f5f5f7;
+  color: var(--eb-text);
+  background: var(--eb-bg);
 }
 
 /* 제목 폰트 (h1 ~ h6) */
@@ -49,6 +51,7 @@ h6 {
   font-family: var(--font-headline);
   letter-spacing: 0;
   font-weight: 600;
+  color: inherit;
 }
 
 h1 {
@@ -191,11 +194,9 @@ select {
   font-size: clamp(1.375rem, 5.5vw, 1.625rem);
   font-weight: 700;
   letter-spacing: 0.04em;
-  color: #ffffff;
+  color: var(--eb-text);
   line-height: var(--leading-tight);
-  text-shadow:
-    0 0 10px rgba(212, 175, 55, 0.5),
-    0 0 20px rgba(212, 175, 55, 0.3);
+  text-shadow: none;
   white-space: nowrap;
 }
 
@@ -204,24 +205,18 @@ select {
   font-size: 0.875rem;
   font-weight: 500;
   letter-spacing: 0.01em;
-  color: rgba(255, 255, 255, 0.72);
+  color: var(--eb-text-2);
   margin-top: 6px;
   line-height: var(--leading-normal);
 }
 
-/* Safe area - Dynamic Island / 노치 영역 여백 */
+/* Safe area — 순수 하드웨어 인셋만 반영한다 (헤더 자체 패딩과 이중 적용 금지). */
 .safe-area-top {
-  padding-top: max(48px, env(safe-area-inset-top, 48px));
+  padding-top: env(safe-area-inset-top, 0px);
 }
 
 .safe-area-bottom {
-  padding-bottom: max(12px, env(safe-area-inset-bottom, 12px));
-}
-
-@media (min-width: 768px) {
-  .safe-area-top {
-    padding-top: max(60px, env(safe-area-inset-top, 60px));
-  }
+  padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
 /* 화면 제목 */
@@ -230,10 +225,11 @@ select {
   font-size: var(--text-lg);
   font-weight: 600;
   line-height: var(--leading-tight);
+  color: var(--eb-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  max-width: min(12.5rem, 52vw);
+  max-width: min(14rem, 60vw);
 }
 
 /* 업로드 화면 */
@@ -242,7 +238,7 @@ select {
   font-size: var(--text-xl);
   font-weight: 600;
   line-height: var(--leading-tight);
-  color: #ffffff;
+  color: var(--eb-text);
   margin-bottom: 8px;
 }
 
@@ -250,16 +246,16 @@ select {
   font-size: var(--text-sm);
   font-weight: 400;
   line-height: var(--leading-relaxed);
-  color: rgba(255, 255, 255, 0.78);
+  color: var(--eb-text-2);
   margin-bottom: 12px;
 }
 
 /* 사진 업로드 필수 가이드 */
 .upload-guide {
-  padding: 14px 16px;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.04);
-  border: 1px solid rgba(212, 175, 55, 0.22);
+  padding: var(--eb-space-4);
+  border-radius: var(--eb-radius-md);
+  background: var(--eb-surface);
+  border: 1px solid var(--eb-hairline);
   text-align: left;
 }
 
@@ -268,7 +264,7 @@ select {
   font-size: var(--text-sm);
   font-weight: 600;
   line-height: var(--leading-tight);
-  color: #f5f5f7;
+  color: var(--eb-text);
   margin-bottom: 10px;
 }
 
@@ -276,14 +272,14 @@ select {
   font-size: var(--text-sm);
   font-weight: 500;
   line-height: var(--leading-relaxed);
-  color: #e8c96a;
+  color: var(--eb-gold-text);
   margin-bottom: 8px;
 }
 
 .upload-guide-body {
   font-size: var(--text-sm);
   line-height: 1.55;
-  color: rgba(255, 255, 255, 0.82);
+  color: var(--eb-text-2);
   margin-bottom: 12px;
 }
 
@@ -316,15 +312,15 @@ select {
 }
 
 .upload-guide-badge--good {
-  background: rgba(52, 199, 89, 0.15);
-  color: #5dd879;
-  border: 1px solid rgba(52, 199, 89, 0.35);
+  background: var(--eb-sage-wash);
+  color: var(--eb-sage-text);
+  border: 1px solid var(--eb-sage-line);
 }
 
 .upload-guide-badge--bad {
-  background: rgba(255, 69, 58, 0.12);
-  color: #ff6b6b;
-  border: 1px solid rgba(255, 69, 58, 0.28);
+  background: var(--eb-terracotta-wash);
+  color: var(--eb-terracotta-text);
+  border: 1px solid var(--eb-terracotta-line);
 }
 
 .upload-guide-label {
@@ -334,27 +330,27 @@ select {
 }
 
 .upload-guide-label--good {
-  color: #5dd879;
+  color: var(--eb-sage-text);
 }
 
 .upload-guide-label--bad {
-  color: #ff8a80;
+  color: var(--eb-terracotta-text);
 }
 
 .upload-guide-text {
-  color: rgba(255, 255, 255, 0.78);
+  color: var(--eb-text-2);
 }
 
 .memorial-body {
   font-size: var(--text-sm);
   line-height: var(--leading-relaxed);
-  color: #a1a1a6;
+  color: var(--eb-text-2);
 }
 
 .memorial-caption {
   font-size: var(--text-xs);
   line-height: var(--leading-normal);
-  color: #a1a1a6;
+  color: var(--eb-text-3);
 }
 
 .memorial-btn-label {
@@ -363,68 +359,30 @@ select {
   line-height: 1.25;
 }
 
-/* 업로드 카드 */
+/* 업로드 카드 — 시각은 memorial-premium.css / brand.css 의 dropzone 규칙이 맡는다. */
 .upload-card {
-  background: rgba(255, 255, 255, 0.03);
-  border: 2px dashed rgba(212, 175, 55, 0.3);
-  border-radius: 24px;
-  padding: clamp(2rem, 8vw, 3rem) clamp(1.25rem, 5vw, 1.75rem);
   text-align: center;
   cursor: pointer;
-  transition: all 0.3s ease;
   position: relative;
   overflow: hidden;
 }
 
-.upload-card:hover {
-  background: rgba(212, 175, 55, 0.05);
-  border-color: #D4AF37;
-  transform: translateY(-4px);
-  box-shadow: 0 12px 32px rgba(212, 175, 55, 0.2);
-}
-
-.upload-card.drag-over {
-  background: rgba(212, 175, 55, 0.1);
-  border-color: #F4D03F;
-  border-style: solid;
-}
-
 .upload-card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-image:
-    repeating-linear-gradient(
-      45deg,
-      transparent,
-      transparent 20px,
-      rgba(212, 175, 55, 0.02) 20px,
-      rgba(212, 175, 55, 0.02) 40px
-    );
-  opacity: 0;
-  transition: opacity 0.3s ease;
-  pointer-events: none;
+  display: none;
 }
 
-.upload-card:hover::before {
-  opacity: 1;
-}
-
-/* 드래그 힌트 추가 */
+/* 드래그 힌트 */
 .upload-hint {
   font-size: var(--text-sm);
   line-height: var(--leading-normal);
-  color: rgba(255, 255, 255, 0.65);
+  color: var(--eb-text-2);
   margin-top: 12px;
   display: none;
 }
 
 .upload-card:hover .upload-hint {
   display: block;
-  animation: fadeIn 0.3s ease;
+  animation: fadeIn var(--eb-dur-slow) var(--eb-ease);
 }
 
 @keyframes fadeIn {

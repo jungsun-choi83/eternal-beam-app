@@ -1,8 +1,10 @@
 "use client";
 
-import { useState, useEffect, useRef, memo } from "react";
+import { useState, useEffect, useRef, memo, useMemo } from "react";
 import { Check } from "lucide-react";
 import { EternalBeamBrandMark } from "@/components/memorial/eternal-beam-brand-mark";
+import { PrimaryButton } from "@/components/ui/buttons";
+import { StatusBadge } from "@/components/ui/status-badge";
 import {
   assertUsableCutout,
   cutoutImage,
@@ -38,7 +40,11 @@ import { useProcessingClock } from "@/lib/use-processing-clock";
 import { isClientCutoutFirst } from "@/lib/device-host-flags";
 import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
 import { setPendingCutout } from "@/lib/pending-generation";
-import { persistPhase1Intake } from "@/lib/original-reference";
+import {
+  persistPhase1Intake,
+  buildPhase1IntakeReceipt,
+  type ReadyIntakePair,
+} from "@/lib/original-reference";
 import { getEternalBeamUserId } from "@/lib/eternal-beam-user";
 import { getPremiumAccessToken } from "@/lib/premium-auth-token";
 import { syncEternalBeamIdentity } from "@/lib/supabase-auth";
@@ -105,15 +111,33 @@ export interface StoredPipeline {
   phase1_intake?: {
     status: "ready";
     pet_id: string;
+    /** 하위 호환 단수 필드 — 준비된 **첫** 쌍. 기존 소비자는 이것만 읽는다. */
     original_reference_id: string;
     cutout_reference_id: string;
+    /**
+     * 활성 펫에서 준비 완료된 **모든** 원본/누끼 쌍(1–3장). 같은 인덱스끼리
+     * 짝이다. 예전 세션에서 복원된 페이로드에는 없을 수 있어 optional 이다.
+     */
+    original_reference_ids?: string[];
+    cutout_reference_ids?: string[];
   };
 }
 
 interface AIProcessingScreenProps {
   uploadedImage: string | null;
+  uploadedImages?: string[];
+  /**
+   * 지금 처리 중인 **펫 자리**. 업로드 신원(content_id → pet_id)과 대기 누끼가
+   * 이 이름 앞으로 보관된다. 예전에는 둘 다 앱 전체에 한 칸씩이라, 두 번째
+   * 아이를 처리하면 첫 아이의 신원·누끼를 덮어썼다.
+   */
+  petSlotId: string;
   intakeIdentity?: Phase1IntakeIdentity | null;
   language?: string;
+  onImageStateChange?: (
+    index: number,
+    state: { status: "pending" | "uploading" | "success" | "error"; error?: string | null },
+  ) => void;
   onComplete: (cutoutUrl: string) => void;
 }
 
@@ -291,6 +315,37 @@ function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function apiBase(): string {
+  try {
+    const raw = (import.meta as { env?: Record<string, string> }).env?.VITE_API_BASE_URL;
+    return (raw || "").trim().replace(/\/$/, "");
+  } catch {
+    return "";
+  }
+}
+
+async function buildIdentityProfile(petId: string, accessToken: string): Promise<void> {
+  const res = await fetch(`${apiBase()}/api/v1/pet/identity/${encodeURIComponent(petId)}/build`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({}),
+  });
+  if (!res.ok) {
+    let message = `신원 프로필 빌드에 실패했습니다 (${res.status}).`;
+    try {
+      const body = (await res.json()) as { detail?: { message?: string } };
+      const detail = body?.detail?.message?.trim();
+      if (detail) message = detail;
+    } catch {
+      /* keep default */
+    }
+    throw new Error(message);
+  }
+}
+
 async function runFilmConversionDemo(
   onTick: (pct: number, line: string) => void,
   t: ProcessingCopy
@@ -320,8 +375,8 @@ const CompareImages = memo(function CompareImages({
   showCheck: boolean;
 }) {
   return (
-    <div className="w-full max-w-[280px] mb-3 relative z-10 shrink-0">
-      <div className="grid grid-cols-2 gap-2.5">
+    <div className="ai-processing-screen__compare">
+      <div className="ai-processing-screen__compare-grid">
         <div className="compare-panel">
           <p className="compare-panel__label">{beforeLabel}</p>
           <div className="aspect-square relative overflow-hidden">
@@ -343,13 +398,8 @@ const CompareImages = memo(function CompareImages({
               decoding="async"
             />
             {showCheck ? (
-              <div
-                className="absolute bottom-2 right-2 z-10 w-6 h-6 rounded-full flex items-center justify-center"
-                style={{
-                  background: "linear-gradient(135deg, #c9a227, #e8d5a3)",
-                }}
-              >
-                <Check className="w-3.5 h-3.5 text-[#0a0a0a]" strokeWidth={3} />
+              <div className="eb-check-mark absolute bottom-2 right-2 z-10" aria-hidden>
+                <Check className="w-3.5 h-3.5" strokeWidth={3} />
               </div>
             ) : null}
           </CutoutStage>
@@ -361,8 +411,11 @@ const CompareImages = memo(function CompareImages({
 
 export function AIProcessingScreen({
   uploadedImage,
+  uploadedImages,
+  petSlotId,
   intakeIdentity,
   language = "ko",
+  onImageStateChange,
   onComplete,
 }: AIProcessingScreenProps) {
   const m = memorialT(language);
@@ -370,7 +423,6 @@ export function AIProcessingScreen({
   const lite = isLiteUI();
 
   const [currentStep, setCurrentStep] = useState(0);
-  const [progress, setProgress] = useState(10);
   const [processingActive, setProcessingActive] = useState(false);
   const { seconds: elapsedSec } = useProcessingClock(processingActive);
   const [error, setError] = useState<string | null>(null);
@@ -389,18 +441,32 @@ export function AIProcessingScreen({
 
   const runTokenRef = useRef(0);
   const onCompleteRef = useRef(onComplete);
+  const onImageStateChangeRef = useRef(onImageStateChange);
   onCompleteRef.current = onComplete;
+  onImageStateChangeRef.current = onImageStateChange;
+
+  const intakeImages = useMemo(
+    () =>
+      uploadedImages && uploadedImages.length > 0
+        ? uploadedImages.filter((url) => url.startsWith("data:image/"))
+        : uploadedImage && uploadedImage.startsWith("data:image/")
+          ? [uploadedImage]
+          : [],
+    [uploadedImages, uploadedImage],
+  );
 
   useEffect(() => {
-    if (!uploadedImage) return;
+    if (intakeImages.length === 0) return;
+    const firstImage = intakeImages[0];
+    if (!firstImage) return;
     let cancelled = false;
-    createDisplayImageUrl(uploadedImage, 480).then((url) => {
+    createDisplayImageUrl(firstImage, 480).then((url) => {
       if (!cancelled) setDisplayOriginal(url);
     });
     return () => {
       cancelled = true;
     };
-  }, [uploadedImage]);
+  }, [intakeImages]);
 
   const step1Lines =
     t.statusLines.length > 0 ? t.statusLines : [t.step1Main];
@@ -495,7 +561,7 @@ export function AIProcessingScreen({
     (currentStep === 0 && step1Fading) || (currentStep === 1 && step2Fading);
 
   useEffect(() => {
-    if (!uploadedImage) return;
+    if (intakeImages.length === 0) return;
 
     const myToken = ++runTokenRef.current;
     let cancelled = false;
@@ -503,7 +569,6 @@ export function AIProcessingScreen({
     const fail = (msg: string) => {
       if (cancelled || myToken !== runTokenRef.current) return;
       setError(friendlyCutoutError(msg, language));
-      setProgress(0);
     };
 
     (async () => {
@@ -514,12 +579,11 @@ export function AIProcessingScreen({
       setShowCompare(false);
       setIdlePreviewUrl(null);
       setCurrentStep(0);
-      setProgress(10);
         setStatusLine(t.uploading);
 
       try {
         setStatusLine(t.steps[0].description);
-        const stableIdentity = requirePhase1Intake(intakeIdentity);
+        const stableIdentity = requirePhase1Intake(petSlotId, intakeIdentity);
         const auth = await getPremiumAccessToken();
         if (!auth.token) throw new Error("로그인 세션을 확인하지 못했습니다. 다시 로그인해 주세요.");
         const userId =
@@ -528,104 +592,162 @@ export function AIProcessingScreen({
             : getEternalBeamUserId();
         if (!userId) throw new Error("인증된 사용자 신원을 확인하지 못했습니다.");
 
-        // The unmodified upload is authoritative evidence and must be durable
-        // before preprocessing. A cutout failure therefore cannot erase intake.
-        const original = await persistPhase1Intake({
-          userId,
-          contentId: stableIdentity.contentId,
-          dataUrl: uploadedImage,
-          accessToken: auth.token,
-        });
-        if (
-          !original.recorded ||
-          !original.referenceId ||
-          original.userId !== userId ||
-          original.contentId !== stableIdentity.contentId ||
-          original.petId !== stableIdentity.petId
-        ) {
-          throw new Error("원본 사진의 Phase 1 저장 결과가 업로드 신원과 일치하지 않습니다.");
+        let firstReady: {
+          display: string;
+          cutFile: File;
+          contentId: string;
+          petId: string;
+          referenceId: string;
+          cutoutReferenceId: string;
+        } | null = null;
+        /** 활성 펫에서 준비된 **모든** 쌍 — 세션 영수증의 실제 내용이다. */
+        const readyPairs: ReadyIntakePair[] = [];
+        let successCount = 0;
+        let failedCount = 0;
+        const total = intakeImages.length;
+
+        for (let index = 0; index < total; index += 1) {
+          const sourceImage = intakeImages[index];
+          if (!sourceImage) continue;
+
+          try {
+            onImageStateChangeRef.current?.(index, { status: "uploading", error: null });
+            setStatusLine(`${t.uploadingImage(index + 1, total)}`);
+
+            const original = await persistPhase1Intake({
+              userId,
+              contentId: stableIdentity.contentId,
+              dataUrl: sourceImage,
+              accessToken: auth.token,
+            });
+            if (
+              !original.recorded ||
+              !original.referenceId ||
+              original.userId !== userId ||
+              original.contentId !== stableIdentity.contentId ||
+              original.petId !== stableIdentity.petId
+            ) {
+              throw new Error("원본 사진의 Phase 1 저장 결과가 업로드 신원과 일치하지 않습니다.");
+            }
+
+            await traceImage(`pipeline:uploadedImage:${index + 1}`, sourceImage, "original-upload");
+            const file = await normalizeImageForCutout(sourceImage);
+            const cutout = await runCutoutWithFallback(
+              file,
+              (line) => {
+                if (!cancelled && myToken === runTokenRef.current) {
+                  setStatusLine(`${t.processingImage(index + 1, total)} · ${line}`);
+                }
+              },
+              t,
+              language,
+              stableIdentity,
+              userId,
+              auth.token,
+            );
+
+            const contentId = cutout.contentId;
+            if (contentId !== stableIdentity.contentId) {
+              throw new Error("누끼 결과의 업로드 식별자가 원본과 일치하지 않습니다.");
+            }
+
+            const ready = await persistPhase1Intake({
+              userId,
+              contentId,
+              dataUrl: sourceImage,
+              accessToken: auth.token,
+              cutoutFile: cutout.cutFile,
+              diagnostics: cutout.quality ?? undefined,
+            });
+            if (
+              !ready.intakeReady ||
+              !ready.referenceId ||
+              !ready.cutoutReferenceId ||
+              ready.referenceId !== original.referenceId ||
+              ready.petId !== stableIdentity.petId
+            ) {
+              throw new Error("Phase 1 원본과 누끼의 연결을 확인하지 못했습니다.");
+            }
+
+            await traceImage(`cutout:result-file:${index + 1}`, cutout.cutFile, "cutout-result");
+            await traceImage(`cutout:display-url:${index + 1}`, cutout.display, "cutout-result");
+
+            successCount += 1;
+            readyPairs.push({
+              petId: ready.petId,
+              referenceId: ready.referenceId,
+              cutoutReferenceId: ready.cutoutReferenceId,
+            });
+            onImageStateChangeRef.current?.(index, { status: "success", error: null });
+
+            if (!firstReady) {
+              firstReady = {
+                display: cutout.display,
+                cutFile: cutout.cutFile,
+                contentId,
+                petId: ready.petId,
+                referenceId: ready.referenceId,
+                cutoutReferenceId: ready.cutoutReferenceId,
+              };
+
+              const cutThumb = await createDisplayCutoutUrl(cutout.display, 480);
+              if (cancelled || myToken !== runTokenRef.current) return;
+              setCutoutPreview(cutThumb);
+              setShowCompare(true);
+            }
+          } catch (imageError) {
+            const msg = imageError instanceof Error ? imageError.message : String(imageError);
+            onImageStateChangeRef.current?.(index, { status: "error", error: msg });
+            failedCount += 1;
+          }
+
+          if (cancelled || myToken !== runTokenRef.current) return;
         }
 
-        // [IMAGE-TRACE] 파이프라인 입구 — 앱 상태에 들어있는 "원본"의 실제 크기.
-        await traceImage("pipeline:uploadedImage", uploadedImage, "original-upload");
-        const file = await normalizeImageForCutout(uploadedImage);
-
-        const cutout = await runCutoutWithFallback(
-          file,
-          (line) => {
-            if (!cancelled && myToken === runTokenRef.current) setStatusLine(line);
-          },
-          t,
-          language,
-          stableIdentity,
-          userId,
-          auth.token,
-        );
-        const { display, cutFile, contentId: cutContentId } = cutout;
-
-        // [IMAGE-TRACE] 누끼 결과 — 이후 Luma/미리보기로 흘러가는 파일.
-        await traceImage("cutout:result-file", cutFile, "cutout-result");
-        await traceImage("cutout:display-url", display, "cutout-result");
         dumpImageTrace();
 
-        if (cancelled || myToken !== runTokenRef.current) return;
+        if (!firstReady || successCount === 0) {
+          throw new Error(t.allUploadsFailed);
+        }
+        // 영수증은 첫 장이 아니라 **활성 펫의 준비된 전부**다. 다른 펫 슬롯의
+        // 레퍼런스는 buildPhase1IntakeReceipt 가 pet_id 로 걸러 낸다.
+        const intakeReceipt = buildPhase1IntakeReceipt(firstReady.petId, readyPairs);
+        if (!intakeReceipt) {
+          throw new Error(t.allUploadsFailed);
+        }
+        const hasFailures = failedCount > 0 || successCount !== total;
+        if (hasFailures) {
+          setStatusLine(t.someUploadsFailed(failedCount, total));
+        }
 
-        const cutThumb = await createDisplayCutoutUrl(display, 480);
-        if (cancelled || myToken !== runTokenRef.current) return;
-
-        setCutoutPreview(cutThumb);
-        setShowCompare(true);
-        setProgress(38);
         setStatusLine(t.cutoutDone);
-
         await sleep(COMPARE_HOLD_MS);
         if (cancelled || myToken !== runTokenRef.current) return;
 
-        // ── 여기서 멈춘다 ────────────────────────────────────────────────
-        // 예전에는 누끼 직후 곧바로 generatePetVideo() 를 호출했다. 이제는
-        // 누끼까지만 하고, 실제 생성은 사용자가 미리보기에서 확인을 누를 때
-        // preview-screen.tsx 가 시작한다(업로드 → 누끼 → 테마 → 미리보기 →
-        // 확인 → 생성). 원본 해상도 누끼는 그때 다시 필요하므로 보관해 둔다.
+        // accepted 레퍼런스(원본+파생)가 모두 기록된 뒤, 같은 pet 에 대해
+        // 신원 프로필을 1회 빌드한다.
+        setStatusLine(
+          hasFailures
+            ? `${t.someUploadsFailed(failedCount, total)} ${t.buildingIdentity}`
+            : t.buildingIdentity,
+        );
+        await buildIdentityProfile(firstReady.petId, auth.token);
         if (cancelled || myToken !== runTokenRef.current) return;
 
-        const contentId = cutContentId;
-        if (contentId !== stableIdentity.contentId) {
-          throw new Error("누끼 결과의 업로드 식별자가 원본과 일치하지 않습니다.");
-        }
-
-        // Attach the produced cutout to the already-recorded original. The
-        // endpoint deduplicates both rows and reports the explicit parent pair.
-        const ready = await persistPhase1Intake({
-          userId,
-          contentId,
-          dataUrl: uploadedImage,
-          accessToken: auth.token,
-          cutoutFile: cutFile,
-          diagnostics: cutout.quality ?? undefined,
-        });
-        if (
-          !ready.intakeReady ||
-          !ready.referenceId ||
-          !ready.cutoutReferenceId ||
-          ready.referenceId !== original.referenceId ||
-          ready.petId !== stableIdentity.petId
-        ) {
-          throw new Error("Phase 1 원본과 누끼의 연결을 확인하지 못했습니다.");
-        }
-        setPendingCutout(cutFile, contentId, display);
+        setPendingCutout(
+          firstReady.cutFile,
+          firstReady.contentId,
+          firstReady.display,
+          petSlotId,
+        );
 
         const stored: StoredPipeline = {
-          content_id: contentId,
-          cutout_display_url: display,
-          dog_only_nobg_url: display,
+          content_id: firstReady.contentId,
+          cutout_display_url: firstReady.display,
+          dog_only_nobg_url: firstReady.display,
           idle_video_url: "", // 아직 생성 전 — 확인 후에 채워진다
           action_video_url: "",
-          phase1_intake: {
-            status: "ready",
-            pet_id: ready.petId,
-            original_reference_id: ready.referenceId,
-            cutout_reference_id: ready.cutoutReferenceId,
-          },
+          phase1_intake: intakeReceipt,
         };
         try {
           sessionStorage.setItem(ETERNAL_BEAM_PIPELINE_KEY, JSON.stringify(stored));
@@ -635,13 +757,12 @@ export function AIProcessingScreen({
           /* ignore */
         }
 
-        setProgress(100);
         setCurrentStep(2);
         setStatusLine(t.done);
 
         setTimeout(() => {
           if (cancelled || myToken !== runTokenRef.current) return;
-          onCompleteRef.current(display);
+          onCompleteRef.current(firstReady.display);
         }, lite ? 300 : 500);
       } catch (e) {
         if (isCutoutRejectedError(e)) {
@@ -664,7 +785,7 @@ export function AIProcessingScreen({
       cancelled = true;
       setProcessingActive(false);
     };
-  }, [uploadedImage, intakeIdentity, language, retryKey]);
+  }, [intakeImages, intakeIdentity, petSlotId, language, retryKey]);
 
   const originalForUi = displayOriginal || uploadedImage;
   const showComparePanel =
@@ -673,155 +794,116 @@ export function AIProcessingScreen({
     currentStep >= 1 && Boolean(idlePreviewUrl || cutoutPreview);
 
   return (
-    <div className="ai-processing-screen h-full flex flex-col relative overflow-hidden">
-      <header className="px-6 pt-[max(3.25rem,env(safe-area-inset-top,0px))] pb-2 text-center relative z-10 shrink-0">
-        <h1
-          className={`processing-headline px-10 processing-copy-fade ${
-            headlineFading ? "processing-copy-fade--out" : ""
-          }`}
-        >
-          {headlineCopy}
-        </h1>
+    <div className="ai-processing-screen">
+      <header className="ai-processing-screen__header">
+        <h1 className="ai-processing-screen__title">{t.title}</h1>
+        <p className="ai-processing-screen__supporting-copy">{t.supportingCopy}</p>
       </header>
 
-      <div className="ai-processing-screen__body flex-1 flex flex-col items-center px-5 relative z-10 min-h-0 hide-scrollbar">
-        {showComparePanel ? (
-          <CompareImages
-            original={originalForUi}
-            cutout={cutoutPreview}
-            beforeLabel={t.before}
-            afterLabel={t.after}
-            showCheck={false}
-          />
-        ) : showIdlePreview ? (
-          <div className="ai-processing-screen__idle-preview relative z-10 shrink-0">
-            <PetIdleDisplay
-              idleVideoUrl={idlePreviewUrl}
-              cutoutUrl={cutoutPreview}
-              // 생성 전 화면 — 데모 mp4 로 채우지 않는다(정적 누끼만).
-              allowDemoFallback={false}
-              // **명시적으로** false 다 (Phase 25). 이 화면은 생성 이전 단계라
-              // idlePreviewUrl 이 채워지는 경로가 없고, 나가는 것은 언제나 정적
-              // 누끼다 — 구운 장면이 여기로 올 수 없다. 기본값에 기대지 않고
-              // 적어 두는 이유는, 빠뜨린 것과 그렇게 정한 것을 구분하기 위해서다.
-              backgroundBaked={false}
-              className="ai-processing-screen__idle-pet w-full h-full object-contain"
-            />
-          </div>
-        ) : originalForUi && currentStep === 0 ? (
-          <div className="w-36 h-36 mb-4 rounded-2xl overflow-hidden bg-[#141416] flex items-center justify-center shrink-0">
-            <img
-              src={originalForUi}
-              alt=""
-              className="max-w-full max-h-full object-contain p-2"
-              decoding="async"
-            />
-          </div>
-        ) : null}
+      <div className="ai-processing-screen__body">
+        <div className="ai-processing-screen__panel eb-fade-up">
+          <div className="ai-processing-screen__visual">
+            {showComparePanel ? (
+              <CompareImages
+                original={originalForUi}
+                cutout={cutoutPreview}
+                beforeLabel={t.before}
+                afterLabel={t.after}
+                showCheck={false}
+              />
+            ) : showIdlePreview ? (
+              <div className="ai-processing-screen__idle-preview">
+                <PetIdleDisplay
+                  idleVideoUrl={idlePreviewUrl}
+                  cutoutUrl={cutoutPreview}
+                  // 생성 전 화면 — 데모 mp4 로 채우지 않는다(정적 누끼만).
+                  allowDemoFallback={false}
+                  // **명시적으로** false 다 (Phase 25). 이 화면은 생성 이전 단계라
+                  // idlePreviewUrl 이 채워지는 경로가 없고, 나가는 것은 언제나 정적
+                  // 누끼다 — 구운 장면이 여기로 올 수 없다. 기본값에 기대지 않고
+                  // 적어 두는 이유는, 빠뜨린 것과 그렇게 정한 것을 구분하기 위해서다.
+                  backgroundBaked={false}
+                  className="ai-processing-screen__idle-pet w-full h-full object-contain"
+                />
+              </div>
+            ) : originalForUi && currentStep === 0 ? (
+              <div className="ai-processing-screen__source-preview">
+                <img src={originalForUi} alt="" decoding="async" />
+              </div>
+            ) : null}
 
-        {currentStep === 1 && !showIdlePreview && !lite ? (
-          <div className="processing-scanline w-40 h-1 mb-3 rounded-full overflow-hidden bg-white/5 shrink-0" />
-        ) : null}
+            {currentStep === 1 && !showIdlePreview && !lite ? (
+              <div className="processing-scanline ai-processing-screen__scanline" aria-hidden />
+            ) : null}
+          </div>
 
-        <div className={`w-full max-w-[300px] mb-3 shrink-0 ai-processing-screen__steps ${showIdlePreview ? "mt-1" : ""}`}>
-          <div className="flex items-center justify-between mb-3">
-            {t.steps.map((step, index) => (
-              <div key={step.id} className="flex flex-col items-center flex-1">
-                <div
-                  className="w-10 h-10 rounded-full flex items-center justify-center mb-1.5 text-xs font-medium"
-                  style={{
-                    background: currentStep >= index ? "rgba(28, 28, 30, 0.9)" : "rgba(20, 20, 22, 0.6)",
-                    color: currentStep >= index ? "#c9a227" : "#666",
+          <div className="ai-processing-screen__details" aria-live="polite">
+            <div className="ai-processing-screen__headline-row">
+              <div>
+                <StatusBadge tone={error ? "error" : currentStep >= 2 ? "success" : "loading"}>
+                  {error ? t.errorBadge : currentStep >= 2 ? t.done : t.statusPreparing}
+                </StatusBadge>
+                <p
+                  className={`ai-processing-screen__headline processing-copy-fade ${
+                    headlineFading ? "processing-copy-fade--out" : ""
+                  }`}
+                >
+                  {headlineCopy}
+                </p>
+              </div>
+              {!error ? (
+                <p className="ai-processing-screen__clock">
+                  <span>{m.generationProgress.elapsedLabel}</span>
+                  <strong>
+                    {Math.floor(elapsedSec / 60)}:{String(elapsedSec % 60).padStart(2, "0")}
+                  </strong>
+                </p>
+              ) : null}
+            </div>
+
+            <div className="ai-processing-screen__activity">
+              <span className="ai-processing-screen__activity-dot" aria-hidden />
+              <div>
+                <p
+                  className={`ai-processing-screen__copy processing-copy-fade ${
+                    copyFading ? "processing-copy-fade--out" : ""
+                  }`}
+                >
+                  {mainCopy}
+                </p>
+                {currentStep === 1 ? (
+                  <p className="ai-processing-screen__status">{t.step2Sub}</p>
+                ) : statusLine && currentStep === 0 ? (
+                  <p className="ai-processing-screen__status">{statusLine}</p>
+                ) : null}
+              </div>
+            </div>
+
+            {!error && currentStep === 0 && elapsedSec >= 3 ? (
+              <p className="ai-processing-screen__hint">{t.waitHint}</p>
+            ) : null}
+
+            {error ? (
+              <div className="ai-processing-screen__error">
+                <div className="eb-notice eb-notice--error" role="alert">
+                  {error}
+                </div>
+                <PrimaryButton
+                  block
+                  onClick={() => {
+                    setError(null);
+                    clearServerCutoutSkipped();
+                    setRetryKey((k) => k + 1);
                   }}
                 >
-                  {currentStep > index ? <Check className="w-4 h-4" /> : step.id}
-                </div>
-                <span
-                  className="text-[9px] tracking-wide text-center"
-                  style={{ color: currentStep >= index ? "#F1E5D1" : "#555" }}
-                >
-                  {step.name}
-                </span>
+                  {t.retry}
+                </PrimaryButton>
               </div>
-            ))}
-          </div>
-          <div
-            className={`h-[3px] rounded-full overflow-hidden bg-[rgba(28,28,30,0.8)] ${
-              currentStep === 0 && progress < 40 ? "processing-bar-active" : ""
-            }`}
-          >
-            <div
-              className="h-full rounded-full transition-[width] duration-300 ease-out"
-              style={{
-                width: `${Math.max(progress, currentStep === 0 ? 12 : 0)}%`,
-                background: "linear-gradient(90deg, #b8860b, #c9a227, #f5d77a)",
-              }}
-            />
+            ) : null}
+
+            <EternalBeamBrandMark language={language} />
           </div>
         </div>
-
-        <div className="text-center mb-3 max-w-[300px] shrink-0">
-          <p
-            className={`text-sm font-light min-h-[1.25rem] processing-copy-fade ${
-              copyFading ? "processing-copy-fade--out" : ""
-            }`}
-            style={{ color: "#F1E5D1" }}
-          >
-            {mainCopy}
-          </p>
-          {currentStep === 1 ? (
-            <p className="text-[11px] mt-2" style={{ color: "#888" }}>
-              {t.step2Sub}
-            </p>
-          ) : statusLine && currentStep === 0 ? (
-            <p className="text-[11px] mt-2" style={{ color: "#888" }}>
-              {statusLine}
-            </p>
-          ) : null}
-          {!error ? (
-            <p className="text-[10px] mt-1 tabular-nums" style={{ color: "#888" }}>
-              {Math.floor(elapsedSec / 60)}:{String(elapsedSec % 60).padStart(2, "0")}
-              {currentStep === 0 && elapsedSec >= 3 ? (
-                <span className="block mt-1" style={{ color: "#666" }}>
-                  {t.waitHint}
-                </span>
-              ) : null}
-            </p>
-          ) : null}
-        </div>
-
-        {error ? (
-          <div className="mb-4 max-w-[300px] w-full">
-            <div
-              className="px-4 py-3 rounded-xl text-center text-sm"
-              style={{
-                background: "rgba(80, 20, 20, 0.4)",
-                color: "#f5c2c2",
-                border: "1px solid #553333",
-              }}
-            >
-              {error}
-            </div>
-            <button
-              type="button"
-              className="mt-3 w-full py-3 rounded-xl text-sm font-medium"
-              style={{
-                background: "rgba(201, 162, 39, 0.2)",
-                color: "#f5d77a",
-                border: "1px solid rgba(201, 162, 39, 0.35)",
-              }}
-              onClick={() => {
-                setError(null);
-                clearServerCutoutSkipped();
-                setRetryKey((k) => k + 1);
-              }}
-            >
-              {t.retry}
-            </button>
-          </div>
-        ) : null}
-
-        <EternalBeamBrandMark language={language} className="mb-4 shrink-0" />
       </div>
     </div>
   );

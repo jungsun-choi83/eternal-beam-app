@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import binascii
 import hashlib
@@ -29,6 +30,28 @@ class PersistCutoutBody(BaseModel):
     content_id: str
     #: 이미 만들어진 누끼 PNG 의 data: URL (또는 순수 base64).
     data_url: str
+
+
+async def _strict_multi_reference_pet(user_id: str, content_id: str) -> bool:
+    """
+    이 펫이 이미 **엄격한 멀티 레퍼런스 인테이크**를 탔는가.
+
+    원본이 2장 이상이거나, parent 로 묶인 cutout_reference 가 하나라도 있으면
+    참이다. 그런 펫에는 부모 없는 누끼를 더 이상 붙이지 않는다 (아래 참조).
+    대장을 못 읽으면 보수적으로 참 — 모호한 행을 만드는 쪽이 더 나쁘다.
+    """
+    try:
+        ledger = await pet_reference_service.list_references(
+            user_id=user_id, pet_id=pet_reference_service.pet_id_for_content(content_id)
+        )
+    except pet_reference_service.PetReferenceError:
+        return True
+
+    originals = sum(1 for r in ledger if r.role == pet_reference_service.ROLE_ORIGINAL)
+    parented = any(
+        r.role == pet_reference_service.ROLE_DERIVED and r.parent_reference_id for r in ledger
+    )
+    return originals > 1 or parented
 
 
 @router.post("/assets/cutout")
@@ -76,14 +99,25 @@ async def post_persist_cutout(body: PersistCutoutBody):
 
     # 파생 레퍼런스 기록 (Durable Pet Identity Intake). 실패해도 기존 플로우를
     # 막지 않는다 — 이 경로의 계약(누끼 원격 URL 확보)은 그대로다.
+    #
+    # 단, 이 경로는 **부모 없는** 누끼를 남긴다(어떤 원본에서 나왔는지 모른다).
+    # 엄격한 멀티 레퍼런스 인테이크가 이미 선 펫에는 기록하지 않는다 — 원본이
+    # 여러 장인데 부모 없는 누끼가 섞이면 "원본 N ↔ 누끼 N" 이 무너진다.
+    # 바이트 저장과 cutout_url 반환은 그대로이므로 이 경로의 계약은 불변이다.
     try:
-        await pet_reference_service.record_derived(
-            user_id=uid,
-            content_id=cid,
-            object_path=path,
-            derived_kind="cutout_client",
-            mime_type="image/png",
-        )
+        if await _strict_multi_reference_pet(uid, cid):
+            logger.info(
+                "persist-cutout: 엄격 인테이크 펫이라 부모 없는 누끼는 대장에 남기지 않는다 (cid=%s)",
+                cid,
+            )
+        else:
+            await pet_reference_service.record_derived(
+                user_id=uid,
+                content_id=cid,
+                object_path=path,
+                derived_kind="cutout_client",
+                mime_type="image/png",
+            )
     except Exception:
         logger.warning("persist-cutout: 파생 레퍼런스 기록 실패 (cid=%s)", cid, exc_info=True)
 
@@ -164,8 +198,9 @@ async def post_persist_original(
     if len(raw) > ORIGINAL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="original image exceeds the size limit")
 
-    # A stable content_id represents one upload. A retry may repeat the same
-    # bytes, but must not silently turn that identity into a different original.
+    # A stable content_id represents one pet, not one photo. Intake accepts
+    # 1..MAX_ORIGINALS_PER_PET distinct originals for that pet; a retry repeating
+    # the same bytes still dedupes to the existing row and does not spend a slot.
     if strict_intake:
         try:
             existing_refs = await pet_reference_service.list_references(
@@ -177,18 +212,23 @@ async def post_persist_original(
                 status_code=e.status, detail={"code": e.code, "message": e.message}
             ) from e
         incoming_hash = hashlib.sha256(raw).hexdigest()
-        conflicting = any(
-            r.role == pet_reference_service.ROLE_ORIGINAL
-            and r.content_hash
-            and r.content_hash != incoming_hash
+        existing_hashes = {
+            r.content_hash
             for r in existing_refs
-        )
-        if conflicting:
+            if r.role == pet_reference_service.ROLE_ORIGINAL and r.content_hash
+        }
+        if (
+            incoming_hash not in existing_hashes
+            and len(existing_hashes) >= pet_reference_service.MAX_ORIGINALS_PER_PET
+        ):
             raise HTTPException(
                 status_code=409,
                 detail={
-                    "code": "PHASE1_ORIGINAL_CONFLICT",
-                    "message": "같은 업로드 식별자에 다른 원본을 연결할 수 없습니다.",
+                    "code": "PHASE1_ORIGINAL_LIMIT",
+                    "message": (
+                        "한 펫에 등록할 수 있는 원본은 최대 "
+                        f"{pet_reference_service.MAX_ORIGINALS_PER_PET}장입니다."
+                    ),
                 },
             )
 
@@ -199,6 +239,16 @@ async def post_persist_original(
             diagnostics = parsed if isinstance(parsed, dict) else None
         except (TypeError, ValueError):
             diagnostics = None  # 진단은 부가 정보 — 깨진 JSON 이 인테이크를 막지 않는다
+
+    # 원본 스토리지 업로드+대장 기록(record_original)이 나가는 동안 누끼
+    # 멀티파트 바디를 미리 읽어 둔다 — 둘 다 이 핸들러 안의 순수 I/O이고
+    # 서로의 결과에 의존하지 않으므로(누끼 저장 경로 자체는 ref.content_hash
+    # 가 필요하지만, "바이트를 읽는 것"은 필요 없다) 겹쳐도 안전하다. 실패하면
+    # 아래 누끼 처리 블록에서 원래와 똑같이 처리한다(먼저 읽었을 뿐 예외 경로는
+    # 그대로다).
+    cutout_read_task: "asyncio.Task[bytes] | None" = (
+        asyncio.ensure_future(cutout_file.read()) if cutout_file is not None else None
+    )
 
     try:
         ref = await pet_reference_service.record_original(
@@ -211,12 +261,18 @@ async def post_persist_original(
             diagnostics=diagnostics,
         )
     except pet_reference_service.PetReferenceError as e:
+        if cutout_read_task is not None:
+            cutout_read_task.cancel()
         raise HTTPException(status_code=e.status, detail={"code": e.code, "message": e.message}) from e
     except Exception as e:
+        if cutout_read_task is not None:
+            cutout_read_task.cancel()
         logger.exception("persist-original: storage upload failed (cid=%s)", cid)
         raise HTTPException(status_code=502, detail=f"storage upload failed: {e}") from e
 
     if strict_intake and (not ref.recorded or not ref.id):
+        if cutout_read_task is not None:
+            cutout_read_task.cancel()
         raise HTTPException(
             status_code=503,
             detail={
@@ -232,7 +288,7 @@ async def post_persist_original(
     if cutout_file is not None:
         cutout_recorded = False
         try:
-            cut_raw = await cutout_file.read()
+            cut_raw = await cutout_read_task
             if cut_raw and ref.recorded and ref.content_hash:
                 cut_path = f"{uid}/{cid}/references/cutout_{ref.content_hash[:16]}.png"
                 cut_hash = hashlib.sha256(cut_raw).hexdigest()
@@ -304,11 +360,19 @@ async def post_persist_original(
     if not strict_intake and _identity_autobuild_enabled() and ref.recorded:
         background_tasks.add_task(_autobuild_identity_profile, uid, ref.pet_id)
 
+    # 응답은 **이번 요청의 원본**을 말해야 한다. 펫 전체의 "아무 짝이나 하나"를
+    # 돌려주면 2·3번째 사진이 1번째의 누끼를 자기 것으로 보고받고, 클라이언트의
+    # 장별 검증이 거짓으로 통과한다.
     ledger = await pet_reference_service.list_references(user_id=uid, pet_id=ref.pet_id)
-    intake_ready, _, ready_cutout = pet_reference_service.intake_readiness(ledger)
-    if ready_cutout:
-        cutout_reference_id = ready_cutout.id
-        cutout_object_path = ready_cutout.object_path
+    paired = pet_reference_service.strict_cutout_for_original(ledger, ref.id)
+    if paired:
+        cutout_reference_id = paired.id
+        cutout_object_path = paired.object_path
+    intake_ready = bool(
+        paired
+        and ref.recorded
+        and ref.acceptance_state == pet_reference_service.STATE_ACCEPTED
+    )
 
     return {
         "user_id": uid,

@@ -5,7 +5,9 @@ import { motion } from "framer-motion";
 import { AlertCircle, Check, Loader2 } from "lucide-react";
 
 import { memorialT } from "@/components/memorial/memorial-i18n";
-import { MobileFrame } from "@/components/memorial/mobile-frame";
+import { AppShell } from "@/components/layout/app-shell";
+import { PrimaryButton, SecondaryButton } from "@/components/ui/buttons";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { confirmMembership, readBillingRedirectParams } from "@/lib/toss-billing";
 
 type Phase = "confirming" | "done" | "failed";
@@ -68,54 +70,53 @@ export function BillingResultScreen({
     void run();
   }, [outcome, run]);
 
+  // Phase 10 — 상태 색은 토큰만 쓴다: 확인 중 = 블루, 완료 = 세이지, 실패 = 테라코타.
   const icon =
     phase === "confirming" ? (
-      <Loader2 className="w-7 h-7 animate-spin" style={{ color: "#d4af37" }} />
+      <Loader2 className="w-7 h-7 animate-spin" style={{ color: "var(--eb-blue)" }} />
     ) : phase === "done" ? (
-      <Check className="w-7 h-7" style={{ color: "#d4af37" }} />
+      <Check className="w-7 h-7" style={{ color: "var(--eb-sage)" }} />
     ) : (
-      <AlertCircle className="w-7 h-7" style={{ color: "#e0a0a0" }} />
+      <AlertCircle className="w-7 h-7" style={{ color: "var(--eb-terracotta)" }} />
     );
 
   const title =
     phase === "confirming" ? t.confirming : phase === "done" ? t.confirmed : t.paymentFailed;
 
   return (
-    <MobileFrame>
-      <div className="flex flex-col items-center justify-center h-full px-6 text-center">
+    <AppShell>
+      <div className="billing-result-screen flex flex-col items-center justify-center h-full px-6 text-center text-[var(--eb-text)]">
         <motion.div
           initial={{ opacity: 0, y: 8 }}
           animate={{ opacity: 1, y: 0 }}
-          className="flex flex-col items-center gap-4"
+          className="eb-card flex w-full max-w-[420px] flex-col items-center gap-4 px-6 py-8"
+          aria-live="polite"
         >
           {icon}
-          <p className="text-base font-medium" style={{ color: "#F1E5D1" }}>
+          <StatusBadge
+            tone={phase === "confirming" ? "loading" : phase === "done" ? "success" : "error"}
+          >
             {title}
-          </p>
+          </StatusBadge>
           {message ? (
-            <p className="text-xs memorial-body max-w-[260px]">{message}</p>
+            <p className="eb-body-sm memorial-body max-w-[260px]">{message}</p>
           ) : phase === "done" ? (
-            <p className="text-xs memorial-body max-w-[260px]">{t.confirmedHint}</p>
+            <p className="eb-body-sm memorial-body max-w-[260px]">{t.confirmedHint}</p>
           ) : null}
 
           {phase !== "confirming" ? (
-            <button
-              type="button"
-              onClick={onContinue}
-              className="mt-2 px-6 py-2.5 rounded-xl text-[13px] font-medium tracking-wide"
-              style={{
-                background:
-                  phase === "done"
-                    ? "linear-gradient(135deg, #b8860b 0%, #c9a227 30%, #d4af37 50%, #f5d77a 70%, #d4af37 100%)"
-                    : "rgba(255,255,255,0.08)",
-                color: phase === "done" ? "#0a0a0a" : "#E2E2E2",
-              }}
-            >
-              {t.continueAfterPayment}
-            </button>
+            phase === "done" ? (
+              <PrimaryButton block className="mt-2" onClick={onContinue}>
+                {t.continueAfterPayment}
+              </PrimaryButton>
+            ) : (
+              <SecondaryButton block className="mt-2" onClick={onContinue}>
+                {t.continueAfterPayment}
+              </SecondaryButton>
+            )
           ) : null}
         </motion.div>
       </div>
-    </MobileFrame>
+    </AppShell>
   );
 }

@@ -19,6 +19,7 @@ from backend.services import motion_reference_service as mrs
 from backend.services import motion_spec as ms
 from backend.services import motion_video_service as mv
 from backend.services import pet_identity_service as ids
+from backend.services import pet_morphology_service as morph
 from backend.services import pet_reference_service as refs
 from backend.services import pet_reference_set_service as sets
 from backend.services import pet_registry
@@ -35,10 +36,10 @@ def _mock_backend(monkeypatch):
     monkeypatch.delenv("PET_VLM_IDENTITY_ENABLED", raising=False)
     monkeypatch.setenv("CANONICAL_QA_MIN_RESOLUTION", "100")
     monkeypatch.setenv("PHASE6_LIVE_MODE", "all")
-    for m in (refs, pet_registry, ids, sets, canon, kf, mv, mrs):
+    for m in (refs, pet_registry, ids, morph, sets, canon, kf, mv, mrs):
         m.__reset_for_tests()
     yield
-    for m in (refs, pet_registry, ids, sets, canon, kf, mv, mrs):
+    for m in (refs, pet_registry, ids, morph, sets, canon, kf, mv, mrs):
         m.__reset_for_tests()
 
 
@@ -63,7 +64,7 @@ def _run(coro):
 def reg(key, *, species="DOG", motion="RUN", size="UNKNOWN", legs="UNKNOWN",
         body="UNKNOWN", view="UNKNOWN", direction="UNKNOWN", speed="UNKNOWN",
         approve=True, commercial=True, pet_id=None, source_type=None,
-        license_text="Adobe Stock Standard License #A123"):
+        license_text="Adobe Stock Standard License #A123", **extra):
     ref = _run(
         mrs.register_reference(
             reference_key=key, species=species, motion_id=motion,
@@ -73,6 +74,7 @@ def reg(key, *, species="DOG", motion="RUN", size="UNKNOWN", legs="UNKNOWN",
             camera_view=view, travel_direction=direction, speed_class=speed,
             object_path=f"motion-references/{species.lower()}/{key.lower()}_v1.mp4",
             pet_id=pet_id, commercial_use_allowed=commercial,
+            **extra,
         )
     )
     if approve:
@@ -81,11 +83,27 @@ def reg(key, *, species="DOG", motion="RUN", size="UNKNOWN", legs="UNKNOWN",
     return ref
 
 
-def prof(species="DOG", size="UNKNOWN", legs="UNKNOWN", body="UNKNOWN"):
+def prof(
+    species="DOG",
+    size="UNKNOWN",
+    legs="UNKNOWN",
+    body="UNKNOWN",
+    body_build="UNKNOWN",
+    head="UNKNOWN",
+    muzzle="UNKNOWN",
+    ear_form="UNKNOWN",
+    tail_form="UNKNOWN",
+):
     return {
         "profile_version": mrs.MORPHOLOGY_PROFILE_VERSION,
         "species": species, "body_size_class": size,
-        "leg_length_class": legs, "body_length_class": body, "sources": {},
+        "leg_length_class": legs, "body_length_class": body,
+        "body_build_class": body_build,
+        "head_proportion_class": head,
+        "muzzle_proportion_class": muzzle,
+        "ear_form": ear_form,
+        "tail_form": tail_form,
+        "sources": {},
     }
 
 
@@ -162,6 +180,11 @@ def test_example1_small_standard_dog_run_level1():
         "species": "EXACT", "motion": "EXACT", "body_size": "EXACT",
         "leg_class": "EXACT", "body_class": "EXACT", "view": "EXACT",
         "direction": "EXACT", "speed": "UNSPECIFIED",
+        "body_build": "UNVERIFIED",
+        "head_proportion": "UNVERIFIED",
+        "muzzle_proportion": "UNVERIFIED",
+        "ear_form": "UNVERIFIED",
+        "tail_form": "UNVERIFIED",
     }
 
 
@@ -258,6 +281,123 @@ def test_pet_own_motion_takes_priority():
     assert other["reference_key"] == "DOG_RUN_FRONT_SMALL_STANDARD"
 
 
+def test_registry_morphology_match_fields_include_adjacent_and_reject_far_mismatch():
+    # RUN(LOCOMOTION) requirements 는 body_build_class 까지 매칭 축으로 포함한다.
+    reg(
+        "DOG_RUN_FRONT_BALANCED",
+        size="MEDIUM",
+        legs="STANDARD",
+        body="STANDARD",
+        view="FRONT",
+        body_build_class="BALANCED",
+    )
+    reg(
+        "DOG_RUN_FRONT_STOCKY",
+        size="MEDIUM",
+        legs="STANDARD",
+        body="STANDARD",
+        view="FRONT",
+        body_build_class="STOCKY",
+    )
+    reg("DOG_RUN_GENERIC")
+
+    near = resolve(
+        prof(size="MEDIUM", legs="STANDARD", body="STANDARD", body_build="SLENDER"),
+        desired_view="FRONT",
+        motion_requirements=ms.MOTIONS["RUN"].requirements,
+    )
+    # adjacent(BALANCED) 는 LEVEL_2 로 generic 보다 우선한다.
+    assert near["reference_key"] == "DOG_RUN_FRONT_BALANCED"
+    assert near["selection_level"] == mrs.LEVEL_2
+
+    far = resolve(
+        prof(size="MEDIUM", legs="STANDARD", body="STANDARD", body_build="STOCKY"),
+        desired_view="FRONT",
+        motion_requirements=ms.MOTIONS["RUN"].requirements,
+    )
+    assert far["reference_key"] == "DOG_RUN_FRONT_STOCKY"
+
+    # SLENDER ↔ STOCKY 는 2-step 차이로 MISMATCH → 후보 제외.
+    filtered = resolve(
+        prof(size="MEDIUM", legs="STANDARD", body="STANDARD", body_build="SLENDER"),
+        desired_view="FRONT",
+        motion_requirements={
+            **ms.MOTIONS["RUN"].requirements,
+            "morphology": {
+                **ms.MOTIONS["RUN"].requirements["morphology"],
+                "match_fields": ["body_build_class"],
+            },
+        },
+    )
+    assert filtered["reference_key"] == "DOG_RUN_FRONT_BALANCED"
+
+
+def test_unknown_profile_axes_are_ignored_not_counted_against_reference():
+    """
+    측정 불가/신뢰도 하한 미달로 UNKNOWN 인 **펫 쪽** 축은 판단 근거가 아니라
+    무시 대상이다 — 나머지 축이 정확히 맞으면 LEVEL_1 이 유지된다.
+    레퍼런스 쪽 UNKNOWN(generic 자산)은 종전대로 UNVERIFIED → LEVEL_3.
+    """
+    reg("DOG_RUN_FRONT_LONG_BODY", size="MEDIUM", legs="STANDARD", body="LONG", view="FRONT")
+    reg("DOG_RUN_GENERIC")
+
+    # 펫: 다리 길이 미상(휴리스틱 저신뢰), 몸통 비율만 확정.
+    r = resolve(prof(body="LONG"), desired_view="FRONT")
+    assert r["reference_key"] == "DOG_RUN_FRONT_LONG_BODY"
+    assert r["selection_level"] == mrs.LEVEL_1
+    assert r["morphology_axes"]["compared"] == ["body_length_class"]
+    assert set(r["morphology_axes"]["ignored_unknown_profile_fields"]) == {
+        "body_size_class",
+        "leg_length_class",
+    }
+
+    # 펫 형태를 하나도 모르면 구조 검증이 없는 것 — 조용한 LEVEL_1 승격 금지.
+    blind = resolve(prof(), desired_view="FRONT")
+    assert blind["selection_level"] == mrs.LEVEL_3
+
+
+def test_frame_occupancy_never_becomes_body_size_class():
+    """morphology.body_size 는 프레임 점유율이라 체급으로 승격되지 않는다."""
+    morphology = {
+        "traits": {
+            "species": {"status": "fused", "class": "DOG", "confidence": "high"},
+            "body_size": {
+                "status": "fused",
+                "class": "large_in_frame",
+                "confidence": "high",
+                "measures": "frame_occupancy",
+            },
+        }
+    }
+    p = mrs.derive_motion_profile(None, morphology_profile=morphology, confidence_floor="medium")
+    assert p["body_size_class"] == "UNKNOWN"
+    assert "body_size" not in p["sources"]
+
+    # 운영 override(실측 소스)는 여전히 통한다.
+    over = mrs.derive_motion_profile(
+        None, {"body_size_class": "LARGE"}, morphology_profile=morphology
+    )
+    assert over["body_size_class"] == "LARGE"
+    assert over["sources"]["body_size"] == "override"
+
+
+def test_fused_morphology_body_length_wins_over_identity_single_reference(storage, monkeypatch):
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY",))
+    profile_obj = _run(ids.get_profile(user_id=USER, pet_id=PET))
+    identity_only = mrs.derive_motion_profile(profile_obj)
+
+    morphology = {
+        "traits": {
+            "torso_proportion": {"status": "fused", "class": "long", "confidence": "high"},
+        }
+    }
+    fused = mrs.derive_motion_profile(profile_obj, morphology_profile=morphology)
+    assert fused["body_length_class"] == "LONG"
+    assert fused["sources"]["body_length"] == "morphology_profile:high"
+    # 신원 단독 경로는 여전히 폴백으로 살아 있다.
+    assert identity_only["sources"]["body_length"] == "measured"
+
+
 def test_resolver_makes_no_video_provider_calls(monkeypatch):
     from backend.services import video_motion_providers as vp
 
@@ -307,7 +447,7 @@ def test_contract_resolves_reference_with_asset(storage, monkeypatch):
     contract = _run(ms.resolve_video_generation_spec(
         user_id=USER, pet_id=PET, motion_id="COME_CLOSER"
     ))
-    assert contract["contract_version"] == "phase6-contract-v2"
+    assert contract["contract_version"] == ms.PHASE6_CONTRACT_VERSION
     assert contract["pet_motion_profile"]["species"] == "DOG"
     mr = contract["motion_reference"]
     assert mr["reference_key"] == "DOG_APPROACH_FRONT_GENERIC"

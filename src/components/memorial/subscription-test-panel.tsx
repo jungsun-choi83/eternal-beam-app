@@ -73,40 +73,33 @@ export function SubscriptionTestPanel({
     <motion.div
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
-      className="mx-2 mb-4 rounded-2xl p-4"
-      style={{
-        background: "rgba(201, 162, 39, 0.08)",
-        border: "1px solid rgba(201, 162, 39, 0.25)",
-      }}
+      className="eb-card eb-card--muted mx-2 mb-4 p-4"
     >
-      <div className="flex items-center justify-between mb-3">
-        <p className="text-sm font-light" style={{ color: "#d4af37" }}>
-          {t.title}
-        </p>
-        <button type="button" onClick={onClose} className="p-1">
-          <X className="w-4 h-4" style={{ color: "#A1A1A6" }} />
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <p className="eb-section-title truncate">{t.title}</p>
+        <button type="button" onClick={onClose} className="mem-icon-btn -mr-2 shrink-0" aria-label="Close">
+          <X className="w-4 h-4 text-[var(--eb-text-2)]" />
         </button>
       </div>
 
-      <p className="text-[11px] mb-3 font-light" style={{ color: "#A1A1A6" }}>
-        {t.hint}
-      </p>
+      <p className="eb-caption mb-3">{t.hint}</p>
 
       {status ? (
-        <div
-          className="text-[12px] space-y-1 mb-3 p-3 rounded-xl"
-          style={{ background: "rgba(0,0,0,0.25)" }}
-        >
-          <p style={{ color: "#F5F5F7" }}>
+        <div className="text-[12px] space-y-1 mb-3 p-3 rounded-[var(--eb-radius-sm)] bg-[var(--eb-surface)] border border-[var(--eb-hairline)]">
+          <p className="text-[var(--eb-text)]">
             {t.status}:{" "}
-            <span style={{ color: status.entitled ? "#4ade80" : "#f87171" }}>
+            <span
+              className={`font-semibold ${
+                status.entitled ? "text-[var(--eb-sage-text)]" : "text-[var(--eb-terracotta-text)]"
+              }`}
+            >
               {status.status ?? "—"} ({status.entitled ? t.entitledYes : t.entitledNo})
             </span>
           </p>
-          <p style={{ color: "#A1A1A6" }}>
+          <p className="text-[var(--eb-text-2)]">
             {t.credits}: {status.credits_remaining ?? "—"}
           </p>
-          <p style={{ color: "#A1A1A6" }}>
+          <p className="text-[var(--eb-text-2)]">
             {t.nextBilling}: {status.next_billing_date?.slice(0, 10) ?? "—"}
           </p>
         </div>
@@ -119,13 +112,8 @@ export function SubscriptionTestPanel({
             type="button"
             disabled={!!busy}
             onClick={() => void run(event)}
-            className="py-2.5 px-2 rounded-xl text-[11px] font-light transition-opacity"
-            style={{
-              background: "rgba(28, 28, 30, 0.95)",
-              border: "1px solid rgba(201, 162, 39, 0.3)",
-              color: "#F5F5F7",
-              opacity: busy && busy !== event ? 0.5 : 1,
-            }}
+            aria-busy={busy === event || undefined}
+            className="eb-btn eb-btn--secondary mem-btn-secondary text-xs px-2"
           >
             {busy === event ? t.processing : label}
           </button>
@@ -136,18 +124,13 @@ export function SubscriptionTestPanel({
         type="button"
         disabled={!!busy}
         onClick={() => void refresh()}
-        className="w-full mt-2 py-2 flex items-center justify-center gap-2 text-[11px]"
-        style={{ color: "#A1A1A6" }}
+        className="eb-btn eb-btn--ghost eb-btn--block mt-2 text-xs"
       >
-        <RefreshCw className={`w-3 h-3 ${busy === "refresh" ? "animate-spin" : ""}`} />
+        <RefreshCw className={`w-3.5 h-3.5 ${busy === "refresh" ? "animate-spin" : ""}`} />
         {t.refresh}
       </button>
 
-      {lastMsg ? (
-        <p className="mt-2 text-[10px] font-light" style={{ color: "#A1A1A6" }}>
-          {lastMsg}
-        </p>
-      ) : null}
+      {lastMsg ? <p className="mt-2 eb-caption">{lastMsg}</p> : null}
     </motion.div>
   );
 }

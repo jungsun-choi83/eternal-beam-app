@@ -54,6 +54,7 @@ export function clearStoredCustomBgVideoUrl(): void {
   try {
     localStorage.removeItem(CUSTOM_BG_VIDEO_URL_KEY);
     localStorage.removeItem(CUSTOM_BG_JOB_ID_KEY);
+    localStorage.removeItem(CUSTOM_BG_CONTENT_ID_KEY);
   } catch {
     /* ignore */
   }

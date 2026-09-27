@@ -24,6 +24,7 @@ pet_registry 와 같은 최초 사용 시 귀속(TOFU)이다. pets 레지스트�
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import logging
@@ -50,6 +51,11 @@ VIEW_UNKNOWN = "UNKNOWN"
 
 STATE_ACCEPTED = "accepted"
 STATE_REJECTED = "rejected"
+
+#: 한 펫(=한 content_id)에 붙일 수 있는 **서로 다른** 원본 장수. 멀티 레퍼런스
+#: 인테이크는 1~3장을 같은 펫에 쌓는다 — 같은 바이트의 재시도는 여전히 멱등이라
+#: 이 상한을 소모하지 않는다.
+MAX_ORIGINALS_PER_PET = 3
 
 _EXT_BY_MIME = {
     "image/jpeg": ".jpg",
@@ -212,14 +218,19 @@ async def _rows_for_pet(pet_id: str) -> list[dict[str, Any]]:
 
     if _use_db() and _supabase():
         try:
-            r = (
-                _supabase()
-                .table(_table())
-                .select(_SELECT)
-                .eq("pet_id", pid)
-                .order("created_at", desc=False)
-                .execute()
-            )
+            # supabase-py 는 동기 클라이언트다. 이벤트 루프를 막지 않고 스레드로
+            # 넘겨야 여러 사진(=여러 요청)의 대장 조회가 실제로 동시에 진행된다.
+            def _select():
+                return (
+                    _supabase()
+                    .table(_table())
+                    .select(_SELECT)
+                    .eq("pet_id", pid)
+                    .order("created_at", desc=False)
+                    .execute()
+                )
+
+            r = await asyncio.to_thread(_select)
             return getattr(r, "data", None) or []
         except Exception as e:
             # pet_registry.get 과 같은 이유로 "없음"으로 답하지 않는다 — 조회 실패를
@@ -272,27 +283,98 @@ def pair_cutouts(refs: list[PetReference]) -> dict[str, Optional[PetReference]]:
     """
     원본 레퍼런스 id → 짝지어진 누끼(파생) 레퍼런스.
 
-    parent_reference_id 로 명시적으로 연결된 누끼가 우선이고, 없으면 같은
-    content_id 의 콘텐츠 수준 누끼로 폴백한다 — 단일 사진 온보딩(Phase 1 훅)은
-    parent 링크 없이 콘텐츠당 누끼 하나를 남기기 때문이다. 짝이 없으면 None.
+    parent_reference_id 로 명시적으로 연결된 누끼가 정본이다.
+
+    ── content_id 폴백이 **모호하지 않을 때만** 남는 이유 ────────────────────
+    단일 사진 온보딩(Phase 1 훅)은 parent 링크 없이 콘텐츠당 누끼 하나를 남긴다.
+    그 레거시 짝짓기는 그대로 살린다 — 단, **그 content_id 의 원본이 정확히
+    하나일 때만**이다. 멀티 레퍼런스(한 펫에 원본 2~3장)에서는 모든 원본이 같은
+    content_id 를 공유하므로, parent 없는 누끼 하나가 세 원본 전부에 붙어
+    "어느 원본의 누끼인지"를 잃는다. 그 경우 폴백을 쓰지 않고 엄격한 부모 링크만
+    인정한다. 짝이 없으면 None.
     """
     cutouts = [
         r
         for r in refs
         if r.role == ROLE_DERIVED and (r.derived_kind or "").startswith("cutout")
     ]
+    originals = [r for r in refs if r.role == ROLE_ORIGINAL and r.id]
+
+    originals_per_content: dict[str, int] = {}
+    for r in originals:
+        originals_per_content[r.content_id] = originals_per_content.get(r.content_id, 0) + 1
+
     by_parent: dict[str, PetReference] = {}
     by_content: dict[str, PetReference] = {}
     for c in cutouts:
         if c.parent_reference_id:
             by_parent.setdefault(str(c.parent_reference_id), c)
+            continue
+        # 부모가 없는 누끼만 콘텐츠 수준 폴백 후보다 — 다른 원본에 이미 묶인
+        # 누끼가 제3의 원본에 흘러가는 일은 없다.
         by_content.setdefault(c.content_id, c)
 
     out: dict[str, Optional[PetReference]] = {}
+    for r in originals:
+        fallback = (
+            by_content.get(r.content_id)
+            if originals_per_content.get(r.content_id, 0) == 1
+            else None
+        )
+        out[str(r.id)] = by_parent.get(str(r.id)) or fallback
+    return out
+
+
+def strict_cutout_for_original(
+    refs: list[PetReference], original_id: Optional[str]
+) -> Optional[PetReference]:
+    """
+    이 원본에 **엄격하게 연결된** 누끼만 돌려준다 (parent_reference_id 일치).
+
+    멀티 레퍼런스 인테이크가 "원본 N ↔ 누끼 N" 을 장마다 확인할 때 쓴다 —
+    pair_cutouts 의 레거시 폴백조차 타지 않는다.
+    """
+    oid = str(original_id or "").strip()
+    if not oid:
+        return None
+    for c in refs:
+        if (
+            c.role == ROLE_DERIVED
+            and (c.derived_kind or "").startswith("cutout")
+            and str(c.parent_reference_id or "") == oid
+            and c.acceptance_state == STATE_ACCEPTED
+            and c.recorded
+        ):
+            return c
+    return None
+
+
+def strict_lineage_map(refs: list[PetReference]) -> dict[str, dict[str, Any]]:
+    """
+    accepted original id → 그 원본이 **실제로 소비하는** 누끼의 신원.
+
+    ── 왜 프로필 재사용 키에 이것이 들어가야 하는가 ──────────────────────────
+    신원/형태 프로필의 멱등 판정은 원본 집합(source_reference_ids)과 분석기
+    버전만 봤다. 그런데 누끼는 원본과 **다른 시점에** 붙는다: 한 장의 누끼
+    단계가 실패한 뒤 재시도로 나중에 붙으면 원본 집합은 그대로다. 그래서
+    "입력이 안 바뀌었다"로 판정돼, 그 원본은 세그멘테이션이 생긴 뒤에도
+    프로필에 영원히 기여하지 못했다.
+
+    여기서 돌려주는 (원본 → 누끼 id + 엄격 계보 여부) 사상이 그 차이를 드러낸다.
+    pair_cutouts 와 같은 짝짓기를 쓴다 — 빌더가 실제로 읽는 것과 같은 값이라야
+    재사용 판정이 빌드 결과와 어긋나지 않는다.
+    """
+    pairing = pair_cutouts(refs)
+    out: dict[str, dict[str, Any]] = {}
     for r in refs:
-        if r.role != ROLE_ORIGINAL or not r.id:
+        if r.role != ROLE_ORIGINAL or r.acceptance_state != STATE_ACCEPTED or not r.id:
             continue
-        out[str(r.id)] = by_parent.get(str(r.id)) or by_content.get(r.content_id)
+        rid = str(r.id)
+        cut = pairing.get(rid)
+        out[rid] = {
+            "cutout_reference_id": (str(cut.id) if cut and cut.id else None),
+            "strict": bool(cut and cut.parent_reference_id and str(cut.parent_reference_id) == rid),
+        }
     return out
 
 
@@ -334,7 +416,7 @@ async def _insert_row(row: dict[str, Any]) -> tuple[bool, Optional[Exception]]:
     """(성공 여부, 오류). 유니크 충돌은 호출자가 재조회로 판별한다."""
     if _use_db() and _supabase():
         try:
-            _supabase().table(_table()).insert(row).execute()
+            await asyncio.to_thread(lambda: _supabase().table(_table()).insert(row).execute())
             return True, None
         except Exception as e:  # noqa: BLE001 — 충돌/장애 판별은 호출자가 한다
             return False, e
