@@ -1,0 +1,889 @@
+/* ==========================================================================
+   My Library (Phase 7 · Phase 10 brand polish · Phase 11 structural redesign)
+   Mobile-first; the desktop-equivalent grid/column layout reacts to this
+   screen's own rendered width via a container query, not the viewport — same
+   convention as theme-selection.css, since this screen is reused inside the
+   standard (non-wide) app-shell stage.
+
+   Colour, spacing, radius and motion all come from brand.css tokens: cards
+   are off-white on ivory with a hairline, gold is reserved for the primary
+   CTA, status badges reuse the shared eb-status-badge tones.
+   ========================================================================== */
+
+.my-library {
+  container-type: inline-size;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.my-library__scroll {
+  width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.my-library__scroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* ── Header: title/subtitle + Beam Credits + Membership + Create New ────── */
+
+.my-library__hero {
+  display: flex;
+  flex-direction: column;
+  gap: var(--eb-space-4);
+  margin-bottom: var(--eb-space-5);
+}
+
+.my-library__title {
+  margin: 0;
+  font-family: var(--font-headline);
+  font-size: var(--eb-type-title);
+  font-weight: 600;
+  color: var(--eb-text);
+}
+
+.my-library__subtitle {
+  margin: var(--eb-space-1) 0 0;
+  font-size: var(--eb-type-body-sm);
+  color: var(--eb-text-2);
+}
+
+.my-library__hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--eb-space-2);
+}
+
+.my-library__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--eb-space-1);
+  min-height: 44px;
+  padding: 0 var(--eb-space-3);
+  border-radius: var(--eb-radius-pill);
+  background: var(--eb-surface);
+  border: 1px solid var(--eb-hairline-strong);
+  color: var(--eb-text);
+  font-size: var(--eb-type-caption);
+  font-weight: 500;
+  cursor: default;
+}
+
+button.my-library__chip {
+  cursor: pointer;
+  transition: background var(--eb-dur) var(--eb-ease), border-color var(--eb-dur) var(--eb-ease);
+}
+
+button.my-library__chip:hover {
+  background: var(--eb-surface-2);
+}
+
+button.my-library__chip:focus-visible {
+  outline: none;
+  box-shadow: var(--eb-focus-ring);
+}
+
+.my-library__chip--credits {
+  color: var(--eb-gold-text);
+  border-color: var(--eb-gold-line);
+}
+
+.my-library__chip-value {
+  font-weight: 700;
+  color: var(--eb-text);
+}
+
+.my-library__chip-add {
+  color: var(--eb-gold-text);
+}
+
+.my-library__chip--membership {
+  color: var(--eb-text-2);
+}
+
+.my-library__chip--active,
+.my-library__chip--grace {
+  color: var(--eb-sage-text);
+  border-color: var(--eb-sage-line);
+}
+
+.my-library__chip--lapsed {
+  color: var(--eb-terracotta-text);
+  border-color: var(--eb-terracotta-line);
+}
+
+.my-library__create-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--eb-space-2);
+  min-height: 44px;
+  width: auto;
+  padding: 0 var(--eb-space-5);
+  white-space: nowrap;
+}
+
+/* ── Filters: All Pets / per-pet / motion / sort ─────────────────────────── */
+
+.my-library__filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--eb-space-2);
+  margin-bottom: var(--eb-space-6);
+}
+
+.my-library__filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--eb-space-1);
+  min-height: 44px;
+  padding: 0 var(--eb-space-4);
+  border-radius: var(--eb-radius-pill);
+  background: var(--eb-surface);
+  border: 1px solid var(--eb-hairline-strong);
+  color: var(--eb-text-2);
+  font-size: var(--eb-type-body-sm);
+  font-weight: 500;
+  cursor: pointer;
+  transition:
+    background var(--eb-dur) var(--eb-ease),
+    color var(--eb-dur) var(--eb-ease),
+    border-color var(--eb-dur) var(--eb-ease);
+}
+
+.my-library__filter-chip:hover {
+  background: var(--eb-surface-2);
+  color: var(--eb-text);
+}
+
+.my-library__filter-chip:focus-visible {
+  outline: none;
+  box-shadow: var(--eb-focus-ring);
+}
+
+.my-library__filter-chip--active {
+  background: var(--eb-gold);
+  border-color: var(--eb-gold);
+  color: var(--eb-text-on-gold);
+}
+
+.my-library__select {
+  min-height: 44px;
+  padding: 0 var(--eb-space-3);
+  border-radius: var(--eb-radius-pill);
+  background: var(--eb-surface);
+  border: 1px solid var(--eb-hairline-strong);
+  color: var(--eb-text);
+  font-size: var(--eb-type-body-sm);
+  cursor: pointer;
+}
+
+.my-library__select:focus-visible {
+  outline: none;
+  box-shadow: var(--eb-focus-ring);
+}
+
+/* ── Pet sections ─────────────────────────────────────────────────────────── */
+
+.my-library__sections {
+  display: flex;
+  flex-direction: column;
+  gap: var(--eb-space-8);
+}
+
+.my-library__pet-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--eb-space-5);
+}
+
+.my-library__owned-empty {
+  margin-bottom: var(--eb-space-5);
+}
+
+.my-library__pet-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--eb-space-4);
+}
+
+.my-library__pet-head {
+  display: flex;
+  align-items: center;
+  gap: var(--eb-space-3);
+}
+
+.my-library__pet-avatar {
+  width: 2.75rem;
+  height: 2.75rem;
+  flex-shrink: 0;
+  border-radius: var(--eb-radius-pill);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--eb-gold-wash);
+  color: var(--eb-gold-text);
+}
+
+.my-library__pet-avatar--error {
+  background: var(--eb-terracotta-wash);
+  color: var(--eb-terracotta-text);
+}
+
+.my-library__pet-name {
+  margin: 0;
+  font-size: var(--eb-type-body);
+  font-weight: 600;
+  color: var(--eb-text);
+}
+
+.my-library__pet-hint {
+  margin: 2px 0 0;
+  font-size: var(--eb-type-caption);
+  color: var(--eb-text-2);
+}
+
+.my-library__pet-hint--error {
+  color: var(--eb-terracotta-text);
+}
+
+.my-library__pet-retry {
+  margin-left: auto;
+  flex-shrink: 0;
+  min-height: 44px;
+  min-width: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--eb-radius-md);
+  background: var(--eb-surface);
+  border: 1px solid var(--eb-hairline-strong);
+  color: var(--eb-text);
+  cursor: pointer;
+}
+
+.my-library__pet-retry:focus-visible {
+  outline: none;
+  box-shadow: var(--eb-focus-ring);
+}
+
+/* ── Motion cards — media-first, responsive grid ─────────────────────────── */
+
+.my-library__cards-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--eb-space-4);
+}
+
+/* ── Available to Create: separate from owned/published Library cards ───── */
+
+.my-library__available,
+.my-library__generation-resume {
+  width: 100%;
+  padding: var(--eb-space-5);
+  border-radius: var(--eb-radius-xl);
+  background: var(--eb-surface);
+  border: 1px solid var(--eb-gold-line);
+  box-shadow: var(--eb-shadow-1);
+}
+
+.my-library__available-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--eb-space-3);
+}
+
+.my-library__available-title {
+  margin: 0;
+  color: var(--eb-text);
+  font-family: var(--font-headline);
+  font-size: var(--eb-type-section);
+  font-weight: 600;
+}
+
+.my-library__available-hint {
+  margin: var(--eb-space-1) 0 0;
+  max-width: 42rem;
+  color: var(--eb-text-2);
+  font-size: var(--eb-type-caption);
+  line-height: 1.5;
+}
+
+.my-library__available-group {
+  margin-top: var(--eb-space-5);
+}
+
+.my-library__available-group-label {
+  margin: 0 0 var(--eb-space-2);
+  color: var(--eb-text-3);
+  font-size: var(--eb-type-caption);
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.my-library__available-list {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--eb-space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.my-library__available-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--eb-space-3);
+  min-width: 0;
+  padding: var(--eb-space-3);
+  border-radius: var(--eb-radius-md);
+  background: var(--eb-surface-2);
+  border: 1px solid var(--eb-hairline);
+}
+
+.my-library__available-copy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--eb-space-1);
+  min-width: 0;
+}
+
+.my-library__available-name {
+  overflow: hidden;
+  color: var(--eb-text);
+  font-size: var(--eb-type-body-sm);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.my-library__access {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: 3px;
+  color: var(--eb-text-2);
+  font-size: var(--eb-type-caption);
+  font-weight: 600;
+}
+
+.my-library__access--included,
+.my-library__access--member {
+  color: var(--eb-sage-text);
+}
+
+.my-library__access--credit {
+  color: var(--eb-gold-text);
+}
+
+.my-library__access--locked {
+  color: var(--eb-terracotta-text);
+}
+
+.my-library__available-cta {
+  min-height: 44px;
+  flex: 0 0 auto;
+  padding-inline: var(--eb-space-3);
+  font-size: var(--eb-type-caption);
+}
+
+.my-library__available-generating {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: var(--eb-space-2);
+  flex: 0 1 auto;
+  color: var(--eb-gold-text);
+  font-size: var(--eb-type-caption);
+  font-weight: 600;
+  text-align: right;
+}
+
+.my-library__available-generating small {
+  display: block;
+  margin-top: 2px;
+  color: var(--eb-text-3);
+  font-size: 10px;
+  font-weight: 400;
+}
+
+.my-library__available-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--eb-space-2);
+  margin-top: var(--eb-space-3);
+  color: var(--eb-error);
+  font-size: var(--eb-type-caption);
+}
+
+.my-library__available-error p {
+  margin: 0;
+}
+
+@container (max-width: 520px) {
+  .my-library__hero-actions,
+  .my-library__filters {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .my-library__chip,
+  .my-library__filter-chip,
+  .my-library__select {
+    width: 100%;
+    min-width: 0;
+    justify-content: center;
+  }
+
+  .my-library__create-btn {
+    grid-column: 1 / -1;
+    width: 100%;
+    justify-content: center;
+  }
+
+  .my-library__available,
+  .my-library__generation-resume {
+    padding: var(--eb-space-4);
+  }
+
+  .my-library__available-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .my-library__available-cta,
+  .my-library__available-generating {
+    width: 100%;
+    justify-content: center;
+    text-align: left;
+  }
+}
+
+.my-library__card {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--eb-radius-lg);
+  background: var(--eb-surface);
+  border: 1px solid var(--eb-hairline);
+  box-shadow: var(--eb-shadow-1);
+  overflow: hidden;
+}
+
+/* 미디어 영역 — 탐색 버튼(.my-library__card-hit)과 재생 버튼(.my-library__card-play)이
+   **형제**로 놓인다. 재생 버튼을 탐색 버튼 안에 두면 클릭이 버블링돼 테마 화면이 열린다. */
+.my-library__card-media {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 9 / 16;
+  background: var(--eb-surface-3);
+}
+
+.my-library__card-hit {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.my-library__card-hit:disabled {
+  cursor: default;
+}
+
+.my-library__card-hit:focus-visible {
+  outline: none;
+  box-shadow: var(--eb-focus-ring);
+}
+
+/* 정지 미리보기 — packed_alpha 프레임 하나를 합성한 캔버스. 따뜻한 중립 배경 위에
+   투명 펫이 놓인다. 비디오 요소는 디코드용으로만 잠깐 존재하고 보이지 않는다. */
+.my-library__card-poster {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--eb-surface-2);
+}
+
+.my-library__card-poster--loading {
+  animation: my-library-pulse 1.4s ease-in-out infinite;
+}
+
+.my-library__card-poster-video {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .my-library__card-poster--loading {
+    animation: none;
+  }
+}
+
+.my-library__card-media-fallback {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--eb-blue-text);
+  background: var(--eb-blue-wash);
+}
+
+.my-library__card-media-fallback--generating {
+  color: var(--eb-gold-text);
+  background: var(--eb-gold-wash);
+}
+
+.my-library__card-status {
+  position: absolute;
+  top: var(--eb-space-2);
+  right: var(--eb-space-2);
+}
+
+.my-library__card-duration {
+  position: absolute;
+  bottom: var(--eb-space-2);
+  right: var(--eb-space-2);
+  padding: 2px 6px;
+  border-radius: var(--eb-radius-xs);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: var(--eb-type-caption);
+  line-height: 1.4;
+}
+
+/* 인라인 미리보기 재생/멈춤 — 실제 <button>, 44px 터치 타깃, 가운데. 데스크톱은
+   hover/포커스에 드러나고, 터치 기기와 재생 중에는 항상 보인다. */
+.my-library__card-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 48px;
+  height: 48px;
+  min-width: 44px;
+  min-height: 44px;
+  transform: translate(-50%, -50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.55);
+  box-shadow: var(--eb-shadow-1);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--eb-dur) var(--eb-ease), background var(--eb-dur) var(--eb-ease);
+}
+
+.my-library__card-media:hover .my-library__card-play,
+.my-library__card-hit:focus-visible ~ .my-library__card-play,
+.my-library__card-play:focus-visible,
+.my-library__card-play--active {
+  opacity: 1;
+}
+
+.my-library__card-play:hover {
+  background: rgba(0, 0, 0, 0.7);
+}
+
+.my-library__card-play:focus-visible {
+  outline: none;
+  box-shadow: var(--eb-focus-ring);
+}
+
+@media (hover: none) {
+  .my-library__card-play {
+    opacity: 1;
+  }
+}
+
+.my-library__card--unavailable .my-library__card-media {
+  filter: grayscale(1);
+  opacity: 0.6;
+}
+
+@keyframes my-library-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.my-library__spin {
+  animation: my-library-spin 1.6s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .my-library__spin {
+    animation: none;
+  }
+}
+
+.my-library__card-body {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--eb-space-2);
+  padding: var(--eb-space-3) var(--eb-space-3) var(--eb-space-4);
+}
+
+.my-library__card-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.my-library__card-name {
+  margin: 0;
+  font-size: var(--eb-type-body-sm);
+  font-weight: 600;
+  color: var(--eb-text);
+  text-transform: capitalize;
+}
+
+.my-library__card-meta {
+  margin: 2px 0 0;
+  font-size: var(--eb-type-caption);
+  color: var(--eb-text-3);
+}
+
+.my-library__card-menu {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.my-library__card-overflow {
+  min-height: 44px;
+  min-width: 44px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--eb-radius-md);
+  background: transparent;
+  border: none;
+  color: var(--eb-text-3);
+  cursor: pointer;
+}
+
+.my-library__card-overflow:hover {
+  background: var(--eb-surface-2);
+  color: var(--eb-text);
+}
+
+.my-library__card-overflow:focus-visible {
+  outline: none;
+  box-shadow: var(--eb-focus-ring);
+}
+
+/* document.body 포털 — 카드(overflow:hidden)와 그리드 스크롤 밖에서 fixed 로 뜬다.
+   top/left 는 버튼 위치에서 계산해 inline 으로 준다 (library-card-menu.ts). */
+.my-library__card-menu-list {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1200;
+  min-width: 10rem;
+  padding: var(--eb-space-1);
+  border-radius: var(--eb-radius-md);
+  background: var(--eb-surface);
+  border: 1px solid var(--eb-hairline-strong);
+  box-shadow: var(--eb-shadow-2);
+}
+
+.my-library__card-menu-item {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 var(--eb-space-3);
+  border: none;
+  background: transparent;
+  border-radius: var(--eb-radius-sm);
+  color: var(--eb-text);
+  font-size: var(--eb-type-body-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.my-library__card-menu-item:hover {
+  background: var(--eb-surface-2);
+}
+
+@keyframes my-library-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+
+.my-library__card--skeleton {
+  aspect-ratio: 9 / 16;
+  background: var(--eb-surface-3);
+  animation: my-library-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .my-library__card--skeleton {
+    animation: none;
+  }
+}
+
+/* ── Bottom sections ──────────────────────────────────────────────────────── */
+
+.my-library__bottom-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--eb-space-4);
+  margin-top: var(--eb-space-8);
+}
+
+.my-library__add-pet {
+  display: flex;
+  align-items: center;
+  gap: var(--eb-space-4);
+  width: 100%;
+  min-height: 44px;
+  padding: var(--eb-space-5);
+  border-radius: var(--eb-radius-lg);
+  background: transparent;
+  border: 1px dashed var(--eb-hairline-strong);
+  color: var(--eb-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.my-library__add-pet:hover {
+  background: var(--eb-surface-2);
+}
+
+.my-library__add-pet:focus-visible {
+  outline: none;
+  box-shadow: var(--eb-focus-ring);
+}
+
+.my-library__add-pet-icon {
+  width: 2.75rem;
+  height: 2.75rem;
+  flex-shrink: 0;
+  border-radius: var(--eb-radius-pill);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--eb-surface-2);
+  color: var(--eb-text-2);
+}
+
+.my-library__add-pet-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.my-library__add-pet-title {
+  font-weight: 600;
+  color: var(--eb-text);
+}
+
+.my-library__add-pet-hint {
+  margin-top: 2px;
+  font-size: var(--eb-type-caption);
+  color: var(--eb-text-2);
+}
+
+.my-library__add-pet-cta {
+  flex-shrink: 0;
+  display: none;
+  align-items: center;
+  gap: var(--eb-space-2);
+  min-height: 44px;
+  padding: 0 var(--eb-space-4);
+}
+
+.my-library__banner {
+  display: flex;
+  flex-direction: column;
+  gap: var(--eb-space-4);
+  padding: var(--eb-space-6);
+  border-radius: var(--eb-radius-xl);
+  background: var(--eb-gold-wash);
+  border: 1px solid var(--eb-gold-line);
+}
+
+.my-library__banner-title {
+  margin: 0;
+  font-family: var(--font-headline);
+  font-size: var(--eb-type-section);
+  font-weight: 600;
+  color: var(--eb-text);
+}
+
+.my-library__banner-body {
+  margin: var(--eb-space-1) 0 0;
+  font-size: var(--eb-type-body-sm);
+  color: var(--eb-text-2);
+}
+
+.my-library__banner-cta {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--eb-space-2);
+  min-height: 44px;
+}
+
+/* ── Desktop-equivalent layout (container-driven, same 860px threshold as
+   theme-selection.css so every screen in this app-shell switches together) ── */
+
+@container (min-width: 860px) {
+  .my-library__hero {
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: space-between;
+  }
+
+  .my-library__cards-grid {
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  }
+
+  .my-library__available-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .my-library__add-pet-cta {
+    display: inline-flex;
+  }
+
+  .my-library__banner {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .my-library__banner-cta {
+    width: auto;
+  }
+}

@@ -92,36 +92,42 @@ test('설정 화면이 크레딧 대신 멤버십을 보여 준다', () => {
   assert.doesNotMatch(line, /showSubscriptionTest|showIdleTest/, '토글 뒤에 숨어 있다')
 })
 
-test('재생 화면이 크레딧 카드 대신 멤버십 카드를 띄운다', () => {
-  const code = strip(PLAY)
-  assert.match(code, /<MembershipCard/)
-  assert.doesNotMatch(code, /<UnlockFeaturesCard/)
+test('멤버십은 설정/라이브러리에 있고 레거시 재생 화면과 분리된다', () => {
+  const play = strip(PLAY)
+  const settings = strip(SETTINGS)
+  const library = strip(readFileSync('src/components/memorial/my-library-screen.tsx', 'utf8'))
+  assert.match(settings, /<MembershipSection/)
+  assert.match(library, /onOpenMembership/)
+  assert.doesNotMatch(play, /<MembershipCard|<UnlockFeaturesCard/)
 })
 
 test('앱 라우팅이 크레딧이 아니라 멤버십으로 간다', () => {
   const code = strip(APP)
   assert.match(
     code,
-    /onOpenMembership=\{\(\) => openSettings\('devicePlay', \{ focusMembership: true \}\)\}/
+    /onOpenMembership=\{\(\) => openSettings\('preview', \{ focusMembership: true \}\)\}/
   )
   assert.doesNotMatch(code, /focusCredits/, '크레딧 포커스 경로가 남아 있다')
 })
 
-test('소비자 문구에서 크레딧 개념이 사라졌다', () => {
+test('Beam Credit 이 테마 문구에 돌아왔다 (Phase 4)', () => {
+  // ── 이 테스트는 **뒤집혔다** ────────────────────────────────────────────
+  // 예전 이름은 '소비자 문구에서 크레딧 개념이 사라졌다' 였다. Phase 3 에서
+  // 크레딧이 제품에서 빠졌을 때 그것을 지키던 가드다.
+  //
+  // Phase 4 에서 테마가 Beam Credit 으로 팔리게 되면서 전제가 바뀌었다.
+  // 이제 크레딧은 소비자가 보는 재화이고, 문구에 있어야 **한다**.
   const i18n = readFileSync('src/components/memorial/memorial-i18n.ts', 'utf8')
+
+  // 예전 "크레딧 받기" 충전 유도 문구는 여전히 없다 — 충전 UX 는 아직 없다.
   assert.doesNotMatch(i18n, /getCredits:/, '"크레딧 받기" 문구가 남아 있다')
   assert.match(i18n, /membership: \{/, '멤버십 문구 그룹이 없다')
 
-  // 구독 **테스트 패널**(개발 전용, SUBSCRIPTION_MOCK 뒤)은 예외다 — 거기서는
-  // 레거시 지갑 잔액을 QA 가 확인해야 한다. 그 블록만 빼고 검사한다.
-  const consumer = i18n.replace(/subscriptionTest: \{[\s\S]*?\n {4}\},/g, '')
-  assert.doesNotMatch(consumer, /크레딧/, '소비자 문구에 크레딧이 남아 있다')
-  // 복수형만 본다 — "Credit or Debit Card" 는 결제 수단 이름이지 재화가 아니다.
-  assert.doesNotMatch(consumer, /\bcredits\b/i, '소비자 영문 문구에 credits 가 남아 있다')
-
-  // 위 제외가 실제로 무언가를 지웠는지 확인한다 — 정규식이 빗나가면 이 테스트가
-  // 조용히 통과해 버린다.
-  assert.ok(consumer.length < i18n.length, 'subscriptionTest 블록 제외가 동작하지 않았다')
+  // 테마 구매 문구는 크레딧으로 말한다.
+  assert.match(i18n, /크레딧으로 잠금 해제/, '테마 CTA 가 크레딧을 쓰지 않는다')
+  assert.match(i18n, /Unlock for \$\{price\} Credits/, '영문 테마 CTA 가 크레딧을 쓰지 않는다')
+  assert.match(i18n, /balanceLabel:/, '잔액 문구가 없다')
+  assert.match(i18n, /insufficientCredits:/, '크레딧 부족 문구가 없다')
 })
 
 // ── 레이아웃 회귀: 카드가 재생 영역을 눌러선 안 된다 ─────────────────────────

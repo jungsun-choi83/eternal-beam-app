@@ -18,9 +18,10 @@ import {
 } from "lucide-react";
 import { languageLabels, memorialLang, memorialT } from "@/components/memorial/memorial-i18n";
 import { SubscriptionTestPanel } from "@/components/memorial/subscription-test-panel";
-import { MembershipSection } from "@/components/memorial/membership-section";
+import { MEMBERSHIP_SECTION_ID, MembershipSection } from "@/components/memorial/membership-section";
 import { IdleGenerationTestPanel } from "@/components/memorial/idle-generation-test-panel";
 import { SUBSCRIPTION_MOCK_ENABLED, IDLE_TEST_PANEL_ENABLED } from "@/lib/test-app-flags";
+import { DestructiveButton } from "@/components/ui/buttons";
 
 interface SettingsScreenProps {
   currentLanguage: string;
@@ -99,6 +100,11 @@ export function SettingsScreen({
       case "subscription":
         if (SUBSCRIPTION_MOCK_ENABLED) {
           setShowSubscriptionTest((v) => !v);
+        } else {
+          document.getElementById(MEMBERSHIP_SECTION_ID)?.scrollIntoView({
+            behavior: "smooth",
+            block: "center",
+          });
         }
         break;
       case "idle-test":
@@ -113,19 +119,15 @@ export function SettingsScreen({
 
   return (
     <div className="h-full flex flex-col relative overflow-hidden">
-      <header className="px-6 pt-14 pb-4 flex items-center relative">
-        <button onClick={onBack} className="p-2 -ml-2">
-          <ChevronLeft className="w-5 h-5" style={{ color: "#F5F5F7" }} />
+      <header className="px-6 pt-[var(--eb-header-top)] pb-4 flex items-center relative shrink-0">
+        <button onClick={onBack} className="mem-icon-btn eb-back-btn -ml-2" aria-label="Back">
+          <ChevronLeft className="w-5 h-5" />
         </button>
-        <h1
-          className="text-xl font-medium absolute left-1/2 -translate-x-1/2"
-          style={{ color: "#F5F5F7" }}
-        >
-          {s.title}
-        </h1>
+        <h1 className="screen-title eb-title absolute left-1/2 -translate-x-1/2">{s.title}</h1>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-4 pb-8">
+      <div className="flex-1 min-h-0 overflow-y-auto px-4 pb-[var(--eb-footer-bottom)]">
+        <div className="w-full max-w-2xl mx-auto">
         {/* 상시 노출 — 숨은 테스트 패널 뒤에 두지 않는다. Memorial 이 "설정에서
             충전하세요" 라고 안내하는데 실제 충전 UI 가 없던 것이 원래 문제였다. */}
         <MembershipSection language={currentLanguage} focusOnMount={focusMembership} />
@@ -151,72 +153,65 @@ export function SettingsScreen({
             transition={{ delay: groupIndex * 0.1 }}
             className="mb-6"
           >
-            <p className="text-[11px] tracking-[0.12em] mb-2 px-2" style={{ color: "rgba(245,245,247,0.56)" }}>
-              {group.title.toUpperCase()}
-            </p>
+            <p className="eb-section-title mb-2 px-2">{group.title.toUpperCase()}</p>
 
-            <div
-              className="rounded-2xl overflow-hidden"
-              style={{
-                background: "rgba(255, 255, 255, 0.045)",
-                border: "1px solid rgba(255, 255, 255, 0.10)",
-              }}
-            >
-              {group.items.map((item, index) => (
-                <button
-                  key={item.id}
-                  onClick={() => handleItemClick(item.id)}
-                  className="w-full px-4 py-[15px] flex items-center justify-between transition-colors hover:bg-white/5"
-                  style={{
-                    borderBottom:
-                      index < group.items.length - 1
-                        ? "1px solid rgba(255, 255, 255, 0.09)"
-                        : "none",
-                    background:
-                      (item.id === "subscription" && showSubscriptionTest) ||
-                      (item.id === "idle-test" && showIdleTest)
-                        ? "rgba(201, 162, 39, 0.06)"
-                        : undefined,
-                  }}
-                >
-                  <div className="flex items-center gap-3">
-                    <item.icon className="w-5 h-5" style={{ color: "rgba(245,245,247,0.72)" }} />
-                    <span className="text-[15px]" style={{ color: "#F5F5F7" }}>
-                      {item.label}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {item.id === "language" && (
-                      <span className="text-[13px]" style={{ color: "rgba(245,245,247,0.58)" }}>
-                        {languageLabels[lang]}
+            <div className="eb-card overflow-hidden">
+              {group.items.map((item, index) => {
+                const active =
+                  (item.id === "subscription" && showSubscriptionTest) ||
+                  (item.id === "idle-test" && showIdleTest);
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => handleItemClick(item.id)}
+                    aria-expanded={
+                      item.id === "subscription" || item.id === "idle-test" ? active : undefined
+                    }
+                    className="w-full min-h-[var(--eb-touch)] px-4 py-3 flex items-center justify-between gap-3 text-left transition-colors duration-[var(--eb-dur)] hover:bg-[var(--eb-surface-2)]"
+                    style={{
+                      borderBottom:
+                        index < group.items.length - 1 ? "1px solid var(--eb-hairline)" : "none",
+                      background: active ? "var(--eb-gold-wash)" : undefined,
+                    }}
+                  >
+                    <div className="flex items-center gap-3 min-w-0">
+                      <item.icon className="w-5 h-5 shrink-0 text-[var(--eb-text-2)]" />
+                      <span className="text-[15px] text-[var(--eb-text)] truncate">
+                        {item.label}
                       </span>
-                    )}
-                    <ChevronRight className="w-4 h-4" style={{ color: "rgba(245,245,247,0.58)" }} />
-                  </div>
-                </button>
-              ))}
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {item.id === "language" && (
+                        <span className="text-[13px] text-[var(--eb-text-3)]">
+                          {languageLabels[lang]}
+                        </span>
+                      )}
+                      <ChevronRight className="w-4 h-4 text-[var(--eb-text-3)]" />
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </motion.div>
         ))}
 
-        <motion.button
+        <DestructiveButton
+          block
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.4 }}
           onClick={onLogout}
-          className="w-full py-4 rounded-2xl flex items-center justify-center gap-2 mt-4"
-          style={{
-            background: "rgba(255, 59, 48, 0.1)",
-            border: "1px solid rgba(255, 59, 48, 0.2)",
-          }}
+          className="mt-4"
         >
-          <LogOut className="w-5 h-5 text-red-400" />
-          <span className="text-red-400 font-medium">{s.logout}</span>
-        </motion.button>
+          <span className="inline-flex items-center gap-2">
+            <LogOut className="w-5 h-5" />
+            {s.logout}
+          </span>
+        </DestructiveButton>
 
-        <p className="text-center text-xs mt-6" style={{ color: "#A1A1A6" }}>
-          Eternal Beam v1.0.0
-        </p>
+        <p className="eb-caption text-center mt-6">Eternal Beam v1.0.0</p>
+        </div>
       </div>
     </div>
   );

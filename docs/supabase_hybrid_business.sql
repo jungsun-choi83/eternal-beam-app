@@ -1,5 +1,21 @@
 -- Eternal Beam: NFC 장소 카드 + 구독 크레딧 (하이브리드 모델)
--- Supabase SQL Editor 에서 실행
+--
+-- ⚠️⚠️ **프로덕션에서 실행하지 말 것.** 이 파일은 아래 68행에 실제 지갑 잔액을
+--       덮어쓰는 시드가 들어 있다:
+--
+--         insert into public.user_wallets ... values ('demo-user', 12), ...
+--         on conflict (user_id) do update set current_credits = excluded.current_credits;
+--
+--       `do update` 라 **이미 있는 행의 잔액을 되돌린다.** 그 user_id 를 쓰는
+--       실사용자가 있으면 그 사람의 크레딧이 조용히 리셋된다.
+--
+-- 스키마의 권위는 이제 마이그레이션에 있다 — 새 환경은 이 파일이 아니라
+-- supabase/migrations/ 를 적용한다:
+--     20260721000200_hybrid_business_wallet.sql   user_wallets · generated_motions 등
+--     20260930000000_authoritative_wallet_rpcs.sql add_wallet_credits · deduct_wallet_credits
+--
+-- 이 파일은 초기 설계 기록으로만 남는다. 로컬 실험용으로 쓸 때도 시드 블록은
+-- 빼고 실행할 것.
 
 -- 지갑 (월 구독으로 충전되는 코인)
 create table if not exists public.user_wallets (

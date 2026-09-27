@@ -114,3 +114,48 @@ export function orderReturnEntry(): OrderReturn {
   if (path === '/orders/fail') return 'fail'
   return null
 }
+
+
+/**
+ * 크레딧 팩 결제 복귀 경로.
+ *
+ * 테마(/themes/*)·구독(/billing/*)·실물(/orders/*)과 **경로를 나눈다.** 네 흐름은
+ * 확인 엔드포인트도 결과 화면도 다르다. 경로를 공유하면 크레딧 결제가 테마
+ * confirm 을 타게 되고, 그건 잘못된 주문을 승인하려는 시도가 된다.
+ *
+ * vercel.json 의 SPA 리라이트가 이미 /credits/* 를 index.html 로 보낸다.
+ */
+export type CreditsReturn = 'success' | 'fail' | null
+
+export function creditsReturnEntry(): CreditsReturn {
+  if (typeof window === 'undefined') return null
+  const path = window.location.pathname.replace(/\/+$/, '') || '/'
+  if (path === '/credits/success') return 'success'
+  if (path === '/credits/fail') return 'fail'
+  return null
+}
+
+/**
+ * Toss 가 크레딧 결제 성공 URL 에 실어 주는 값들.
+ *
+ * ⚠️ amount 는 **주소창에 있는 값**이다. 승인 기준이 아니라 대조용이다 —
+ * 실제 승인은 서버가 보관한 주문 금액으로 한다.
+ */
+export function readCreditsReturnParams(search: string): {
+  paymentKey: string | null
+  orderId: string | null
+  amount: number | null
+  code: string | null
+  message: string | null
+} {
+  const p = new URLSearchParams(search)
+  const rawAmount = p.get('amount')
+  const amount = rawAmount == null ? null : Number.parseInt(rawAmount, 10)
+  return {
+    paymentKey: p.get('paymentKey'),
+    orderId: p.get('orderId'),
+    amount: Number.isFinite(amount as number) ? (amount as number) : null,
+    code: p.get('code'),
+    message: p.get('message'),
+  }
+}

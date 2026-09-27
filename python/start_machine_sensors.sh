@@ -44,10 +44,11 @@ case "$mode" in
     export BG_DISPLAY_HOST="${BG_DISPLAY_HOST:-127.0.0.1}"
     export BG_DISPLAY_PORT="${BG_DISPLAY_PORT:-9999}"
     export NFC_FALLBACK_THEME="${NFC_FALLBACK_THEME:-forest}"
-    export ACTION_MOCK="${ACTION_MOCK:-run}"
+    # 기본 off (M5-lite) — run 은 touch 를 approach/RUN 으로 뭉갠다 (구 데모 전용).
+    export ACTION_MOCK="${ACTION_MOCK:-off}"
     echo "[bridge] S23 Unity → udp://${UDP_HOST}:${UDP_PORT}"
     echo "[bridge] Pi 배경   → udp://${BG_DISPLAY_HOST}:${BG_DISPLAY_PORT}"
-    echo "[bridge] ACTION_MOCK=${ACTION_MOCK} (approach=달려오기 목업)"
+    echo "[bridge] ACTION_MOCK=${ACTION_MOCK} (run=구 달려오기 목업, 기본 off)"
     echo "[bridge] 거리센서 + 마이크 + NFC (옵션 끄지 마세요)"
     exec python3 -u eternal_beam_pi.py --sse-port 0
     ;;

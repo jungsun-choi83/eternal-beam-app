@@ -187,7 +187,19 @@ async def process_charge_mock(
     w = await get_wallet(user_id, create_if_missing=True)
     return existing.id or 0, w.current_credits if w else 0
 
-  wallet = await add_credits(user_id, credits_added)
+  # 멱등 키는 영수증 지문 — DB 경로(process_iap_charge)와 **같은 축**이라
+  # 목업과 실제가 같은 재플레이 판정을 한다.
+  from .credit_ledger import REASON_CREDIT_PACK_TOPUP, iap_key
+
+  wallet = await add_credits(
+    user_id,
+    credits_added,
+    reason=REASON_CREDIT_PACK_TOPUP,
+    idempotency_key=iap_key(receipt_fingerprint),
+    product_key=product_id,
+    unit_price=amount_krw,
+    ref_type="payment_history",
+  )
   pay_id = len(_MOCK_HISTORY) + 1
   row = PaymentHistoryRow(
     id=pay_id,

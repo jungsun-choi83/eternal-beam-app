@@ -30,6 +30,8 @@ IMG = "https://example.test/cutout.png"
 def _isolated(monkeypatch: pytest.MonkeyPatch):
     """DB 없이 인메모리 원장/지갑으로 돈다. 매 테스트마다 초기화."""
     monkeypatch.setenv("HYBRID_USE_SUPABASE", "0")
+    # Phase 7H: 이 파일은 **레거시 이행 계약**을 검증한다 — 명시 회귀 스위치.
+    monkeypatch.setenv("PREMIUM_FULFILLMENT", "legacy")
     monkeypatch.setenv("PET_HYBRID_SEED", "0")
     # 이 파일은 **크레딧 과금 계약**을 고정한다. Phase 2 에서 프리미엄 생성의
     # 기본 인가는 구독으로 넘어갔지만(PREMIUM_REQUIRES_SUBSCRIPTION 기본 1),
@@ -68,7 +70,8 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
     async def list_active(user_id, pet_id=None):
         return list(w.active)
 
-    async def submit(*, user_id, pet_id, action_id, pet_image_url, api_base, keyframe_url=None):
+    # **kw 로 흡수한다 — 예약 인자(Phase 7)처럼 나중에 늘어나는 것들을 위해.
+    async def submit(*, user_id, pet_id, action_id, pet_image_url, api_base, keyframe_url=None, **kw):
         if w.submit_fails:
             raise premium_generation.PremiumSubmitError("boom", stage="submit")
         w.submitted.append(action_id)
@@ -104,10 +107,11 @@ async def _buy(kind: str, *, user: str = USER, pet: str = PET, image: str | None
 # ── 가격 모델 ────────────────────────────────────────────────────────────────
 
 
-def test_bundle_covers_the_registered_idle_set_not_a_hardcoded_four():
+@pytest.mark.anyio
+async def test_bundle_covers_the_registered_idle_set_not_a_hardcoded_four():
     """5번째 아이들 모션이 추가돼도 같은 1 크레딧 번들에 들어와야 한다."""
     assert premium_purchase.target_actions(premium_purchase.KIND_IDLE_BUNDLE) == tuple(IDLE_EVENTS)
-    assert premium_purchase.credits_for_kind(premium_purchase.KIND_IDLE_BUNDLE) == 1
+    assert await premium_purchase.credits_for_kind(premium_purchase.KIND_IDLE_BUNDLE) == 1
 
 
 def test_breathing_is_not_part_of_the_paid_bundle():
@@ -117,10 +121,11 @@ def test_breathing_is_not_part_of_the_paid_bundle():
         assert free not in targets
 
 
-def test_action_events_are_one_credit_each():
+@pytest.mark.anyio
+async def test_action_events_are_one_credit_each():
     for action in PET_ACTIONS:
         kind = premium_purchase.action_kind(action)
-        assert premium_purchase.credits_for_kind(kind) == 1
+        assert await premium_purchase.credits_for_kind(kind) == 1
         assert premium_purchase.target_actions(kind) == (action,)
 
 
@@ -305,6 +310,11 @@ async def test_bundle_and_action_are_priced_separately(world):
     await _grant(USER, 5)
     await _buy(premium_purchase.KIND_IDLE_BUNDLE)
     assert await _balance(USER) == 4
+    # 번들이 동시 실행 상한(2)을 정당하게 채운다 — 액션 구매 전에 진행 중인
+    # 작업을 완료시켜 슬롯을 비운다(검증 대상은 가격 분리이지 동시성 아님).
+    for a in list(world.active):
+        world.ready[a] = f"url_{a}"
+    world.active.clear()
     await _buy(premium_purchase.action_kind("COME_CLOSER"))
     assert await _balance(USER) == 3
 
@@ -474,6 +484,8 @@ async def test_test_only_products_charge_the_declared_credits_under_mock(
 
     monkeypatch.setenv("PAYMENT_MOCK", "1")
     monkeypatch.setenv("HYBRID_USE_SUPABASE", "0")
+    # Phase 7H: 이 파일은 **레거시 이행 계약**을 검증한다 — 명시 회귀 스위치.
+    monkeypatch.setenv("PREMIUM_FULFILLMENT", "legacy")
     for i, pid in enumerate(sorted(TEST_ONLY_PRODUCT_IDS)):
         r = await verify_and_charge(
             user_id="topup_user",
@@ -487,10 +499,12 @@ async def test_test_only_products_charge_the_declared_credits_under_mock(
         assert r.amount_krw == 0
 
 
-def test_two_credit_pack_exactly_covers_the_unlock_total():
+@pytest.mark.anyio
+async def test_two_credit_pack_exactly_covers_the_unlock_total():
     """잠금 해제 총액 = IDLE_BUNDLE 1 + COME_CLOSER 1 = 2."""
     from backend.data.iap_products import IAP_PRODUCTS
 
     assert IAP_PRODUCTS["credit_pack_test_2"].credits == (
-        premium_purchase.IDLE_BUNDLE_CREDITS + premium_purchase.ACTION_EVENT_CREDITS
+        await premium_purchase.credits_for_kind(premium_purchase.KIND_IDLE_BUNDLE)
+        + await premium_purchase.credits_for_kind(premium_purchase.action_kind("COME_CLOSER"))
     )

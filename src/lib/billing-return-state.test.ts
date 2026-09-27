@@ -6,10 +6,12 @@
  * 방금 결제한 뒤 자기 펫 대신 "사진을 올리세요"를 봤다.
  *
  * 여기서 고정하는 계약:
- *   Memorial(devicePlay) → Toss → 성공 → **같은 펫의 Memorial**
+ *   Preview(발행된 펫) → Toss → 성공 → **같은 펫의 Preview**
+ *   My Library → Toss → 성공 → My Library
  *   실패·취소도 같은 화면으로 돌아온다
  *   펫이 바뀌었거나 BREATHING 이 없으면 복원하지 않는다 (틀린 펫을 보여주느니 설정으로)
  *   복원은 **기존 자산을 가리키기만 한다** — 새 펫을 만들거나 생성을 다시 시작하지 않는다
+ *   직접 Pi 송출 화면(devicePlay)은 복원 대상이 아니다 — 옛 스냅샷은 preview 로 승격된다
  */
 
 import { test, beforeEach } from 'node:test'
@@ -36,7 +38,7 @@ const store = new Map<string, string>()
 const SETTINGS = { scale: 1.4, posX: 12, posY: -8 }
 const PET = 'content_abc123'
 const snapshot = (over: Partial<BillingReturnState> = {}): BillingReturnState => ({
-  screen: 'devicePlay',
+  screen: 'preview',
   settings: SETTINGS,
   contentId: PET,
   ...over,
@@ -49,20 +51,35 @@ const pipeline = (over: Record<string, unknown> = {}) => ({
 
 beforeEach(() => store.clear())
 
-// ── 핵심 회귀: Memorial → Toss → 성공 → 같은 펫 Memorial ─────────────────────
+// ── 핵심 회귀: Preview → Toss → 성공 → 같은 펫 Preview ───────────────────────
 
-test('Memorial → Toss → 성공 → **같은 펫의 Memorial** 로 돌아온다', () => {
-  // 1) Memorial 에서 결제를 시작한다 — 앱이 스냅샷을 남긴다.
+test('Preview → Toss → 성공 → **같은 펫의 Preview** 로 돌아온다', () => {
+  // 1) 발행된 Preview 에서 결제를 시작한다 — 앱이 스냅샷을 남긴다.
   saveBillingReturnState(snapshot())
 
   // 2) Toss 가 리다이렉트한다 → 새 문서. React state 는 사라졌지만
   //    sessionStorage 의 파이프라인과 스냅샷은 살아 있다.
   const restored = resolveBillingReturn(readBillingReturnState(), pipeline())
 
-  // 3) 업로드가 아니라 Memorial 로, 같은 위치 그대로.
+  // 3) 업로드가 아니라 Preview 로, 같은 위치 그대로.
   assert.ok(restored, '결제 후 복원되지 않았다 — 업로드 화면으로 떨어진다')
-  assert.equal(restored!.screen, 'devicePlay')
+  assert.equal(restored!.screen, 'preview')
   assert.deepEqual(restored!.settings, SETTINGS, '펫 위치가 초기화됐다')
+})
+
+test('My Library → Toss → 성공 → My Library 로 돌아온다 (파이프라인 무관)', () => {
+  saveBillingReturnState(snapshot({ screen: 'library', contentId: null }))
+  const restored = resolveBillingReturn(readBillingReturnState(), null)
+  assert.ok(restored, '라이브러리 복귀가 파이프라인을 요구한다')
+  assert.equal(restored!.screen, 'library')
+})
+
+test('옛 devicePlay 스냅샷은 preview 로 승격된다 — 직접 Pi 송출 화면으로 돌아가지 않는다', () => {
+  store.set(BILLING_RETURN_KEY, JSON.stringify({ screen: 'devicePlay', settings: SETTINGS, contentId: PET }))
+  const saved = readBillingReturnState()
+  assert.ok(saved)
+  assert.equal(saved!.screen, 'preview')
+  assert.equal(resolveBillingReturn(saved, pipeline())!.screen, 'preview')
 })
 
 test('복원은 기존 펫을 가리킬 뿐 — 새 펫을 만들지 않는다', () => {
@@ -131,12 +148,17 @@ test('복원 후 스냅샷을 지운다 — 다음 새로고침이 다시 튀지
 const strip = (s: string) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '')
 const APP = strip(readFileSync('src/app/EternalBeamApp.tsx', 'utf8'))
 
-test('재생 화면에 있는 동안 스냅샷을 남긴다', () => {
+test('재생 화면(preview)·라이브러리에 있는 동안 스냅샷을 남긴다 — devicePlay 는 아니다', () => {
   assert.match(APP, /saveBillingReturnState\(\{/, '스냅샷을 저장하지 않는다')
   assert.match(
     APP,
-    /if \(screen !== 'devicePlay' && screen !== 'preview'\) return/,
+    /if \(screen !== 'preview' && screen !== 'library'\) return/,
     '복원 가능한 화면에서만 저장해야 한다'
+  )
+  assert.doesNotMatch(
+    APP.slice(APP.indexOf('saveBillingReturnState({') - 200, APP.indexOf('saveBillingReturnState({')),
+    /devicePlay/,
+    '직접 Pi 송출 화면이 여전히 스냅샷 대상이다'
   )
   assert.match(APP, /\}, \[screen, previewSettings\]\)/, '위치 변경이 스냅샷에 반영되지 않는다')
 })

@@ -1,40 +1,36 @@
 @import 'tailwindcss';
 
 @layer utilities {
-  .gradient-eternal {
-    background: linear-gradient(135deg, #667eea 0%, #764ba2 50%, #00d4ff 100%);
-  }
-  
-  /* 글래스모피즘 - 투명·미래지향 */
+  /* 유리 표면 — 최종 브랜드(아이보리·차콜)에 맞춰 밝은 반투명 카드로 통일.
+     예전 이름은 그대로 두고(호출부 20곳+) 값만 토큰으로 바꿨다. */
   .glass {
-    background: rgba(255, 255, 255, 0.12);
-    backdrop-filter: blur(20px);
-    -webkit-backdrop-filter: blur(20px);
-    border: 1px solid rgba(255, 255, 255, 0.25);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08);
+    background: rgba(253, 251, 247, 0.72);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid var(--eb-hairline);
+    box-shadow: var(--eb-shadow-1);
   }
   .glass-strong {
-    background: rgba(255, 255, 255, 0.2);
-    backdrop-filter: blur(24px);
-    -webkit-backdrop-filter: blur(24px);
-    border: 1px solid rgba(255, 255, 255, 0.35);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.1), inset 0 1px 0 rgba(255,255,255,0.3);
-  }
-  .glass-dark {
-    background: rgba(15, 15, 35, 0.6);
+    background: rgba(253, 251, 247, 0.88);
     backdrop-filter: blur(20px);
     -webkit-backdrop-filter: blur(20px);
-    border: 1px solid rgba(255, 255, 255, 0.1);
+    border: 1px solid var(--eb-hairline);
+    box-shadow: var(--eb-shadow-1);
   }
-  /* 로고용 글래스모피즘 - 앱 기존색(보라·라벤더) 유지, 강한 블러, 얇은 밝은 테두리 */
+  /* 미디어(영상·누끼) 위에 얹는 어두운 칩 — 재생 표면은 어둡게 유지된다. */
+  .glass-dark {
+    background: rgba(31, 27, 23, 0.62);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    color: var(--eb-text-on-inverse);
+  }
   .glass-logo {
-    background: rgba(184, 164, 212, 0.06);
-    backdrop-filter: blur(40px);
-    -webkit-backdrop-filter: blur(40px);
-    border: 1px solid rgba(184, 164, 212, 0.5);
-    box-shadow:
-      0 8px 32px rgba(45, 38, 64, 0.08),
-      inset 0 1px 0 rgba(201, 168, 212, 0.45);
+    background: var(--eb-surface);
+    backdrop-filter: blur(24px);
+    -webkit-backdrop-filter: blur(24px);
+    border: 1px solid var(--eb-hairline);
+    box-shadow: var(--eb-shadow-1);
   }
   .scrollbar-hide,
   .hide-scrollbar {

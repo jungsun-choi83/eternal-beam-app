@@ -47,7 +47,28 @@ export const IDLE_HOME_STATE = "BREATHING" as const;
 export type IdleHomeState = typeof IDLE_HOME_STATE;
 
 /** 사용자가 유발하는 사건. 늘어나면 여기에 유니온 멤버를 추가한다. */
-export type PetAction = "COME_CLOSER";
+export type PetAction =
+  | "COME_CLOSER"
+  | "PET_HEAD"
+  | "LOOK_UP"
+  | "LIE_DOWN"
+  | "STAND_UP"
+  | "LIE_IDLE"
+  // 진입 브리지 (2026-09-10) — 직접 트리거되는 액션이 아니라, 앉은 홈에서
+  // STAND_READY 시작 모션으로 갈 때 decideTrigger 가 끼워 넣는 전이다.
+  | "SIT_TO_STAND";
+
+/**
+ * 펫의 자세 상태 (2026-09-08, 전이 모션 도입).
+ *
+ *   STANDING — 홈 루프 = BREATHING. 기존 모든 이벤트의 전제 자세.
+ *   LYING    — 홈 루프 = LIE_IDLE (loopUntilPreempted 이벤트가 곧 홈이다).
+ *
+ * 자세는 **파생 상태**다: 별도 스토어 없이 "지금 무엇이 재생 중인가"에서
+ * poseForCurrentEvent() 로 계산한다. 스토어를 따로 두면 플레이어 상태와
+ * 어긋나는 순간(클립 실패, 소스 소멸) 자세가 거짓말을 한다.
+ */
+export type PetPose = "STANDING" | "LYING";
 
 /**
  * 스스로 일어나는 미세한 생명감. **현재는 타입 선언만이고 등록돼 있지 않다** —
@@ -126,6 +147,33 @@ export interface RuntimeEventDef {
    * kind="ACTION" 은 애초에 후보에 들어오지 않는다. 생략하면 1로 본다.
    */
   spontaneousWeight?: number;
+  /** 이 이벤트를 시작할 수 있는 자세. 생략 = STANDING (기존 전 이벤트). */
+  requiredPose?: PetPose;
+  /**
+   * 이벤트가 끝난 뒤의 자세. 생략 = requiredPose 와 같다 (자세 불변).
+   * 전이 모션(LIE_DOWN/STAND_UP)만 다른 값을 갖는다.
+   */
+  endPose?: PetPose;
+  /**
+   * 끝나면 BREATH 복귀 대신 이 이벤트로 **이어진다**. 전이 → 자세 전용 홈.
+   * 전이는 목표 키프레임 포즈에서 끝나고 체인 대상은 그 포즈에서 시작하므로
+   * 하드 컷이 어떤 디졸브보다 깨끗하다 (TRANSITION 생성 계약).
+   */
+  chainTo?: RuntimeEventId;
+  /**
+   * true: 도착 후 자동 복귀가 없고 소스 영상을 loop 재생한다 — 자세 전용
+   * 홈 루프(LIE_IDLE). 벗어나는 길은 선점(더 높은 우선순위 트리거)뿐이다.
+   */
+  loopUntilPreempted?: boolean;
+  /**
+   * 진입 브리지 (2026-09-10) — 이 이벤트의 시작 포즈가 홈과 다를 수 있을 때
+   * (STAND_READY 시작 모션 vs 앉은 NEUTRAL_IDLE 홈) 사이를 잇는 전이 id.
+   * decideTrigger 가 브리지 **소스가 있을 때만** 요청을 브리지로 바꿔치기하고
+   * chainTo 를 원래 이벤트로 동적으로 박는다. 소스가 없으면(= 서 있는 홈이라
+   * 브리지를 생성하지 않은 펫) 지금까지처럼 직행한다 — 생성 여부 결정이 곧
+   * "브리지가 필요한 펫인가"의 수요 신호다.
+   */
+  entryBridge?: RuntimeEventId;
 }
 
 /**
@@ -138,7 +186,15 @@ export interface RuntimeEventDef {
 export const IDLE_EVENT_PRIORITY = 10;
 
 /** 선언된 액션 전체. */
-export const PET_ACTION_IDS: readonly PetAction[] = ["COME_CLOSER"];
+export const PET_ACTION_IDS: readonly PetAction[] = [
+  "COME_CLOSER",
+  "PET_HEAD",
+  "LOOK_UP",
+  "LIE_DOWN",
+  "STAND_UP",
+  "LIE_IDLE",
+  "SIT_TO_STAND",
+];
 
 /**
  * 선언된 아이들 이벤트 전체 — **도메인 목록이지 활성 목록이 아니다.**
@@ -170,6 +226,114 @@ export const RUNTIME_EVENTS: Readonly<Partial<Record<RuntimeEventId, RuntimeEven
     returnPolicy: "hold-and-dissolve",
     themeIndependent: true,
     preload: "auto",
+    // Phase 4: STAND_READY 포즈에서 시작한다 — 앉은 홈이면 SIT_TO_STAND 로 진입.
+    entryBridge: "SIT_TO_STAND",
+  },
+
+  // PET_HEAD (2026-09-08) — 첫 INTERACTION 액션. TOUCH(웹에서는 싱글탭)가
+  // 트리거한다. COME_CLOSER 와 정책이 두 곳에서 다르다:
+  //   priority 90  — 다가오기(100)보다 낮다. 둘 다 non-interruptible 이라
+  //                  재생 중 선점은 없지만, seam 대기 중 경합은 다가오기가 이긴다.
+  //   seam-aligned — 머리 쓰다듬기 반응은 시작 포즈로 돌아오고 프레이밍이 같다
+  //                  (motion_spec video_compat.returns_to_start_pose). COME_CLOSER
+  //                  의 hold-and-dissolve 를 쓰면 오히려 이중상이 생긴다.
+  PET_HEAD: {
+    id: "PET_HEAD",
+    kind: "ACTION",
+    priority: 90,
+    interruptible: false,
+    returnToIdle: true,
+    entryPolicy: "immediate",
+    returnPolicy: "seam-aligned",
+    themeIndependent: true,
+    // 등록 기본값 그대로 none — 프리로드는 COME_CLOSER 만의 예외다.
+    preload: "none",
+  },
+
+  // LOOK_UP (2026-09-08) — VOICE 트리거의 목적지 (백엔드 TRIGGERS["VOICE"] 와
+  // 같은 매핑). 정책은 PET_HEAD 와 동일 계열이고 우선순위만 한 단 아래다:
+  // 목소리 반응(80) < 터치 반응(90) < 다가오기(100). 시작 포즈로 돌아오는
+  // MICRO 모션이라 복귀는 seam-aligned 다.
+  LOOK_UP: {
+    id: "LOOK_UP",
+    kind: "ACTION",
+    priority: 80,
+    interruptible: false,
+    returnToIdle: true,
+    entryPolicy: "immediate",
+    returnPolicy: "seam-aligned",
+    themeIndependent: true,
+    preload: "none",
+  },
+
+  // ── 자세 전이 3종 (2026-09-08) — STANDING ↔ LYING ─────────────────────
+  // LIE_DOWN 은 복귀하지 않는다: LIE 포즈에서 끝나고 LIE_IDLE 로 체인된다.
+  // LIE_IDLE 은 이벤트라기보다 "누운 자세의 홈 루프"다 — loopUntilPreempted 로
+  // 무한 반복하고, 벗어나는 길은 STAND_UP 선점뿐이다. 자세 게이트(wrong-pose)가
+  // 나머지 전부(아이들/COME_CLOSER/PET_HEAD/LOOK_UP)를 누운 동안 차단한다.
+  LIE_DOWN: {
+    id: "LIE_DOWN",
+    kind: "ACTION",
+    priority: 85,
+    interruptible: false,
+    returnToIdle: false,
+    entryPolicy: "immediate",
+    returnPolicy: "immediate", // 복귀 없음 — chainTo 가 대신한다
+    themeIndependent: true,
+    preload: "none",
+    requiredPose: "STANDING",
+    endPose: "LYING",
+    chainTo: "LIE_IDLE",
+    // Phase 4: STAND_READY 포즈에서 시작한다 — 앉은 홈이면 SIT_TO_STAND 로 진입.
+    entryBridge: "SIT_TO_STAND",
+  },
+
+  // ── 진입 브리지 (2026-09-10) — 앉은 홈 → STAND_READY 이음매 수리 ──────
+  // 직접 트리거 대상이 아니다: decideTrigger 가 entryBridge 요청을 이 정의로
+  // 바꿔치기하고 chainTo 를 원래 이벤트로 동적으로 박는다 (재생 중 판정은
+  // 레지스트리의 이 정의를 본다 — priority 100 = 브리지가 나르는 최고 우선
+  // 액션(COME_CLOSER)과 같게, non-interruptible = 진입은 끝까지 간다).
+  // 시작 프레임 = NEUTRAL_IDLE 키프레임(홈 포즈), 끝 프레임 = STAND_READY
+  // 키프레임(체인 대상의 시작 포즈) — 양쪽 하드 컷이 전부 포즈 일치다.
+  SIT_TO_STAND: {
+    id: "SIT_TO_STAND",
+    kind: "ACTION",
+    priority: 100,
+    interruptible: false,
+    returnToIdle: false,
+    entryPolicy: "immediate",
+    returnPolicy: "immediate", // 복귀 없음 — 동적 chainTo 가 대신한다
+    themeIndependent: true,
+    preload: "none",
+    requiredPose: "STANDING",
+    endPose: "STANDING",
+  },
+  LIE_IDLE: {
+    id: "LIE_IDLE",
+    kind: "ACTION", // 스케줄러(IDLE_EVENT 필터) 후보에 절대 들어가지 않는다
+    priority: 20,
+    interruptible: true, // STAND_UP 이 밀어낼 수 있어야 한다
+    returnToIdle: false,
+    entryPolicy: "immediate",
+    returnPolicy: "immediate",
+    themeIndependent: true,
+    preload: "none",
+    requiredPose: "LYING",
+    endPose: "LYING",
+    loopUntilPreempted: true,
+  },
+  STAND_UP: {
+    id: "STAND_UP",
+    kind: "ACTION",
+    priority: 85,
+    interruptible: false,
+    returnToIdle: true, // NEUTRAL_IDLE 포즈에서 끝난다 → BREATHING 복귀
+    entryPolicy: "immediate",
+    returnPolicy: "seam-aligned",
+    themeIndependent: true,
+    preload: "none",
+    requiredPose: "LYING",
+    endPose: "STANDING",
   },
 
   // Phase 1A — 첫 아이들 이벤트. 현재는 **개발용 수동 트리거 전용**이고 자발적
@@ -335,6 +499,7 @@ export type TriggerRejection =
   | "unknown-event"
   | "not-registered"
   | "no-source"
+  | "wrong-pose"
   | "busy-non-interruptible"
   | "lower-priority"
   | "returning";
@@ -350,6 +515,11 @@ export interface TriggerContext {
   requestedEventId: string;
   /** 요청된 이벤트의 소스 URL 이 실제로 붙어 있는가. */
   hasSource: boolean;
+  /**
+   * 요청된 이벤트의 entryBridge 소스가 붙어 있는가 (2026-09-10). 생략/false =
+   * 브리지 없음 → 직행 (서 있는 홈 펫과 기존 호출부 전부의 기본 경로).
+   */
+  hasBridgeSource?: boolean;
 }
 
 /**
@@ -370,6 +540,18 @@ export interface TriggerContext {
  *                                    쓴다 — 낮은 우선순위가 대기 중인 것을 가로채
  *                                    새치기하는 일이 없어야 한다.)
  */
+/**
+ * 현재 재생 상태의 자세. IDLE(=BREATHING 루프) 이면 STANDING 이다.
+ * 이벤트 재생/복귀 중이면 그 이벤트가 끝났을 때의 자세(endPose)를 쓴다 —
+ * "다음 트리거가 시작될 시점의 자세"가 게이트가 물어야 할 값이기 때문이다.
+ */
+export function poseForCurrentEvent(currentEventId: RuntimeEventId | null): PetPose {
+  if (!currentEventId) return "STANDING";
+  const def = RUNTIME_EVENTS[currentEventId];
+  if (!def) return "STANDING";
+  return def.endPose ?? def.requiredPose ?? "STANDING";
+}
+
 export function decideTrigger(ctx: TriggerContext): TriggerDecision {
   if (!isDeclaredRuntimeEvent(ctx.requestedEventId)) {
     return { accepted: false, reason: "unknown-event" };
@@ -378,7 +560,16 @@ export function decideTrigger(ctx: TriggerContext): TriggerDecision {
   if (!requested) return { accepted: false, reason: "not-registered" };
   if (!ctx.hasSource) return { accepted: false, reason: "no-source" };
 
-  if (ctx.phase === "IDLE") return { accepted: true, event: requested };
+  // ── 자세 게이트 (2026-09-08) ──────────────────────────────────────────
+  // 누운 펫에게 깜빡임/다가오기를 시키지 않고, 선 펫에게 STAND_UP 을 시키지
+  // 않는다. 자세는 현재 이벤트에서 파생된다 — 호출자가 넘길 값이 없어
+  // 모든 기존 호출부가 자동으로 옳다.
+  const currentPose = poseForCurrentEvent(ctx.currentEventId);
+  if ((requested.requiredPose ?? "STANDING") !== currentPose) {
+    return { accepted: false, reason: "wrong-pose" };
+  }
+
+  if (ctx.phase === "IDLE") return { accepted: true, event: withEntryBridge(requested, ctx) };
   if (ctx.phase === "EVENT_RETURNING") return { accepted: false, reason: "returning" };
 
   const current = ctx.currentEventId ? RUNTIME_EVENTS[ctx.currentEventId] : undefined;
@@ -388,7 +579,26 @@ export function decideTrigger(ctx: TriggerContext): TriggerDecision {
   if (requested.priority <= current.priority) {
     return { accepted: false, reason: "lower-priority" };
   }
-  return { accepted: true, event: requested };
+  return { accepted: true, event: withEntryBridge(requested, ctx) };
+}
+
+/**
+ * 수락된 요청에 진입 브리지를 끼운다 (2026-09-10, 앉은 홈 ↔ STAND_READY 수리).
+ *
+ * 판정(자세/우선순위/소스)은 **요청된 이벤트** 기준으로 이미 끝났다 — 여기서는
+ * 재생 시작 대상만 바꾼다: 브리지 정의에 chainTo=원래 이벤트를 동적으로 박아
+ * 돌려주면, 플레이어는 시작한 def 객체의 chainTo 를 읽으므로(chainFrom) 브리지
+ * 종료 시 원래 이벤트로 하드 컷 체인된다. 원래 이벤트의 자체 chainTo(LIE_DOWN→
+ * LIE_IDLE)는 레지스트리에서 다시 해석되므로 그대로 살아 있다.
+ *
+ * 브리지 소스가 없으면 직행 — 서 있는 홈 펫은 브리지 자산을 애초에 생성하지
+ * 않으므로(수요 기반), 그 결정이 곧 "브리지 불필요" 신호다.
+ */
+function withEntryBridge(requested: RuntimeEventDef, ctx: TriggerContext): RuntimeEventDef {
+  if (!requested.entryBridge || !ctx.hasBridgeSource) return requested;
+  const bridge = RUNTIME_EVENTS[requested.entryBridge];
+  if (!bridge || bridge.id === requested.id) return requested;
+  return { ...bridge, chainTo: requested.id };
 }
 
 /**
@@ -414,4 +624,27 @@ export function mountableEvents(sources: RuntimeEventSources): RuntimeEventDef[]
     const src = sources[def.id];
     return typeof src === "string" && src.trim().length > 0;
   });
+}
+
+// ── 디바이스 센서 → 런타임 이벤트 ────────────────────────────────────────────
+
+/**
+ * Pi 센서 이벤트 이름 → 재생할 런타임 이벤트. 백엔드 motion_spec.TRIGGERS 의
+ * 프론트 거울이다 (TOUCH→PET_HEAD, VOICE→LOOK_UP) + 거리 센서의 approach 는
+ * COME_CLOSER 로 잇는다. 모르는 이벤트는 null — 호출부는 조용히 무시한다.
+ *
+ * 매핑만 한다: 적격성(구독∩READY∩ON)과 우선순위/선점은 각각 호출부와
+ * decideTrigger 가 판정한다.
+ */
+export function sensorEventToRuntimeEvent(sensorEvent: string): RuntimeEventId | null {
+  switch ((sensorEvent || "").trim().toLowerCase()) {
+    case "touch":
+      return "PET_HEAD";
+    case "voice":
+      return "LOOK_UP";
+    case "approach":
+      return "COME_CLOSER";
+    default:
+      return null;
+  }
 }

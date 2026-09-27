@@ -202,7 +202,18 @@ async def process_renewal_mock(
   # 거절하고, 무엇보다 쓸 곳 없는 잔액을 만들 이유가 없다 — 자격은 구독 상태가
   # 정한다. 레거시 4코인 플랜(credits_per_month>0)의 동작은 그대로다.
   if credits > 0:
-    w = await add_credits(user_id, credits)
+    # 멱등 키는 이벤트 지문 — DB 경로(process_subscription_renewal)와 같은 축이다.
+    from .credit_ledger import REASON_MEMBERSHIP_GRANT, membership_key
+
+    w = await add_credits(
+      user_id,
+      credits,
+      reason=REASON_MEMBERSHIP_GRANT,
+      idempotency_key=membership_key(event_fingerprint),
+      product_key=plan_id,
+      unit_price=amount_krw,
+      ref_type="subscription_webhook_events",
+    )
   else:
     from .wallet_service import get_wallet as _get_wallet
 

@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from . import (
+    acquisition_bonus,
     pet_ownership,
     physical_order,
     physical_product,
@@ -303,6 +304,18 @@ async def confirm(
     from . import order_finalization
 
     await order_finalization.finalize_quietly(order_id=oid)
+
+    # ── 획득 보너스 (Phase 9) ────────────────────────────────────────────────
+    # LETTER +3 / MEMORY BOX +10. 고객이 실물을 받고 **다시 돌아오게** 하는 고리다.
+    #
+    # 멱등 키가 주문 id 라, 결제 확인 화면을 새로고침해도 다시 지급되지 않는다.
+    # (confirm 은 이미 already_paid 로 조기 반환하지만, 방어를 한 겹에만 두지 않는다.)
+    #
+    # finalize_quietly 와 같은 규약: 실패해도 주문을 뒤집지 않는다. 고객은 돈을
+    # 냈고 주문은 성사됐다 — 덤을 못 줬다고 그것을 취소할 수는 없다.
+    await acquisition_bonus.grant_physical(
+        user_id=uid, order_id=oid, product_type=order.product_type
+    )
 
     return ConfirmOutcome(
         order_id=order.order_id, product_type=order.product_type,

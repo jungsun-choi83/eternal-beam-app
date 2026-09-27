@@ -1,5 +1,23 @@
-"""Supabase: user_assets 업로드 및 purchased_slots 조회"""
+"""Supabase: user_assets 업로드 및 purchased_slots 조회
 
+⚠️ **purchased_slots 는 legacy / dev-only 다** (docs/PAYPAL_LEGACY.md).
+
+이 표는 PayPal(USD) 시절의 테마 소유권 저장소이고, PayPal 은 개발 중에만 쓰였다.
+근거: 이 파일의 record_theme_purchase 가 그 표에 쓰는 **유일한** 함수인데,
+호출부는 routers/paypal.py 하나뿐이고 그 라우터는 backend/main.py 에 **한 번도
+마운트된 적이 없다**(저장소 전체 이력 기준). 즉 배포된 API 는 이 표에 한 줄도
+쓸 수 없었다 — 실 고객 결제는 코드 배치상 불가능했다.
+
+따라서:
+  * 이 표의 데이터는 크레딧·소유권 마이그레이션에서 **제외한다.**
+  * user_theme_entitlements 로 이관하지 않는다. 이관 코드도 만들지 않는다.
+  * 새 기능이 이 표를 참조해서는 안 된다. 소유권의 권위는
+    services/theme_entitlement.py (user_theme_entitlements) 하나뿐이다.
+
+규칙은 backend/tests/test_paypal_data_excluded.py 가 강제한다.
+"""
+
+import asyncio
 import os
 import re
 from typing import Optional
@@ -44,37 +62,53 @@ BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "user-assets")
 
 
 async def upload_asset_to_storage(object_path: str, data: bytes, content_type: str) -> str:
-    """Storage에 업로드 후 public URL 또는 signed URL 반환."""
+    """
+    Storage에 업로드 후 public URL 또는 signed URL 반환.
+
+    supabase-py 는 동기 클라이언트라, 실제 네트워크 왕복은 `asyncio.to_thread` 로
+    스레드에 넘긴다 — 그러지 않으면 이 "async" 함수가 사실 이벤트 루프를 그대로
+    막아, 여러 사진을 동시에 올려도 서버 쪽에서 한 장씩 직렬로 처리된다(동시
+    인테이크의 실제 병목이 여기였다).
+    """
     supabase = _client()
     if not supabase:
         raise RuntimeError("Supabase가 설정되지 않았습니다.")
 
-    supabase.storage.from_(BUCKET).upload(
-        object_path,
-        data,
-        {"content-type": content_type, "upsert": "true"},
-    )
-    # private bucket일 가능성이 높아 signed URL을 우선 시도.
-    # get_public_url()은 private여도 문자열을 반환할 수 있어, 브라우저 GET 시 400/403이 날 수 있다.
-    try:
-        res = supabase.storage.from_(BUCKET).create_signed_url(object_path, 604800)
-        if isinstance(res, dict):
-            for k in ("signedURL", "signedUrl", "signed_url", "url"):
-                v = res.get(k)
-                if isinstance(v, str) and v:
-                    return v
-            data = res.get("data")
-            if isinstance(data, dict):
+    def _sync() -> str:
+        supabase.storage.from_(BUCKET).upload(
+            object_path,
+            data,
+            {"content-type": content_type, "upsert": "true"},
+        )
+        # private bucket일 가능성이 높아 signed URL을 우선 시도.
+        # get_public_url()은 private여도 문자열을 반환할 수 있어, 브라우저 GET 시 400/403이 날 수 있다.
+        try:
+            res = supabase.storage.from_(BUCKET).create_signed_url(object_path, 604800)
+            if isinstance(res, dict):
                 for k in ("signedURL", "signedUrl", "signed_url", "url"):
-                    v = data.get(k)
+                    v = res.get(k)
                     if isinstance(v, str) and v:
                         return v
+                nested = res.get("data")
+                if isinstance(nested, dict):
+                    for k in ("signedURL", "signedUrl", "signed_url", "url"):
+                        v = nested.get(k)
+                        if isinstance(v, str) and v:
+                            return v
+        except Exception:
+            pass
+
+        # 공개 버킷이면 public URL fallback
+        return supabase.storage.from_(BUCKET).get_public_url(object_path)
+
+    return await asyncio.to_thread(_sync)
+
+
+def _ensure_user_asset_row_sync(supabase: Client, row: dict) -> None:
+    try:
+        supabase.table("user_assets").insert(row).execute()
     except Exception:
         pass
-
-    # 공개 버킷이면 public URL fallback
-    pub = supabase.storage.from_(BUCKET).get_public_url(object_path)
-    return pub
 
 
 async def ensure_user_asset_row(
@@ -95,28 +129,24 @@ async def ensure_user_asset_row(
         "url": url,
         "theme_id": theme_id,
     }
-    try:
-        supabase.table("user_assets").insert(row).execute()
-    except Exception:
-        pass
+    await asyncio.to_thread(_ensure_user_asset_row_sync, supabase, row)
 
 
-async def record_theme_purchase(
-    user_id: str, theme_key: str, payment_id: Optional[str] = None
-) -> None:
-    """PayPal 결제 확정(capture 성공) 후 purchased_slots에 upsert."""
-    supabase = _client()
-    if not supabase:
-        raise RuntimeError("Supabase가 설정되지 않았습니다.")
-    supabase.table("purchased_slots").upsert(
-        {
-            "user_id": user_id,
-            "theme_id": theme_key,
-            "payment_id": payment_id,
-            "payment_status": True,
-        },
-        on_conflict="user_id,theme_id",
-    ).execute()
+# ── record_theme_purchase 는 삭제됐다 (Phase 11) ─────────────────────────────
+# purchased_slots 에 쓰던 유일한 함수였고, 호출부는 PayPal capture 하나뿐이었다.
+# PayPal 이 은퇴하면서 이 함수도 함께 사라진다 — **표는 남는다.**
+#
+# 표를 지우지 않는 이유: 과거 구매 증거는 새 아키텍처가 생겼다는 이유로 버리는
+# 것이 아니다. 조회는 아래 get_purchased_themes 로 계속 가능하고, 쓰기는
+# 마이그레이션 20261009000000 이 DB 수준에서 막는다.
+# 근거·재검증 방법: docs/PAYPAL_LEGACY.md
+
+
+def _get_purchased_themes_sync(supabase: Client, user_id: str) -> list[str]:
+    r = supabase.table("purchased_slots").select("theme_id").eq("user_id", user_id).eq("payment_status", True).execute()
+    if r.data:
+        return [x["theme_id"] for x in r.data if x.get("theme_id")]
+    return []
 
 
 async def get_purchased_themes(user_id: str) -> list[str]:
@@ -124,11 +154,7 @@ async def get_purchased_themes(user_id: str) -> list[str]:
     supabase = _client()
     if not supabase:
         return []
-
-    r = supabase.table("purchased_slots").select("theme_id").eq("user_id", user_id).eq("payment_status", True).execute()
-    if r.data:
-        return [x["theme_id"] for x in r.data if x.get("theme_id")]
-    return []
+    return await asyncio.to_thread(_get_purchased_themes_sync, supabase, user_id)
 
 
 def check_payment_for_theme(user_id: str, theme_id: str, paid_theme_ids: list[str]) -> bool:

@@ -15,10 +15,11 @@
 
 import { supabase } from "@/app/config/supabase";
 import { setEternalBeamUserId } from "./eternal-beam-user.ts";
+import { classifyAuthError, type AuthErrorCode } from "./auth-form.ts";
 
 export type AuthResult =
   | { ok: true; needsEmailConfirmation: boolean }
-  | { ok: false; message: string };
+  | { ok: false; code: AuthErrorCode; message: string };
 
 export function isSupabaseAuthConfigured(): boolean {
   return Boolean(supabase);
@@ -27,16 +28,31 @@ export function isSupabaseAuthConfigured(): boolean {
 const NOT_CONFIGURED =
   "인증이 설정되지 않았습니다. VITE_SUPABASE_URL 과 VITE_SUPABASE_ANON_KEY 를 확인하세요.";
 
+function failure(err: { message?: string; status?: number | null; name?: string } | null | undefined): AuthResult {
+  const c = classifyAuthError(err?.message, { status: err?.status ?? null, name: err?.name ?? null });
+  return { ok: false, code: c.code, message: c.raw || c.code };
+}
+
+/** fetch 자체가 던진 경우(오프라인·DNS·CORS) — GoTrue 오류 객체가 아니다. */
+function thrown(e: unknown): AuthResult {
+  const err = e as { message?: string; name?: string } | null;
+  return failure({ message: err?.message, name: err?.name });
+}
+
 export async function signInWithPassword(
   email: string,
   password: string
 ): Promise<AuthResult> {
-  if (!supabase) return { ok: false, message: NOT_CONFIGURED };
-  const { error } = await supabase.auth.signInWithPassword({
-    email: email.trim(),
-    password,
-  });
-  if (error) return { ok: false, message: error.message };
+  if (!supabase) return { ok: false, code: "not_configured", message: NOT_CONFIGURED };
+  try {
+    const { error } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password,
+    });
+    if (error) return failure(error);
+  } catch (e) {
+    return thrown(e);
+  }
   return { ok: true, needsEmailConfirmation: false };
 }
 
@@ -66,26 +82,111 @@ function defaultEmailRedirectTo(): string | undefined {
   }
 }
 
+/**
+ * 가입 — **이름 · 이메일 · 비밀번호** 세 값이 전부다.
+ *
+ * 이름은 Supabase Auth 의 user_metadata(`full_name`)에 저장한다. 이 앱에는
+ * 별도 프로필 테이블이 없고 서버 신원(identity_service)은 sub/email 만 본다 —
+ * user_metadata 가 이름의 **유일한** 권위 있는 저장소다. 두 번째 프로필 원천을
+ * 만들지 않는다. (`full_name` 은 Supabase 대시보드·OAuth 공급자가 쓰는 관례 키.)
+ *
+ * 반려/기기 호출 이름은 여기에 **없다** — 계정과 무관한 펫 온보딩/기기 설정 값이다.
+ */
 export async function signUpWithPassword(
   email: string,
   password: string,
-  options: { emailRedirectTo?: string } = {}
+  options: { emailRedirectTo?: string; name?: string } = {}
 ): Promise<AuthResult> {
-  if (!supabase) return { ok: false, message: NOT_CONFIGURED };
+  if (!supabase) return { ok: false, code: "not_configured", message: NOT_CONFIGURED };
   const emailRedirectTo = options.emailRedirectTo?.trim() || defaultEmailRedirectTo();
-  const { data, error } = await supabase.auth.signUp({
-    email: email.trim(),
-    password,
-    ...(emailRedirectTo ? { options: { emailRedirectTo } } : {}),
-  });
-  if (error) return { ok: false, message: error.message };
+  const fullName = options.name?.trim() || "";
+  let data: { session: unknown } | null = null;
+  try {
+    const r = await supabase.auth.signUp({
+      email: email.trim(),
+      password,
+      options: {
+        ...(emailRedirectTo ? { emailRedirectTo } : {}),
+        ...(fullName ? { data: { full_name: fullName } } : {}),
+      },
+    });
+    if (r.error) return failure(r.error);
+    data = r.data;
+  } catch (e) {
+    return thrown(e);
+  }
   // 이메일 확인이 켜진 프로젝트에서는 session 이 null 로 온다 — 확인 전까지
   // 토큰이 없으므로 구매도 불가능하다. 호출부가 안내할 수 있게 알려 준다.
   //
   // ⚠️ 현재 이 프로젝트는 mailer_autoconfirm = true (확인 메일 꺼짐)라 가입 즉시
   //    세션이 온다. 그래도 이 분기를 지우지 않는다 — 설정은 대시보드에서 언제든
   //    켜지고, 켜지는 순간 이 값이 유일한 안내 근거가 된다.
-  return { ok: true, needsEmailConfirmation: !data.session };
+  return { ok: true, needsEmailConfirmation: !data?.session };
+}
+
+/**
+ * 비밀번호 재설정 메일. 링크는 defaultEmailRedirectTo 와 같은 규칙으로 **지금
+ * 서 있는 origin** 으로 돌아온다(다른 origin 의 Site URL 로 떨어지면 세션이
+ * 그쪽에 갇힌다 — signUp 주석 참고).
+ */
+export async function sendPasswordReset(
+  email: string,
+  options: { redirectTo?: string } = {}
+): Promise<AuthResult> {
+  if (!supabase) return { ok: false, code: "not_configured", message: NOT_CONFIGURED };
+  const redirectTo = options.redirectTo?.trim() || defaultEmailRedirectTo();
+  try {
+    const { error } = await supabase.auth.resetPasswordForEmail(
+      email.trim(),
+      redirectTo ? { redirectTo } : undefined
+    );
+    if (error) return failure(error);
+  } catch (e) {
+    return thrown(e);
+  }
+  return { ok: true, needsEmailConfirmation: false };
+}
+
+/**
+ * 비밀번호 재설정 — **지금 세션**의 비밀번호를 바꾼다. 새 계정을 만들지 않고,
+ * 신원(user_identity_links)도 건드리지 않는다.
+ *
+ * 이 세션은 재설정 이메일 링크가 세운 recovery 세션이어야 정상 경로다. 세션이
+ * 아예 없으면(링크가 만료됐거나, 다른 브라우저/탭에서 이미 링크를 열었거나
+ * 이미 한 번 써서 소비됐다) supabase-js 가 AuthSessionMissingError 를 던지고,
+ * classifyAuthError 가 그것을 `session_expired` 로 분류한다 — 화면은 그 코드로
+ * "링크가 만료됐다" 를 보여 준다.
+ */
+export async function updatePassword(newPassword: string): Promise<AuthResult> {
+  if (!supabase) return { ok: false, code: "not_configured", message: NOT_CONFIGURED };
+  try {
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    if (error) return failure(error);
+  } catch (e) {
+    return thrown(e);
+  }
+  return { ok: true, needsEmailConfirmation: false };
+}
+
+export interface SessionProfile {
+  email: string | null;
+  /** user_metadata.full_name — 가입 때 넣은 이름. 없으면 null (지어내지 않는다). */
+  name: string | null;
+}
+
+function profileOf(user: { email?: string | null; user_metadata?: Record<string, unknown> | null } | null | undefined): SessionProfile | null {
+  if (!user) return null;
+  const meta = (user.user_metadata || {}) as Record<string, unknown>;
+  const rawName = typeof meta.full_name === "string" ? meta.full_name : typeof meta.name === "string" ? meta.name : "";
+  const name = rawName.trim();
+  return { email: user.email?.trim() || null, name: name || null };
+}
+
+/** 현재 세션의 표시용 프로필. 세션이 없으면 null. */
+export async function getSessionProfile(): Promise<SessionProfile | null> {
+  if (!supabase) return null;
+  const { data } = await supabase.auth.getSession();
+  return profileOf(data?.session?.user);
 }
 
 export async function signOut(): Promise<void> {
@@ -154,14 +255,30 @@ export async function syncEternalBeamIdentity(): Promise<string | null> {
  * supabase-js 가 액세스 토큰 갱신을 자동으로 처리하고 TOKEN_REFRESHED 를 쏜다.
  * 우리는 신원만 다시 맞춰 주면 된다.
  */
-export function onAuthStateChange(cb: (signedIn: boolean) => void): () => void {
+/**
+ * 세션 변화 구독 — 복원 / 갱신 / 로그아웃 / **비밀번호 재설정 링크**.
+ *
+ * supabase-js 가 액세스 토큰 갱신을 자동으로 처리하고 TOKEN_REFRESHED 를 쏜다.
+ * 우리는 신원만 다시 맞춰 주면 된다.
+ *
+ * 재설정 링크를 열면 GoTrue 는 유효한 세션을 세우면서도(signedIn = true)
+ * PASSWORD_RECOVERY 이벤트를 쏜다 — 그냥 로그인한 것과 겉모습이 같다. 세 번째
+ * 인자로 그 구분을 그대로 넘긴다: 호출부는 이 순간을 "로그인 완료"로 다루지
+ * 않아야 한다(펫 등록·홈 이동 같은 정상 로그인 부수 효과를 건너뛴다 —
+ * EternalBeamApp 의 세션 구독 참고). 재설정 화면 자신은 바로 이 플래그로
+ * "링크가 방금 세션을 세웠다"를 알아챈다.
+ */
+export function onAuthStateChange(
+  cb: (signedIn: boolean, profile: SessionProfile | null, isPasswordRecovery: boolean) => void
+): () => void {
   if (!supabase) return () => {};
   const { data } = supabase.auth.onAuthStateChange((event, session) => {
     const signedIn = Boolean(session?.access_token);
+    const isPasswordRecovery = event === "PASSWORD_RECOVERY";
     if (signedIn && (event === "SIGNED_IN" || event === "INITIAL_SESSION")) {
       void syncEternalBeamIdentity();
     }
-    cb(signedIn);
+    cb(signedIn, signedIn ? profileOf(session?.user) : null, isPasswordRecovery);
   });
   return () => data.subscription.unsubscribe();
 }

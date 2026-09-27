@@ -28,6 +28,7 @@ from pydantic import BaseModel
 
 from ..auth import AuthedUser, require_user
 from ..services import (
+    acquisition_bonus,
     letter_background,
     order_attention,
     physical_checkout,
@@ -174,6 +175,19 @@ async def claim_letter(
         )
     except Exception:  # noqa: BLE001 — 배경은 편지를 막지 않는다
         logger.warning("편지 배경 복사 실패 — 배경 없이 진행", exc_info=True)
+
+    # ── 획득 보너스 (Phase 9) ────────────────────────────────────────────
+    # 편지를 가져온 고객에게 크레딧을 준다 — 이것이 Soul Trace → Eternal Beam
+    # 유입의 연결 고리다.
+    #
+    # 멱등 키는 **Soul Trace 원본 편지 id** 다. 임시 핸드오프 토큰이 아니다:
+    # 그 토큰은 편지 하나에 대해 몇 번이든 새로 발급되므로(재시도를 위해 그것이
+    # 옳다), 토큰을 키로 삼으면 토큰을 다시 받는 것만으로 보너스를 다시 받는다.
+    #
+    # 실패해도 편지 가져오기를 막지 않는다 — 보너스는 덤이다.
+    await acquisition_bonus.grant_soultrace(
+        user_id=user.user_id, source_letter_id=source.letter_id
+    )
 
     try:
         letter = await soul_trace_letter.link_letter(

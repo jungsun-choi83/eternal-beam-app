@@ -142,14 +142,15 @@ def test_one_pet_drains_all_five_without_a_browser(stub):
             break
         _terminalise(active[0])       # 가장 오래된 것 하나가 완료된다
 
-    assert sorted(submitted) == sorted(GENERATION_ORDER), submitted
+    # PET_HEAD 는 새 경로 전용이라 레거시 전진이 절대 제출하지 않는다.
+    assert sorted(submitted) == sorted(premium_generation.LEGACY_CAPABLE_ACTIONS), submitted
     assert len(submitted) == len(set(submitted)), "같은 액션을 두 번 제출했다"
 
     ready = {
         (m.action_id or "").upper()
         for m in asyncio.run(motions_svc.list_motions_for_pet(USER, PET))
     }
-    assert ready == set(GENERATION_ORDER), ready
+    assert ready == set(premium_generation.LEGACY_CAPABLE_ACTIONS), ready
     # 배수가 끝나면 더 제출할 것이 없다.
     assert _advance() == []
 
@@ -164,8 +165,9 @@ def test_generation_order_is_respected_across_advances(stub):
             break
         _terminalise(active[0])
     assert order[0] == "COME_CLOSER", "COME_CLOSER 가 1순위여야 한다"
-    for a in GENERATION_ORDER:
+    for a in premium_generation.LEGACY_CAPABLE_ACTIONS:
         assert a in order
+    assert "PET_HEAD" not in order  # 새 경로 전용 — 레거시 큐 무진입
 
 
 # ── 안전장치 ─────────────────────────────────────────────────────────────────
@@ -175,8 +177,10 @@ def test_legacy_actions_never_trigger_advance():
     """레거시 4종은 자기 파이프라인이 동시성을 관리한다."""
     for legacy in ACTION_ORDER:
         assert not premium_generation.is_queued_action(legacy)
-    for premium in GENERATION_ORDER:
+    for premium in premium_generation.LEGACY_CAPABLE_ACTIONS:
         assert premium_generation.is_queued_action(premium)
+    # 새 경로 전용 액션은 레거시 큐 관할 밖이다.
+    assert not premium_generation.is_queued_action("PET_HEAD")
 
 
 def test_missing_pet_image_url_is_a_no_op(stub):

@@ -16,16 +16,14 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { getPremiumAccessToken } from "@/lib/premium-auth-token";
 import {
   indexOffers,
-  markOwned,
   type ThemeOffer,
 } from "@/lib/theme-ownership";
 import {
   ThemeStoreError,
   fetchThemeCatalog,
-  openThemePaymentWindow,
-  purchaseTheme,
-  startThemeCheckout,
+  purchaseThemeWithCredits,
 } from "@/lib/theme-store-api";
+import { markOwned } from "@/lib/theme-ownership";
 
 export interface ThemeOwnershipValue {
   offers: Map<string, ThemeOffer>;
@@ -36,6 +34,8 @@ export interface ThemeOwnershipValue {
   buying: string | null;
   /** 마지막 구매 오류 코드 — 화면이 문구를 정한다. */
   error: string | null;
+  /** 지금 잔액. 아직 못 받았으면 null (0 과 구분한다). */
+  balance: number | null;
   buy: (themeKey: string) => Promise<boolean>;
   refresh: () => Promise<void>;
 }
@@ -43,6 +43,7 @@ export interface ThemeOwnershipValue {
 export function useThemeOwnership(): ThemeOwnershipValue {
   const [token, setToken] = useState<string | null>(null);
   const [rows, setRows] = useState<ThemeOffer[] | null>(null);
+  const [balance, setBalance] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [buying, setBuying] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -64,7 +65,9 @@ export function useThemeOwnership(): ThemeOwnershipValue {
     }
     setLoading(true);
     try {
-      setRows(await fetchThemeCatalog({ accessToken: token }));
+      const catalog = await fetchThemeCatalog({ accessToken: token });
+      setRows(catalog.offers);
+      setBalance(catalog.creditBalance);
       setError(null);
     } catch {
       // 카탈로그를 못 받으면 폴백 표시로 간다 — 무료 테마는 계속 쓸 수 있고,
@@ -90,25 +93,19 @@ export function useThemeOwnership(): ThemeOwnershipValue {
       setBuying(themeKey);
       setError(null);
       try {
-        // 저장된 카드가 있으면 결제창 없이 끝난다. 없으면 **오류가 아니라**
-        // 결제창 경로로 넘어간다 — 카드 등록이 구매의 전제가 아니다.
-        try {
-          await purchaseTheme({ themeKey, accessToken: token });
-        } catch (e) {
-          if (
-            e instanceof ThemeStoreError &&
-            e.code === "PAYMENT_METHOD_UNAVAILABLE"
-          ) {
-            const checkout = await startThemeCheckout({ themeKey, accessToken: token });
-            // 페이지가 결제창으로 이동한다 — 이 아래는 실행되지 않는다.
-            await openThemePaymentWindow(checkout);
-            return false;
-          }
-          throw e;
-        }
-        // 낙관적 갱신 — 결제 직후 NOT OWNED 로 남아 있으면 "돈은 나갔는데
-        // 안 샀다"로 보인다. 곧바로 서버 값으로 수렴시킨다.
+        // ── Beam Credit 구매 (Phase 4) ─────────────────────────────────────
+        // 결제창이 없다. 페이지가 이동하지 않으므로 Toss 경로가 필요로 하던
+        // 왕복 상태 저장(theme-purchase-return-state)도 없다 — 응답이 바로
+        // 돌아오고 그 자리에서 OWNED 가 된다.
+        //
+        // 서버에서 차감·원장·소유권이 **한 트랜잭션**이다. 성공했으면 셋 다 됐고,
+        // 실패했으면 셋 다 안 됐다. 그래서 여기에 보상 로직이 없다.
+        const out = await purchaseThemeWithCredits({ themeKey, accessToken: token });
+
+        // 낙관적 갱신 — 서버 재조회 전에 잠깐 NOT OWNED 로 남아 있으면
+        // "크레딧은 나갔는데 안 샀다"로 보인다. 구매 직후 가장 불안한 순간이다.
         setRows((cur) => [...markOwned(indexOffers(cur), themeKey).values()]);
+        if (out.creditsRemaining != null) setBalance(out.creditsRemaining);
         void refresh();
         return true;
       } catch (e) {
@@ -127,6 +124,7 @@ export function useThemeOwnership(): ThemeOwnershipValue {
     unavailable: rows === null,
     buying,
     error,
+    balance,
     buy,
     refresh,
   };

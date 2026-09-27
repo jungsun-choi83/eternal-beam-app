@@ -152,11 +152,17 @@ test('어느 화면도 마운트만으로 유료 생성을 시작하지 않는�
   }
 })
 
-test('발견 경로는 조회 전용 함수만 쓴다', () => {
-  assert.match(strip(ASSETS), /lookupIdleEventAsset\(/, '자산 훅이 조회 전용이 아니다')
+test('발견 경로는 조회 전용 — 인증 컨텍스트 하나만 읽는다 (Phase 7I.1)', () => {
+  // 예전에는 무과금 dev 엔드포인트(lookupIdleEventAsset / lookupComeCloserAsset)를
+  // 직접 폴링했다 — DEV 게이트 때문에 **프로덕션에서는 발견이 아예 안 됐다.**
+  // 이제 발견원은 PremiumAssetsProvider(GET /premium/assets, 인증) 하나다.
+  assert.match(strip(ASSETS), /usePremiumAssetsContext\(\)/, '자산 훅이 인증 발견을 읽지 않는다')
+  assert.doesNotMatch(strip(ASSETS), /lookupIdleEventAsset\(/, 'dev 조회가 남아 있다')
   assert.doesNotMatch(strip(ASSETS), /ensureIdleEventAsset\(/, '자산 훅이 생성을 제출한다')
-  for (const code of [SCREEN, MEMORIAL]) {
-    assert.match(strip(code), /lookupComeCloserAsset\(/)
+  assert.doesNotMatch(strip(ASSETS), /import\.meta\.env\.DEV/, 'DEV 게이트가 남아 있다 — 프로덕션에서 발견이 죽는다')
+  for (const [name, code] of [['preview', SCREEN], ['memorial', MEMORIAL]] as const) {
+    assert.match(strip(code), /readyAssets\?\.COME_CLOSER/, `${name} 이 인증 READY 계약을 읽지 않는다`)
+    assert.doesNotMatch(strip(code), /lookupComeCloserAsset\(/, `${name} 에 dev 조회가 남아 있다`)
   }
 })
 
@@ -176,8 +182,8 @@ test('구매 요청은 인증 토큰을 보낸다 — 신원을 바디로 보내
 })
 
 test('확인 전 프리미엄 생성 금지 — COME_CLOSER effect 와 자산 훅 둘 다 게이트된다', () => {
-  // 스윕이 공유 훅으로 빠지면서 게이트도 그쪽으로 갔다. 불변식은 그대로다:
-  // BREATH 가 없으면 어느 경로로도 유료 생성이 나가지 않는다.
+  // 발견원이 인증 컨텍스트로 바뀌었지만 불변식은 그대로다:
+  // BREATH 가 없으면 어느 경로로도 프리미엄 소스가 노출되지 않는다.
   const code = strip(SCREEN)
   const gates = [...code.matchAll(/if \(!hasIdle\) return;/g)]
   assert.equal(gates.length, 1, `preview 의 COME_CLOSER hasIdle 게이트가 ${gates.length}개다`)
@@ -186,23 +192,26 @@ test('확인 전 프리미엄 생성 금지 — COME_CLOSER effect 와 자산 �
     /useIdleEventAssets\(\{\s*pipeline,\s*enabled: hasIdle,/,
     'preview 가 자산 훅에 hasIdle 게이트를 넘기지 않는다',
   )
-  assert.match(strip(ASSETS), /if \(!enabled\) return;/, '자산 훅에 enabled 게이트가 없다')
+  assert.match(
+    strip(ASSETS),
+    /if \(!enabled \|\| !pipeline \|\| !assets\) return EMPTY;/,
+    '자산 훅에 enabled 게이트가 없다',
+  )
 })
 
-// ── 공유 훅 — 두 화면이 스윕을 복제하지 않는다 ───────────────────────────────
+// ── 공유 훅 — 두 화면이 발견을 복제하지 않는다 ───────────────────────────────
 
-test('스윕 구현은 공유 훅에만 있다 — 화면에 복제하지 않는다', () => {
-  // 이 루프는 유료 생성을 제출한다. 사본이 갈라지면 한쪽에서만 중복 지출이 난다.
-  assert.match(strip(ASSETS), /IDLE_ASSET_SWEEP_MS/, '스윕 주기가 훅에 없다')
-  for (const [name, code] of [['preview', SCREEN], ['memorial', MEMORIAL]] as const) {
+test('발견 구현은 공유 훅/Provider 에만 있다 — 화면에 복제하지 않는다', () => {
+  // Phase 7I.1: 폴링은 PremiumAssetsProvider 가 한 곳에서 한다 (생성 중 15초,
+  // 평시 5분, 탭 복귀 시 1회). 화면/훅에 자체 스윕 루프가 생기면 사본이 갈라진다.
+  for (const [name, code] of [['assets-hook', ASSETS], ['preview', SCREEN], ['memorial', MEMORIAL]] as const) {
     assert.doesNotMatch(
       strip(code),
       /const sweep = async/,
       `${name} 에 스윕 사본이 남아 있다`,
     )
+    assert.doesNotMatch(strip(code), /ensureIdleEventAsset/, `${name} 이 직접 제출하고 있다`)
   }
-  // memorial 은 자산 확보를 직접 하지 않는다 — 훅을 통해서만 한다.
-  assert.doesNotMatch(strip(MEMORIAL), /ensureIdleEventAsset/, 'memorial 이 직접 제출하고 있다')
 })
 
 test('공유 훅도 이벤트 id 를 하드코딩하지 않는다', () => {

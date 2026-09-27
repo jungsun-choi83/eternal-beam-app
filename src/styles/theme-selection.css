@@ -1,0 +1,433 @@
+/* ==========================================================================
+   Theme Selection (Phase 5 · restyled Phase 10 · Phase 11B-4 grid redesign)
+   Mobile-first; the desktop split (stepper column / theme grid) reacts to the
+   screen's own rendered width via a container query, not the viewport —
+   this screen is reused inside My Library without the wide app-shell stage,
+   and a viewport-only media query would wedge the two-column layout into a
+   520px box there. Consumes brand.css tokens only.
+   ========================================================================== */
+
+.theme-selection-screen {
+  container-type: inline-size;
+  background: transparent;
+  color: var(--eb-text);
+}
+
+.theme-select__header {
+  padding-inline: var(--eb-space-6);
+  padding-top: var(--eb-header-top);
+  padding-bottom: var(--eb-space-3);
+}
+
+.theme-select__title {
+  flex: 1;
+  text-align: center;
+  font-family: var(--font-headline);
+  font-size: var(--eb-type-title);
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--eb-text);
+  margin: 0;
+}
+
+.theme-select__main {
+  min-width: 0;
+}
+
+.theme-select__scroll {
+  /* The runtime measurement includes the CTA, conditional footer copy, and the
+     footer's safe-area padding. The fallback covers the ordinary one-line CTA
+     before ResizeObserver runs (and browsers without ResizeObserver). */
+  --theme-select-footer-reserve: calc(
+    var(--eb-touch) + var(--eb-space-3) + var(--eb-footer-bottom)
+  );
+  box-sizing: border-box;
+  padding-bottom: var(--theme-select-footer-reserve);
+  scroll-padding-bottom: var(--theme-select-footer-reserve);
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.theme-select__scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.theme-select__intro {
+  padding-inline: var(--eb-space-6);
+  padding-top: var(--eb-space-2);
+  padding-bottom: var(--eb-space-3);
+  display: flex;
+  flex-direction: column;
+}
+
+.theme-select__intro > * + * {
+  margin-top: var(--eb-space-2);
+}
+
+.theme-select__subtitle {
+  color: var(--eb-text-2);
+}
+
+/* Credit balance — the brand pill. */
+.theme-select__balance-row {
+  display: flex;
+}
+
+.theme-select__balance-pill {
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
+.theme-select__balance-pill-label {
+  color: var(--eb-text-2);
+  font-weight: 500;
+}
+
+/* ── Filter pills ──────────────────────────────────────────────────────── */
+
+.theme-select__filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--eb-space-2);
+  padding-inline: var(--eb-space-6);
+  padding-bottom: var(--eb-space-4);
+}
+
+/* ── Theme grid ────────────────────────────────────────────────────────── */
+
+.theme-select__grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--eb-space-3);
+  padding-inline: var(--eb-space-6);
+  padding-bottom: var(--eb-space-4);
+}
+
+.theme-select__empty {
+  padding-inline: var(--eb-space-6);
+  padding-bottom: var(--eb-space-4);
+  color: var(--eb-text-3);
+}
+
+.theme-grid__card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  cursor: pointer;
+  border-radius: var(--eb-radius-lg);
+  border: 1px solid var(--eb-hairline);
+  background: var(--eb-surface);
+  overflow: hidden;
+  transition:
+    border-color var(--eb-dur) var(--eb-ease),
+    box-shadow var(--eb-dur) var(--eb-ease),
+    transform var(--eb-dur-fast) var(--eb-ease);
+}
+
+.theme-grid__card:hover {
+  border-color: var(--eb-hairline-strong);
+}
+
+.theme-grid__card:active {
+  transform: scale(0.99);
+}
+
+.theme-grid__card:focus-visible {
+  outline: none;
+  box-shadow: var(--eb-focus-ring);
+}
+
+.theme-grid__card--selected {
+  border-color: var(--eb-gold);
+  box-shadow: 0 0 0 1px var(--eb-gold);
+}
+
+.theme-grid__card--custom {
+  border-style: dashed;
+  border-color: var(--eb-gold-line);
+}
+
+/* Thumbnail stack (bottom → top): theme gradient base → catalog photo →
+   badges. The base is what the eye sees until the multi-MB photo decodes,
+   and what remains when a real asset is genuinely missing. The gradient
+   itself comes from Tailwind utilities on the same element; this unlayered
+   rule must therefore never set `background`, or it would win the cascade
+   and hide the gradient. */
+.theme-grid__thumb {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  overflow: hidden;
+  background: var(--eb-surface-inverse);
+}
+
+.theme-grid__thumb-base {
+  position: absolute;
+  inset: 0;
+}
+
+.theme-grid__img {
+  position: absolute;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+}
+
+.theme-grid__check,
+.theme-grid__badge {
+  position: absolute;
+  top: var(--eb-space-2);
+  z-index: 2;
+}
+
+/* Selection check sits over the photo — the light ring keeps it readable on
+   dark thumbnails (starlight, ocean) as well as bright ones. */
+.theme-grid__check {
+  left: var(--eb-space-2);
+  box-shadow: 0 0 0 2px var(--eb-surface);
+}
+
+/* Custom-background marker (flower), top-right so it never collides with the
+   check mark. */
+.theme-grid__badge {
+  right: var(--eb-space-2);
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: var(--eb-radius-pill);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--eb-surface);
+  color: var(--eb-gold-text);
+  box-shadow: 0 0 0 1px var(--eb-gold-line);
+}
+
+/* min-height keeps the whole card comfortably above the 44px touch target
+   even on the narrowest 2-column mobile grid. */
+.theme-grid__body {
+  min-height: 44px;
+  padding: var(--eb-space-3);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.theme-grid__name {
+  font-size: var(--eb-type-body-sm);
+  font-weight: 600;
+  color: var(--eb-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.theme-grid__state {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--eb-space-1);
+  font-size: var(--eb-type-caption);
+}
+
+.theme-grid__state--free {
+  color: var(--eb-text-2);
+}
+
+.theme-grid__state--owned {
+  color: var(--eb-gold-text);
+  font-weight: 600;
+}
+
+.theme-grid__state--premium {
+  color: var(--eb-gold-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.theme-grid__state--coming-soon {
+  color: var(--eb-text-3);
+}
+
+/* ── Footer ─────────────────────────────────────────────────────────────── */
+
+.theme-select__footer {
+  padding-inline: var(--eb-space-6);
+  padding-top: var(--eb-space-3);
+}
+
+.theme-select__footer > * + * {
+  margin-top: var(--eb-space-2);
+}
+
+.theme-select__shortfall {
+  margin-left: var(--eb-space-2);
+  color: var(--eb-warn-text);
+  font-weight: 600;
+}
+
+/* ── Create-flow stepper ──────────────────────────────────────────────────
+   Both the vertical list and the compact bar are always in the DOM; this
+   container query decides which renders — same reasoning as the split below
+   (screen's own width, not the viewport, because of the My Library embed). */
+
+.create-flow-stepper {
+  flex-shrink: 0;
+}
+
+.create-flow-stepper__full {
+  display: none;
+  list-style: none;
+  margin: 0;
+  padding: var(--eb-space-6) var(--eb-space-4) var(--eb-space-4);
+  flex-direction: column;
+  gap: var(--eb-space-4);
+}
+
+.create-flow-stepper__item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--eb-space-3);
+}
+
+.create-flow-stepper__marker {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--eb-radius-pill);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: var(--eb-type-caption);
+  font-weight: 600;
+  border: 1px solid var(--eb-hairline-strong);
+  color: var(--eb-text-3);
+  background: var(--eb-surface);
+}
+
+.create-flow-stepper__item--complete .create-flow-stepper__marker {
+  background: var(--eb-sage);
+  border-color: var(--eb-sage);
+  color: var(--eb-text-on-inverse);
+}
+
+.create-flow-stepper__item--current .create-flow-stepper__marker {
+  background: var(--eb-gold);
+  border-color: var(--eb-gold);
+  color: var(--eb-text-on-gold);
+}
+
+.create-flow-stepper__copy {
+  display: flex;
+  flex-direction: column;
+  padding-top: 2px;
+}
+
+.create-flow-stepper__label {
+  font-size: var(--eb-type-body-sm);
+  font-weight: 600;
+  color: var(--eb-text);
+}
+
+.create-flow-stepper__item--upcoming .create-flow-stepper__label {
+  color: var(--eb-text-3);
+  font-weight: 500;
+}
+
+.create-flow-stepper__status {
+  font-size: var(--eb-type-caption);
+}
+
+.create-flow-stepper__item--complete .create-flow-stepper__status {
+  color: var(--eb-sage-text);
+}
+
+.create-flow-stepper__item--current .create-flow-stepper__status {
+  color: var(--eb-gold-text);
+}
+
+.create-flow-stepper__item--upcoming .create-flow-stepper__status {
+  color: var(--eb-text-3);
+}
+
+.create-flow-stepper__compact {
+  display: flex;
+  align-items: center;
+  gap: var(--eb-space-3);
+  padding: var(--eb-space-3) var(--eb-space-6) var(--eb-space-1);
+}
+
+.create-flow-stepper__dots {
+  display: flex;
+  align-items: center;
+  gap: var(--eb-space-1);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.create-flow-stepper__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--eb-radius-pill);
+  background: var(--eb-hairline-strong);
+}
+
+.create-flow-stepper__dot--complete {
+  background: var(--eb-sage);
+}
+
+.create-flow-stepper__dot--current {
+  width: 14px;
+  background: var(--eb-gold);
+}
+
+.create-flow-stepper__compact-label {
+  font-size: var(--eb-type-caption);
+  font-weight: 500;
+  color: var(--eb-text-2);
+}
+
+/* ── Desktop-equivalent split (container-driven, see header note) ───────── */
+
+@container (min-width: 640px) {
+  .theme-select__grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@container (min-width: 860px) {
+  .theme-select__body {
+    flex-direction: row;
+  }
+
+  .create-flow-stepper__full {
+    display: flex;
+  }
+
+  .create-flow-stepper__compact {
+    display: none;
+  }
+
+  .theme-select__stepper {
+    width: 14rem;
+    flex-shrink: 0;
+    border-right: 1px solid var(--eb-hairline);
+  }
+
+  .theme-select__intro,
+  .theme-select__filters,
+  .theme-select__grid,
+  .theme-select__empty,
+  .theme-select__footer {
+    padding-inline: var(--eb-space-8);
+  }
+}
+
+@container (min-width: 960px) {
+  .theme-select__grid {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}

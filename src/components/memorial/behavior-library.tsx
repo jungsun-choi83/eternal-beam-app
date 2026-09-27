@@ -1,21 +1,17 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { AlertCircle, Check, Loader2, Sparkles } from "lucide-react";
+import { AlertCircle, Coins, Crown, Loader2, RefreshCw, Sparkles } from "lucide-react";
 
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { useBehaviorLibrary } from "@/components/memorial/use-behavior-library";
-import {
-  canGenerateBehavior,
-  canToggleBehavior,
-  type BehaviorItem,
-} from "@/lib/behavior-library";
+import { canGenerateBehavior, type BehaviorItem } from "@/lib/behavior-library";
 
 interface BehaviorLibraryProps {
   petId: string | null;
-  petImageUrl?: string | null;
   enabled: boolean;
   language?: string;
+  onOpenMembership?: () => void;
 }
 
 /**
@@ -31,54 +27,48 @@ interface BehaviorLibraryProps {
  */
 export function BehaviorLibrary({
   petId,
-  petImageUrl,
   enabled,
   language = "ko",
+  onOpenMembership,
 }: BehaviorLibraryProps) {
   const t = memorialT(language).behaviors;
-  const { state, submitting, toggling, error, generate, toggle } = useBehaviorLibrary({
+  const { state, loading, submitting, error, generate, refresh } = useBehaviorLibrary({
     petId,
-    petImageUrl,
     enabled,
   });
 
-  // 멤버가 아니면 목록 자체를 보여 주지 않는다 — 멤버십 카드가 이미 안내한다.
-  // state.canGenerate 는 서버가 준 entitled 그대로다.
-  if (!enabled || !state.canGenerate) return null;
-  if (state.totalCount === 0) return null;
+  if (!enabled) return null;
+  const offerGroups = state.groups
+    .map((group) => ({ ...group, items: group.items.filter((item) => item.status !== "ready") }))
+    .filter((group) => group.items.length > 0);
+  if (!loading && offerGroups.length === 0) return null;
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
-      className="w-full max-w-[320px] rounded-2xl px-4 py-3.5 border backdrop-blur-sm text-left"
-      style={{
-        background: "rgba(255,255,255,0.05)",
-        borderColor: "rgba(201, 162, 39, 0.22)",
-      }}
+      className="my-library__available"
     >
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Sparkles className="w-4 h-4 shrink-0" style={{ color: "#d4af37" }} />
-          <p className="text-sm font-medium" style={{ color: "#F1E5D1" }}>
-            {t.title}
-          </p>
+      <div className="my-library__available-head">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 shrink-0 text-[var(--eb-gold-text)]" />
+            <h3 className="my-library__available-title">{t.availableTitle}</h3>
+          </div>
+          <p className="my-library__available-hint">{t.availableHint}</p>
         </div>
-        <span className="text-[11px]" style={{ color: "#8a8a8a" }}>
-          {t.readyOf(state.readyCount, state.totalCount)}
-        </span>
+        <button type="button" className="my-library__pet-retry" onClick={() => void refresh()} aria-label={t.refresh}>
+          <RefreshCw className={`w-4 h-4${loading ? " my-library__spin" : ""}`} />
+        </button>
       </div>
 
-      {state.groups.map((group) =>
+      {offerGroups.map((group) =>
         group.items.length === 0 ? null : (
-          <div key={group.id} className="mt-3">
-            <p
-              className="text-[10px] tracking-wider uppercase mb-1.5"
-              style={{ color: "#8a8a8a" }}
-            >
+          <div key={group.id} className="my-library__available-group">
+            <p className="my-library__available-group-label">
               {group.id === "spontaneous" ? t.groupSpontaneous : t.groupInteractive}
             </p>
-            <ul className="space-y-1.5">
+            <ul className="my-library__available-list">
               {group.items.map((item) => (
                 <BehaviorRow
                   key={item.id}
@@ -87,10 +77,9 @@ export function BehaviorLibrary({
                   actionable={canGenerateBehavior(item, state)}
                   busy={submitting === item.id}
                   disabled={submitting != null}
-                  toggling={toggling === item.id}
                   t={t}
                   onGenerate={() => void generate(item.id)}
-                  onToggle={() => void toggle(item.id, !item.enabled)}
+                  onOpenMembership={onOpenMembership}
                 />
               ))}
             </ul>
@@ -99,9 +88,9 @@ export function BehaviorLibrary({
       )}
 
       {error ? (
-        <div className="mt-2.5 flex items-start gap-1.5">
-          <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" style={{ color: "#e0a0a0" }} />
-          <p className="text-[11px]" style={{ color: "#e0a0a0" }}>
+        <div className="my-library__available-error">
+          <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+          <p>
             {error.code === "SUBSCRIPTION_REQUIRED"
               ? t.membershipRequired
               : error.code === "UNAUTHENTICATED"
@@ -122,74 +111,53 @@ function BehaviorRow({
   actionable,
   busy,
   disabled,
-  toggling,
   t,
   onGenerate,
-  onToggle,
+  onOpenMembership,
 }: {
   item: BehaviorItem;
   label: string;
   actionable: boolean;
   busy: boolean;
   disabled: boolean;
-  toggling: boolean;
   t: ReturnType<typeof memorialT>["behaviors"];
   onGenerate: () => void;
-  onToggle: () => void;
+  onOpenMembership?: () => void;
 }) {
-  return (
-    <li className="flex items-center justify-between gap-2">
-      <span className="text-xs memorial-body">{label}</span>
+  const isLocked = item.offerAccess === "locked";
+  const accessLabel = item.offerAccess === "included"
+    ? t.accessIncluded
+    : item.offerAccess === "member"
+      ? t.accessMember
+      : item.offerAccess === "credit"
+        ? item.priceCredits == null ? t.accessCredit : t.accessCredits(item.priceCredits)
+        : t.accessLocked;
 
-      {/* 상태 하나당 표시 하나.
-          READY   → 상태 라벨 + ON/OFF (재생성 버튼은 여전히 **없다**)
-          그 외   → 상태 표시 또는 [생성]. 토글은 노출하지 않는다. */}
-      {item.status === "ready" ? (
-        <span className="flex items-center gap-2">
-          <span className="flex items-center gap-1 text-[11px]" style={{ color: "#d4af37" }}>
-            <Check className="w-3.5 h-3.5 shrink-0" />
-            {t.stateReady}
-          </span>
-          {canToggleBehavior(item) ? (
-            <button
-              type="button"
-              role="switch"
-              aria-checked={item.enabled}
-              aria-label={t.toggleLabel(label)}
-              onClick={onToggle}
-              disabled={toggling}
-              className="relative w-9 h-5 rounded-full transition-colors disabled:opacity-50"
-              style={{
-                background: item.enabled ? "rgba(201,162,39,0.55)" : "rgba(255,255,255,0.16)",
-                border: "1px solid rgba(201,162,39,0.35)",
-              }}
-            >
-              <span
-                className="absolute top-[2px] w-3.5 h-3.5 rounded-full transition-all"
-                style={{
-                  left: item.enabled ? "18px" : "2px",
-                  background: item.enabled ? "#F1E5D1" : "#9a9a9a",
-                }}
-              />
-            </button>
-          ) : null}
+  return (
+    <li className="my-library__available-row">
+      <div className="my-library__available-copy">
+        <span className="my-library__available-name">{label}</span>
+        <span className={`my-library__access my-library__access--${item.offerAccess ?? "locked"}`}>
+          {item.offerAccess === "credit" ? <Coins className="w-3 h-3" /> : item.offerAccess === "locked" ? <Crown className="w-3 h-3" /> : null}
+          {accessLabel}
         </span>
-      ) : item.status === "generating" ? (
-        <span className="flex items-center gap-1 text-[11px]" style={{ color: "#A1A1A6" }}>
+      </div>
+
+      {item.status === "generating" ? (
+        <span className="my-library__available-generating">
           <Loader2 className="w-3.5 h-3.5 shrink-0 animate-spin" />
-          {t.stateGenerating}
+          <span>{t.stateGenerating}<small>{t.generationKeepsGoing}</small></span>
         </span>
+      ) : isLocked ? (
+        <button type="button" onClick={onOpenMembership} className="eb-btn eb-btn--secondary my-library__available-cta">
+          {t.manageMembership}
+        </button>
       ) : (
         <button
           type="button"
           onClick={onGenerate}
           disabled={!actionable || disabled}
-          className="px-3 py-1 rounded-lg text-[11px] font-medium disabled:opacity-45"
-          style={{
-            background: "rgba(201, 162, 39, 0.16)",
-            border: "1px solid rgba(201, 162, 39, 0.45)",
-            color: "#F1E5D1",
-          }}
+          className="eb-btn eb-btn--secondary my-library__available-cta"
         >
           {busy ? t.stateSubmitting : t.generate}
         </button>

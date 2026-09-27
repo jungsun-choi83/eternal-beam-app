@@ -353,6 +353,8 @@ def test_debug_artifacts_collected_when_enabled(monkeypatch):
         # Phase 2B: 사람 인지 보정 전 기준선 마스크
         "03b_mask_before_person_aware.png",
         "04_trimap.png",
+        # 그림자 억제 전/후를 눈으로 비교할 수 있어야 한다.
+        "05a_alpha_before_shadow_suppression.png",
         "05_alpha.png",
         "06_checkerboard.png",
     }

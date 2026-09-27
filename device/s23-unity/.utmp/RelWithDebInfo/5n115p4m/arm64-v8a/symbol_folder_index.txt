@@ -1,0 +1,1 @@
+C:\Manscom\Git\eternal-beam-app\device\s23-unity\Library\Bee\Android\Prj\IL2CPP\Gradle\unityLibrary\build\intermediates\cxx\RelWithDebInfo\5n115p4m\obj\arm64-v8a

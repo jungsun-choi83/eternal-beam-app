@@ -36,7 +36,6 @@ const read = (p: string) => readFileSync(p, "utf8");
 
 const PREVIEW = "src/components/memorial/preview-screen.tsx";
 const DEVICE = "src/components/memorial/memorial-device-play-screen.tsx";
-const THEME_SEL = "src/components/memorial/theme-selection-screen.tsx";
 const AI_PROC = "src/components/memorial/ai-processing-screen.tsx";
 const IDLE_VIDEO = "src/components/memorial/idle-loop-video.tsx";
 const CSS = "src/styles/memorial-premium.css";
@@ -265,13 +264,9 @@ for (const [name, path] of [
   });
 }
 
-test("테마 선택: 이미 파싱하던 객체에서 플래그를 꺼내 넘긴다", () => {
-  const src = read(THEME_SEL);
-  assert.match(src, /pipeline\.background_baked === true/);
-  assert.match(src, /backgroundBaked=\{idleBaked\}/);
-  // 영상이 없으면 정적 누끼다 — 그때 구운 것으로 치면 안 된다.
-  assert.match(src, /Boolean\(pipeline\.idle_video_url\) && pipeline\.background_baked/);
-});
+// 테마 선택 화면은 Phase 11B-4 그리드 재설계로 PetIdleDisplay/펫 합성을 더
+// 이상 렌더하지 않는다(theme-selection-redesign.test.ts 가 그 부재를
+// 지킨다) — 그래서 이 화면은 아래 크로스-스크린 배선 점검 대상에서 빠진다.
 
 test("AI 처리: 생성 이전 화면이라 명시적으로 false 다", () => {
   // 기본값에 기대면 "빠뜨린 것"과 "그렇게 정한 것"이 구분되지 않는다.
@@ -279,7 +274,7 @@ test("AI 처리: 생성 이전 화면이라 명시적으로 false 다", () => {
 });
 
 test("모든 PetIdleDisplay 호출부가 플래그를 명시한다 — 빠진 곳이 없다", () => {
-  for (const p of [PREVIEW, DEVICE, THEME_SEL, AI_PROC]) {
+  for (const p of [PREVIEW, DEVICE, AI_PROC]) {
     const src = read(p);
     let i = src.indexOf("<PetIdleDisplay");
     assert.ok(i > 0, p);

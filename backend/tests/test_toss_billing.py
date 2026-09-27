@@ -390,13 +390,37 @@ def test_expiry_preserves_preferences(client):
     assert body["preferences"]["BLINKING"] is False, "만료가 선호를 지웠다"
 
 
-def test_billing_never_touches_the_credit_wallet(client):
+def test_renewal_grants_beam_credits_into_the_same_wallet(client):
+    """
+    ── 이 테스트는 **뒤집혔다** (Phase 10) ──────────────────────────────────
+    예전 이름은 test_billing_never_touches_the_credit_wallet 이었다. Phase 3 에서
+    소비자 크레딧이 제품에서 사라졌을 때, 멤버십이 쓸 곳 없는 잔액을 발행하지
+    않도록 지키던 가드다.
+
+    Phase 4–8 에서 그 전제가 사라졌다 — 이제 크레딧으로 테마·아이들·액션을 산다.
+    Phase 10 의 계약은 정반대다: **갱신 성공은 크레딧을 지급한다.**
+
+    핵심은 "지급한다"가 아니라 **어디에** 지급하느냐다. member coin 도
+    subscription token 도 아니고, 크레딧 팩으로 산 것과 **완전히 같은 지갑**이다.
+    """
+    from backend.data.subscription_plans import get_subscription_plan
+
     _buy(client)
     _force_due(EMAIL)
     _renew(client)
+
+    plan = get_subscription_plan("web_membership")
     w = wallet_service._MOCK_WALLETS.get(EMAIL)
-    # Toss 경로는 지갑을 만들지도, 크레딧을 주지도 않는다.
-    assert w is None or w.current_credits == 0, "웹 결제가 소비자 크레딧을 발행했다"
+    assert w is not None, "갱신이 크레딧을 지급하지 않았다"
+    # 첫 결제와 갱신은 **둘 다 성공한 결제**다 — 각각 한 달치를 지급한다.
+    assert w.current_credits == plan.credits_per_month * 2
+
+    # 멤버 전용 화폐가 아니다 — 같은 원장의 같은 사유 어휘를 쓴다.
+    from backend.services import credit_ledger
+
+    reasons = [e.reason for e in credit_ledger.mock_entries(EMAIL)]
+    assert credit_ledger.REASON_MEMBERSHIP_GRANT in reasons
+    assert credit_ledger.mock_balance(EMAIL) == w.current_credits
 
 
 def test_billing_service_cannot_reach_generation():

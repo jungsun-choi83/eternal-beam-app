@@ -74,7 +74,6 @@ test('freeMemorialThemes[0] 과 DEFAULT_THEME_ID 가 이제 일치한다', () =>
 // ── 모든 폴백 경로가 같은 값을 쓴다 ─────────────────────────────────────────
 
 const FALLBACK_SITES: [string, RegExp][] = [
-  ['src/app/EternalBeamApp.tsx', /defaultThemeId: DEFAULT_THEME_ID/],
   ['src/components/memorial/preview-screen.tsx', /getMemorialTheme\(DEFAULT_THEME_ID\)!/],
   ['src/components/memorial/memorial-device-play-screen.tsx', /getMemorialTheme\(DEFAULT_THEME_ID\)!/],
   ['src/lib/credit-pipeline.ts', /theme\?\.themeKey \?\? DEFAULT_THEME_KEY/],
@@ -105,7 +104,11 @@ test('COME_CLOSER 는 테마에 의존하지 않는다 (배경은 여전히 테�
     preview, /placeId: currentTheme\.themeKey/,
     'COME_CLOSER 조회에 테마가 섞였다 — 테마 전환 시 조회 실패/재생성이 생긴다')
   // 배경(미리보기 합성)은 반대로 테마를 그대로 써야 한다.
-  assert.match(preview, /getThemeBackgroundApiId\(currentTheme\)/, '미리보기 background_id')
+  // getThemeBackgroundApiId(currentTheme) 는 레거시 FFmpeg 디버그 패널
+  // (SHOW_PIPELINE_DEBUG, Luma→Unity 시대 스크래치 패널) 전용 호출이었고 그
+  // 패널과 함께 제거됐다 — 실제 웹 컴포지터의 배경 레이어가 테마를 쓰는지를
+  // 봐야 한다.
+  assert.match(preview, /getEffectiveBgVideo\(currentTheme\)/, '미리보기 배경이 테마를 쓰지 않는다')
 
   // 자동 생성 모듈의 키에도 place 가 없어야 한다.
   const autogen = readFileSync('src/lib/come-closer-autogen.ts', 'utf8')

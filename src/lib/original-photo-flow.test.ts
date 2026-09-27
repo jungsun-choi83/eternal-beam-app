@@ -35,6 +35,7 @@ import { resolveBackgroundSource, resolveSceneBackground } from "./build-canonic
 import {
   ORIGINAL_PHOTO_THEME_KEY,
   getMemorialTheme,
+  getThemeCardThumb,
   memorialThemes,
 } from "../components/memorial/themes.ts";
 
@@ -196,49 +197,40 @@ test("원본 사진이 없으면 배경 주소가 없다 — 검은 판을 만�
 
 test("카드·큰 미리보기·생성이 모두 같은 prop 에서 나온다", () => {
   const app = read(APP);
-  assert.match(app, /const originalPhoto = resolveOriginalPhoto\(uploadedImage\)/);
+  // 후보는 **활성 펫의 첫 사진**이다. uploadedImage 를 그대로 넘기던 시절에는
+  // 영상 슬롯의 blob: 이 원본 사진 후보로 들어갔다.
+  assert.match(app, /const originalPhoto = resolveOriginalPhoto\(uploadedImages\[0\] \?\? null\)/);
   // 두 화면 모두 같은 값을 받는다.
   assert.equal((app.match(/originalPhoto=\{originalPhoto\}/g) ?? []).length, 2);
 
   const themes = read(THEMES);
   // 화면이 저장소를 직접 읽지 않는다.
   assert.ok(!themes.includes("readOriginalPhoto"), "테마 화면이 저장소를 직접 읽는다");
-  assert.match(themes, /originalPhoto \|\| theme\.thumb/, "카드가 주입값을 안 쓴다");
+  // 카드 썸네일 주소는 카탈로그 헬퍼(getThemeCardThumb)가 주입값으로 푼다.
+  assert.match(themes, /getThemeCardThumb\(theme, originalPhoto\)/, "카드가 주입값을 안 쓴다");
   assert.match(themes, /originalPhoto=\{originalPhoto\}/);
+  assert.equal(getThemeCardThumb(ORIGINAL_THEME, "blob:photo"), "blob:photo");
+  assert.equal(getThemeCardThumb(ORIGINAL_THEME, null), "");
 
   const preview = read(PREVIEW);
   assert.match(preview, /originalPhotoProp \|\| readOriginalPhoto\(\)/);
   assert.match(preview, /resolveSceneBackground\(currentTheme, originalPhoto\)/);
 });
 
-// ── 큰 미리보기가 고른 배경을 보여 준다 ─────────────────────────────────────
-
-test("테마를 고르면 큰 미리보기가 그 배경을 그린다", () => {
-  const src = read(THEMES);
-  // 배경 영상 · 썸네일 · 원본 세 갈래가 모두 있어야 한다.
-  assert.match(src, /<ThemeBackgroundVideo/, "테마 영상 배경이 없다");
-  assert.match(src, /backgroundImage: `url\(\$\{previewTheme\.thumb\}\)`/, "썸네일 배경이 없다");
-  assert.match(src, /previewIsOriginal \?/, "원본 갈래 분기가 없다");
-  // 배경 판정이 미리보기 화면과 같은 함수를 쓴다.
-  assert.match(src, /getEffectiveBgVideo\(previewTheme\)/);
-});
-
-test("원본 갈래에는 펫을 덧그리지 않는다", () => {
-  // 사진에 이미 아이가 있다. 누끼를 한 번 더 얹으면 둘로 보인다.
-  const src = read(THEMES);
-  const i = src.indexOf("{previewIsOriginal ? (");
-  const j = src.indexOf(") : (", i);
-  const originalBranch = src.slice(i, j);
-  assert.ok(!originalBranch.includes("PetIdleDisplay"), "원본 위에 펫을 얹는다");
-  assert.match(originalBranch, /<img/);
-});
+// ── 큰 미리보기는 Phase 11B-4 그리드 재설계로 사라졌다 ──────────────────────
+//
+// 테마 선택 화면은 더 이상 배경/펫을 합성해 보여 주지 않는다 — 그 컴포지팅은
+// PreviewScreen 하나가 맡는다(theme-selection-redesign.test.ts 가 stage/
+// PetIdleDisplay/ThemeBackgroundVideo 부재를 지킨다). 카드 썸네일은 여전히
+// 원본 사진 주입을 쓴다 — 아래 "카드·큰 미리보기·생성이 모두 같은 prop 에서
+// 나온다" 테스트가 `originalPhoto || theme.thumb` 패턴으로 이를 지킨다.
 
 test("원본이 없으면 검은 판이 아니라 오류가 보이고 계속 진행이 막힌다", () => {
   const src = read(THEMES);
   assert.match(src, /const originalMissing = Boolean\(previewIsOriginal && !originalPhoto\)/);
   assert.match(src, /role="alert"/);
-  assert.match(src, /disabled=\{!activeTheme \|\| originalMissing\}/);
-  assert.match(src, /activeTheme && !originalMissing && onContinue\(activeTheme\)/);
+  assert.match(src, /const primaryDisabled =[\s\S]*originalMissing/);
+  assert.match(src, /if \(!previewTheme \|\| originalMissing \|\| !activeRow\) return/);
 });
 
 test("미리보기 화면도 같은 규칙을 쓴다 — 검은 배경으로 생성하지 않는다", () => {
@@ -252,21 +244,11 @@ test("미리보기 화면도 같은 규칙을 쓴다 — 검은 배경으로 생
   assert.match(src, /disabled=\{generating \|\| originalMissing\}/);
 });
 
-// ── 멀리 있는(지연 로딩) 테마 ───────────────────────────────────────────────
-
-test("선택된 카드는 멀리 있어도 검게 남지 않는다", () => {
-  const src = read(THEMES);
-  assert.match(
-    src,
-    /const loadImage = Math\.abs\(index - focusIndex\) <= 1 \|\| selected/,
-    "선택된 카드가 ±1 가상화에 걸려 검은 채로 남는다"
-  );
-});
-
-test("가상화 자체는 남아 있다 — 전부 로드하지 않는다", () => {
-  const src = read(THEMES);
-  assert.match(src, /Math\.abs\(index - focusIndex\) <= 1/);
-});
+// ── 지연 로딩 ────────────────────────────────────────────────────────────
+//
+// 캐러셀의 ±1 거리 가상화는 Phase 11B-4 그리드 재설계로 사라졌다 — 그리드는
+// 무한 스크롤 캐러셀이 아니라 카드 10여 개를 한 번에 그리는 유한 목록이라,
+// 각 <img loading="lazy"> 가 브라우저 네이티브 지연 로딩을 그대로 쓴다.
 
 // ── 테마 목록의 원본 카드 ───────────────────────────────────────────────────
 

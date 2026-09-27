@@ -53,11 +53,10 @@ export interface BehaviorLibrary {
  */
 export function useBehaviorLibrary(params: {
   petId: string | null;
-  petImageUrl?: string | null;
   /** false 면 아무 네트워크도 타지 않는다. */
   enabled: boolean;
 }): BehaviorLibrary {
-  const { petId, petImageUrl, enabled } = params;
+  const { petId, enabled } = params;
 
   // 조회·폴링은 **공유 컨텍스트 한 곳**이 담당한다 (Phase 4 의 중복 폴링 제거).
   const { assets, refresh, loading, applyPreferences } = usePremiumAssetsContext();
@@ -108,10 +107,11 @@ export function useBehaviorLibrary(params: {
       setSubmitting(actionId);
       setError(null);
       try {
+        // 서버 계약은 kind + pet_id 뿐이다 (Phase 7H) — 이미지는 서버가
+        // pet_id 의 Phase 1 intake 에서 읽는다.
         await purchasePremium({
           kind: actionKind(actionId),
           petId,
-          petImageUrl,
           accessToken: auth.token,
         });
       } catch (e) {
@@ -133,7 +133,7 @@ export function useBehaviorLibrary(params: {
       }
       await refresh();
     },
-    [assets, petId, petImageUrl, refresh]
+    [assets, petId, refresh]
   );
 
   /**

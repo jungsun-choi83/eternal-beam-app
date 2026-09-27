@@ -280,6 +280,37 @@ export async function triggerPetReadyOnDevice(
   return postPetReadyToPi(base, payload)
 }
 
+/**
+ * 미리 조립·검증된 /demo/pet-ready 본문을 그대로 전송한다 (Device D1).
+ *
+ * Phase 7 경로는 본문 조립이 검증과 붙어 있어(buildPhase7PetReadyBody)
+ * 여기서는 발견 + POST 만 담당한다. 레거시 triggerPetReadyOnDevice 와 같은
+ * 발견 순서를 쓴다 — 경로가 갈라지면 한쪽만 Pi 를 못 찾는 상태가 생긴다.
+ */
+export async function postPetReadyBodyToDevice(
+  body: Record<string, string>,
+): Promise<boolean> {
+  if (!body.content_id?.trim()) return false
+  const send = async (base: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`${base}/demo/pet-ready`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (res.ok) rememberPiBase(base)
+      return res.ok
+    } catch {
+      return false
+    }
+  }
+  const quick = readUrlPiHost() ?? readStoredPiBase()
+  if (quick && (await probePiBase(quick))) return send(quick)
+  const base = (await discoverPiHttpBaseCached()) ?? resolvePiHttpBase()
+  if (!base) return false
+  return send(base)
+}
+
 async function postPetReadyToPi(
   base: string,
   payload: PetReadyRequest,
@@ -373,6 +404,44 @@ export function subscribePiNfcEvents(
       (payload) => {
         const event = String(payload.event ?? '').toLowerCase()
         if (event === 'nfc_tagged' || event === 'demo_forest') onNfc()
+      },
+      onStatus,
+    )
+  })
+
+  return () => {
+    cancelled = true
+    es?.close()
+  }
+}
+
+/**
+ * 센서 이벤트를 **이름 그대로** 전달하는 구독 — 메모리얼 런타임용.
+ *
+ * subscribePiSensors(포레스트 데모)는 touch/approach/voice 를 하나의 콜백으로
+ * 뭉개는데, 런타임은 이벤트별로 다른 모션을 골라야 한다(touch→PET_HEAD,
+ * voice→LOOK_UP, approach→COME_CLOSER — lib/pet-runtime-events 의
+ * sensorEventToRuntimeEvent). NFC 는 여기서 다루지 않는다 — 테마 전환은
+ * 배경 경로(:9999)의 일이다.
+ */
+export function subscribePiRuntimeEvents(
+  onSensorEvent: (sensorEvent: string) => void,
+  onStatus?: (msg: string) => void,
+): () => void {
+  if (typeof EventSource === 'undefined') return () => {}
+
+  let es: EventSource | null = null
+  let cancelled = false
+
+  void discoverPiHttpBaseCached().then((base) => {
+    if (cancelled || !base) return
+    es = openPiEventSource(
+      base,
+      (payload) => {
+        const event = String(payload.event ?? '').toLowerCase()
+        if (event === 'touch' || event === 'approach' || event === 'voice') {
+          onSensorEvent(event)
+        }
       },
       onStatus,
     )

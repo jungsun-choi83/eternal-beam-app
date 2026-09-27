@@ -101,19 +101,16 @@ export function IdleGenerationTestPanel({ userId, onClose }: IdleGenerationTestP
     <motion.div
       initial={{ opacity: 0, y: 12 }}
       animate={{ opacity: 1, y: 0 }}
-      className="mx-2 mb-4 rounded-2xl p-4"
-      style={{ background: "rgba(201, 162, 39, 0.08)", border: "1px solid rgba(201, 162, 39, 0.25)" }}
+      className="eb-card eb-card--muted mx-2 mb-4 p-4"
     >
-      <div className="flex items-center justify-between mb-3">
-        <p className="text-sm font-light" style={{ color: "#d4af37" }}>
-          아이들(Idle) 5종 세트 테스트
-        </p>
-        <button type="button" onClick={onClose} className="p-1">
-          <X className="w-4 h-4" style={{ color: "#A1A1A6" }} />
+      <div className="flex items-center justify-between gap-2 mb-3">
+        <p className="eb-section-title truncate">아이들(Idle) 5종 세트 테스트</p>
+        <button type="button" onClick={onClose} className="mem-icon-btn -mr-2 shrink-0" aria-label="Close">
+          <X className="w-4 h-4 text-[var(--eb-text-2)]" />
         </button>
       </div>
 
-      <p className="text-[11px] mb-3 font-light" style={{ color: "#A1A1A6" }}>
+      <p className="eb-caption mb-3">
         사진 1장 → SAM2 누끼 → Luma로 아이들 모션 5종을 순차 생성합니다. 실제 Luma 과금이 발생할 수 있어요
         (LUMA_MOCK=1이면 무료로 파이프라인만 확인).
       </p>
@@ -126,18 +123,12 @@ export function IdleGenerationTestPanel({ userId, onClose }: IdleGenerationTestP
         onChange={handleFileChange}
       />
 
-      <div className="flex items-center gap-3 mb-3">
+      <div className="flex flex-wrap items-center gap-3 mb-3">
         <button
           type="button"
           onClick={() => fileInputRef.current?.click()}
           disabled={busy}
-          className="flex items-center gap-1.5 py-2 px-3 rounded-xl text-[11px]"
-          style={{
-            background: "rgba(28, 28, 30, 0.95)",
-            border: "1px solid rgba(201, 162, 39, 0.3)",
-            color: "#F5F5F7",
-            opacity: busy ? 0.5 : 1,
-          }}
+          className="eb-btn eb-btn--secondary mem-btn-secondary text-xs px-3"
         >
           <Upload className="w-3.5 h-3.5" />
           사진 선택
@@ -147,8 +138,7 @@ export function IdleGenerationTestPanel({ userId, onClose }: IdleGenerationTestP
           <img
             src={photoPreview}
             alt="original"
-            className="w-10 h-10 rounded-lg object-cover"
-            style={{ border: "1px solid rgba(255,255,255,0.15)" }}
+            className="w-10 h-10 rounded-[var(--eb-radius-xs)] object-cover border border-[var(--eb-hairline)]"
           />
         ) : null}
 
@@ -156,8 +146,7 @@ export function IdleGenerationTestPanel({ userId, onClose }: IdleGenerationTestP
           <img
             src={cutoutDisplayUrl}
             alt="cutout"
-            className="w-10 h-10 rounded-lg object-cover"
-            style={{ background: "#000", border: "1px solid rgba(201,162,39,0.4)" }}
+            className="w-10 h-10 rounded-[var(--eb-radius-xs)] object-cover bg-[var(--eb-surface-inverse)] border border-[var(--eb-gold-line)]"
           />
         ) : null}
 
@@ -165,13 +154,8 @@ export function IdleGenerationTestPanel({ userId, onClose }: IdleGenerationTestP
           type="button"
           onClick={() => void run()}
           disabled={!photoFile || busy}
-          className="ml-auto py-2 px-3 rounded-xl text-[11px] font-medium"
-          style={{
-            background: "rgba(201, 162, 39, 0.25)",
-            border: "1px solid rgba(201, 162, 39, 0.4)",
-            color: "#f5d77a",
-            opacity: !photoFile || busy ? 0.5 : 1,
-          }}
+          aria-busy={busy || undefined}
+          className="eb-btn eb-btn--primary mem-btn-primary ml-auto text-xs px-3"
         >
           {busy ? "생성 중…" : "5종 생성 시작"}
         </button>
@@ -183,30 +167,30 @@ export function IdleGenerationTestPanel({ userId, onClose }: IdleGenerationTestP
           return (
             <div
               key={key}
-              className="flex items-center gap-3 p-2 rounded-xl"
-              style={{ background: "rgba(0,0,0,0.25)" }}
+              className="flex items-center gap-3 p-2 min-h-[var(--eb-touch)] rounded-[var(--eb-radius-sm)] bg-[var(--eb-surface)] border border-[var(--eb-hairline)]"
             >
               <div className="w-6 shrink-0 flex items-center justify-center">
                 {status.state === "pending" ? (
-                  <span className="w-2 h-2 rounded-full" style={{ background: "#444" }} />
+                  <span className="eb-status-dot eb-status-dot--neutral" />
                 ) : status.state === "running" ? (
-                  <Loader2 className="w-4 h-4 animate-spin" style={{ color: "#c9a227" }} />
+                  <Loader2 className="w-4 h-4 animate-spin text-[var(--eb-gold-text)]" />
                 ) : status.state === "done" ? (
                   <CheckCircle2
-                    className="w-4 h-4"
-                    style={{ color: status.result.is_black_background ? "#4ade80" : "#facc15" }}
+                    className={`w-4 h-4 ${
+                      status.result.is_black_background
+                        ? "text-[var(--eb-sage-text)]"
+                        : "text-[var(--eb-warn-text)]"
+                    }`}
                   />
                 ) : (
-                  <XCircle className="w-4 h-4" style={{ color: "#f87171" }} />
+                  <XCircle className="w-4 h-4 text-[var(--eb-terracotta-text)]" />
                 )}
               </div>
 
               <div className="flex-1 min-w-0">
-                <p className="text-[11px]" style={{ color: "#F5F5F7" }}>
-                  {TEMPLATE_LABELS[key]}
-                </p>
+                <p className="text-[12px] text-[var(--eb-text)] truncate">{TEMPLATE_LABELS[key]}</p>
                 {status.state === "done" ? (
-                  <p className="text-[9px]" style={{ color: "#888" }}>
+                  <p className="eb-caption text-[11px]">
                     {status.result.is_black_background ? "블랙 배경 OK" : "블랙 배경 아님(경고)"} · 재시도{" "}
                     {status.result.retries_used}회
                     {status.result.background_luminance != null
@@ -214,16 +198,14 @@ export function IdleGenerationTestPanel({ userId, onClose }: IdleGenerationTestP
                       : ""}
                   </p>
                 ) : status.state === "error" ? (
-                  <p className="text-[9px]" style={{ color: "#f87171" }}>
-                    {status.message}
-                  </p>
+                  <p className="eb-field-error text-[11px] truncate">{status.message}</p>
                 ) : null}
               </div>
 
               {status.state === "done" ? (
                 <video
                   src={status.result.video_url}
-                  className="w-14 h-14 rounded-lg object-cover shrink-0 bg-black"
+                  className="w-14 h-14 rounded-[var(--eb-radius-xs)] object-cover shrink-0 bg-[var(--eb-surface-inverse)]"
                   muted
                   loop
                   autoPlay
@@ -236,7 +218,7 @@ export function IdleGenerationTestPanel({ userId, onClose }: IdleGenerationTestP
       </div>
 
       {globalError ? (
-        <p className="mt-3 text-[10px] font-light" style={{ color: "#f87171" }}>
+        <p className="mt-3 eb-field-error" role="alert">
           {globalError}
         </p>
       ) : null}

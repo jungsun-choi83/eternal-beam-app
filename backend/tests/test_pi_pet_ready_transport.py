@@ -60,6 +60,62 @@ def test_empty_packed_url_creates_no_key(value):
     assert "packed_url" not in base
 
 
+# ── Device D1 — Phase 7 신원/포맷 필드 ──────────────────────────────────────
+
+
+def test_phase7_fields_pass_through_unchanged():
+    """pet_id / motion_id / delivery_format 은 값 그대로 UDP 본문에 실린다."""
+    base = build_pet_ready_base(
+        {
+            "packed_url": "https://x/breathing_packed.mp4?token=f",
+            "pet_id": "pet_c1",
+            "motion_id": "BREATHING",
+            "delivery_format": "packed_alpha",
+        },
+        "c1",
+    )
+    assert base["pet_id"] == "pet_c1"
+    assert base["motion_id"] == "BREATHING"
+    assert base["delivery_format"] == "packed_alpha"
+    # Pi 는 판정하지 않는다 — 값이 변형되지 않고 그대로다.
+    assert base["packed_url"] == "https://x/breathing_packed.mp4?token=f"
+
+
+def test_legacy_payload_stays_byte_identical_without_phase7_fields():
+    """새 필드를 보내지 않는 구형 브라우저의 본문은 예전과 완전히 같다."""
+    base = build_pet_ready_base({"idle_url": "https://x/idle.mp4"}, "c1")
+    assert base == {
+        "content_id": "c1",
+        "source": "app_idle_ready",
+        "idle_url": "https://x/idle.mp4",
+        "video_url": "https://x/idle.mp4",
+    }
+    for key in ("pet_id", "motion_id", "delivery_format"):
+        assert key not in base
+
+
+@pytest.mark.parametrize("key", ["pet_id", "motion_id", "delivery_format"])
+@pytest.mark.parametrize("value", ["", "   ", None])
+def test_blank_phase7_fields_create_no_keys(key, value):
+    base = build_pet_ready_base({"idle_url": "https://x/i.mp4", key: value}, "c1")
+    assert key not in base
+
+
+def test_unknown_keys_are_still_dropped():
+    """화이트리스트 밖 키(테마 포함)는 pet-ready 본문에 절대 실리지 않는다."""
+    base = build_pet_ready_base(
+        {
+            "idle_url": "https://x/i.mp4",
+            "theme_id": "7",           # 테마는 /demo/play 의 몫 — 분리 계약
+            "qa_decision": "PASS",     # Pi 는 QA 를 추측/전달하지 않는다
+            "evil": "x",
+        },
+        "c1",
+    )
+    for key in ("theme_id", "qa_decision", "evil"):
+        assert key not in base
+
+
 def test_whitespace_is_trimmed():
     base = build_pet_ready_base({"packed_url": "  https://x/p_packed.mp4  "}, "c1")
     assert base["packed_url"] == "https://x/p_packed.mp4"

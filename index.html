@@ -1,6 +1,13 @@
 <!doctype html>
 <html lang="ko">
   <head>
+    <link
+      rel="preload"
+      as="image"
+      href="/home/hero-golden-retriever.jpg"
+      type="image/jpeg"
+      fetchpriority="high"
+    />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;600&family=Playfair+Display:ital,wght@0,400;0,500;0,600&display=swap" rel="stylesheet" />
@@ -8,13 +15,16 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Eternal Beam - 당신의 영원한 순간을 빛으로</title>
     <style>
-      html, body { margin: 0; min-height: 100%; background: #000; }
-      #root { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #000; }
+      html, body { margin: 0; min-height: 100%; background: #f7f2e9; }
+      /* #root must not centre its child: a screen taller than the viewport would
+         be pushed above the top edge (its header clipped) instead of scrolling. */
+      #root { min-height: 100vh; background: #f7f2e9; }
+      #root > .eb-boot { min-height: 100vh; display: flex; align-items: center; justify-content: center; }
     </style>
   </head>
   <body>
     <div id="root">
-      <div style="color: rgba(255,255,255,0.8); font-family: sans-serif; text-align: center; padding: 2rem;">로딩 중...</div>
+      <div class="eb-boot" style="color: #6e655b; font-family: sans-serif; text-align: center; padding: 2rem;">로딩 중...</div>
     </div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

@@ -1,6 +1,7 @@
 /**
- * 8단계 선형 플로우 라우팅
- * photoUpload → aiProcessing → themeSelection → preview → checkout(필요 시) → nfcPlayback
+ * 메인 생성 플로우 라우팅
+ * photoUpload → aiProcessing → themeSelection → preview → nfcPlayback
+ * 유료 테마 결제는 themeSelection 안에서 Toss 왕복으로 처리하며 별도 화면 단계가 아니다.
  * 뒤로 가기 시 이전 단계로 이동, SubjectSlotContext는 App 레벨에서 유지됨
  */
 
@@ -10,7 +11,6 @@ export const LINEAR_FLOW_ORDER: string[] = [
   'aiProcessing',
   'themeSelection',
   'preview',
-  'checkout',
   'nfcPlayback',
 ]
 

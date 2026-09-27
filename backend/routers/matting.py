@@ -115,6 +115,24 @@ async def post_matting_cutout(
         except Exception:
             logger.exception("matting/cutout: storage upload failed (cid=%s)", cid)
             cutout_b64 = base64.b64encode(png).decode("ascii")
+        else:
+            # 파생 레퍼런스 기록 (Durable Pet Identity Intake). 진단 메타를 그 시점
+            # 그대로 남긴다. 실패해도 누끼 응답 계약은 바뀌지 않는다 — fail-open.
+            try:
+                from ..services import pet_reference_service
+
+                await pet_reference_service.record_derived(
+                    user_id=user_id,
+                    content_id=cid,
+                    object_path=path,
+                    derived_kind="cutout_vitmatte",
+                    mime_type="image/png",
+                    diagnostics=quality_meta,
+                )
+            except Exception:
+                logger.warning(
+                    "matting/cutout: 파생 레퍼런스 기록 실패 (cid=%s)", cid, exc_info=True
+                )
     else:
         cutout_b64 = base64.b64encode(png).decode("ascii")
 

@@ -32,6 +32,47 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _clean_credit_ledger():
+    """
+    인메모리 원장을 테스트마다 비운다.
+
+    ── 왜 autouse 인가 ────────────────────────────────────────────────────────
+    원장은 **재무 상태의 일부**다. 지갑(_MOCK_WALLETS)만 지우고 원장을 남기면
+    두 저장소가 어긋난 채로 다음 테스트가 시작되고, 그 어긋남이 실제 결함처럼
+    보인다. 실제로 그랬다: 가입 보너스는 사용자당 한 번뿐이라(멱등 키
+    'starter:<uid>') 원장에 기록이 남아 있으면 지갑을 다시 만들어도 보너스가
+    지급되지 않는다 — 올바른 동작이지만, 원장을 안 지운 테스트에서는 잔액 0 으로
+    보인다.
+
+    지갑을 지우는 픽스처마다 원장 초기화를 덧붙이는 대신 여기 한 곳에 둔다.
+    빠뜨릴 수 있는 자리를 없애는 것이 요점이다.
+    """
+    from backend.services import credit_ledger
+
+    credit_ledger.__reset_for_tests()
+    yield
+    credit_ledger.__reset_for_tests()
+
+
+@pytest.fixture(autouse=True)
+def _no_live_supabase_in_tests(monkeypatch: pytest.MonkeyPatch):
+    """
+    테스트 프로세스에서 **실 Supabase 자격 증명을 매 테스트마다 제거**한다.
+
+    ── 왜 필요한가 (실제 사고) ────────────────────────────────────────────────
+    어떤 테스트가 backend.main 을 임포트하면 dotenv 캐스케이드가 .env.local 의
+    실 SUPABASE_URL/SERVICE_ROLE_KEY 를 os.environ 에 올리고, 그 뒤의 모든
+    테스트가 목업 대신 **라이브 프로덕션 DB** 를 때린다. 실제로 이렇게
+    test_queue_auto_advance 가 프로덕션에 u_adv 행 20개를 썼다(즉시 정리됨).
+    이 픽스처가 있으면 어떤 임포트 순서로도 그 사고가 재발할 수 없다 —
+    라이브 DB 가 필요한 테스트는 존재하지 않으며, 필요하면 명시적으로
+    monkeypatch.setenv 로 가짜 값을 넣는다 (test_generation_cost_safety 처럼).
+    """
+    for var in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "VITE_SUPABASE_URL", "SUPABASE_ANON_KEY"):
+        monkeypatch.delenv(var, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _clean_cutout_env(monkeypatch: pytest.MonkeyPatch):
     """임계값 관련 환경변수가 로컬 .env 에서 새어 들어오지 않도록 초기화."""
     for key in (

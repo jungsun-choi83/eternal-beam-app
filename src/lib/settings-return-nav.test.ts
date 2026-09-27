@@ -60,10 +60,18 @@ test('Home 에서 연 설정은 Home 으로 돌아간다', () => {
   assert.match(CODE, /onSettings=\{\(\) => openSettings\('home'\)\}/)
 })
 
-test('Memorial 의 멤버십 진입은 devicePlay 로 돌아간다', () => {
+test('발행된 Preview 의 멤버십 진입은 preview 로 돌아간다 — devicePlay 가 아니다', () => {
   assert.match(
     CODE,
-    /onOpenMembership=\{\(\) => openSettings\('devicePlay', \{ focusMembership: true \}\)\}/,
+    /onOpenMembership=\{\(\) => openSettings\('preview', \{ focusMembership: true \}\)\}/,
+  )
+  // 직접 Pi 송출 화면의 멤버십 진입은 데모 게이트(deviceDemo) 안에서만 남는다.
+  const legacy = CODE.indexOf("openSettings('devicePlay'")
+  const demoGate = CODE.indexOf("screen === 'devicePlay' && deviceDemo &&")
+  assert.ok(demoGate > 0, 'devicePlay 렌더가 deviceDemo 로 게이트되지 않았다')
+  assert.ok(
+    legacy === -1 || legacy > demoGate,
+    '직접 Pi 송출 화면(devicePlay)이 데모 게이트 밖에서 멤버십 복귀 대상이다',
   )
 })
 

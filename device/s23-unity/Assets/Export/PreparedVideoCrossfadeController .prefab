@@ -1,0 +1,54 @@
+%YAML 1.1
+%TAG !u! tag:unity3d.com,2011:
+--- !u!1 &5939579921018184566
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 4364872870176612133}
+  - component: {fileID: 7731778611823237858}
+  m_Layer: 0
+  m_Name: 'PreparedVideoCrossfadeController '
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &4364872870176612133
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5939579921018184566}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &7731778611823237858
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5939579921018184566}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 56a96915dfd662f4e9fef6492c4b9204, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::PreparedVideoCrossfadeController
+  playerA: {fileID: 0}
+  playerB: {fileID: 0}
+  materialA: {fileID: 2100000, guid: 05353d29c1ae8d24aa15c3a7abfbcd09, type: 2}
+  materialB: {fileID: 2100000, guid: 570feaa6806f726438216b2081389a0b, type: 2}
+  winterClip: {fileID: 32900000, guid: 627dce3ba8d4c8946a100895b65cb30d, type: 3}
+  springClip: {fileID: 32900000, guid: cb89c2b058ac2f04791be210ba351549, type: 3}
+  halloweenClip: {fileID: 32900000, guid: 0b8e29b5962a62c44b0791c98744d47f, type: 3}
+  fadeDuration: 1.5

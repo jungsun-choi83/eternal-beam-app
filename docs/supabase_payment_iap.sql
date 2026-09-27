@@ -1,96 +1,40 @@
--- Eternal Beam: 인앱 결제(IAP) 영수증 · 결제 이력
--- supabase_hybrid_business.sql 실행 후 이 파일을 Supabase SQL Editor에서 실행
+-- ⚠️ 이 파일은 더 이상 스키마를 정의하지 않는다. **실행해도 아무 일도 없다.**
+--
+-- ── 왜 비웠나 ───────────────────────────────────────────────────────────────
+-- 예전 이 파일은 `payment_history` 표와 `add_wallet_credits` / `process_iap_charge`
+-- 함수를 정의했고, 운영자가 Supabase SQL Editor 에 붙여넣어 적용했다.
+--
+-- 그런데 `add_wallet_credits` 는 마이그레이션에도 **다른 내용으로** 정의돼 있었다:
+--
+--   supabase/migrations/20260721000200_hybrid_business_wallet.sql
+--       → greatest(p_amount, 0)  — 0·음수를 조용히 통과
+--   docs/supabase_payment_iap.sql  (이 파일)
+--       → p_amount <= 0 이면 raise 'invalid_amount'
+--
+-- 둘 다 `create or replace` 라 **나중에 실행된 쪽이 이겼다.** 즉 프로덕션의 돈
+-- 관련 동작이 "사람이 어떤 파일을 언제 붙여넣었는가"에 달려 있었다. 이건 가설이
+-- 아니라 실제로 사고를 냈다 — 20260819000400 의 헤더에 그 사고 기록이 있다
+-- (0 크레딧 웹 멤버십 갱신이 P0001 invalid_amount 로 전부 실패).
+--
+-- 같은 이유로 `payment_history` 도 위험했다. 이 표는 IAP 재충전을 막는 **유일한**
+-- 방어인데, 마이그레이션에 없어서 신규/재구축 환경에는 조용히 없을 수 있었다.
+--
+-- ── 지금 권위는 어디에 있나 ─────────────────────────────────────────────────
+--   supabase/migrations/20260930000000_authoritative_wallet_rpcs.sql
+--       add_wallet_credits · deduct_wallet_credits  (유일한 정의)
+--   supabase/migrations/20260930000100_payment_history.sql
+--       payment_history 표 · 인덱스 · process_iap_charge
+--
+-- 내용은 이 파일이 갖고 있던 것과 **동일하다.** 옮기기만 했지 계약을 바꾸지
+-- 않았다. 예전 내용이 필요하면 git 이력에 그대로 있다.
+--
+-- ── 이 파일을 지우지 않고 비워 둔 이유 ──────────────────────────────────────
+-- 20260819000400 의 헤더가 이 경로를 사고 원인으로 명시해 인용한다. 파일이
+-- 사라지면 그 설명이 가리키는 곳이 없어진다. 빈 채로 두면 "여기 있던 것이
+-- 어디로 갔는지"가 남는다.
+--
+-- 그리고 더 중요한 이유: 누군가 예전 습관대로 이 파일을 SQL Editor 에 붙여넣어도
+-- **아무 일도 일어나지 않아야 한다.** 파일이 지워져 있으면 낡은 사본을 다시
+-- 실행할 수 있고, 그러면 고쳐 놓은 정의가 다시 뒤집힌다.
 
--- 결제 이력 (중복 영수증 방지)
-create table if not exists public.payment_history (
-  id bigserial primary key,
-  user_id text not null,
-  product_id text not null,
-  store_type text not null check (store_type in ('apple', 'google', 'mock')),
-  receipt_fingerprint text not null,
-  transaction_id text,
-  amount_krw int not null check (amount_krw >= 0),
-  credits_added int not null check (credits_added > 0),
-  status text not null check (status in ('pending', 'success', 'failed')),
-  error_message text,
-  raw_receipt_meta jsonb,
-  created_at timestamptz not null default now()
-);
-
--- 동일 영수증 재전송 → 1회만 충전
-create unique index if not exists uq_payment_receipt_fingerprint
-  on public.payment_history (receipt_fingerprint);
-
--- 스토어 트랜잭션 ID 중복 방지 (검증 성공 건만)
-create unique index if not exists uq_payment_store_transaction
-  on public.payment_history (store_type, transaction_id)
-  where transaction_id is not null and status = 'success';
-
-create index if not exists idx_payment_history_user
-  on public.payment_history (user_id, created_at desc);
-
--- 지갑 크레딧 충전 (원자적)
-create or replace function public.add_wallet_credits(p_user_id text, p_amount int)
-returns int
-language plpgsql
-as $$
-declare
-  new_bal int;
-begin
-  if p_amount is null or p_amount <= 0 then
-    raise exception 'invalid_amount';
-  end if;
-
-  insert into public.user_wallets (user_id, current_credits, updated_at)
-  values (p_user_id, 0, now())
-  on conflict (user_id) do nothing;
-
-  update public.user_wallets
-  set current_credits = current_credits + p_amount,
-      updated_at = now()
-  where user_id = p_user_id
-  returning current_credits into new_bal;
-
-  return new_bal;
-end;
-$$;
-
--- IAP 성공 처리: 결제 이력 insert + 지갑 충전 (단일 트랜잭션)
-create or replace function public.process_iap_charge(
-  p_user_id text,
-  p_product_id text,
-  p_store_type text,
-  p_receipt_fingerprint text,
-  p_transaction_id text,
-  p_amount_krw int,
-  p_credits_added int,
-  p_raw_meta jsonb default null
-)
-returns jsonb
-language plpgsql
-as $$
-declare
-  pay_id bigint;
-  new_bal int;
-begin
-  insert into public.payment_history (
-    user_id, product_id, store_type, receipt_fingerprint, transaction_id,
-    amount_krw, credits_added, status, raw_receipt_meta
-  ) values (
-    p_user_id, p_product_id, p_store_type, p_receipt_fingerprint, p_transaction_id,
-    p_amount_krw, p_credits_added, 'success', p_raw_meta
-  )
-  returning id into pay_id;
-
-  new_bal := public.add_wallet_credits(p_user_id, p_credits_added);
-
-  return jsonb_build_object(
-    'payment_id', pay_id,
-    'credits_remaining', new_bal,
-    'status', 'success'
-  );
-exception
-  when unique_violation then
-    raise exception 'duplicate_receipt';
-end;
-$$;
+-- (의도적으로 비어 있음 — 실행 가능한 SQL 없음)

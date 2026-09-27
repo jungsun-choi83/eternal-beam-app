@@ -31,9 +31,15 @@ REPO = Path(__file__).resolve().parents[2]
 MIGRATIONS = REPO / "supabase" / "migrations"
 DOCS = REPO / "docs"
 
-#: 배포 상태를 재현하려면 **엄격한** add_wallet_credits 를 써야 한다
-#: (docs/supabase_payment_iap.sql 쪽이 나중에 적용되어 이겼다).
-STRICT_WALLET_FN = DOCS / "supabase_payment_iap.sql"
+#: add_wallet_credits 의 **유일한 권위 정의**.
+#:
+#: 예전에는 docs/supabase_payment_iap.sql 을 읽었다. 그 파일이 배포된 정의였기
+#: 때문인데, 그건 "마이그레이션과 docs 에 서로 다른 정의가 있고 나중에 붙여넣은
+#: 쪽이 이긴다"는 상태를 테스트가 그대로 흉내 내고 있었다는 뜻이다.
+#:
+#: Phase 1 에서 정의를 마이그레이션으로 승격했으므로 여기도 그쪽을 읽는다.
+#: 이제 이 테스트는 **실제로 배포될 SQL** 을 검증한다.
+STRICT_WALLET_FN = MIGRATIONS / "20260930000000_authoritative_wallet_rpcs.sql"
 RENEWAL_FIX = MIGRATIONS / "20260819000400_renewal_allows_zero_credits.sql"
 
 SCHEMA = """

@@ -16,17 +16,17 @@ interface MembershipCardProps {
 }
 
 /**
- * Monthly Membership 카드 — 크레딧 UI 를 대체한다.
+ * Monthly Membership 카드.
  *
- * 예전 UnlockFeaturesCard 는 가격·잔액·부족을 노출했다("2 크레딧으로 잠금 해제",
- * "보유 3", "크레딧이 부족합니다"). 소비자에게 지갑을 계산하게 하지 않는다:
- * 이제 상태는 **멤버인가 아닌가** 하나다.
+ * 소비자에게 지갑을 계산하게 하지 않는다: 상태는 **멤버인가 아닌가** 하나다.
  *
  * ⚠️ 여기서 모션을 고르거나 만들지 않는다. 행동별 선택(Behavior Library)은
  * 다음 단계다. 이 카드는 멤버십 상태만 보여 주고 가입 경로를 연다.
  *
  * ⚠️ 재생에 관여하지 않는다. 만료돼도 이미 만든 모션은 계속 재생되고
  * BREATHING 은 언제나 돈다 — 그 사실을 문구로 분명히 말해 준다.
+ *
+ * Phase 10: .eb-card 위에 owned/premium 악센트(gold-line + gold-text)만 얹는다.
  */
 export function MembershipCard({
   enabled,
@@ -38,24 +38,15 @@ export function MembershipCard({
 
   if (!enabled) return null;
 
-  const shell =
-    "w-full max-w-[320px] rounded-2xl px-4 py-3.5 border backdrop-blur-sm text-left";
+  const shell = "eb-card w-full max-w-[320px] px-4 py-3.5 text-left";
 
   // ── 로그인 필요 ───────────────────────────────────────────────────────────
   if (state.phase === "signed-out") {
     return (
-      <div
-        className={shell}
-        style={{
-          background: "rgba(255,255,255,0.04)",
-          borderColor: "rgba(255,255,255,0.12)",
-        }}
-      >
+      <div className={`${shell} eb-card--muted`}>
         <div className="flex items-center gap-2">
-          <Lock className="w-4 h-4 shrink-0" style={{ color: "#9a9a9a" }} />
-          <p className="text-sm" style={{ color: "#E2E2E2" }}>
-            {t.signInRequired}
-          </p>
+          <Lock className="w-4 h-4 shrink-0 text-[var(--eb-text-3)]" />
+          <p className="text-sm text-[var(--eb-text-2)]">{t.signInRequired}</p>
         </div>
       </div>
     );
@@ -68,26 +59,19 @@ export function MembershipCard({
         initial={{ opacity: 0, y: 6 }}
         animate={{ opacity: 1, y: 0 }}
         className={shell}
-        style={{
-          background: "rgba(201, 162, 39, 0.08)",
-          borderColor: "rgba(201, 162, 39, 0.28)",
-        }}
+        style={{ borderColor: "var(--eb-gold-line)" }}
       >
         <div className="flex items-center gap-2">
-          <Crown className="w-4 h-4 shrink-0" style={{ color: "#d4af37" }} />
-          <p className="text-sm font-medium" style={{ color: "#F1E5D1" }}>
-            {t.activeTitle}
-          </p>
+          <Crown className="w-4 h-4 shrink-0 text-[var(--eb-gold-text)]" />
+          <p className="text-sm font-semibold text-[var(--eb-text)]">{t.activeTitle}</p>
         </div>
         <p className="mt-1.5 pl-6 text-xs memorial-body">
           {state.phase === "grace" ? t.graceHint : t.activeHint}
         </p>
         {state.readyCount > 0 ? (
           <div className="mt-2 flex items-center gap-1.5 pl-6">
-            <Check className="w-3.5 h-3.5 shrink-0" style={{ color: "#d4af37" }} />
-            <span className="text-[11px] memorial-body">
-              {t.readyCount(state.readyCount)}
-            </span>
+            <Check className="w-3.5 h-3.5 shrink-0 text-[var(--eb-gold-text)]" />
+            <span className="text-[11px] memorial-body">{t.readyCount(state.readyCount)}</span>
           </div>
         ) : null}
       </motion.div>
@@ -98,18 +82,10 @@ export function MembershipCard({
   const lapsed = state.phase === "lapsed";
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 6 }}
-      animate={{ opacity: 1, y: 0 }}
-      className={shell}
-      style={{
-        background: "rgba(255,255,255,0.05)",
-        borderColor: "rgba(201, 162, 39, 0.22)",
-      }}
-    >
+    <motion.div initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }} className={shell}>
       <div className="flex items-center gap-2">
-        <Sparkles className="w-4 h-4 shrink-0" style={{ color: "#d4af37" }} />
-        <p className="text-sm font-medium" style={{ color: "#F1E5D1" }}>
+        <Sparkles className="w-4 h-4 shrink-0 text-[var(--eb-gold-text)]" />
+        <p className="text-sm font-semibold text-[var(--eb-text)]">
           {lapsed ? t.lapsedTitle : t.joinTitle}
         </p>
       </div>
@@ -128,12 +104,7 @@ export function MembershipCard({
         <button
           type="button"
           onClick={onOpenMembership}
-          className="mt-3 w-full py-2.5 rounded-xl text-[13px] font-medium tracking-wide"
-          style={{
-            background:
-              "linear-gradient(135deg, #b8860b 0%, #c9a227 30%, #d4af37 50%, #f5d77a 70%, #d4af37 100%)",
-            color: "#0a0a0a",
-          }}
+          className="eb-btn eb-btn--primary mem-btn-primary eb-btn--block mt-3 text-sm"
         >
           {lapsed ? t.resumeCta : t.joinCta}
         </button>
