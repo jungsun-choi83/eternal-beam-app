@@ -178,6 +178,13 @@
   object-position: center;
 }
 
+/* Original-photo card: the user's own pet, shown whole (PetPhoto, pet-photo.css). */
+.theme-grid__pet {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
+
 .theme-grid__check,
 .theme-grid__badge {
   position: absolute;

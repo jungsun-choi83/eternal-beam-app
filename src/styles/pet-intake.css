@@ -217,6 +217,27 @@
 
 /* ── Dropzone ─────────────────────────────────────────────────────────── */
 
+.pet-intake__stage-photo {
+  position: absolute;
+  inset: 0;
+}
+
+/* User video preview — whole frame visible on the warm neutral, never cropped
+   (a portrait phone clip in a 16:10 card used to lose its top and bottom). */
+.pet-intake__stage-video {
+  position: absolute;
+  inset: 0;
+  background: var(--eb-surface-2);
+}
+
+.pet-intake__stage-video video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+}
+
 .pet-intake__dropzone {
   cursor: pointer;
   /* Short/wide on phones so the dropzone + thumbnail row + CTA all land in
@@ -269,11 +290,11 @@
   aspect-ratio: 1;
 }
 
-.pet-intake__thumb img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
+/* Thumbnail media is a PetPhoto (pet-photo.css): whole pet, contain, blurred
+   fill. The old `img { object-fit: cover }` rule cropped portrait photos. */
+.pet-intake__thumb .eb-pet-photo {
+  position: absolute;
+  inset: 0;
 }
 
 .pet-intake__thumb-actions {

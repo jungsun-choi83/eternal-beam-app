@@ -145,11 +145,11 @@
   align-items: center;
 }
 
+/* PetPhoto avatar (pet-photo.css) — it owns the cover/face-first crop. */
 .preview-composer__identity-avatar {
   width: 2.75rem;
   height: 2.75rem;
   border-radius: var(--eb-radius-pill);
-  object-fit: cover;
   border: 1px solid var(--eb-hairline);
 }
 

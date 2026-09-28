@@ -24,6 +24,7 @@ import { groupPremiumThemes } from "@/lib/theme-groups";
 import { computeCreateFlowSteps } from "@/lib/create-flow-steps";
 import { CreateFlowStepper, type CreateFlowStepView } from "@/components/memorial/create-flow-stepper";
 import { CreditPackSheet } from "@/components/memorial/credit-pack-sheet";
+import { PetPhoto } from "@/components/memorial/pet-photo";
 import { applyLibraryOverride, type LibraryPublication } from "@/lib/library-publication";
 
 interface ThemeSelectionScreenProps {
@@ -88,10 +89,15 @@ const ThemeThumb = ({
   originalPhoto?: string | null;
 }) => {
   const src = getThemeCardThumb(theme, originalPhoto);
+  // 원본 갈래 카드만 **사용자 사진**이다 — 전체가 보이게(contain) 그린다.
+  // 카탈로그 썸네일은 브랜드 사진이라 그대로 cover 크롭을 유지한다.
+  const isUserPhoto = theme.themeKey === ORIGINAL_PHOTO_THEME_KEY && Boolean(originalPhoto);
   return (
     <>
       <div className={`theme-grid__thumb-base bg-gradient-to-b ${theme.gradient}`} aria-hidden />
-      {src ? (
+      {src && isUserPhoto ? (
+        <PetPhoto src={src} variant="full" className="theme-grid__pet" loading="lazy" />
+      ) : src ? (
         <img src={src} alt="" loading="lazy" decoding="async" className="theme-grid__img" />
       ) : null}
     </>

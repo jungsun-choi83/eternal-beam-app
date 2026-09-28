@@ -1,0 +1,66 @@
+/* ── User pet media ─────────────────────────────────────────────────────────
+   One rule set for every place a USER-UPLOADED pet photo or cutout is shown
+   (components/memorial/pet-photo.tsx). Brand photography (home hero, beam
+   card, theme catalog thumbs) never uses these classes — those crops are
+   intentional.
+
+   .eb-pet-photo            full-pet frame: the whole animal is visible
+                            (contain) on a warm neutral; a blurred copy of the
+                            same photo fills the leftover space so portrait,
+                            landscape and square photos all sit in any frame
+                            without hard letterbox bars. Never stretches.
+   .eb-pet-photo--avatar    small circular identity chip: cover is allowed,
+                            biased toward the upper body so the face survives.
+
+   The frame fills its parent; the parent owns size, aspect-ratio, radius. */
+
+.eb-pet-photo {
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  border-radius: inherit;
+  background: var(--eb-surface-2);
+  isolation: isolate;
+}
+
+.eb-pet-photo__backdrop {
+  position: absolute;
+  inset: -8%;
+  z-index: 0;
+  width: 116%;
+  height: 116%;
+  object-fit: cover;
+  object-position: center;
+  filter: blur(18px) saturate(0.85) brightness(1.04);
+  opacity: 0.6;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* Soft ivory veil over the blur so the backdrop stays quiet under the pet. */
+.eb-pet-photo--backdrop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: rgba(244, 238, 227, 0.28);
+  pointer-events: none;
+}
+
+.eb-pet-photo__img {
+  position: relative;
+  z-index: 1;
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+}
+
+/* Avatar: cover, face-first. No blurred layer at this size. */
+.eb-pet-photo--avatar .eb-pet-photo__img {
+  object-fit: cover;
+  object-position: 50% 28%;
+}

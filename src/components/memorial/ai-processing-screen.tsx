@@ -39,6 +39,7 @@ import { CutoutStage } from "@/components/memorial/cutout-stage";
 import { useProcessingClock } from "@/lib/use-processing-clock";
 import { isClientCutoutFirst } from "@/lib/device-host-flags";
 import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
+import { PetPhoto } from "@/components/memorial/pet-photo";
 import { setPendingCutout } from "@/lib/pending-generation";
 import {
   persistPhase1Intake,
@@ -379,13 +380,10 @@ const CompareImages = memo(function CompareImages({
       <div className="ai-processing-screen__compare-grid">
         <div className="compare-panel">
           <p className="compare-panel__label">{beforeLabel}</p>
+          {/* 사용자 원본 사진 — 전체가 보이게(PetPhoto). 예전 object-cover 는
+              세로 사진의 위아래를 잘라 냈다. */}
           <div className="aspect-square relative overflow-hidden">
-            <img
-              src={original}
-              alt={beforeLabel}
-              className="absolute inset-0 w-full h-full object-cover"
-              decoding="async"
-            />
+            <PetPhoto src={original} alt={beforeLabel} variant="full" className="absolute inset-0" />
           </div>
         </div>
         <div className="compare-panel compare-panel--cutout">
