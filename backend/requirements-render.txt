@@ -26,6 +26,9 @@ requests>=2.31.0
 torch>=2.1.0
 transformers>=4.57.0
 
+anthropic>=1.0.0
+modal>=0.64.0
+
 # QR Shaker (Phase 10) 판매자/운영 QR 생성 서비스.
 # 순수 파이썬·의존성 없음(76KB). QR 은 물리 제품에 인쇄되므로 직접 구현하지 않는다 —
 # Reed-Solomon/마스킹이 미묘하게 틀린 QR 은 테스트에서는 읽히고 현장에서 실패한다.
