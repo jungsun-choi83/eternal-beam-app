@@ -6,6 +6,7 @@ const home = readFileSync("src/components/memorial/home-screen.tsx", "utf8");
 const app = readFileSync("src/app/EternalBeamApp.tsx", "utf8");
 const desktopNav = readFileSync("src/components/layout/desktop-nav.tsx", "utf8");
 const mediaTrigger = readFileSync("src/components/memorial/media-file-trigger.tsx", "utf8");
+const homeCss = readFileSync("src/styles/home-dashboard.css", "utf8");
 
 describe("홈 대시보드 — 나의 반려 / 라이브러리 / 마이 빔", () => {
   it("펫 목록을 실제 슬롯 배열에서 받아 그린다(가짜 목록을 만들지 않는다)", () => {
@@ -54,6 +55,94 @@ describe("홈 대시보드 — 나의 반려 / 라이브러리 / 마이 빔", ()
   it("Settings/Profile 진입(openSettings)을 그대로 보존한다", () => {
     assert.match(home, /onSettings\?:\s*\(\) => void/);
     assert.match(home, /onClick=\{onSettings\}/);
+  });
+
+  it("모바일은 콘텐츠 높이, 데스크톱은 대시보드가 정한 한 행 높이를 쓴다", () => {
+    assert.match(
+      homeCss,
+      /\.eb-home__dashboard-grid\s*\{[^}]*--eb-home-card-row-height:\s*auto;[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\);[^}]*grid-auto-rows:\s*var\(--eb-home-card-row-height\);[^}]*align-items:\s*stretch;/s
+    );
+    assert.match(
+      homeCss,
+      /\.eb-home__dashboard-card\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*width:\s*100%;[^}]*max-width:\s*100%;[^}]*min-width:\s*0;[^}]*align-self:\s*stretch;/s
+    );
+    assert.doesNotMatch(
+      homeCss,
+      /\.eb-home__dashboard-card\s*\{[^}]*height:\s*100%/s
+    );
+
+    const desktopCss = homeCss.slice(homeCss.indexOf("@media (min-width: 1024px)"));
+    assert.match(
+      desktopCss,
+      /\.eb-home__dashboard-grid\s*\{[^}]*--eb-home-card-row-height:\s*21rem;[^}]*grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*1fr\)\);[^}]*grid-auto-rows:\s*var\(--eb-home-card-row-height\);/s
+    );
+    assert.match(
+      homeCss,
+      /\.eb-home__card-header\s*\{[^}]*min-height:\s*var\(--eb-home-card-header-height\);/s
+    );
+  });
+
+  it("태블릿은 2 + 1로 감싸고 같은 행의 카드는 grid stretch로 맞춘다", () => {
+    const tabletCss = homeCss.slice(
+      homeCss.indexOf("@media (min-width: 640px)"),
+      homeCss.indexOf("@media (min-width: 1024px)")
+    );
+    assert.match(tabletCss, /\.eb-home__dashboard-grid\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);/s);
+    assert.match(tabletCss, /\.eb-home__beam-card\s*\{[^}]*grid-column:\s*1\s*\/\s*-1;/s);
+  });
+
+  it("펫 카드는 390/768 에서 2열, 1024/1440 에서 3열로 배치한다", () => {
+    const compactColumns = Number(
+      homeCss.match(
+        /\.eb-home__pets-track\s*\{[^}]*grid-template-columns:\s*repeat\((\d+),\s*minmax\(0,\s*1fr\)\);/s
+      )?.[1]
+    );
+    const desktopBreakpoint = Number(
+      homeCss.match(
+        /@media \(min-width:\s*(\d+)px\)\s*\{(?:(?!@media)[\s\S])*?\.eb-home__pets-track/
+      )?.[1]
+    );
+    const desktopCss = homeCss.slice(homeCss.indexOf(`@media (min-width: ${desktopBreakpoint}px)`));
+    const desktopColumns = Number(
+      desktopCss.match(
+        /\.eb-home__pets-track\s*\{[^}]*grid-template-columns:\s*repeat\((\d+),\s*minmax\(0,\s*1fr\)\);/s
+      )?.[1]
+    );
+
+    for (const [width, expected] of [[390, 2], [768, 2], [1024, 3], [1440, 3]] as const) {
+      assert.equal(width >= desktopBreakpoint ? desktopColumns : compactColumns, expected);
+    }
+
+    assert.match(
+      homeCss,
+      /\.eb-home__pets-track\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*100%;[^}]*min-width:\s*0;/s
+    );
+    assert.match(
+      homeCss,
+      /\.eb-home__pet-card\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*100%;[^}]*min-width:\s*0;/s
+    );
+    assert.match(
+      homeCss,
+      /\.eb-home__pet-thumb\s*\{[^}]*width:\s*min\(3\.75rem,\s*100%\);[^}]*max-width:\s*100%;[^}]*height:\s*auto;[^}]*aspect-ratio:\s*1\s*\/\s*1;/s
+    );
+    assert.match(
+      desktopCss,
+      /\.eb-home__pet-card,\s*\.eb-home__pet-card--first\s*\{[^}]*min-height:\s*0;[^}]*\}[\s\S]*?\.eb-home__pet-card-body\s*\{[^}]*min-height:\s*0;/s
+    );
+  });
+
+  it("빈 펫·Quick Start·Beam 미디어가 공통 카드의 남은 공간 안에서만 배치된다", () => {
+    assert.match(homeCss, /\.eb-home__pets-track\s*\{[^}]*flex:\s*1\s+1\s+auto;[^}]*grid-auto-rows:\s*minmax\(0,\s*1fr\);/s);
+    assert.match(homeCss, /\.eb-home__pet-card--first > div\s*\{[^}]*flex:\s*1\s+1\s+auto;/s);
+    assert.match(homeCss, /\.eb-home__steps\s*\{[^}]*flex:\s*1\s+1\s+auto;[^}]*justify-content:\s*space-between;/s);
+    assert.match(homeCss, /\.eb-home__beam-media\s*\{[^}]*aspect-ratio:\s*2\s*\/\s*1;[^}]*max-height:\s*13rem;/s);
+    assert.match(homeCss, /\.eb-home__beam-media img\s*\{[^}]*object-fit:\s*cover;[^}]*object-position:\s*50%\s+60%;/s);
+
+    const desktopCss = homeCss.slice(homeCss.indexOf("@media (min-width: 1024px)"));
+    assert.match(
+      desktopCss,
+      /\.eb-home__beam-media\s*\{[^}]*flex:\s*1\s+1\s+auto;[^}]*min-height:\s*0;[^}]*max-height:\s*none;[^}]*aspect-ratio:\s*auto;/s
+    );
   });
 });
 

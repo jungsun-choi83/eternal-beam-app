@@ -210,18 +210,32 @@
 /* Dashboard cards ------------------------------------------------------- */
 
 .eb-home__dashboard-grid {
+  --eb-home-card-gap: 1rem;
+  --eb-home-card-padding: 1.25rem;
+  --eb-home-card-radius: 1.2rem;
+  --eb-home-card-header-height: 2.75rem;
+  --eb-home-card-row-height: auto;
   display: grid;
+  width: 100%;
   grid-template-columns: minmax(0, 1fr);
-  gap: 1rem;
+  grid-auto-rows: var(--eb-home-card-row-height);
+  align-items: stretch;
+  gap: var(--eb-home-card-gap);
   min-width: 0;
 }
 
 .eb-home__dashboard-card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
+  align-self: stretch;
+  box-sizing: border-box;
   overflow: hidden;
-  padding: 1.25rem;
+  padding: var(--eb-home-card-padding);
   border: 1px solid rgba(var(--eb-hairline-rgb), 0.1);
-  border-radius: 1.2rem;
+  border-radius: var(--eb-home-card-radius);
   background: rgba(253, 251, 247, 0.94);
   box-shadow: 0 12px 30px -28px rgba(58, 41, 24, 0.58);
 }
@@ -232,6 +246,7 @@
   justify-content: space-between;
   gap: 0.75rem;
   min-width: 0;
+  min-height: var(--eb-home-card-header-height);
 }
 
 .eb-home__card-heading {
@@ -300,20 +315,31 @@
 
 .eb-home__pets-track {
   display: grid;
+  width: 100%;
+  max-width: 100%;
+  flex: 1 1 auto;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+  align-items: stretch;
   gap: 0.75rem;
   min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
 }
 
 .eb-home__pet-card {
   display: flex;
+  width: 100%;
+  max-width: 100%;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 0.65rem;
   min-width: 0;
-  min-height: 9.5rem;
-  padding: 0.85rem;
+  min-height: 7.25rem;
+  box-sizing: border-box;
+  overflow: hidden;
+  padding: 0.65rem;
   border: 1px solid var(--eb-hairline);
   border-radius: 0.9rem;
   background: rgba(255, 255, 255, 0.28);
@@ -338,10 +364,12 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 4.75rem;
-  height: 4.75rem;
+  width: min(3.75rem, 100%);
+  max-width: 100%;
+  height: auto;
+  aspect-ratio: 1 / 1;
   overflow: hidden;
-  flex: 0 0 auto;
+  flex: 0 1 auto;
   border: 2px solid rgba(184, 150, 62, 0.34);
   border-radius: 50%;
   background: var(--eb-surface-2);
@@ -385,20 +413,29 @@
 
 .eb-home__pet-card--first {
   grid-column: 1 / -1;
-  display: block;
-  min-height: 9.5rem;
+  display: flex;
+  min-height: 7.25rem;
   padding: 0;
   border-style: dashed;
 }
 
+.eb-home__pet-card--first > div {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .eb-home__pet-card-body {
   display: flex;
+  flex: 1 1 auto;
   align-items: center;
   justify-content: center;
   gap: 1rem;
   width: 100%;
-  min-height: 9.5rem;
-  padding: 1rem;
+  min-width: 0;
+  min-height: calc(7.25rem - 2px);
+  box-sizing: border-box;
+  padding: 0.75rem;
 }
 
 .eb-home__pet-empty-copy {
@@ -427,7 +464,9 @@
 
 .eb-home__steps {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
+  justify-content: space-between;
   gap: 0.65rem;
   margin: 0;
   padding: 0;
@@ -510,6 +549,7 @@
   width: 100%;
   height: auto;
   aspect-ratio: 2 / 1;
+  max-height: 13rem;
   overflow: hidden;
   margin: 0;
   padding: 0;
@@ -525,7 +565,7 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
-  object-position: 50% 50%;
+  object-position: 50% 60%;
   transition: transform 500ms var(--eb-ease);
 }
 
@@ -793,12 +833,27 @@
   }
 
   .eb-home__dashboard-grid {
-    grid-template-columns: 1.02fr 0.96fr 1fr;
+    --eb-home-card-padding: 1.5rem;
+    --eb-home-card-row-height: 21rem;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-auto-rows: var(--eb-home-card-row-height);
   }
 
-  .eb-home__dashboard-card {
-    min-height: 19.75rem;
-    padding: 1.5rem;
+  .eb-home__card-description {
+    min-height: 2.45rem;
+  }
+
+  .eb-home__pets-track {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .eb-home__pet-card,
+  .eb-home__pet-card--first {
+    min-height: 0;
+  }
+
+  .eb-home__pet-card-body {
+    min-height: 0;
   }
 
   .eb-home__card-heading {
@@ -810,18 +865,8 @@
     font-size: 0.84rem;
   }
 
-  .eb-home__pet-card {
-    min-height: 12rem;
-  }
-
-  .eb-home__pet-card--first,
-  .eb-home__pet-card-body {
-    min-height: 12rem;
-  }
-
   .eb-home__pet-thumb {
-    width: 5.25rem;
-    height: 5.25rem;
+    width: min(5.25rem, 100%);
   }
 
   .eb-home__beam-card {
@@ -829,8 +874,10 @@
   }
 
   .eb-home__beam-media {
-    height: auto;
-    margin-top: auto;
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+    aspect-ratio: auto;
   }
 
   .eb-home__mobile-library {
@@ -858,8 +905,8 @@
     padding: 3rem 3.25rem;
   }
 
-  .eb-home__dashboard-card {
-    padding: 1.5rem 1.75rem;
+  .eb-home__dashboard-grid {
+    --eb-home-card-padding: 1.5rem 1.75rem;
   }
 
 }
