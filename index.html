@@ -1,6 +1,9 @@
 <!doctype html>
-<html lang="ko">
+<html lang="ko" translate="no">
   <head>
+    <!-- 앱이 자체 언어 토글을 가진다. 브라우저 기계 번역은 텍스트 노드를 <font> 로
+         감싸 React 의 insertBefore 를 깨뜨리므로 끈다. -->
+    <meta name="google" content="notranslate" />
     <link
       rel="preload"
       as="image"

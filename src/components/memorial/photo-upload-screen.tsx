@@ -8,7 +8,7 @@ import { createDisplayImageUrl } from "@/lib/display-image";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { MediaFileTrigger } from "@/components/memorial/media-file-trigger";
 import { PhotoUploadGuide } from "@/components/memorial/photo-upload-guide";
-import { CutoutStage } from "@/components/memorial/cutout-stage";
+import { PetPhoto } from "@/components/memorial/pet-photo";
 import { MemorialIconButton, MemorialPrimaryButton } from "@/components/memorial/memorial-chrome";
 import type { MediaKind } from "@/lib/main-media-store";
 import { classifyIntakeBatch, clampToRoom, type IntakeRejectReason } from "@/lib/photo-intake-validation";
@@ -80,6 +80,8 @@ export function PhotoUploadScreen({
   const [isDragging, setIsDragging] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
+  /** 대표 사진의 실제 비율. 카드를 사진 모양에 맞추는 데 쓴다(4:5 ~ 16:10 사이). */
+  const [previewAspect, setPreviewAspect] = useState<number | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const replaceIndexRef = useRef<number | null>(null);
 
@@ -233,6 +235,12 @@ export function PhotoUploadScreen({
   }, [activePetSlotIndex]);
 
   const imageForDisplay = previewUrl || selectedImages[0] || uploadedImage;
+  // 사진이 있을 때만 카드가 사진 비율을 따른다. 세로 사진은 4:5 까지 키가 커지고,
+  // 가로 사진은 16:10 을 넘지 않는다. 높이 상한(max-height)은 CSS 가 계속 지킨다.
+  const dropzoneStyle =
+    hasMedia && !isVideo && previewAspect
+      ? { aspectRatio: String(Math.min(1.6, Math.max(0.8, previewAspect))) }
+      : undefined;
 
   const togglePlayPause = () => {
     if (videoRef.current) {
@@ -309,7 +317,10 @@ export function PhotoUploadScreen({
                     {active && hasMedia ? (
                       <Check className="w-3.5 h-3.5" strokeWidth={2.5} aria-hidden />
                     ) : null}
-                    {u.petTabLabel(index + 1)}
+                    {/* 라벨은 반드시 요소로 감싼다. 맨 텍스트 노드가 형제로 있으면
+                        Chrome 페이지 번역이 그 노드를 <font> 로 감싸 버리고, 그 뒤
+                        Check 아이콘을 insertBefore 할 때 NotFoundError 가 난다. */}
+                    <span>{u.petTabLabel(index + 1)}</span>
                   </button>
                 );
               })}
@@ -335,20 +346,25 @@ export function PhotoUploadScreen({
           </div>
 
           <div className="pet-intake__stage">
-            {!isVideo ? (
-              <div className="pet-intake__progress" aria-live="polite">
-                {Array.from({ length: maxImages }).map((_, i) => (
-                  <span
-                    key={`progress-${i}`}
-                    className={`pet-intake__progress-dot${i < selectedImages.length ? " is-filled" : ""}`}
-                    aria-hidden
-                  />
-                ))}
-                <span className="pet-intake__progress-label">
-                  {u.photoCountLabel(selectedImages.length, maxImages)}
-                </span>
-              </div>
-            ) : null}
+            {/* 항상 마운트한 채로 둔다 — isVideo 전환 때마다 이 형제 노드를
+                붙였다 뗐다 하면, 같은 부모 아래서 애니메이션 중인 피드백
+                배너의 insertBefore 참조가 흔들릴 여지가 생긴다. */}
+            <div
+              className="pet-intake__progress"
+              aria-live="polite"
+              style={isVideo ? { display: "none" } : undefined}
+            >
+              {Array.from({ length: maxImages }).map((_, i) => (
+                <span
+                  key={`progress-${i}`}
+                  className={`pet-intake__progress-dot${i < selectedImages.length ? " is-filled" : ""}`}
+                  aria-hidden
+                />
+              ))}
+              <span className="pet-intake__progress-label">
+                {u.photoCountLabel(selectedImages.length, maxImages)}
+              </span>
+            </div>
 
             <AnimatePresence>
               {feedback ? (
@@ -386,15 +402,15 @@ export function PhotoUploadScreen({
                 className={`upload-card relative overflow-hidden pet-intake__dropzone ${
                   isDragging ? "drag-over" : ""
                 }`}
+                style={dropzoneStyle}
               >
                 {hasMedia ? (
                   <>
                     {isVideo ? (
-                      <div className="relative w-full h-full cutout-stage cutout-stage--fill">
+                      <div className="pet-intake__stage-video">
                         <video
                           ref={videoRef}
                           src={uploadedImage ?? undefined}
-                          className="cutout-stage__subject"
                           loop
                           muted
                           playsInline
@@ -418,14 +434,12 @@ export function PhotoUploadScreen({
                         </button>
                       </div>
                     ) : (
-                      <CutoutStage className="w-full h-full" fit="cover">
-                        <img
-                          src={imageForDisplay || selectedImages[0]}
-                          alt=""
-                          className="cutout-stage__subject"
-                          decoding="async"
-                        />
-                      </CutoutStage>
+                      <PetPhoto
+                        src={imageForDisplay || selectedImages[0]}
+                        variant="full"
+                        className="pet-intake__stage-photo"
+                        onAspect={setPreviewAspect}
+                      />
                     )}
                     <div className="eb-check-mark pet-intake__media-check absolute top-3 right-3 z-10" aria-hidden>
                       <Check className="w-4 h-4" strokeWidth={3} />
@@ -467,12 +481,12 @@ export function PhotoUploadScreen({
                   const state = imageStates?.[index];
                   const label = statusLabel(state);
                   return (
-                    <div key={`${url}_${index}`} className="pet-intake__thumb">
-                      <img
-                        src={previewUrls[index] || url}
-                        alt=""
-                        decoding="async"
-                      />
+                    // 슬롯 인덱스가 신원이다 — onReplaceImage/onRemoveImage 도
+                    // 같은 index 로 동작한다. url 을 키에 섞으면 교체할 때마다
+                    // 이 썸네일 DOM 이 완전히 새로 마운트되어(불필요한 unmount/
+                    // mount), 외부 확장 프로그램의 DOM 변형과 겹칠 위험이 커진다.
+                    <div key={`pet-photo-slot-${index}`} className="pet-intake__thumb">
+                      <PetPhoto src={previewUrls[index] || url} variant="full" />
                       <div className="pet-intake__thumb-actions">
                         {onReplaceImage ? (
                           <MediaFileTrigger

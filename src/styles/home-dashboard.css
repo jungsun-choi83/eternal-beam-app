@@ -349,11 +349,7 @@
   box-shadow: 0 3px 12px rgba(84, 61, 29, 0.08);
 }
 
-.eb-home__pet-thumb img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
+/* The pet inside is a PetPhoto avatar (pet-photo.css): cover, face-first. */
 
 .eb-home__pet-thumb--add {
   border: 1px dashed var(--eb-gold);

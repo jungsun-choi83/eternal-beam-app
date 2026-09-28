@@ -12,12 +12,13 @@
     "test:renderer": "node --test src/lib/packed-alpha-canvas.test.ts",
     "video-api": "python -m uvicorn backend.main:app --reload --port 8001",
     "test:flow": "node --test src/lib/idle-generation-request.test.ts",
-    "test": "node --test src/lib/*.test.ts"
+    "test": "node --test src/lib/*.test.ts",
+    "test:components": "vitest run"
   },
   "dependencies": {
-    "@imgly/background-removal": "^1.7.0",
     "@firebase/auth": "^1.12.0",
     "@firebase/firestore": "^4.11.0",
+    "@imgly/background-removal": "^1.7.0",
     "@react-three/drei": "^9.105.0",
     "@react-three/fiber": "^8.18.0",
     "@supabase/supabase-js": "^2.97.0",
@@ -32,12 +33,16 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.1.12",
+    "@testing-library/dom": "^10.4.2",
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^22.10.0",
     "@types/react": "^18.3.1",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.7.0",
+    "jsdom": "^30.1.1",
     "tailwindcss": "^4.1.12",
     "typescript": "^5.7.3",
-    "vite": "^6.3.5"
+    "vite": "^6.3.5",
+    "vitest": "^5.0.2"
   }
 }

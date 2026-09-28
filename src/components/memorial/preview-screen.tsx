@@ -16,6 +16,7 @@ import {
 } from "@/components/memorial/themes";
 import { ThemeBackgroundVideo } from "@/components/memorial/theme-background-video";
 import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
+import { PetPhoto } from "@/components/memorial/pet-photo";
 import { usePetGrounding } from "@/components/memorial/use-pet-grounding";
 import { subjectTransform } from "@/lib/pet-grounding";
 import {
@@ -1410,7 +1411,7 @@ function PreviewScreenInner({
             are omitted rather than faked. */}
         {petAvatarUrl ? (
           <div className="preview-composer__identity">
-            <img src={petAvatarUrl} alt="" className="preview-composer__identity-avatar" />
+            <PetPhoto src={petAvatarUrl} variant="avatar" className="preview-composer__identity-avatar" />
           </div>
         ) : null}
 

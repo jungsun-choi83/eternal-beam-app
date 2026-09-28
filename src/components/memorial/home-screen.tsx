@@ -21,6 +21,7 @@ import { HolographicBackground } from "./holographic-background";
 import { HologramEffects } from "./hologram-effects";
 import { EternalBeamBrandMark } from "./eternal-beam-brand-mark";
 import { MediaFileTrigger } from "./media-file-trigger";
+import { PetPhoto } from "./pet-photo";
 import { MAX_PET_SLOTS } from "@/lib/pet-slot-state";
 import { resolvePairedDeviceId } from "@/lib/device-command-api";
 import { useDeviceConnection } from "./use-device-connection";
@@ -273,7 +274,7 @@ export function HomeScreen({
                     }`}
                   >
                     <span className="eb-home__pet-thumb">
-                      <img src={pet.previewImage} alt="" />
+                      <PetPhoto src={pet.previewImage} variant="avatar" />
                     </span>
                     <span className="eb-home__pet-name">{petCardLabel(pet.index)}</span>
                   </button>
