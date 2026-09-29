@@ -11,11 +11,12 @@ submit once, persist their external job ID, then yield until a later worker tick
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -34,6 +35,8 @@ from . import (
     premium_motion_finalization,
     video_motion_providers,
 )
+
+logger = logging.getLogger(__name__)
 
 MOTION_BREATHING = "BREATHING"
 REQUEST_FREE_HOME = "FREE_HOME"
@@ -142,6 +145,8 @@ class PetGenerationRun:
     product_key: Optional[str] = None
     reservation_ledger_id: Optional[str] = None
     credits_reserved: int = 0
+    #: lease 만료 후 워커가 이 실행을 다시 집어 간 횟수 (마지막 사용자 행동 이후).
+    lease_recoveries: int = 0
 
 
 _MOCK_RUNS: list[dict[str, Any]] = []
@@ -155,6 +160,23 @@ ACTIVE_RUN_STATUSES = (
     STATUS_WAITING_PROVIDER,
     STATUS_RECOVERY_REQUIRED,
 )
+
+#: 워커가 스스로 다시 집어 갈 수 있는 상태. RECOVERY_REQUIRED 는 "활성"이지만
+#: 사용자/운영자 행동 없이는 절대 재개되지 않는다 — 여기 없다.
+CLAIMABLE_RUN_STATUSES = (STATUS_QUEUED, STATUS_WAITING_PROVIDER, STATUS_RUNNING)
+
+#: 더 이상 워커가 손대지 않는 상태. 여기서 나가는 유일한 길은
+#: retry_generation_run() (사용자 행동) 뿐이다.
+TERMINAL_RUN_STATUSES = (STATUS_PUBLISHED, STATUS_FAILED, STATUS_CANCELLED)
+
+#: 사용자 행동으로 다시 QUEUED 가 될 수 있는 상태.
+RETRYABLE_RUN_STATUSES = (STATUS_FAILED, STATUS_CANCELLED, STATUS_RECOVERY_REQUIRED)
+
+#: 워커 lease 만료 후 자동 재점유(복구) 횟수 상한. 이 횟수를 넘긴 실행은 다시
+#: 되살아나지 않고 FAILED(WORKER_RECOVERY_EXHAUSTED) 로 종료된다 — 사용자가
+#: Retry 를 눌러야만 다시 QUEUED 가 된다. 카운터는 retry 에서만 0 으로 돌아간다.
+ERROR_WORKER_RECOVERY_EXHAUSTED = "WORKER_RECOVERY_EXHAUSTED"
+ERROR_RUN_CANCELLED = "RUN_CANCELLED"
 
 #: start_generation_run() 의 확인-후-삽입 구간을 프로세스 내에서 직렬화한다 —
 #: (user_id, pet_id, motion_id, request_kind) 별로 하나씩. 이것만으로는
@@ -238,6 +260,7 @@ def _to_run(row: dict[str, Any]) -> PetGenerationRun:
             str(row["reservation_ledger_id"]) if row.get("reservation_ledger_id") else None
         ),
         credits_reserved=int(row.get("credits_reserved") or 0),
+        lease_recoveries=int(row.get("lease_recoveries") or 0),
     )
 
 
@@ -357,6 +380,10 @@ async def _update(
                 raise PetGenerationRunError(
                     "WORKER_LEASE_LOST", "생성 실행 lease 소유권을 잃었습니다.", status=409
                 )
+        except PetGenerationRunError:
+            # lease 유실은 실제 신호다(취소/다른 워커의 인수) — 503 으로 뭉개면
+            # _execute 가 그 실행을 다시 FAILED 로 덮어쓰려 든다.
+            raise
         except Exception as exc:
             raise PetGenerationRunError(
                 "GENERATION_RUNS_UNAVAILABLE", "생성 실행 상태를 저장하지 못했습니다.", status=503
@@ -380,6 +407,43 @@ async def _progress(run: PetGenerationRun, fields: dict[str, Any]) -> PetGenerat
     if not run.execution_token:
         raise PetGenerationRunError("WORKER_LEASE_REQUIRED", "worker lease 가 필요합니다.", status=409)
     return await _update(run.id, fields, execution_token=run.execution_token)
+
+
+async def _transition(
+    run_id: str, fields: dict[str, Any], *, from_statuses: tuple[str, ...]
+) -> Optional[PetGenerationRun]:
+    """
+    사용자 행동(취소/재시도)의 상태 전이 — 워커 토큰 없이, 그러나 **현재 상태가
+    from_statuses 안일 때만** 쓴다. 읽기와 쓰기 사이에 워커가 발행을 끝냈다면
+    (PUBLISHED) 아무것도 덮어쓰지 않고 None 을 돌려준다.
+    """
+    payload = {**fields, "updated_at": _now_iso()}
+    client = _supabase() if _use_db() else None
+    if client:
+        try:
+            result = (
+                client.table(_table())
+                .update(payload)
+                .eq("id", run_id)
+                .in_("status", list(from_statuses))
+                .execute()
+            )
+            rows = getattr(result, "data", None) or []
+        except Exception as exc:
+            raise PetGenerationRunError(
+                "GENERATION_RUNS_UNAVAILABLE", "생성 실행 상태를 저장하지 못했습니다.", status=503
+            ) from exc
+        if not rows:
+            return None
+    else:
+        row = next((r for r in _MOCK_RUNS if r.get("id") == run_id), None)
+        if not row or row.get("status") not in from_statuses:
+            return None
+        row.update(payload)
+    refreshed = await _row_by_id(run_id)
+    if not refreshed:
+        raise PetGenerationRunError("GENERATION_RUN_NOT_FOUND", "생성 실행이 없습니다.", status=404)
+    return _to_run(refreshed)
 
 
 async def _insert_or_get(row: dict[str, Any]) -> tuple[PetGenerationRun, bool]:
@@ -454,6 +518,16 @@ def _lease_seconds() -> int:
     return max(60, int(os.getenv("GENERATION_RUN_LEASE_SECONDS", "300")))
 
 
+def _max_lease_recoveries() -> int:
+    """lease 만료 후 자동 재점유 상한. 0 이면 한 번 죽은 RUNNING 은 바로 FAILED."""
+    return max(0, int(os.getenv("GENERATION_RUN_MAX_LEASE_RECOVERIES", "2")))
+
+
+def _recovery_exhausted(run: PetGenerationRun) -> bool:
+    """claim 이 상한을 넘겨 건네준 실행 — 일을 시키지 않고 종료시켜야 한다."""
+    return run.lease_recoveries > _max_lease_recoveries()
+
+
 async def _claim_next(worker_id: str) -> Optional[PetGenerationRun]:
     client = _supabase() if _use_db() else None
     if client:
@@ -463,6 +537,7 @@ async def _claim_next(worker_id: str) -> Optional[PetGenerationRun]:
                 {
                     "p_worker_id": worker_id,
                     "p_lease_seconds": _lease_seconds(),
+                    "p_max_lease_recoveries": _max_lease_recoveries(),
                 },
             ).execute()
             data = getattr(result, "data", None) or {}
@@ -480,7 +555,10 @@ async def _claim_next(worker_id: str) -> Optional[PetGenerationRun]:
             ) from exc
         return None
 
+    # In-memory mirror of claim_next_pet_generation_run() (migration 20261032):
+    # same predicate, same cap, same ordering, same self-heal.
     now = datetime.now(timezone.utc)
+    max_recoveries = _max_lease_recoveries()
     eligible = []
     for row in _MOCK_RUNS:
         status = row.get("status")
@@ -491,6 +569,28 @@ async def _claim_next(worker_id: str) -> Optional[PetGenerationRun]:
                 lease_expired = datetime.fromisoformat(str(lease).replace("Z", "+00:00")) <= now
             except ValueError:
                 lease_expired = True
+        recoveries = int(row.get("lease_recoveries") or 0)
+        if lease_expired and recoveries > max_recoveries:
+            # Self-heal: the exhausted hand-out itself died. Never claim again.
+            row.update(
+                {
+                    "status": STATUS_FAILED,
+                    "last_error": {
+                        "stage": row.get("current_stage"),
+                        "code": ERROR_WORKER_RECOVERY_EXHAUSTED,
+                        "message": "worker lease expired too many times; manual retry required",
+                        "lease_recoveries": recoveries,
+                        "at": _now_iso(),
+                    },
+                    "execution_token": None,
+                    "lease_expires_at": None,
+                    "worker_id": None,
+                    "next_attempt_at": None,
+                    "completed_at": _now_iso(),
+                    "updated_at": _now_iso(),
+                }
+            )
+            continue
         next_attempt = row.get("next_attempt_at")
         due = True
         if status == STATUS_WAITING_PROVIDER and next_attempt:
@@ -498,17 +598,31 @@ async def _claim_next(worker_id: str) -> Optional[PetGenerationRun]:
                 due = datetime.fromisoformat(str(next_attempt).replace("Z", "+00:00")) <= now
             except ValueError:
                 due = True
-        if status == STATUS_QUEUED or (status == STATUS_WAITING_PROVIDER and due) or lease_expired:
+        if (
+            status == STATUS_QUEUED
+            or (status == STATUS_WAITING_PROVIDER and due)
+            or (lease_expired and recoveries <= max_recoveries)
+        ):
             eligible.append(row)
     if not eligible:
         return None
+
+    def _rank(row: dict[str, Any]) -> int:
+        if row.get("status") == STATUS_WAITING_PROVIDER:
+            return 0
+        if row.get("status") == STATUS_QUEUED:
+            return 1
+        return 2  # stale-lease RUNNING recovery goes last — never ahead of fresh intent
+
     current = min(
         eligible,
         key=lambda row: (
-            0 if row.get("status") == STATUS_WAITING_PROVIDER else 1,
+            _rank(row),
             str(row.get("updated_at") or ""),
+            str(row.get("created_at") or ""),
         ),
     )
+    was_recovery = current.get("status") == STATUS_RUNNING
     token = str(uuid.uuid4())
     lease_until = datetime.fromtimestamp(now.timestamp() + _lease_seconds(), timezone.utc).isoformat()
     current.update(
@@ -517,6 +631,7 @@ async def _claim_next(worker_id: str) -> Optional[PetGenerationRun]:
             "worker_id": worker_id,
             "execution_token": token,
             "lease_expires_at": lease_until,
+            "lease_recoveries": int(current.get("lease_recoveries") or 0) + (1 if was_recovery else 0),
             "next_attempt_at": None,
             "updated_at": _now_iso(),
         }
@@ -676,38 +791,52 @@ def _provider_state(run: PetGenerationRun) -> dict[str, Any]:
     return state
 
 
-async def _fail(run: PetGenerationRun, stage: str, exc: Exception) -> PetGenerationRun:
-    failed = await _progress(
-        run,
-        {
-            "status": STATUS_FAILED,
-            "current_stage": stage,
-            "last_error": _phase_error(stage, exc),
-            "provider_state": _provider_state(run),
-            "execution_token": None,
-            "lease_expires_at": None,
-            "worker_id": None,
-            "next_attempt_at": None,
-        },
-    )
+async def _reconcile_premium_after_stop(stopped: PetGenerationRun) -> None:
     # ── Phase 7H — 상용 실행의 종료 되돌림 판정 ──────────────────────────────
     # 레거시 세션의 예약 분기와 같은 정책(READY 하나라도 있으면 유지, 진행 중이면
     # 유예, 예약은 환불이 아니라 **해제**)을 실행용으로 옮긴 함수 하나를 부른다.
     # 판정 실패는 실행 상태를 바꾸지 못한다 — 다음 종료/재시도가 다시 판정한다.
-    if failed.request_kind == REQUEST_PREMIUM_PRODUCT:
-        try:
-            from . import premium_run_fulfillment
+    if stopped.request_kind != REQUEST_PREMIUM_PRODUCT:
+        return
+    try:
+        from . import premium_run_fulfillment
 
-            await premium_run_fulfillment.reconcile_failed_run(
-                user_id=failed.user_id,
-                pet_id=failed.pet_id,
-                motion_id=failed.motion_id,
-                reservation_ledger_id=failed.reservation_ledger_id,
-            )
-        except Exception:
-            logger.exception(
-                "프리미엄 실행 종료 되돌림 판정 실패 — 다음 종료에서 재판정 (run=%s)", failed.id
-            )
+        await premium_run_fulfillment.reconcile_failed_run(
+            user_id=stopped.user_id,
+            pet_id=stopped.pet_id,
+            motion_id=stopped.motion_id,
+            reservation_ledger_id=stopped.reservation_ledger_id,
+        )
+    except Exception:
+        logger.exception(
+            "프리미엄 실행 종료 되돌림 판정 실패 — 다음 종료에서 재판정 (run=%s)", stopped.id
+        )
+
+
+async def _fail(run: PetGenerationRun, stage: str, exc: Exception) -> PetGenerationRun:
+    try:
+        failed = await _progress(
+            run,
+            {
+                "status": STATUS_FAILED,
+                "current_stage": stage,
+                "last_error": _phase_error(stage, exc),
+                "provider_state": _provider_state(run),
+                "execution_token": None,
+                "lease_expires_at": None,
+                "worker_id": None,
+                "next_attempt_at": None,
+                "completed_at": _now_iso(),
+            },
+        )
+    except PetGenerationRunError as lease_exc:
+        if lease_exc.code in ("WORKER_LEASE_LOST", "WORKER_LEASE_REQUIRED"):
+            # 우리 lease 는 이미 끝났다 — 사용자가 취소했거나 다른 워커가 인수했다.
+            # 그쪽의 상태(CANCELLED / RUNNING …)가 정본이므로 덮어쓰지 않는다.
+            current = await _row_by_id(run.id)
+            return _to_run(current) if current else run
+        raise
+    await _reconcile_premium_after_stop(failed)
     return failed
 
 
@@ -1324,16 +1453,24 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
             },
         )
     except PetGenerationRunError as exc:
-        if exc.code == "WORKER_LEASE_LOST":
+        if exc.code in ("WORKER_LEASE_LOST", "WORKER_LEASE_REQUIRED"):
             current = await _row_by_id(run.id)
             return _to_run(current) if current else run
-        latest_row = await _row_by_id(run.id)
-        latest = _to_run(latest_row) if latest_row else run
-        return await _fail(latest, stage, exc)
+        return await _fail(await _latest_with_our_lease(run), stage, exc)
     except Exception as exc:  # Every stage failure must become durable run state.
-        latest_row = await _row_by_id(run.id)
-        latest = _to_run(latest_row) if latest_row else run
-        return await _fail(latest, stage, exc)
+        return await _fail(await _latest_with_our_lease(run), stage, exc)
+
+
+async def _latest_with_our_lease(run: PetGenerationRun) -> PetGenerationRun:
+    """
+    실패 기록 전에 행을 다시 읽되 **우리가 점유한 토큰**으로 쓴다. 다시 읽은
+    행의 토큰을 그대로 쓰면, 그 사이 다른 워커가 인수했을 때 그 워커의 실행을
+    FAILED 로 덮어쓰고, 사용자가 취소했을 때는(토큰 없음) 예외로 튄다.
+    """
+    latest_row = await _row_by_id(run.id)
+    if not latest_row:
+        return run
+    return replace(_to_run(latest_row), execution_token=run.execution_token)
 
 
 async def process_next_generation_run(*, worker_id: str) -> Optional[PetGenerationRun]:
@@ -1344,6 +1481,24 @@ async def process_next_generation_run(*, worker_id: str) -> Optional[PetGenerati
     run = await _claim_next(wid)
     if not run:
         return None
+    if _recovery_exhausted(run):
+        # claim 이 상한을 넘겨 한 번 더 건네준 실행 — 워커가 이 실행 위에서
+        # 계속 죽고 있다는 뜻이다(OOM 등). 일을 시키지 않고 종료시킨다. 이후엔
+        # 사용자가 Retry 를 눌러야만 다시 QUEUED 가 된다.
+        logger.warning(
+            "run %s exhausted %s lease recoveries at stage %s — failing, not resurrecting",
+            run.id, run.lease_recoveries - 1, run.current_stage,
+        )
+        return await _fail(
+            run,
+            run.current_stage,
+            PetGenerationRunError(
+                ERROR_WORKER_RECOVERY_EXHAUSTED,
+                "워커가 이 실행 위에서 반복해서 중단됐습니다. 다시 시도해 주세요.",
+                status=503,
+                details={"lease_recoveries": run.lease_recoveries - 1},
+            ),
+        )
     lock = _LOCKS.setdefault(run.id, asyncio.Lock())
     async with lock:
         with _LeaseHeartbeater(run):
@@ -1544,6 +1699,8 @@ async def retry_generation_run(*, user_id: str, run_id: str) -> PetGenerationRun
         "status": STATUS_QUEUED,
         "last_error": None,
         "retry_count": run.retry_count + 1,
+        # 사용자 행동이 복구 예산을 되돌린다 — 워커는 절대 이 값을 내리지 않는다.
+        "lease_recoveries": 0,
         "worker_id": None,
         "execution_token": None,
         "lease_expires_at": None,
@@ -1564,7 +1721,55 @@ async def retry_generation_run(*, user_id: str, run_id: str) -> PetGenerationRun
                 "current_stage": STAGE_MOTION_SPEC,
             }
         )
-    return await _update(run.id, updates)
+    # FAILED / CANCELLED / RECOVERY_REQUIRED 에서만 QUEUED 로 — 읽기와 쓰기 사이에
+    # 상태가 바뀌었으면(동시 재시도가 먼저 QUEUED 로 옮김 등) 그 결과를 돌려준다.
+    retried = await _transition(run.id, updates, from_statuses=RETRYABLE_RUN_STATUSES)
+    if retried:
+        return retried
+    return await get_generation_run(user_id=user_id, run_id=run_id)
+
+
+async def cancel_generation_run(
+    *, user_id: str, run_id: str, reason: str = "user_cancelled"
+) -> PetGenerationRun:
+    """
+    사용자/클라이언트의 명시적 정지. 종료되지 않은 실행(QUEUED / RUNNING /
+    WAITING_PROVIDER / RECOVERY_REQUIRED)을 CANCELLED 로 옮기고 lease 와
+    execution_token 을 비운다 — 지금 이 실행을 돌리고 있는 워커는 다음 fenced
+    쓰기(_progress / heartbeat)에서 WORKER_LEASE_LOST 를 받고 그 자리에서
+    멈추며, claim_next_pet_generation_run 은 CANCELLED 를 절대 집지 않는다.
+
+    이미 끝난 실행(PUBLISHED / FAILED / CANCELLED)은 그대로 돌려준다 — 취소는
+    멱등이고, 발행된 결과를 되돌리지 않는다. 다시 돌리려면 Retry 다.
+    """
+    run = await get_generation_run(user_id=user_id, run_id=run_id)
+    if run.status in TERMINAL_RUN_STATUSES:
+        return run
+    why = (reason or "").strip()[:200] or "user_cancelled"
+    cancelled = await _transition(
+        run.id,
+        {
+            "status": STATUS_CANCELLED,
+            "last_error": {
+                "stage": run.current_stage,
+                "code": ERROR_RUN_CANCELLED,
+                "message": "생성 실행이 중단됐습니다.",
+                "reason": why,
+                "at": _now_iso(),
+            },
+            "execution_token": None,
+            "lease_expires_at": None,
+            "worker_id": None,
+            "next_attempt_at": None,
+            "completed_at": _now_iso(),
+        },
+        from_statuses=ACTIVE_RUN_STATUSES,
+    )
+    if not cancelled:
+        # 그 사이 워커가 끝냈다(PUBLISHED 등) — 그 결과가 정본이다.
+        return await get_generation_run(user_id=user_id, run_id=run_id)
+    await _reconcile_premium_after_stop(cancelled)
+    return cancelled
 
 
 async def request_replacement_generation(

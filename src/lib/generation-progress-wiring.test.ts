@@ -54,7 +54,24 @@ test("진행/오류 화면은 GenerationProgressScreen 하나로 그려진다 �
   assert.match(src, /if \(showGenerationProgress \|\| showGenerationError\)/);
   assert.match(src, /<GenerationProgressScreen/);
   assert.match(src, /view=\{view\}/);
-  assert.match(src, /onRetry=\{showGenerationError \? handleConfirm : undefined\}/);
+  assert.match(src, /onRetry=\{showGenerationError \? handleRetry : undefined\}/);
+});
+
+test("Retry 는 확인(handleConfirm)이 아니라 명시적 /retry 흐름이다 — 같은 실행을 QUEUED 로 되살린다", () => {
+  const src = read(PREVIEW);
+  // 예전 배선: onRetry={handleConfirm} → 같은 idempotency_key 로 같은 FAILED
+  // 실행에 합류 → 폴링 없이 같은 오류. 서버는 아무것도 바꾸지 않았다.
+  assert.doesNotMatch(src, /onRetry=\{showGenerationError \? handleConfirm : undefined\}/);
+  assert.match(src, /import \{[^}]*retryPhase7Generation[^}]*\} from "@\/lib\/phase7-generation-flow"/s);
+  const retryStart = src.indexOf("const handleRetry = useCallback(");
+  assert.ok(retryStart > 0);
+  const retryBody = src.slice(retryStart, src.indexOf("}, [", retryStart));
+  assert.match(retryBody, /retryPhase7Generation\(\{/);
+  assert.match(retryBody, /runId,/);
+  // run_id 를 모르면(실행이 만들어지기 전 실패) 확인 경로로 새로 시작한다.
+  assert.match(retryBody, /await handleConfirm\(\)/);
+  // 재시도도 "제출이 실제로 일어난" 시도다 — 전면 오류 카드 조건을 켠다.
+  assert.match(retryBody, /runAttemptedRef\.current = true/);
 });
 
 test("새로고침 재개 중에도(마운트 시 이미 활성 실행이 있으면) 첫 페인트부터 진행 화면이다", () => {

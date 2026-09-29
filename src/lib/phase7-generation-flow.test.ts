@@ -14,6 +14,7 @@ import {
   freeHomeIdempotencyKey,
   phase7PipelinePatch,
   resumePhase7Generation,
+  retryPhase7Generation,
   runPhase7Generation,
 } from "./phase7-generation-flow.ts";
 import { GenerationRunError, pollGenerationRun } from "./generation-run-api.ts";
@@ -361,4 +362,114 @@ test("재개: RECOVERY_REQUIRED 도 오류로 복원된다(레거시 폴백 없�
     ),
     (e: GenerationRunError) => e.code === "RECOVERY_REQUIRED"
   );
+});
+
+// ── 정지/재시도 생명주기 (stale-run resurrection fix) ─────────────────────────
+
+test("폴링 타임아웃: 서버 실행을 poll_timeout 사유로 취소한 뒤 원래 오류를 던진다", async () => {
+  const cancels: unknown[] = [];
+  const { fetchFn, urls } = makeFetch((url, init) => {
+    if (url.endsWith("/api/v1/pet/generation-runs") && init?.method === "POST") {
+      return { status: 202, body: runBody("QUEUED") };
+    }
+    if (url.endsWith(`/generation-runs/${RUN_ID}/cancel`)) {
+      cancels.push(JSON.parse(String(init?.body)));
+      return { body: runBody("CANCELLED") };
+    }
+    return { body: runBody("RUNNING") };
+  });
+  await assert.rejects(
+    runPhase7Generation(
+      {
+        petId: "pet_abc",
+        contentId: "cid-timeout",
+        poll: { intervalMs: 1000, timeoutMs: 2500, sleep: async () => {} },
+      },
+      deps(fetchFn)
+    ),
+    (e: GenerationRunError) => e.code === "RUN_POLL_TIMEOUT"
+  );
+  assert.deepEqual(cancels, [{ reason: "poll_timeout" }]);
+  assert.equal(urls.filter((u) => u.endsWith("/cancel")).length, 1);
+});
+
+test("폴링 타임아웃: 취소 호출이 실패해도 원래 타임아웃 오류가 그대로 난다", async () => {
+  const { fetchFn } = makeFetch((url, init) => {
+    if (url.endsWith("/api/v1/pet/generation-runs") && init?.method === "POST") {
+      return { status: 202, body: runBody("QUEUED") };
+    }
+    if (url.endsWith("/cancel")) return { status: 503, body: { detail: { code: "DOWN" } } };
+    return { body: runBody("RUNNING") };
+  });
+  await assert.rejects(
+    resumePhase7Generation(
+      {
+        petId: "pet_abc",
+        contentId: "cid-timeout-2",
+        runId: RUN_ID,
+        poll: { intervalMs: 1000, timeoutMs: 2000, sleep: async () => {} },
+      },
+      deps(fetchFn)
+    ),
+    (e: GenerationRunError) => e.code === "RUN_POLL_TIMEOUT"
+  );
+});
+
+test("Retry: 확인(POST 생성)이 아니라 /retry 로 같은 실행을 되살리고 끝까지 폴링한다", async () => {
+  let polls = 0;
+  const { fetchFn, urls } = makeFetch((url, init) => {
+    if (url.endsWith(`/generation-runs/${RUN_ID}/retry`)) {
+      assert.equal(init?.method, "POST");
+      return { body: runBody("QUEUED", { lease_recoveries: 0, retry_count: 1 }) };
+    }
+    if (url.endsWith(`/generation-runs/${RUN_ID}/playback`)) {
+      return {
+        body: {
+          run_id: RUN_ID,
+          status: "PUBLISHED",
+          published: true,
+          qa_decision: "PASS",
+          url: "https://storage.test/u/packed.mp4",
+          delivery_format: "packed_alpha",
+          background_baked: false,
+        },
+      };
+    }
+    polls += 1;
+    return { body: runBody(polls < 2 ? "RUNNING" : "PUBLISHED") };
+  });
+  const outcome = await retryPhase7Generation(
+    {
+      runId: RUN_ID,
+      petId: "pet_abc",
+      contentId: "cid-retry",
+      poll: { intervalMs: 1000, sleep: async () => {} },
+    },
+    deps(fetchFn)
+  );
+  assert.equal(outcome.run.status, "PUBLISHED");
+  assert.equal(outcome.playback.published, true);
+  // 새 실행을 만들지 않는다 — 생성 POST 는 한 번도 나가지 않는다.
+  const createPosts = urls.filter((u) => u.endsWith("/api/v1/pet/generation-runs"));
+  assert.deepEqual(createPosts, []);
+  assert.equal(urls.filter((u) => u.endsWith("/retry")).length, 1);
+});
+
+test("Retry: 서버가 여전히 FAILED 를 돌려주면(재시도 불가) 폴링 없이 오류로 끝난다", async () => {
+  let gets = 0;
+  const { fetchFn } = makeFetch((url) => {
+    if (url.endsWith("/retry")) {
+      return { body: runBody("FAILED", { last_error: { code: "MOTION_QA_FAIL", message: "no" } }) };
+    }
+    gets += 1;
+    return { body: runBody("FAILED") };
+  });
+  await assert.rejects(
+    retryPhase7Generation(
+      { runId: RUN_ID, petId: "pet_abc", contentId: "cid-retry-2" },
+      deps(fetchFn)
+    ),
+    (e: GenerationRunError) => e.code === "MOTION_QA_FAIL"
+  );
+  assert.equal(gets, 0);
 });
