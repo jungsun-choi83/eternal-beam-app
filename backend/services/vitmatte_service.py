@@ -53,6 +53,7 @@ from .cutout_errors import (
     RectangleLikeMaskError,
     SubjectNotDetectedError,
 )
+from . import rss_trace
 from .person_prompting import PersonAwareResult, apply_person_aware_prompting
 from .yolo_input import load_yolo, to_yolo_source
 
@@ -192,6 +193,8 @@ SAM2_SHAPE_FILL_HIGH = float(os.getenv("SAM2_SHAPE_FILL_HIGH", "0.85"))
 
 _vitmatte_cache: dict[str, tuple] = {}
 _sam2_cache: dict[str, tuple] = {}
+#: 모델 키 → 청크 어텐션 설치 상태 (진단용, vitdet_chunked_attention.install_chunked_attention 결과)
+_vitmatte_attention_status: dict[str, dict] = {}
 
 
 @dataclass
@@ -354,6 +357,16 @@ def _load_vitmatte(model_name: str, device: str):
         model = VitMatteForImageMatting.from_pretrained(model_name)
         model.to(device)
         model.eval()
+        # 전역 어텐션 쿼리 청크 분할 (메모리 최적화 2단계). 수학적으로 같은 결과를
+        # 훨씬 작은 순간 메모리로 낸다. 구조가 다르거나 자기 검증에 실패하면
+        # 원래 eager 구현을 그대로 둔다 — vitdet_chunked_attention 참고.
+        try:
+            from .vitdet_chunked_attention import install_chunked_attention
+
+            _vitmatte_attention_status[key] = install_chunked_attention(model)
+        except Exception:  # noqa: BLE001 — 최적화가 로딩을 막으면 안 된다
+            logger.exception("chunked attention setup failed; using eager attention")
+            _vitmatte_attention_status[key] = {"active": False, "reason": "setup_error"}
         _vitmatte_cache[key] = (processor, model)
     return _vitmatte_cache[key]
 
@@ -987,12 +1000,215 @@ def _run_vitmatte(rgb: np.ndarray, trimap: np.ndarray, model_name: str, device: 
     )
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
-    with torch.no_grad():
-        alphas = model(**inputs).alphas
+    # 임시 RSS 추적 (rss_trace 참고): 백본/디코더 경계에 측정점을 두되, 훅은 이
+    # 호출 동안만 붙였다 뗀다. 비활성이면 훅 자체를 달지 않는다.
+    trace = rss_trace.current()
+    handles = []
+    if trace is not None and trace.enabled:
+        backbone = getattr(model, "backbone", None)
+        decoder = getattr(model, "decoder", None)
+        if backbone is not None and decoder is not None:
+            handles.append(backbone.register_forward_hook(lambda m, i, o: trace.mark("after_vitmatte_backbone")))
+
+            def _before_decoder(m, i):
+                trace.mark("before_decoder")
+                trace.start_peak_window()
+
+            def _after_decoder(m, i, o):
+                peak = trace.end_peak_window()
+                trace.mark("after_decoder", decoder_peak_rss_mb=peak)
+
+            handles.append(decoder.register_forward_pre_hook(_before_decoder))
+            handles.append(decoder.register_forward_hook(_after_decoder))
+    try:
+        with torch.no_grad():
+            alphas = model(**inputs).alphas
+    finally:
+        for h in handles:
+            h.remove()
 
     alpha = alphas[0, 0].detach().cpu().numpy()
     alpha = alpha[:orig_h, :orig_w]
-    return np.clip(alpha, 0.0, 1.0)
+    alpha = np.clip(alpha, 0.0, 1.0)
+    if trace is not None:
+        # 첫 호출은 여기서야 모델이 로드되므로 어텐션 상태를 이 지점에도 남긴다.
+        attn = _vitmatte_attention_status.get(f"{model_name}::{device}") or {}
+        trace.mark(
+            "after_vitmatte",
+            alpha_shape=list(alpha.shape),
+            chunked_attention_active=attn.get("active"),
+            attention_chunk_size=attn.get("chunk_size"),
+        )
+    return alpha
+
+
+#: ViTMatte ROI 크롭 (메모리 최적화 1단계).
+#:
+#: ViTMatte 의 전역 어텐션/디코더 활성값은 입력 픽셀 수에 비례해 커진다. 펫이
+#: 프레임 일부만 차지할 때 프레임 전체를 매팅할 이유가 없다 — 트라이맵이 0 이
+#: 아닌 영역(= SAM2 마스크의 팽창 영역, 확실한 배경 밖)과 검출 크롭 박스의
+#: 합집합에 여백을 둔 ROI 만 ViTMatte 에 넣고, 알파를 원본 크기의 0 캔버스에
+#: 같은 좌표로 되돌려 붙인다. **출력 크기·해상도·하류 계약은 바뀌지 않는다.**
+#: 리사이즈는 하지 않는다. ROI 계산이 실패하면 기존 전체 프레임 경로로 폴백한다.
+#:
+#:   VITMATTE_ROI_ENABLED  "1"(기본) | "0" — 운영 킬스위치
+#:   VITMATTE_ROI_PAD_PX   ROI 여백(px). 32 미만으로는 내려가지 않는다.
+VITMATTE_ROI_ENABLED = os.getenv("VITMATTE_ROI_ENABLED", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+VITMATTE_ROI_MIN_PAD_PX = 32
+try:
+    VITMATTE_ROI_PAD_PX = max(
+        VITMATTE_ROI_MIN_PAD_PX, int(os.getenv("VITMATTE_ROI_PAD_PX", "") or VITMATTE_ROI_MIN_PAD_PX)
+    )
+except ValueError:
+    VITMATTE_ROI_PAD_PX = VITMATTE_ROI_MIN_PAD_PX
+
+
+def compute_vitmatte_roi(
+    crop_bbox: Optional[BBox],
+    trimap: np.ndarray,
+    *,
+    pad_px: int = VITMATTE_ROI_PAD_PX,
+) -> Optional[BBox]:
+    """ViTMatte 에 넣을 안전 ROI (x1, y1, x2, y2) — 원본 픽셀 좌표, 끝은 배타.
+
+    ROI = union(crop_bbox, bbox(trimap != 0)) 에 pad_px 여백을 더하고 이미지
+    경계로 클램프한 것. 트라이맵의 0 은 "확실한 배경"이므로 그 밖은 ViTMatte 가
+    볼 필요가 없다. SAM2 마스크는 YOLO 박스 밖으로 나가기도 하므로(꼬리·귀)
+    crop_bbox 만 쓰지 않고 반드시 트라이맵 범위와 합친다.
+
+    ROI 를 만들 수 없으면 None — 호출자가 전체 프레임으로 폴백한다.
+    """
+    if trimap is None or getattr(trimap, "ndim", 0) != 2:
+        return None
+    h, w = int(trimap.shape[0]), int(trimap.shape[1])
+    if h <= 0 or w <= 0:
+        return None
+    pad = max(int(pad_px), VITMATTE_ROI_MIN_PAD_PX)
+
+    boxes: list[BBox] = []
+    if crop_bbox is not None:
+        x1, y1, x2, y2 = (int(round(float(v))) for v in crop_bbox)
+        if x2 > x1 and y2 > y1:
+            boxes.append((x1, y1, x2, y2))
+    cols = np.flatnonzero(trimap.any(axis=0))
+    rows = np.flatnonzero(trimap.any(axis=1))
+    if cols.size and rows.size:
+        boxes.append((int(cols[0]), int(rows[0]), int(cols[-1]) + 1, int(rows[-1]) + 1))
+    if not boxes:
+        return None
+
+    x1 = max(0, min(b[0] for b in boxes) - pad)
+    y1 = max(0, min(b[1] for b in boxes) - pad)
+    x2 = min(w, max(b[2] for b in boxes) + pad)
+    y2 = min(h, max(b[3] for b in boxes) + pad)
+    if x2 - x1 < 1 or y2 - y1 < 1:
+        return None
+    return (x1, y1, x2, y2)
+
+
+def _run_vitmatte_roi(
+    rgb: np.ndarray,
+    trimap: np.ndarray,
+    model_name: str,
+    device: str,
+    *,
+    crop_bbox: Optional[BBox],
+    pad_px: int = VITMATTE_ROI_PAD_PX,
+    enabled: Optional[bool] = None,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """ROI 만 ViTMatte 에 넣고 원본 크기 알파로 되돌려 붙인다.
+
+    Returns: (float32 alpha (H, W) in [0, 1], ROI 진단 dict).
+    _run_vitmatte 의 계약(입력과 같은 (H, W) 알파)은 그대로이고, 여기서는 그
+    호출을 ROI 크롭으로 감쌀 뿐이다. ROI 를 만들 수 없거나 계산이 실패하면
+    기존과 동일하게 전체 프레임을 한 번 돌린다.
+    """
+    h, w = int(trimap.shape[0]), int(trimap.shape[1])
+    use_roi = VITMATTE_ROI_ENABLED if enabled is None else bool(enabled)
+    info: dict[str, Any] = {
+        "enabled": use_roi,
+        "original_size": [w, h],
+        "pad_px": int(pad_px),
+        "roi": None,
+        "roi_size": None,
+        "roi_area_ratio": None,
+        "fallback": False,
+        "fallback_reason": None,
+    }
+
+    roi: Optional[BBox] = None
+    if not use_roi:
+        info["fallback_reason"] = "disabled"
+    else:
+        try:
+            roi = compute_vitmatte_roi(crop_bbox, trimap, pad_px=pad_px)
+            if roi is None:
+                info["fallback_reason"] = "roi_unavailable"
+        except Exception as exc:  # noqa: BLE001 — ROI 는 최적화일 뿐, 실패해도 매팅은 계속된다
+            logger.exception("vitmatte roi computation failed; falling back to full frame")
+            roi = None
+            info["fallback_reason"] = f"roi_error:{type(exc).__name__}"
+
+    trace = rss_trace.current()
+    if trace is not None:
+        attn = _vitmatte_attention_status.get(f"{model_name}::{device}") or {}
+        trace.mark(
+            "before_vitmatte",
+            original_size=f"{w}x{h}",
+            roi=list(roi) if roi is not None else None,
+            roi_size=f"{roi[2] - roi[0]}x{roi[3] - roi[1]}" if roi is not None else f"{w}x{h}",
+            roi_area_ratio=(round(((roi[2] - roi[0]) * (roi[3] - roi[1])) / float(w * h), 4) if roi is not None else 1.0),
+            roi_fallback_reason=info["fallback_reason"],
+            chunked_attention_active=attn.get("active"),
+            attention_chunk_size=attn.get("chunk_size"),
+            attention_reason=attn.get("reason"),
+        )
+
+    if roi is not None:
+        x1, y1, x2, y2 = roi
+        crop_rgb = np.ascontiguousarray(rgb[y1:y2, x1:x2])
+        crop_trimap = np.ascontiguousarray(trimap[y1:y2, x1:x2])
+        alpha_crop = _run_vitmatte(crop_rgb, crop_trimap, model_name, device)
+        del crop_rgb, crop_trimap
+        if tuple(alpha_crop.shape[:2]) != (y2 - y1, x2 - x1):
+            # 계약 위반(입력과 다른 크기의 알파). 잘못 붙이느니 전체 프레임으로.
+            logger.error(
+                "vitmatte roi: alpha shape %s != roi %sx%s — falling back to full frame",
+                tuple(alpha_crop.shape[:2]),
+                x2 - x1,
+                y2 - y1,
+            )
+            info["fallback_reason"] = "alpha_shape_mismatch"
+            roi = None
+            alpha_crop = None
+        else:
+            alpha = np.zeros((h, w), dtype=np.float32)
+            alpha[y1:y2, x1:x2] = alpha_crop
+            del alpha_crop
+            info["roi"] = [x1, y1, x2, y2]
+            info["roi_size"] = [x2 - x1, y2 - y1]
+            info["roi_area_ratio"] = round(((x2 - x1) * (y2 - y1)) / float(w * h), 4)
+
+    if roi is None:
+        info["fallback"] = True
+        alpha = _run_vitmatte(rgb, trimap, model_name, device)
+
+    logger.info(
+        "vitmatte roi: original=%dx%d roi=%s roi_size=%s area_ratio=%s pad=%d fallback=%s reason=%s",
+        w,
+        h,
+        info["roi"],
+        info["roi_size"],
+        info["roi_area_ratio"],
+        info["pad_px"],
+        info["fallback"],
+        info["fallback_reason"],
+    )
+    return alpha, info
 
 
 def _png_bytes(arr: np.ndarray, mode: str) -> bytes:
@@ -1264,6 +1480,43 @@ def matte_foreground_with_meta(
     rgb = np.array(img)
     h, w = rgb.shape[:2]
 
+    with rss_trace.Tracer(tag="cutout") as trace:
+        return _matte_foreground_traced(
+            trace,
+            rgb=rgb,
+            img=img,
+            w=w,
+            h=h,
+            resolved_model=resolved_model,
+            resolved_yolo=resolved_yolo,
+            resolved_device=resolved_device,
+            resolved_segmenter=resolved_segmenter,
+            resolved_sam2_model=resolved_sam2_model,
+            yolo_conf=yolo_conf,
+            bbox_pad_frac=bbox_pad_frac,
+            collect_debug=collect_debug,
+            debug_artifacts=debug_artifacts,
+        )
+
+
+def _matte_foreground_traced(
+    trace: rss_trace.Tracer,
+    *,
+    rgb: np.ndarray,
+    img: Image.Image,
+    w: int,
+    h: int,
+    resolved_model: str,
+    resolved_yolo: str,
+    resolved_device: str,
+    resolved_segmenter: str,
+    resolved_sam2_model: str,
+    yolo_conf: float,
+    bbox_pad_frac: float,
+    collect_debug: bool,
+    debug_artifacts: Optional[dict[str, bytes]],
+) -> tuple[bytes, dict]:
+    """matte_foreground_with_meta 의 본체 — 디코드 이후 전 과정. 측정점만 추가됐다."""
     diag = Diagnostics(
         detector_model=resolved_yolo,
         segmenter_requested=resolved_segmenter,
@@ -1274,7 +1527,9 @@ def matte_foreground_with_meta(
         processing_height=h,
     )
 
+    trace.mark("before_yolo", input_size=f"{w}x{h}")
     detection = _detect_subject(img, resolved_yolo, conf=yolo_conf)
+    trace.mark("after_yolo", detected=detection is not None)
     if detection is None:
         logger.warning(
             "cutout: no supported animal detected (yolo=%s, conf>=%.2f, size=%dx%d)",
@@ -1333,6 +1588,8 @@ def matte_foreground_with_meta(
         person_result = PersonAwareResult(skipped_reason="segmenter_not_sam2")
     else:
         person_result = PersonAwareResult(skipped_reason="disabled")
+
+    trace.mark("after_sam2", segmenter=seg.segmenter_used)
 
     diag.segmenter_used = seg.segmenter_used
     diag.segmenter_fallback = seg.fallback
@@ -1407,7 +1664,16 @@ def matte_foreground_with_meta(
             diagnostics=diag.to_dict(),
         )
 
-    alpha = _run_vitmatte(rgb, seg.trimap, resolved_model, resolved_device)
+    # ROI 크롭 매팅 — 알파는 원본 (H, W) 그대로 돌아온다 (_run_vitmatte_roi 참고).
+    alpha, roi_info = _run_vitmatte_roi(
+        rgb, seg.trimap, resolved_model, resolved_device, crop_bbox=crop_bbox
+    )
+    diag.extra["vitmatte_roi"] = roi_info
+    diag.extra["vitmatte_attention"] = dict(
+        _vitmatte_attention_status.get(f"{resolved_model}::{resolved_device}") or {"active": False, "reason": "unknown"}
+    )
+    if trace.enabled:
+        diag.extra["rss_trace"] = trace.to_dict()
 
     # 접지/투영 그림자는 전경이 아니다 — 알파에서 증거 기반으로만 걷어낸다.
     alpha_before_shadow = alpha

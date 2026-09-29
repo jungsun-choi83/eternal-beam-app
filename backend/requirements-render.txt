@@ -24,7 +24,9 @@ PyJWT[crypto]>=2.8.0
 python-dotenv==1.0.1
 requests>=2.31.0
 torch>=2.1.0
-transformers>=4.57.0
+# 청크 어텐션 패치(vitdet_chunked_attention.py)가 이 버전의 VitDet 내부 구조에서
+# 검증됐다. 올릴 때는 test_vitdet_chunked_attention.py 를 다시 돌려 확인한다.
+transformers==5.14.1
 
 anthropic>=1.0.0
 modal>=0.64.0
