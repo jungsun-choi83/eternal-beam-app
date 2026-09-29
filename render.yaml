@@ -4,7 +4,7 @@ services:
   - type: web
     name: eternal-beam-video-api
     region: singapore
-    plan: standard
+    plan: starter
     runtime: docker
     dockerfilePath: ./Dockerfile
     autoDeploy: true
@@ -134,7 +134,7 @@ services:
   - type: worker
     name: eternal-beam-generation-worker
     region: singapore
-    plan: starter
+    plan: standard
     runtime: docker
     dockerfilePath: ./Dockerfile
     dockerCommand: python -m backend.workers.pet_generation_worker
