@@ -153,6 +153,19 @@ services:
         value: "INFO"
       - key: GENERATION_RUN_LEASE_SECONDS
         value: "300"
+      # ── 누끼(SAM2/ViTMatte) 메모리 상한 (OOM 최적화 3단계, 워커 전용) ──
+      # 2GB 워커 안에서 CPU 추론의 스레드 풀·malloc 아레나가 RSS 를 키우지
+      # 않게 한다. OMP/MKL 스레드 1 = oneDNN/BLAS 가 스레드별 스크래치를
+      # 여러 벌 잡지 않는다(torch.set_num_threads(1) 과 짝, vitmatte_service).
+      # MALLOC_ARENA_MAX=2 = glibc 가 스레드마다 별도 힙 아레나를 늘려 반환
+      # 안 된 메모리를 쌓아 두지 않게 한다. 웹 서비스에는 넣지 않는다 —
+      # 요청 동시성이 있는 프로세스라 별도 판단이 필요하다.
+      - key: OMP_NUM_THREADS
+        value: "1"
+      - key: MKL_NUM_THREADS
+        value: "1"
+      - key: MALLOC_ARENA_MAX
+        value: "2"
       # BREATHING/Phase 6-7 모션 생성(video_motion_providers.live_generation_
       # allowed(), motion_video_service.py 가 호출)의 실 프로바이더 대량 과금
       # 게이트. GENERATION_MOCK(아래)과는 별개 스위치 — GENERATION_MOCK 은

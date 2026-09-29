@@ -344,6 +344,32 @@ def _load_yolo(model_name: str):
     return load_yolo(model_name)
 
 
+_torch_threads_configured = False
+
+
+def _configure_torch_threads() -> None:
+    """
+    OOM 최적화 3단계 (저위험): CPU 추론을 intra-op 스레드 1개로 고정한다.
+
+    2GB 워커에서 oneDNN/BLAS 는 스레드마다 스크래치 버퍼를 따로 잡고, 그 위에
+    glibc 가 스레드별 malloc 아레나를 늘린다 — 스레드 8개면 같은 forward 가
+    RSS 를 수백 MB 더 먹는다. 워커 env(OMP_NUM_THREADS/MKL_NUM_THREADS=1,
+    MALLOC_ARENA_MAX=2, render.yaml)와 짝을 이룬다: env 는 OpenMP 런타임 초기화
+    전에만 먹히고, 이 호출은 torch 가 이미 초기화된 뒤에도 확실히 적용된다.
+    결과 알파는 바뀌지 않는다(같은 연산, 스레드 분할만 다르다). 한 번만 적용.
+    """
+    global _torch_threads_configured
+    if _torch_threads_configured:
+        return
+    try:
+        import torch
+
+        torch.set_num_threads(1)
+        _torch_threads_configured = True
+    except Exception:  # noqa: BLE001 — 스레드 설정 실패가 로딩을 막으면 안 된다
+        logger.exception("torch.set_num_threads(1) failed; keeping default thread count")
+
+
 def _load_vitmatte(model_name: str, device: str):
     key = f"{model_name}::{device}"
     if key not in _vitmatte_cache:
@@ -353,6 +379,7 @@ def _load_vitmatte(model_name: str, device: str):
             raise RuntimeError(
                 "transformers/torch가 필요합니다: pip install transformers torch"
             ) from e
+        _configure_torch_threads()
         processor = VitMatteImageProcessor.from_pretrained(model_name)
         model = VitMatteForImageMatting.from_pretrained(model_name)
         model.to(device)
@@ -381,6 +408,7 @@ def _load_sam2(model_name: str, device: str):
                 "SAM2를 쓰려면 transformers>=4.57(SAM2 지원 버전)가 필요합니다: "
                 "pip install -U transformers"
             ) from e
+        _configure_torch_threads()
         model = Sam2Model.from_pretrained(model_name)
         model.to(device)
         model.eval()
@@ -715,7 +743,9 @@ def _sam2_candidates(
 
     inputs = processor(**proc_kwargs).to(device)
 
-    with torch.no_grad():
+    # inference_mode: no_grad 에 더해 version counter/뷰 추적까지 끈다 — 추론
+    # 전용 텐서라 autograd 메타데이터 할당이 사라진다(출력 알파는 동일).
+    with torch.inference_mode():
         outputs = model(**inputs, multimask_output=multimask)
 
     masks = processor.post_process_masks(outputs.pred_masks.cpu(), inputs["original_sizes"])[0]
@@ -1021,7 +1051,7 @@ def _run_vitmatte(rgb: np.ndarray, trimap: np.ndarray, model_name: str, device: 
             handles.append(decoder.register_forward_pre_hook(_before_decoder))
             handles.append(decoder.register_forward_hook(_after_decoder))
     try:
-        with torch.no_grad():
+        with torch.inference_mode():
             alphas = model(**inputs).alphas
     finally:
         for h in handles:

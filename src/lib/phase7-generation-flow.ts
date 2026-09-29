@@ -19,11 +19,13 @@
  */
 
 import {
+  cancelGenerationRun,
   GenerationRunError,
   getGenerationRun,
   getRunPlayback,
   isTerminalRunStatus,
   pollGenerationRun,
+  retryGenerationRun,
   startGenerationRun,
   type GenerationRun,
   type PollOptions,
@@ -77,7 +79,62 @@ export async function runPhase7Generation(
   // 첫 폴링 tick(최대 intervalMs)을 기다리지 않고 방금 만든/찾은 실행 상태를
   // 곧바로 보여준다 — 진행 화면이 잠깐이라도 빈 채로 있지 않게 한다.
   params.poll?.onProgress?.(started);
-  const run = await pollGenerationRun(started.run_id, params.poll ?? {}, deps);
+  const run = await pollUntilStopped(started.run_id, params.poll, deps);
+  return finalizeRunOutcome(run, deps);
+}
+
+/**
+ * 종료 상태까지 폴링하되, **이 화면이 포기하면 서버 쪽 실행도 멈춘다.**
+ *
+ * 폴링 타임아웃은 사용자에게 "다시 시도" 를 보여주는 순간이다. 그때 서버의
+ * 실행을 RUNNING 으로 남겨 두면 (1) Retry 가 같은 실행에 다시 합류해 또
+ * 30분을 기다리고, (2) 워커가 lease 만료마다 그 실행을 되살려 새 펫보다
+ * 먼저 돌린다. 그래서 여기서 명시적으로 취소한다 — 취소는 best-effort 이고
+ * (실패해도 원래 오류를 던진다), 이후 Retry 는 retryPhase7Generation 으로
+ * 같은 실행을 QUEUED 로 되돌린다(유료 provider 작업은 fingerprint 로 재사용).
+ *
+ * 탭을 닫거나 로그아웃하는 것은 여기 오지 않는다 — 그 경우 실행은 계속된다.
+ */
+async function pollUntilStopped(
+  runId: string,
+  poll: PollOptions | undefined,
+  deps: RunApiDeps
+): Promise<GenerationRun> {
+  try {
+    return await pollGenerationRun(runId, poll ?? {}, deps);
+  } catch (e) {
+    if (e instanceof GenerationRunError && e.code === "RUN_POLL_TIMEOUT") {
+      try {
+        await cancelGenerationRun(runId, "poll_timeout", deps);
+      } catch {
+        // 취소 실패는 원래 오류를 가리지 않는다 — 서버의 복구 상한이 뒷받침한다.
+      }
+    }
+    throw e;
+  }
+}
+
+/**
+ * Retry 버튼 — **같은 실행을 명시적으로 되살린다.** 서버가 FAILED / CANCELLED /
+ * RECOVERY_REQUIRED 를 QUEUED 로 옮기고(복구 예산 0, 이미 만든 상류 계보는
+ * 재사용), 그 뒤는 처음 실행과 같이 폴링 → 재생 해석이다. 예전 Retry 는
+ * 확인(startGenerationRun)을 다시 불렀는데, 같은 idempotency_key 는 같은
+ * 실행을 그대로 돌려주므로 FAILED 실행은 곧바로 다시 실패로 끝났다.
+ */
+export async function retryPhase7Generation(
+  params: { runId: string; petId: string; contentId: string; poll?: PollOptions },
+  deps: RunApiDeps = {}
+): Promise<Phase7Outcome> {
+  const retried = await retryGenerationRun(params.runId, deps);
+  markGenerationStarted({
+    contentId: params.contentId,
+    petId: params.petId,
+    runId: retried.run_id,
+  });
+  params.poll?.onProgress?.(retried);
+  const run = isTerminalRunStatus(retried.status)
+    ? retried
+    : await pollUntilStopped(retried.run_id, params.poll, deps);
   return finalizeRunOutcome(run, deps);
 }
 
@@ -128,7 +185,7 @@ export async function resumePhase7Generation(
   params.poll?.onProgress?.(current);
   const run = isTerminalRunStatus(current.status)
     ? current
-    : await pollGenerationRun(current.run_id, params.poll ?? {}, deps);
+    : await pollUntilStopped(current.run_id, params.poll, deps);
   return finalizeRunOutcome(run, deps);
 }
 

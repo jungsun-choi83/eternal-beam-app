@@ -54,6 +54,7 @@ import { ensurePetRegistered } from "@/lib/pet-registry-api";
 import {
   phase7GenerationEnabled,
   phase7PipelinePatch,
+  retryPhase7Generation,
   runPhase7Generation,
   resumePhase7Generation,
   type Phase7Outcome,
@@ -1137,6 +1138,49 @@ function PreviewScreenInner({
 
   // ── Phase 4 — 진행 화면 ────────────────────────────────────────────────
   // Phase 7 제출/재개가 도는 동안, 그리고 그것이 **실제로 제출을 시도한 뒤**
+  // ── Retry (Phase 7) ──────────────────────────────────────────────────────
+  // 실패 화면의 "다시 시도" 는 확인(handleConfirm)을 다시 누르는 것이 **아니다**.
+  // 확인은 같은 idempotency_key 로 같은 실행에 합류하므로, FAILED / CANCELLED
+  // 실행은 폴링 없이 곧바로 같은 오류로 끝났고 서버에서는 아무것도 바뀌지
+  // 않았다. 이제는 알고 있는 run_id 로 명시적 retry API 를 불러 그 실행을
+  // QUEUED 로 되돌린다. run_id 를 모르면(실행이 만들어지기 전의 네트워크
+  // 오류 등) 확인 경로로 떨어져 새로 시작한다.
+  const handleRetry = useCallback(async () => {
+    if (hasIdle || generatingRef.current) return;
+    const meta = getPendingCutoutMeta();
+    const record = meta ? readActiveGeneration(meta.contentId) : null;
+    const runId = runState?.run_id ?? record?.runId ?? null;
+    const petId = meta
+      ? (pipeline?.phase1_intake?.pet_id ?? getEternalBeamPetId(meta.contentId))
+      : null;
+    if (!meta || !runId || !petId) {
+      await handleConfirm();
+      return;
+    }
+    generatingRef.current = true;
+    runAttemptedRef.current = true;
+    setGenError(null);
+    setGenErrorRecoverable(false);
+    setGenerating(true);
+    try {
+      const outcome = await retryPhase7Generation({
+        runId,
+        petId,
+        contentId: meta.contentId,
+        poll: { onProgress: (run) => setRunState(run) },
+      });
+      await finalizeOutcome(outcome, petId, meta.contentId, meta.displayUrl);
+    } catch (e) {
+      const message = e instanceof Error && e.message ? e.message : String(e);
+      console.warn("[preview] Phase 7 generation retry failed", e);
+      setGenError(message);
+      setGenErrorRecoverable(isRecoverableErrorCode((e as { code?: string } | undefined)?.code));
+    } finally {
+      generatingRef.current = false;
+      setGenerating(false);
+    }
+  }, [hasIdle, runState, pipeline, handleConfirm, finalizeOutcome]);
+
   // 실패했을 때는 조정 UI 대신 이 화면을 보여준다. 순수 클라이언트 검증
   // 오류(사진 없음 등, runAttemptedRef 가 아직 false)는 여기 해당하지 않고
   // 기존 조정 화면의 인라인 오류 문구로 남는다.
@@ -1159,7 +1203,7 @@ function PreviewScreenInner({
         language={language}
         previewImageUrl={cutoutDisplay}
         onBack={onBack}
-        onRetry={showGenerationError ? handleConfirm : undefined}
+        onRetry={showGenerationError ? handleRetry : undefined}
       />
     );
   }

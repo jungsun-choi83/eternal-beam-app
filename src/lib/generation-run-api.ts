@@ -155,6 +155,42 @@ export async function getRunPlayback(
   );
 }
 
+/**
+ * 명시적 재시도 — 서버가 FAILED / CANCELLED / RECOVERY_REQUIRED 실행을 같은
+ * 실행 id 그대로 QUEUED 로 되돌린다(복구 예산 초기화, 계보 재사용). 이미
+ * 진행 중이거나 PUBLISHED 면 그 상태를 그대로 돌려준다.
+ */
+export async function retryGenerationRun(
+  runId: string,
+  deps: RunApiDeps = {}
+): Promise<GenerationRun> {
+  return authedRequest<GenerationRun>(
+    `/api/v1/pet/generation-runs/${encodeURIComponent(runId)}/retry`,
+    { method: "POST" },
+    deps
+  );
+}
+
+/**
+ * 명시적 정지 — 활성 실행을 CANCELLED 로 옮기고 워커 lease 를 비운다. 이후
+ * 워커는 이 실행을 자동으로 다시 집지 않는다. 이미 끝난 실행은 그대로다.
+ */
+export async function cancelGenerationRun(
+  runId: string,
+  reason: string = "user_cancelled",
+  deps: RunApiDeps = {}
+): Promise<GenerationRun> {
+  return authedRequest<GenerationRun>(
+    `/api/v1/pet/generation-runs/${encodeURIComponent(runId)}/cancel`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason }),
+    },
+    deps
+  );
+}
+
 /** 실행이 끝났는가 — 워커가 더 진행시키지 않는 상태들. */
 export function isTerminalRunStatus(status: string): boolean {
   return ["PUBLISHED", "FAILED", "CANCELLED", "RECOVERY_REQUIRED"].includes(status);

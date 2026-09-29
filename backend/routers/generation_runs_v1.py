@@ -29,6 +29,13 @@ class ReplacementGenerationRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=1000)
 
 
+class CancelGenerationRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: 왜 멈추는가 — 진단용 자유 문자열 (예: user_cancelled, poll_timeout).
+    reason: str = Field(default="user_cancelled", min_length=1, max_length=200)
+
+
 class GenerationRunResponse(BaseModel):
     run_id: str
     user_id: str
@@ -60,6 +67,7 @@ class GenerationRunResponse(BaseModel):
     worker_id: str | None = None
     lease_expires_at: str | None = None
     next_attempt_at: str | None = None
+    lease_recoveries: int = 0
 
 
 def _response(run: service.PetGenerationRun) -> GenerationRunResponse:
@@ -213,6 +221,28 @@ async def retry_generation_run(
 ):
     try:
         run = await service.retry_generation_run(user_id=user.user_id, run_id=run_id)
+    except service.PetGenerationRunError as exc:
+        raise _http(exc) from exc
+    return _response(run)
+
+
+@router.post("/{run_id}/cancel", response_model=GenerationRunResponse)
+async def cancel_generation_run(
+    run_id: str,
+    body: CancelGenerationRunRequest | None = None,
+    user: AuthedUser = Depends(require_user),
+):
+    """
+    명시적 정지. 활성 실행을 CANCELLED 로 옮기고 lease 를 비운다 — 워커는 다음
+    fenced 쓰기에서 멈추고, 이 실행은 다시 자동으로 집히지 않는다. 이미 끝난
+    실행은 그대로 돌려준다(멱등).
+    """
+    try:
+        run = await service.cancel_generation_run(
+            user_id=user.user_id,
+            run_id=run_id,
+            reason=(body.reason if body else "user_cancelled"),
+        )
     except service.PetGenerationRunError as exc:
         raise _http(exc) from exc
     return _response(run)
