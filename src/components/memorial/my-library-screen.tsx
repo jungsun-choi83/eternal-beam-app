@@ -852,6 +852,7 @@ export function MyLibraryScreen({
     return (
       <ThemeSelectionScreen
         cutoutImage={null}
+        cutoutReadiness="ready"
         isLibraryFlow
         libraryPublication={libraryPublication}
         selectedTheme={selectedTheme}

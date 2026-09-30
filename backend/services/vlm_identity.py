@@ -176,6 +176,24 @@ def model_name() -> str:
     return (os.getenv(_MODEL_ENV) or "").strip() or _DEFAULT_MODEL
 
 
+def unavailable_reason() -> Optional[str]:
+    """
+    지금 구성으로 VLM 을 **부를 수 없는** 이유. 부를 수 있으면 None.
+
+    네트워크 호출은 없다 — 유료 생성 전에 "이 QA 구성으로 PASS 가 가능한가"를
+    판단하는 사전 점검용이다 (canonical_pet_service.build_canonical).
+    """
+    if not is_enabled():
+        return f"{_ENABLED_ENV} 가 꺼져 있습니다"
+    import importlib.util
+
+    if importlib.util.find_spec("anthropic") is None:
+        return "anthropic 패키지가 설치되어 있지 않습니다"
+    if not ((os.getenv("ANTHROPIC_API_KEY") or "").strip() or (os.getenv("ANTHROPIC_AUTH_TOKEN") or "").strip()):
+        return "ANTHROPIC_API_KEY 가 설정되어 있지 않습니다"
+    return None
+
+
 # ── VLM 결과 캐시 (같은 이미지 중복 과금 방지) ──────────────────────────────
 # 한 번의 인테이크에서 pet_identity_service 와 pet_morphology_service 가 **같은**
 # 원본 레퍼런스를 각각 분석하고(pet_reference_set_service 가 두 프로필을 연달아

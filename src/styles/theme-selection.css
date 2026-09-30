@@ -84,6 +84,35 @@
   font-weight: 500;
 }
 
+.theme-select__cutout-loading,
+.theme-select__prepared-pet {
+  min-height: 4.5rem;
+  display: flex;
+  align-items: center;
+  gap: var(--eb-space-3);
+  padding: var(--eb-space-3);
+  border-radius: var(--eb-radius-lg);
+  color: var(--eb-text-2);
+}
+
+.theme-select__cutout-loading {
+  justify-content: center;
+}
+
+.theme-select__prepared-pet {
+  border: 1px solid var(--eb-hairline);
+  background: var(--eb-surface);
+  font-weight: 600;
+}
+
+.theme-select__prepared-pet-stage {
+  width: 3.5rem;
+  height: 3.5rem;
+  flex: 0 0 auto;
+  border-radius: var(--eb-radius-md);
+  overflow: hidden;
+}
+
 /* ── Filter pills ──────────────────────────────────────────────────────── */
 
 .theme-select__filters {

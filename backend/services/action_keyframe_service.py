@@ -492,7 +492,14 @@ async def build_keyframe(
     sign_url_fn: Optional[Callable[[Any], Optional[str]]] = None,
     skip_if_unchanged: bool = True,
     allow_canonical_reuse: bool = False,
+    pinned_canonical_version_id: Optional[str] = None,
+    pinned_canonical_version: Optional[int] = None,
 ) -> ActionKeyframe:
+    """
+    pinned_canonical_version_id / pinned_canonical_version: 생성 실행이 고정한
+    정본. 주어지면 **그 버전만** 읽는다 — "최신 정본"을 해석하지 않는다. 틱
+    사이에 다른 정본 버전이 생기거나 env 가 바뀌어도 키프레임 계보는 그대로다.
+    """
     from . import (
         action_keyframe_spec,
         canonical_image_providers,
@@ -533,10 +540,28 @@ async def build_keyframe(
         )
 
     # ── 정본 앵커 (소유권 검사 포함) ──────────────────────────────────────
+    pinned = pinned_canonical_version_id is not None or pinned_canonical_version is not None
+    if pinned and not (pinned_canonical_version_id and pinned_canonical_version):
+        raise ActionKeyframeError(
+            "PINNED_CANONICAL_INVALID",
+            "고정 정본은 id 와 version 이 모두 필요합니다.",
+            status=409,
+        )
     try:
-        canonical = await canonical_pet_service.get_canonical(user_id=uid, pet_id=pid)
+        # 고정된 실행은 그 버전만 읽는다 — 최신을 고르지 않는다.
+        canonical = await canonical_pet_service.get_canonical(
+            user_id=uid,
+            pet_id=pid,
+            **({"version": int(pinned_canonical_version)} if pinned else {}),
+        )
     except canonical_pet_service.CanonicalPetError as e:
         raise ActionKeyframeError(e.code, e.message, status=e.status) from e
+    if pinned and (not canonical or str(canonical.id or "") != str(pinned_canonical_version_id)):
+        raise ActionKeyframeError(
+            "PINNED_CANONICAL_NOT_FOUND",
+            "실행에 고정된 정본 버전을 불러오지 못했습니다.",
+            status=409,
+        )
     if not canonical:
         raise ActionKeyframeError(
             "CANONICAL_REQUIRED", "승인된 정본 펫이 없습니다 — 먼저 정본을 빌드하세요.", status=409
@@ -716,6 +741,20 @@ async def build_keyframe(
         **analyzer_versions(),
         "canonical_providers": [f"{p.name}:{p.model_name()}" for p in resolved_providers],
     }
+    if pinned:
+        # 상류 분석기(신원/세트 — VLM 플래그가 들어가는 부분) 스탬프는 **고정된
+        # 정본이 실제로 만들어진 값**이다, 현재 프로세스 env 가 아니다. 그러지
+        # 않으면 VLM 플래그만 달라진 워커가 같은 정본의 building 키프레임을
+        # 재개하지 못하고 새 버전을 (유료로) 만든다. 빌더/프롬프트/QA 코드
+        # 버전과 프로바이더 구성은 그대로 현재 값이다.
+        pinned_stamp = dict(getattr(canonical, "analyzer_versions", None) or {})
+        versions_stamp.update(
+            {
+                key: pinned_stamp[key]
+                for key in pet_reference_set_service.analyzer_versions()
+                if key in pinned_stamp
+            }
+        )
 
     # ── 멱등: 같은 정본/프롬프트/구성의 비-실패 최신 버전 재사용 ──────────
     # rows 는 정확히 한 번만 조회한다 — 바로 아래 resumable 판정에도 같은

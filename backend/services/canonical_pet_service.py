@@ -430,7 +430,19 @@ async def build_canonical(
     cutout_fn: Optional[Callable[[bytes], Optional[bytes]]] = None,
     sign_url_fn: Optional[Callable[[Any], Optional[str]]] = None,
     skip_if_unchanged: bool = True,
+    pinned_reference_set_id: Optional[str] = None,
+    pinned_reference_set_version: Optional[int] = None,
+    require_pass_capable_qa: bool = False,
 ) -> CanonicalVersion:
+    """
+    pinned_reference_set_id / pinned_reference_set_version: 생성 실행이 고정한
+    레퍼런스 세트. 주어지면 **그 세트만** get_set() 으로 읽는다 —
+    build_reference_set() 을 부르지 않고 "최신"도 해석하지 않는다. 틱 사이에
+    환경(PET_VLM_IDENTITY_ENABLED 등)이 바뀌어도 실행의 계보는 바뀌지 않는다.
+
+    require_pass_capable_qa: 유료 프로바이더 호출 전에, 현재 QA 구성으로 PASS 가
+    가능한지 확인한다. 불가능하면 과금 없이 CANONICAL_QA_NOT_CONFIGURED.
+    """
     from . import (
         canonical_image_providers,
         canonical_prompt,
@@ -457,13 +469,35 @@ async def build_canonical(
             "PROVIDER_NOT_CONFIGURED", "정본 이미지 프로바이더가 설정되지 않았습니다.", status=503
         )
 
-    # ── Phase 3 세트 보장 (소유권 포함, 멱등) ────────────────────────────
-    try:
-        refset = await pet_reference_set_service.build_reference_set(
-            user_id=uid, pet_id=pid, fetch_bytes=fetch_bytes, skip_if_unchanged=True
-        )
-    except pet_reference_set_service.PetReferenceSetError as e:
-        raise CanonicalPetError(e.code, e.message, status=e.status) from e
+    pinned = pinned_reference_set_id is not None or pinned_reference_set_version is not None
+    if pinned:
+        # ── 실행이 고정한 세트 — 다시 만들지도, 최신을 고르지도 않는다 ────
+        if not pinned_reference_set_id or not pinned_reference_set_version:
+            raise CanonicalPetError(
+                "PINNED_REFERENCE_SET_INVALID",
+                "고정 레퍼런스 세트는 id 와 version 이 모두 필요합니다.",
+                status=409,
+            )
+        try:
+            refset = await pet_reference_set_service.get_set(
+                user_id=uid, pet_id=pid, version=int(pinned_reference_set_version)
+            )
+        except pet_reference_set_service.PetReferenceSetError as e:
+            raise CanonicalPetError(e.code, e.message, status=e.status) from e
+        if not refset or str(refset.id or "") != str(pinned_reference_set_id):
+            raise CanonicalPetError(
+                "PINNED_REFERENCE_SET_NOT_FOUND",
+                "실행에 고정된 레퍼런스 세트를 불러오지 못했습니다.",
+                status=409,
+            )
+    else:
+        # ── Phase 3 세트 보장 (소유권 포함, 멱등) ────────────────────────
+        try:
+            refset = await pet_reference_set_service.build_reference_set(
+                user_id=uid, pet_id=pid, fetch_bytes=fetch_bytes, skip_if_unchanged=True
+            )
+        except pet_reference_set_service.PetReferenceSetError as e:
+            raise CanonicalPetError(e.code, e.message, status=e.status) from e
 
     profile = await pet_identity_service.get_profile(
         user_id=uid, pet_id=pid, version=refset.identity_profile_version
@@ -473,6 +507,11 @@ async def build_canonical(
         **analyzer_versions(),
         "canonical_providers": [f"{p.name}:{p.model_name()}" for p in resolved_providers],
     }
+    if pinned:
+        # 스탬프의 세트 분석기 부분은 **고정된 세트가 실제로 분석된 버전**이다 —
+        # 현재 프로세스 env 가 아니다. 그러지 않으면 VLM 플래그만 달라진 워커가
+        # 같은 세트의 building 버전을 재개하지 못하고 새 버전을 (유료로) 만든다.
+        versions_stamp = {**versions_stamp, **dict(getattr(refset, "analyzer_versions", None) or {})}
 
     # ── 멱등: 같은 세트/프롬프트/프로바이더 구성의 비-실패 최신 버전 재사용 ─
     if skip_if_unchanged:
@@ -482,6 +521,7 @@ async def build_canonical(
             if (
                 latest.get("status") in (STATUS_COMPLETE, STATUS_REVIEW)
                 and latest.get("reference_set_version") == refset.version
+                and (not pinned or str(latest.get("reference_set_id") or "") == str(refset.id or ""))
                 and latest.get("prompt_version") == canonical_prompt.CANONICAL_PROMPT_VERSION
                 # QA 버전은 비교에서 빠진다 — 판정이 바뀌었다고 이미지를 다시 사지 않는다.
                 and generation_versions(latest.get("analyzer_versions"))
@@ -489,6 +529,20 @@ async def build_canonical(
             ):
                 cands = await _candidate_rows(str(latest["id"]))
                 return _to_version(latest, cands, deduplicated=True)
+
+    # ── 유료 호출 전: 이 QA 구성으로 PASS 가 가능한가 ────────────────────
+    # 핵심 검사에 VLM 확언이 들어 있는데 VLM 을 부를 수 없으면 모든 후보가
+    # REVIEW 상한에 걸려 시도 상한(primary+fallback)을 전부 태운다. PASS 조건은
+    # 낮추지 않는다 — 구성 오류로 닫는다. 버전 행도 만들지 않는다.
+    if require_pass_capable_qa and canonical_qa.pass_requires_vlm():
+        vlm_unavailable = vlm_identity.unavailable_reason()
+        if vlm_unavailable:
+            raise CanonicalPetError(
+                "CANONICAL_QA_NOT_CONFIGURED",
+                "정본 QA 가 PASS 를 낼 수 없는 구성입니다 — 유료 생성을 제출하지 않았습니다 "
+                f"({vlm_unavailable}).",
+                status=503,
+            )
 
     # ── 입력 레퍼런스 조립 ────────────────────────────────────────────────
     picks = select_input_references(refset)

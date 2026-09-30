@@ -166,14 +166,14 @@ test("selectTheme(카드 탭)은 기기·서버 부작용이 없다 — 강조�
 
 // ── 7. 그리드 레이아웃 — 캐러셀/큰 미리보기를 대체한다 ──────────────────────
 
-test("큰 라이브 미리보기(stage)와 캐러셀이 사라졌다 — 카드가 기기로 새지 않는 그리드다", () => {
+test("큰 라이브 미리보기와 캐러셀이 사라졌다 — 준비 상태의 작은 누끼 표시는 허용한다", () => {
   const src = read(THEME_SEL);
   assert.doesNotMatch(src, /theme-select__stage/);
   assert.doesNotMatch(src, /theme-selection-screen__preview/);
   assert.doesNotMatch(src, /theme-selection-screen__carousel-card/);
   assert.doesNotMatch(src, /snap-x snap-mandatory/);
   assert.doesNotMatch(src, /<PetIdleDisplay/);
-  assert.doesNotMatch(src, /<CutoutStage/);
+  assert.match(src, /theme-select__prepared-pet-stage/);
   assert.doesNotMatch(src, /<ThemeBackgroundVideo/);
   assert.match(src, /theme-select__grid/);
   assert.match(src, /<ThemeGridCard/);
@@ -236,7 +236,7 @@ test("Create 흐름 스테퍼는 computeCreateFlowSteps 로 실제 상태에서 
   const src = read(THEME_SEL);
   assert.match(src, /import \{ computeCreateFlowSteps \} from "@\/lib\/create-flow-steps";/);
   assert.match(src, /computeCreateFlowSteps\(hasPreparedPet\)/);
-  assert.match(src, /const hasPreparedPet = Boolean\(cutoutImage\)/);
+  assert.match(src, /const hasPreparedPet = cutoutReadiness === "ready"/);
 });
 
 test("Create 흐름 스테퍼는 My Library(테마 변경) 흐름에서는 렌더되지 않는다", () => {
@@ -263,6 +263,7 @@ test("My Library 는 여전히 같은 props 계약으로 ThemeSelectionScreen �
   assert.match(call, /\bisLibraryFlow\b/);
   assert.match(call, /libraryPublication=\{libraryPublication\}/);
   assert.match(call, /cutoutImage=\{null\}/);
+  assert.match(call, /cutoutReadiness="ready"/);
   assert.match(call, /onSelectTheme=\{setSelectedTheme\}/);
   assert.match(call, /onSelectCustomBackground=/);
 

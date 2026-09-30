@@ -234,7 +234,7 @@ def analyzer_versions(providers: Sequence[Any]) -> dict[str, Any]:
         "motion_spec": motion_spec.MOTION_SPEC_VERSION,
         "contract": motion_spec.PHASE6_CONTRACT_VERSION,
         "prompt": motion_video_prompts.MOTION_VIDEO_PROMPT_VERSION,
-        "qa": motion_video_qa.MOTION_VIDEO_QA_VERSION,
+        "qa": motion_video_qa.active_qa_version(),
         "sampling": motion_video_qa.FRAME_SAMPLING_VERSION,
         "vlm_motion_qa": vlm_identity.VLM_MOTION_QA_VERSION,
         "providers": [f"{p.name}:{p.model_name()}" for p in providers],
@@ -1553,7 +1553,7 @@ async def reevaluate_motion_candidate(
     previous_qa = dict(candidate.get("qa_result") or {})
     previous_vlm = dict(previous_qa.get("vlm") or {})
     if (
-        previous_qa.get("qa_version") == motion_video_qa.MOTION_VIDEO_QA_VERSION
+        previous_qa.get("qa_version") == motion_video_qa.active_qa_version()
         and previous_qa.get("sampling_version") == motion_video_qa.FRAME_SAMPLING_VERSION
         and previous_vlm.get("source") == vlm_identity.VLM_MOTION_QA_VERSION
     ):
@@ -1660,7 +1660,7 @@ async def reevaluate_motion_candidate(
     if selected:
         status = STATUS_COMPLETE
         selection_reason = (
-            f"best PASS candidate after {motion_video_qa.MOTION_VIDEO_QA_VERSION}: "
+            f"best PASS candidate after {motion_video_qa.active_qa_version()}: "
             f"{selected['provider']} attempt {selected['attempt']}"
         )
     elif any(row.get("decision") == motion_video_qa.REVIEW for row in candidates):
@@ -1673,7 +1673,7 @@ async def reevaluate_motion_candidate(
     versions = dict(version_row.get("analyzer_versions") or {})
     versions.update(
         {
-            "qa": motion_video_qa.MOTION_VIDEO_QA_VERSION,
+            "qa": motion_video_qa.active_qa_version(),
             "sampling": motion_video_qa.FRAME_SAMPLING_VERSION,
             "vlm_motion_qa": vlm_identity.VLM_MOTION_QA_VERSION,
         }
@@ -1821,7 +1821,7 @@ async def qa_calibration_report(*, user_id: str) -> dict[str, Any]:
             buckets["false_fail"] += 1
 
     return {
-        "qa_version": motion_video_qa.MOTION_VIDEO_QA_VERSION,
+        "qa_version": motion_video_qa.active_qa_version(),
         "sample_count": len(pairs),
         "buckets": buckets,
         "matrix": matrix,

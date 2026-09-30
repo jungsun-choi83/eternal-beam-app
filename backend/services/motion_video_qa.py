@@ -67,8 +67,47 @@ logger = logging.getLogger(__name__)
 #     REVIEW 로 내리지 않는다. 검사값·사유·증거는 보존하고 모든 FAIL 은 계속 차단.
 # v9: BREATHING temporal v3 의 전역 이동/카메라 drift verdict 를 hard FAIL 로 소비.
 #     다른 모션과 BREATHING 의 identity/anatomy/general QA 집계는 v8 그대로다.
+# v10 (플래그 뒤): 판정 단계를 순수 함수(apply_judgement)로 분리하고 규칙 집합을
+#      추가한다. MOTION_VIDEO_QA_RULESET=v10 일 때만 켜지며 기본은 v9 그대로다.
+#      (a) VLM camera_stable/major_flicker 소견은 결정론 시간축 게이트(스케일·
+#          이동·침하)와 temporal_stability 가 전부 통과하면 자문(advisory)이다;
+#          MICRO 의 unintended_large_motion 은 같은 조건에서 FAIL→REVIEW 로 강등.
+#      (b) global_pulse 의 위반 게이트가 전부 경계 구간(≤ 1+band, 기본 15%) 이고
+#          호흡 증거(torso_snr·scale_oscillation)가 강하면 FAIL 대신 REVIEW.
+#      (d) 한계의 hard_fail_ratio(기본 1.5)배 이상, scene_cut/duplicated_pet/
+#          human_present, VLM anatomy/same_pet/motion=no, identity FAIL, 규격
+#          위반은 그대로 hard FAIL. FAIL→REVIEW 강등은 절대 자문으로 풀리지 않는다.
+#      + 휴리스틱 구조 FAIL(strong_contradiction / body_deformation)은 VLM 이
+#        해부학·동일 개체를 확언하고 경계 구간 안이면 REVIEW 로 강등.
+#      저장된 qa_result 는 rescore_stored_qa_result 로 영상 없이 재판정할 수 있다
+#      (backend/scripts/replay_motion_qa_rules.py).
 MOTION_VIDEO_QA_VERSION = "motion-video-qa-v9"
+MOTION_VIDEO_QA_VERSION_V10 = "motion-video-qa-v10"
 FRAME_SAMPLING_VERSION = "frame-sampling-v2"
+
+RULESET_V9 = "v9"
+RULESET_V10 = "v10"
+#: 환경 변수로 규칙 집합을 고른다. 미설정/알 수 없는 값 = v9 (현재 동작).
+MOTION_VIDEO_QA_RULESET_ENV = "MOTION_VIDEO_QA_RULESET"
+_QA_VERSION_BY_RULESET = {
+    RULESET_V9: MOTION_VIDEO_QA_VERSION,
+    RULESET_V10: MOTION_VIDEO_QA_VERSION_V10,
+}
+
+
+def active_ruleset(override: Optional[str] = None) -> str:
+    """인자 > 환경 변수 > v9. 알 수 없는 값은 조용히 v9 로 닫힌다(fail-closed)."""
+    value = str(override or os.getenv(MOTION_VIDEO_QA_RULESET_ENV) or RULESET_V9).strip().lower()
+    if value in ("motion-video-qa-v10", "10"):
+        value = RULESET_V10
+    elif value in ("motion-video-qa-v9", "9"):
+        value = RULESET_V9
+    return value if value in _QA_VERSION_BY_RULESET else RULESET_V9
+
+
+def active_qa_version(ruleset: Optional[str] = None) -> str:
+    """현재 규칙 집합의 qa_version 스탬프 — 후보 qa_result / analyzer_versions 에 기록된다."""
+    return _QA_VERSION_BY_RULESET[active_ruleset(ruleset)]
 
 #: 결정론적 샘플 지점. 마지막은 끝 구간을 순차 디코딩한 실제 마지막 프레임.
 # v1 의 1/4 간격은 5초 동안 약 두 번 반복되는 BREATHING 과 위상이 겹쳐
@@ -974,6 +1013,7 @@ def evaluate_motion_video(
     target_keyframe_rgb: Optional[np.ndarray],
     vlm_qa: Optional[dict[str, Any]],
     temporal_qa: Optional[dict[str, Any]] = None,
+    ruleset: Optional[str] = None,
 ) -> dict[str, Any]:
     from .pet_identity_service import signature_similarity
 
@@ -981,11 +1021,6 @@ def evaluate_motion_video(
     reasons: list[str] = []
     identity_similarity: Optional[float] = None
     frame_similarities: list[Optional[float]] = []
-
-    qa_requirements = ((spec_contract.get("requirements") or {}).get("qa") or {})
-    structural_required = list(((qa_requirements.get("structural_anatomy") or {}).get("required_checks") or []))
-    identity_required = list(((qa_requirements.get("identity") or {}).get("required_checks") or []))
-    motion_required = list(((qa_requirements.get("motion_specific") or {}).get("required_checks") or []))
 
     id_pass = _f("PHASE6_QA_IDENTITY_PASS", 0.55)
     id_fail = _f("PHASE6_QA_IDENTITY_FAIL", 0.20)
@@ -1212,6 +1247,216 @@ def evaluate_motion_video(
         checks["starts_at_start_pose"] = _endpoint(first_sig, start_sig, "start_pose")
         checks["reaches_target_pose"] = _endpoint(last_sig, target_sig, "target_pose")
 
+    judged = apply_judgement(
+        checks=checks,
+        reasons=reasons,
+        spec_contract=spec_contract,
+        vlm_qa=vlm_qa,
+        temporal_qa=temporal_qa,
+        structural_evidence=structural_evidence,
+        ruleset=ruleset,
+    )
+
+    return {
+        "qa_version": active_qa_version(ruleset),
+        "ruleset": judged["ruleset"],
+        "sampling_version": FRAME_SAMPLING_VERSION,
+        "sample_fractions": list(SAMPLE_FRACTIONS),
+        "identity_similarity": identity_similarity,
+        # v4 — 신원 검사가 무엇을 어떻게 쟀는지 (mode: full_frame|pet_normalized).
+        # LOCOMOTION 이 아니면 rule=worst_frame 의 기존 판정 그대로다.
+        "identity_evaluation": identity_evaluation,
+        "frame_similarities": frame_similarities,
+        "loop_metrics": loop_metrics,
+        "checks": judged["checks"],
+        "domains": judged["domains"],
+        "advisories": judged["advisories"],
+        # v10 — 판정 단계가 무엇을 완화/강등했는지 (v9 에서는 비어 있다).
+        "judgement": judged["judgement"],
+        "reasons": judged["reasons"],
+        "decision": judged["decision"],
+        # v1 은 source/model 만 남겨 REVIEW 의 실제 설명(notes)과 원 판정을
+        # 잃었다. 운영자가 직접 DB 를 추측하지 않도록 구조화 VLM 근거 전체를
+        # 후보 QA 결과에 보존한다.
+        "vlm": (dict(vlm_qa) if vlm_qa else None),
+        # v3 — BREATHING 시간축 증거 전체 (판정·지표·임계). 없으면 None.
+        "temporal": (dict(temporal_qa) if temporal_qa else None),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 판정 단계 (v10) — 결정론 측정값 + VLM + 시간축 증거 → decision
+#
+# evaluate_motion_video 의 후반부를 **순수 함수**로 분리했다. 같은 함수가
+#   * 라이브 경로 (프레임을 방금 잰 checks) 와
+#   * 오프라인 리플레이 (저장된 qa_result 에서 복원한 checks — rescore_stored_qa_result)
+# 를 판정한다. 규칙 집합(ruleset) 은 인자 > 환경 변수 > v9 순으로 정해지고,
+# v9 는 이전 동작과 바이트 단위로 같다.
+# ══════════════════════════════════════════════════════════════════════════
+
+#: 판정 단계가 **만들어 내는** 검사 — 저장된 qa_result 를 재판정할 때 이 키들은
+#: 버리고 vlm/temporal 근거에서 다시 만든다. 나머지 검사는 프레임 측정값이다.
+JUDGEMENT_CHECKS = frozenset(
+    {
+        "vlm_same_pet",
+        "vlm_anatomy",
+        "vlm_motion",
+        "vlm_composition",
+        "vlm_target_pose",
+        "temporal_breathing",
+    }
+)
+#: 판정 단계가 만들어 내는 사유의 접두어 — 재판정 시 제거 후 재생성.
+_JUDGEMENT_REASON_PREFIXES = (
+    "vlm",
+    "temporal_",
+    "advisory_checks_not_blocking",
+    "advisory_structural_fail_not_blocking",
+    "structural_heuristic_borderline",
+    "output_conformance:",
+)
+
+#: BREATHING 시간축의 전역 게이트 — (metric, threshold key, verdict reason tag).
+_TEMPORAL_GLOBAL_GATES = (
+    ("scale_range", "scale_pulse_max"),
+    ("translation_drift_frac_of_pet", "drift_max_frac"),
+    ("scale_trend", "sag_trend_max"),
+)
+
+
+def _default_temporal_thresholds() -> dict[str, float]:
+    from .breathing_temporal_qa import analyze_frames  # noqa: F401  (same env keys)
+
+    return {
+        "scale_pulse_max": _f("BREATHING_QA_SCALE_PULSE_MAX", 0.020),
+        "scale_strict": _f("BREATHING_QA_SCALE_STRICT", 0.010),
+        "drift_max_frac": _f("BREATHING_QA_DRIFT_MAX_FRAC", 0.020),
+        "sag_trend_max": _f("BREATHING_QA_SAG_TREND_MAX", 0.010),
+        "visible_osc_min": _f("BREATHING_QA_VISIBLE_OSC_MIN", 0.003),
+        "torso_snr_min": _f("BREATHING_QA_TORSO_SNR_MIN", 1.6),
+        "periodic_min": _f("BREATHING_QA_PERIODIC_MIN", 0.25),
+        "modulation_strong": _f("BREATHING_QA_MODULATION_STRONG", 0.45),
+        "head_ratio_max": _f("BREATHING_QA_HEAD_RATIO_MAX", 1.6),
+        "head_ratio_max_midband": _f("BREATHING_QA_HEAD_RATIO_MAX_MIDBAND", 1.2),
+    }
+
+
+def temporal_global_gate_ratios(temporal_qa: Optional[dict[str, Any]]) -> Optional[dict[str, float]]:
+    """
+    전역 게이트별 (측정값 / 한계) 비율. 지표가 없으면 None (판단 보류).
+
+    sag 게이트는 `trend > osc` 일 때만 활성이다(breathing_temporal_qa 와 동일).
+    비활성이면 비율을 0 으로 둔다 — 호흡 진폭이 추세보다 크면 침하가 아니다.
+    """
+    if not isinstance(temporal_qa, dict):
+        return None
+    metrics = temporal_qa.get("metrics") or {}
+    if not isinstance(metrics, dict) or not metrics:
+        return None
+    thresholds = {**_default_temporal_thresholds(), **dict(temporal_qa.get("thresholds") or {})}
+    ratios: dict[str, float] = {}
+    for metric, key in _TEMPORAL_GLOBAL_GATES:
+        value = metrics.get(metric)
+        limit = thresholds.get(key)
+        if not isinstance(value, (int, float)) or not isinstance(limit, (int, float)) or limit <= 0:
+            continue
+        ratio = float(value) / float(limit)
+        if metric == "scale_trend":
+            osc = metrics.get("scale_oscillation")
+            if isinstance(osc, (int, float)) and float(value) <= float(osc):
+                ratio = 0.0
+        ratios[metric] = round(ratio, 4)
+    return ratios or None
+
+
+def _breathing_evidence_strong(temporal_qa: dict[str, Any], knobs: dict[str, float]) -> tuple[bool, dict[str, Any]]:
+    metrics = temporal_qa.get("metrics") or {}
+    thresholds = {**_default_temporal_thresholds(), **dict(temporal_qa.get("thresholds") or {})}
+    snr = metrics.get("torso_snr")
+    osc = metrics.get("scale_oscillation")
+    snr_floor = float(thresholds["torso_snr_min"]) * knobs["snr_strong_mult"]
+    osc_floor = float(thresholds["visible_osc_min"]) * knobs["osc_strong_mult"]
+    ok = (
+        isinstance(snr, (int, float))
+        and isinstance(osc, (int, float))
+        and float(snr) >= snr_floor
+        and float(osc) >= osc_floor
+    )
+    return bool(ok), {
+        "torso_snr": snr,
+        "torso_snr_strong_min": round(snr_floor, 4),
+        "scale_oscillation": osc,
+        "scale_oscillation_strong_min": round(osc_floor, 5),
+    }
+
+
+def _v10_knobs() -> dict[str, float]:
+    return {
+        # 한계 대비 이 비율 안쪽이면 "경계 구간" — 강한 호흡 증거가 있을 때 REVIEW.
+        "band": _f("MOTION_QA_V10_BORDERLINE_BAND", 0.15),
+        # 한계의 이 배수 이상은 무조건 hard FAIL (경계 구간 규칙 적용 불가).
+        "hard_fail_ratio": _f("MOTION_QA_V10_HARD_FAIL_RATIO", 1.5),
+        # 강한 호흡 증거: torso_snr ≥ mult × torso_snr_min, osc ≥ mult × visible_osc_min.
+        "snr_strong_mult": _f("MOTION_QA_V10_TORSO_SNR_STRONG_MULT", 2.0),
+        "osc_strong_mult": _f("MOTION_QA_V10_OSC_STRONG_MULT", 2.0),
+    }
+
+
+def apply_judgement(
+    *,
+    checks: dict[str, str],
+    reasons: list[str],
+    spec_contract: dict[str, Any],
+    vlm_qa: Optional[dict[str, Any]],
+    temporal_qa: Optional[dict[str, Any]],
+    structural_evidence: Optional[dict[str, Any]],
+    ruleset: Optional[str] = None,
+    vlm_checks_fallback: Optional[dict[str, str]] = None,
+) -> dict[str, Any]:
+    """
+    checks/reasons 는 **복사**해서 다룬다 — 호출자의 측정값은 변하지 않는다.
+
+    vlm_checks_fallback: 구조화 VLM 근거(vlm dict)가 없을 때 대신 쓸 저장된
+    vlm_* 검사값 (qa-v1 행은 vlm 을 source/model 만 남겼다). 리플레이 전용 —
+    라이브 경로는 항상 vlm_qa 를 넘긴다. v10 의 VLM-대-시간축 규칙은 이 경우
+    근거가 없으므로 적용되지 않는다(보수적).
+
+    반환: decision / checks / reasons / domains / advisories / judgement / ruleset.
+    """
+    ruleset = active_ruleset(ruleset)
+    v10 = ruleset == RULESET_V10
+    knobs = _v10_knobs() if v10 else {}
+    checks = dict(checks)
+    reasons = list(reasons)
+    structural_evidence = dict(structural_evidence or {"enabled": False})
+    compat = spec_contract.get("video_compat") or {}
+    motion_class = str(spec_contract.get("motion_class") or "")
+
+    qa_requirements = ((spec_contract.get("requirements") or {}).get("qa") or {})
+    structural_required = list(((qa_requirements.get("structural_anatomy") or {}).get("required_checks") or []))
+    identity_required = list(((qa_requirements.get("identity") or {}).get("required_checks") or []))
+    motion_required = list(((qa_requirements.get("motion_specific") or {}).get("required_checks") or []))
+
+    judgement: dict[str, Any] = {
+        "ruleset": ruleset,
+        "knobs": knobs,
+        "downgrades": [],     # FAIL → REVIEW (여전히 차단)
+        "advisories": [],     # REVIEW → advisory (차단 해제, 근거 보존)
+        "hard_fails": [],     # 경계 규칙에서 명시적으로 제외된 명백한 위반
+    }
+    #: FAIL 에서 REVIEW 로 **강등된** 검사 — 자문 규칙이 이것을 다시 풀어 PASS 로
+    #: 만들면 안 된다 (fail-open 금지).
+    demoted_from_fail: set[str] = set()
+    extra_advisory: set[str] = set()
+    extra_findings: list[dict[str, Any]] = []
+
+    gate_ratios = temporal_global_gate_ratios(temporal_qa) if v10 else None
+    temporal_gates_pass = bool(
+        gate_ratios is not None
+        and all(r <= 1.0 for r in gate_ratios.values())
+        and checks.get("temporal_stability") == PASS
+    )
+
     # ── VLM 확인 ─────────────────────────────────────────────────────────
     def v(key: str) -> str:
         return str((vlm_qa or {}).get(key) or "unknown")
@@ -1234,27 +1479,58 @@ def evaluate_motion_video(
 
         composition = PASS
         if v("duplicated_pet") == "yes" or v("scene_cut") == "yes" or v("human_present") == "yes" and not (
-            (compat.get("allow_generated_hand")) and str(spec_contract.get("motion_class")) == "INTERACTION"
+            (compat.get("allow_generated_hand")) and motion_class == "INTERACTION"
         ):
             composition = FAIL
             reasons.append("vlm_composition_contaminated")
-        elif v("unintended_large_motion") == "yes" and str(spec_contract.get("motion_class")) == "MICRO":
-            composition = FAIL
-            reasons.append("vlm_unintended_large_motion")
+        elif v("unintended_large_motion") == "yes" and motion_class == "MICRO":
+            if v10 and temporal_gates_pass:
+                # (a) 결정론 전역 게이트(스케일/이동/침하)가 전부 한계 안인데 VLM 만
+                # "큰 움직임"이라 한다 — 이 검출기는 바로 그 판단을 재기 위해 만들었다.
+                # 그래도 VLM "yes" 를 자동 PASS 로 뒤집지는 않는다: REVIEW 로 강등.
+                composition = REVIEW
+                reasons.append("vlm_unintended_large_motion_contradicted_by_temporal_metrics")
+                demoted_from_fail.add("vlm_composition")
+                judgement["downgrades"].append(
+                    {"check": "vlm_composition", "from": FAIL, "to": REVIEW,
+                     "reason": "unintended_large_motion_vs_temporal_gates", "gate_ratios": gate_ratios}
+                )
+            else:
+                composition = FAIL
+                reasons.append("vlm_unintended_large_motion")
         elif v("major_flicker") == "yes" or v("camera_stable") == "no" or v("background_neutral") == "no":
             composition = REVIEW
-            reasons.append("vlm_temporal_or_background_issue")
+            if v10 and temporal_gates_pass and v("background_neutral") != "no":
+                # (a) 카메라 안정/플리커는 시간축 지표가 직접 재는 항목이다 — 지표가
+                # 통과하면 VLM 소견은 자문으로 남긴다 (배경 중립성은 지표가 못 잰다).
+                reasons.append("vlm_temporal_or_background_issue_advisory_temporal_metrics_pass")
+                extra_advisory.add("vlm_composition")
+                extra_findings.append(
+                    {"check": "vlm_composition", "status": REVIEW,
+                     "reason": "vlm_camera_or_flicker_contradicted_by_temporal_metrics",
+                     "camera_stable": v("camera_stable"), "major_flicker": v("major_flicker"),
+                     "gate_ratios": gate_ratios}
+                )
+                judgement["advisories"].append(extra_findings[-1])
+            else:
+                reasons.append("vlm_temporal_or_background_issue")
         elif v("single_pet") != "yes":
             composition = "unknown"
         checks["vlm_composition"] = composition
 
-        if str(spec_contract.get("motion_class")) == "TRANSITION":
+        if motion_class == "TRANSITION":
             val = v("ends_in_target_pose")
             checks["vlm_target_pose"] = (
                 PASS if val == "yes" else (FAIL if val == "no" else "unknown")
             )
             if val == "no":
                 reasons.append("vlm_did_not_reach_target")
+    elif vlm_checks_fallback:
+        checks.update({k: str(v_) for k, v_ in vlm_checks_fallback.items() if k in JUDGEMENT_CHECKS and k != "temporal_breathing"})
+        for name in ("vlm_same_pet", "vlm_anatomy", "vlm_motion", "vlm_composition"):
+            checks.setdefault(name, "unknown")
+        reasons.append("vlm_evidence_from_stored_checks")
+        judgement["vlm_evidence"] = "stored_checks"
     else:
         checks["vlm_same_pet"] = "unknown"
         checks["vlm_anatomy"] = "unknown"
@@ -1266,6 +1542,8 @@ def evaluate_motion_video(
     #   * VLM "no" 는 이미 위에서 FAIL 이다 — 시간축 증거가 되살리지 못한다.
     #   * breathing_detected 는 vlm_motion 이 **unknown 일 때만** PASS 로 해소한다.
     #   * 전신 펄스/큰 이동/카메라 drift 는 BREATHING 계약 위반이라 hard FAIL.
+    #     v10: 위반 게이트가 전부 경계 구간(≤ 1+band) 이고 호흡 증거가 강하면 REVIEW.
+    #          한계의 hard_fail_ratio 배 이상은 어떤 경우에도 FAIL.
     #   * no_motion 은 증거 부족 REVIEW, inconclusive/unmeasurable 은 기존 VLM 판정 유지.
     if temporal_qa is not None:
         verdict = str(temporal_qa.get("verdict") or "unmeasurable")
@@ -1275,8 +1553,38 @@ def evaluate_motion_video(
                 checks["vlm_motion"] = PASS
                 reasons.append("vlm_motion_resolved_by_temporal_evidence")
         elif verdict == "global_pulse":
-            checks["temporal_breathing"] = FAIL
-            reasons.append(f"temporal_{verdict}: {temporal_qa.get('reason')}")
+            borderline = None
+            if v10 and gate_ratios:
+                violated = {k: r for k, r in gate_ratios.items() if r > 1.0}
+                worst = max(violated.values()) if violated else max(gate_ratios.values())
+                strong, evidence = _breathing_evidence_strong(temporal_qa, knobs)
+                if worst >= knobs["hard_fail_ratio"]:
+                    judgement["hard_fails"].append(
+                        {"check": "temporal_breathing", "gate_ratios": gate_ratios,
+                         "worst_ratio": worst, "rule": f">= {knobs['hard_fail_ratio']}x limit"}
+                    )
+                elif (
+                    violated
+                    and worst <= 1.0 + knobs["band"]
+                    and strong
+                    and checks.get("vlm_motion") != FAIL
+                ):
+                    borderline = {
+                        "check": "temporal_breathing", "from": FAIL, "to": REVIEW,
+                        "reason": "global_pulse_borderline", "gate_ratios": gate_ratios,
+                        "worst_ratio": worst, "band": knobs["band"], "breathing_evidence": evidence,
+                    }
+            if borderline:
+                checks["temporal_breathing"] = REVIEW
+                demoted_from_fail.add("temporal_breathing")
+                judgement["downgrades"].append(borderline)
+                reasons.append(
+                    f"temporal_global_pulse_borderline: {temporal_qa.get('reason')} "
+                    f"(worst {borderline['worst_ratio']}x, band {knobs['band']})"
+                )
+            else:
+                checks["temporal_breathing"] = FAIL
+                reasons.append(f"temporal_{verdict}: {temporal_qa.get('reason')}")
         elif verdict == "unlocalized_motion":
             # temporal v2 receipt 호환. v3 부터 head ratio 는 advisory 라 새로
             # 생성되지 않지만 과거 결과를 hard FAIL 로 재해석하지 않는다.
@@ -1289,6 +1597,44 @@ def evaluate_motion_video(
         # 넣으면 VLM 이 yes 라고 확언한 클립까지 REVIEW 로 끌어내려, "시간축
         # 증거는 상반된 VLM 증거를 뒤집지 않는다" 규칙을 어기게 된다.
 
+    # ── (v10) 휴리스틱 구조 FAIL 의 경계 구간 — VLM 해부학/동일 개체가 확언할 때만 ──
+    # 구조 검사는 마스크 기하 휴리스틱이라(PET_HEAD 의 허용된 손이 전경에 섞이면
+    # bbox 종횡비가 뛴다) 한계 근처의 FAIL 은 REVIEW 로 강등한다. VLM 이 해부학
+    # 이상을 봤거나(vlm_anatomy=FAIL) 개체가 바뀌었으면 손대지 않는다.
+    if v10 and vlm_qa and v("anatomy_plausible_all_frames") == "yes" and v("same_pet_all_frames") == "yes":
+        ratios: dict[str, float] = {}
+        contradiction_limit = float(structural_evidence.get("strong_contradiction_ratio") or 0.7)
+        for trait, summary in (structural_evidence.get("trait_summary") or {}).items():
+            if not isinstance(summary, dict) or summary.get("status") != FAIL:
+                continue
+            support = float(summary.get("support_frames") or 0)
+            mism = float(summary.get("mismatch_frames") or 0)
+            if support > 0 and contradiction_limit > 0:
+                ratios[f"structural_{trait}"] = round((mism / support) / contradiction_limit, 4)
+        signals = structural_evidence.get("anatomy_signals") or {}
+        deform = signals.get("deformation_ratio_max")
+        if checks.get("anatomy_body_deformation") == FAIL and isinstance(deform, (int, float)):
+            ratios["anatomy_body_deformation"] = round(float(deform) / 2.0, 4)
+        failing = [n for n in ("structural_morphology_consistency", "anatomy_body_deformation") if checks.get(n) == FAIL]
+        if failing and ratios:
+            worst = max(ratios.values())
+            if worst <= 1.0 + knobs["band"]:
+                for name in failing:
+                    checks[name] = REVIEW
+                    demoted_from_fail.add(name)
+                judgement["downgrades"].append(
+                    {"check": ",".join(failing), "from": FAIL, "to": REVIEW,
+                     "reason": "structural_heuristic_borderline_vlm_anatomy_ok",
+                     "ratios": ratios, "worst_ratio": worst, "band": knobs["band"]}
+                )
+                reasons.append(
+                    f"structural_heuristic_borderline_vlm_anatomy_ok worst {worst}x band {knobs['band']}"
+                )
+            elif worst >= knobs["hard_fail_ratio"]:
+                judgement["hard_fails"].append(
+                    {"check": ",".join(failing), "ratios": ratios, "worst_ratio": worst}
+                )
+
     # ── 전역 판정 ────────────────────────────────────────────────────────
     # 기본은 fail-closed 다: FAIL 하나면 후보 전체가 FAIL. 단 구조 평가가
     # 명시적으로 advisory 로 분류한 REVIEW 는 증거/사유를 보존하되 PASS 자격을
@@ -1300,7 +1646,10 @@ def evaluate_motion_video(
         for name in _ADVISORY_STRUCTURAL_CHECKS
         if name not in required_all and checks.get(name) == REVIEW
     )
-    advisory_findings = list(structural_evidence.get("advisory_findings") or [])
+    advisory_checks.update(extra_advisory)
+    # FAIL 에서 강등된 REVIEW 는 절대 자문이 아니다.
+    advisory_checks -= demoted_from_fail
+    advisory_findings = list(structural_evidence.get("advisory_findings") or []) + extra_findings
 
     failed = [name for name, value in checks.items() if value == FAIL]
     blocking_non_pass = [
@@ -1344,31 +1693,134 @@ def evaluate_motion_video(
             "status": _domain_status(checks, motion_required),
         },
     }
+    judgement["demoted_from_fail"] = sorted(demoted_from_fail)
+    judgement["temporal_gate_ratios"] = gate_ratios
+    judgement["temporal_gates_pass"] = temporal_gates_pass if v10 else None
 
     return {
-        "qa_version": MOTION_VIDEO_QA_VERSION,
-        "sampling_version": FRAME_SAMPLING_VERSION,
-        "sample_fractions": list(SAMPLE_FRACTIONS),
-        "identity_similarity": identity_similarity,
-        # v4 — 신원 검사가 무엇을 어떻게 쟀는지 (mode: full_frame|pet_normalized).
-        # LOCOMOTION 이 아니면 rule=worst_frame 의 기존 판정 그대로다.
-        "identity_evaluation": identity_evaluation,
-        "frame_similarities": frame_similarities,
-        "loop_metrics": loop_metrics,
-        "checks": checks,
-        "domains": domains,
-        "advisories": {
-            "checks": sorted(advisory_checks),
-            "findings": advisory_findings,
-        },
-        "reasons": reasons,
+        "ruleset": ruleset,
         "decision": decision,
-        # v1 은 source/model 만 남겨 REVIEW 의 실제 설명(notes)과 원 판정을
-        # 잃었다. 운영자가 직접 DB 를 추측하지 않도록 구조화 VLM 근거 전체를
-        # 후보 QA 결과에 보존한다.
-        "vlm": (dict(vlm_qa) if vlm_qa else None),
-        # v3 — BREATHING 시간축 증거 전체 (판정·지표·임계). 없으면 None.
-        "temporal": (dict(temporal_qa) if temporal_qa else None),
+        "checks": checks,
+        "reasons": reasons,
+        "domains": domains,
+        "advisories": {"checks": sorted(advisory_checks), "findings": advisory_findings},
+        "judgement": judgement,
+    }
+
+
+def rescore_stored_qa_result(
+    qa_result: dict[str, Any],
+    *,
+    motion_id: str,
+    motion_class: Optional[str] = None,
+    ruleset: Optional[str] = None,
+    reclassify_temporal: bool = True,
+    temporal_thresholds: Optional[dict[str, float]] = None,
+) -> dict[str, Any]:
+    """
+    저장된 qa_result 를 **영상 없이** 지정 규칙 집합으로 다시 판정한다.
+
+    프레임 측정값(identity_over_time / temporal_stability / loop_return / 끝점 /
+    구조 검사)은 저장된 그대로 쓰고, 판정 단계가 만든 검사(JUDGEMENT_CHECKS)와
+    사유는 버린 뒤 저장된 vlm/temporal 근거로 다시 만든다. output_conformance
+    의 강등 규칙(motion_video_service._evaluate_candidate_qa)도 재적용한다.
+
+    reclassify_temporal=True 면 저장된 시간축 **지표**로 현재 분류기
+    (breathing_temporal_qa._classify_temporal_metrics)를 다시 돌린다 — 시간축
+    임계 변경도 리플레이할 수 있다. 지표가 없거나 키가 부족하면 저장 verdict 유지.
+    프로바이더 호출/DB 쓰기 없음.
+    """
+    from . import motion_spec
+
+    ruleset = active_ruleset(ruleset)
+    stored_checks = dict(qa_result.get("checks") or {})
+    checks = {k: v for k, v in stored_checks.items() if k not in JUDGEMENT_CHECKS}
+    reasons = [
+        r for r in (qa_result.get("reasons") or [])
+        if isinstance(r, str) and not r.startswith(_JUDGEMENT_REASON_PREFIXES)
+    ]
+    spec = motion_spec.get_motion(motion_id)
+    resolved_class = str(motion_class or (spec.motion_class if spec else "") or "")
+    domains = qa_result.get("domains") or {}
+
+    def _required(domain: str) -> list[str]:
+        return list(((domains.get(domain) or {}).get("required_checks")) or [])
+
+    spec_contract = {
+        "motion_id": motion_id,
+        "motion_class": resolved_class,
+        "video_compat": dict(spec.video_compat) if spec else {},
+        "requirements": {
+            "qa": {
+                "structural_anatomy": {"required_checks": _required("structural_anatomy")},
+                "identity": {"required_checks": _required("identity")},
+                "motion_specific": {"required_checks": _required("motion_execution")},
+            }
+        },
+    }
+    structural_evidence = ((domains.get("structural_anatomy") or {}).get("morphology_consistency")) or {"enabled": False}
+
+    temporal = qa_result.get("temporal")
+    temporal = dict(temporal) if isinstance(temporal, dict) else None
+    temporal_reclassified = False
+    if temporal is not None and reclassify_temporal and isinstance(temporal.get("metrics"), dict):
+        from . import breathing_temporal_qa
+
+        thresholds = {**_default_temporal_thresholds(), **dict(temporal.get("thresholds") or {}), **dict(temporal_thresholds or {})}
+        try:
+            verdict, reason, advisories = breathing_temporal_qa._classify_temporal_metrics(
+                dict(temporal["metrics"]), thresholds
+            )
+        except (KeyError, TypeError, ValueError):
+            pass
+        else:
+            temporal.update({"verdict": verdict, "reason": reason, "advisories": advisories, "thresholds": thresholds})
+            temporal_reclassified = True
+
+    stored_vlm = qa_result.get("vlm")
+    vlm_qa = dict(stored_vlm) if isinstance(stored_vlm, dict) and any(
+        k in stored_vlm for k in ("same_pet_all_frames", "anatomy_plausible_all_frames", "requested_motion_occurs")
+    ) else None
+    vlm_fallback = None
+    if vlm_qa is None:
+        stored_vlm_checks = {k: v for k, v in stored_checks.items() if k.startswith("vlm_")}
+        # v1 행: 구조화 근거 없이 vlm_* 판정만 남았다 — 그 판정을 그대로 쓴다.
+        if stored_vlm_checks and any(v != "unknown" for v in stored_vlm_checks.values()):
+            vlm_fallback = stored_vlm_checks
+
+    judged = apply_judgement(
+        checks=checks,
+        reasons=reasons,
+        spec_contract=spec_contract,
+        vlm_qa=vlm_qa,
+        temporal_qa=temporal,
+        structural_evidence=structural_evidence,
+        ruleset=ruleset,
+        vlm_checks_fallback=vlm_fallback,
+    )
+
+    decision = judged["decision"]
+    out_reasons = list(judged["reasons"])
+    conformance = qa_result.get("output_conformance") or {}
+    if conformance.get("status") == FAIL:
+        decision = FAIL
+        out_reasons += [f"output_conformance:{r}" for r in (conformance.get("reasons") or [])]
+    elif conformance.get("status") == REVIEW and decision == PASS:
+        decision = REVIEW
+        out_reasons += [f"output_conformance:{r}" for r in (conformance.get("reasons") or [])]
+
+    return {
+        "qa_version": active_qa_version(ruleset),
+        "ruleset": ruleset,
+        "decision": decision,
+        "checks": judged["checks"],
+        "reasons": out_reasons,
+        "judgement": judged["judgement"],
+        "advisories": judged["advisories"],
+        "temporal_verdict": (temporal or {}).get("verdict") if temporal else None,
+        "temporal_reclassified": temporal_reclassified,
+        "stored_decision": qa_result.get("decision"),
+        "stored_qa_version": qa_result.get("qa_version"),
     }
 
 

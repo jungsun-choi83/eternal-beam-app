@@ -25,10 +25,16 @@ import { computeCreateFlowSteps } from "@/lib/create-flow-steps";
 import { CreateFlowStepper, type CreateFlowStepView } from "@/components/memorial/create-flow-stepper";
 import { CreditPackSheet } from "@/components/memorial/credit-pack-sheet";
 import { PetPhoto } from "@/components/memorial/pet-photo";
+import { CutoutStage } from "@/components/memorial/cutout-stage";
 import { applyLibraryOverride, type LibraryPublication } from "@/lib/library-publication";
+import type { CutoutReadiness } from "@/lib/durable-cutout-readiness";
 
 interface ThemeSelectionScreenProps {
   cutoutImage: string | null;
+  /** 서버 Phase-1 레퍼런스 대장이 판정한 준비 상태. 표시 URL 존재 여부와 별개다. */
+  cutoutReadiness: CutoutReadiness;
+  /** 서명 URL 만료/로드 실패 시 같은 durable 객체의 주소를 새로 받는다. */
+  onCutoutImageError?: () => void;
   /**
    * My Library 경로인가 — 부모(MyLibraryScreen)가 동기적으로 내려주는 값.
    * sessionStorage 를 읽는 effect 가 돌 때까지 기다리지 않고 **첫 렌더부터**
@@ -205,6 +211,8 @@ function ThemeGridCard({
 
 export function ThemeSelectionScreen({
   cutoutImage,
+  cutoutReadiness,
+  onCutoutImageError,
   isLibraryFlow = false,
   libraryPublication = null,
   originalPhoto = null,
@@ -358,7 +366,7 @@ export function ThemeSelectionScreen({
             ? tc.filterPremium
             : tc.filterCustom;
 
-  const hasPreparedPet = Boolean(cutoutImage);
+  const hasPreparedPet = cutoutReadiness === "ready";
   const stepperSteps: CreateFlowStepView[] = useMemo(() => {
     const statusLabel = { complete: tc.stepComplete, current: tc.stepCurrent, upcoming: tc.stepUpcoming };
     const label: Record<string, string> = {
@@ -477,7 +485,45 @@ export function ThemeSelectionScreen({
               {/* My Library 경로는 정적 누끼(cutoutImage) 없이 발행된 영상만 갖고
                   들어온다 — generation_source === "library" 면 업로드 갱신을
                   요구하는 이 경고는 틀린 안내이므로 보이지 않는다. */}
-              {!cutoutImage && !isLibrarySource ? (
+              {cutoutReadiness === "loading" && !isLibrarySource ? (
+                <div
+                  className="theme-select__cutout-loading eb-skeleton"
+                  role="status"
+                  aria-label={tc.cutoutChecking}
+                >
+                  {cutoutImage ? (
+                    <CutoutStage plain className="theme-select__prepared-pet-stage">
+                      <img
+                        src={cutoutImage}
+                        alt=""
+                        className="cutout-stage__subject"
+                        decoding="async"
+                        onError={onCutoutImageError}
+                      />
+                    </CutoutStage>
+                  ) : (
+                    <span className="eb-spinner" aria-hidden />
+                  )}
+                  <span>{tc.cutoutChecking}</span>
+                </div>
+              ) : null}
+
+              {cutoutReadiness === "ready" && cutoutImage && !isLibraryFlow ? (
+                <div className="theme-select__prepared-pet">
+                  <CutoutStage plain className="theme-select__prepared-pet-stage">
+                    <img
+                      src={cutoutImage}
+                      alt={tc.cutoutReadyAlt}
+                      className="cutout-stage__subject"
+                      decoding="async"
+                      onError={onCutoutImageError}
+                    />
+                  </CutoutStage>
+                  <span>{tc.cutoutReady}</span>
+                </div>
+              ) : null}
+
+              {cutoutReadiness === "missing" && !isLibrarySource ? (
                 <div className="theme-select__notice eb-notice eb-notice--warning">{tc.cutoutMissing}</div>
               ) : null}
 

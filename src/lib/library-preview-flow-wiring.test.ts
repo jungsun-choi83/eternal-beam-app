@@ -111,7 +111,11 @@ test("테마 선택: 라이브러리 흐름에서는 절대 뜨지 않고, 업�
   const src = read(THEME_SEL);
   // 배너 게이트 — isLibrarySource 가 prop 에서 확정되므로 라이브러리에서는
   // 항상 거짓이 되어 배너가 렌더되지 않는다.
-  assert.match(src, /\{!cutoutImage && !isLibrarySource \? \(/, "배너 게이트가 사라지거나 바뀌었다");
+  assert.match(
+    src,
+    /\{cutoutReadiness === "missing" && !isLibrarySource \? \(/,
+    "durable readiness 배너 게이트가 사라지거나 바뀌었다",
+  );
 });
 
 test("테마 선택: sessionStorage 에서 읽은 값을 발행 메타데이터로 덮어쓴 뒤에만 쓴다", () => {

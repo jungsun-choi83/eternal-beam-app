@@ -175,6 +175,14 @@ export interface StoredPipelineSnapshot {
   generation_source?: string | null;
   qa_decision?: string | null;
   scene_id?: string | null;
+  phase1_intake?: {
+    status?: "ready";
+    pet_id?: string;
+    original_reference_id?: string;
+    cutout_reference_id?: string;
+    original_reference_ids?: string[];
+    cutout_reference_ids?: string[];
+  } | null;
 }
 
 /**

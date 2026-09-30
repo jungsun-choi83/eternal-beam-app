@@ -16,16 +16,19 @@ pet_reference_service._assert_pet_accessible 참고.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from ..auth import AuthedUser, require_user
-from ..services import pet_reference_service, pet_reference_set_service
+from ..services import asset_url_refresh, pet_reference_service, pet_reference_set_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/pet/references", tags=["pet-references"])
+
+CUTOUT_SIGNED_URL_TTL_SECONDS = 60 * 60
 
 
 class ReferenceOut(BaseModel):
@@ -53,15 +56,19 @@ class ReferenceOut(BaseModel):
 
 class ReferencesResponse(BaseModel):
     pet_id: str
+    content_id: str | None = None
     intake_ready: bool = False
     original_reference_id: str | None = None
     cutout_reference_id: str | None = None
+    cutout_signed_url: str | None = None
+    cutout_signed_url_expires_at: str | None = None
     references: list[ReferenceOut] = []
 
 
 @router.get("/{pet_id}", response_model=ReferencesResponse)
 async def list_pet_references(
     pet_id: str,
+    content_id: str | None = Query(default=None),
     user: AuthedUser = Depends(require_user),
 ):
     """내 펫의 레퍼런스만. 남의 펫은 403 이다."""
@@ -74,12 +81,43 @@ async def list_pet_references(
             status_code=e.status, detail={"code": e.code, "message": e.message}
         ) from e
 
-    ready, original, cutout = pet_reference_service.intake_readiness(refs)
+    requested_content_id = (content_id or "").strip()
+    scoped_refs = (
+        [ref for ref in refs if ref.content_id == requested_content_id]
+        if requested_content_id
+        else refs
+    )
+    ready, original, cutout = pet_reference_service.intake_readiness(scoped_refs)
+
+    cutout_signed_url = None
+    cutout_signed_url_expires_at = None
+    if ready and cutout:
+        cutout_signed_url = asset_url_refresh.sign_object(
+            asset_url_refresh.StorageObject(
+                bucket=cutout.bucket, path=cutout.object_path
+            ),
+            ttl=CUTOUT_SIGNED_URL_TTL_SECONDS,
+        )
+        if not cutout_signed_url:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "CUTOUT_SIGNING_FAILED",
+                    "message": "누끼 표시 주소를 준비하지 못했습니다.",
+                },
+            )
+        cutout_signed_url_expires_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=CUTOUT_SIGNED_URL_TTL_SECONDS)
+        ).isoformat()
+
     return ReferencesResponse(
         pet_id=pet_id,
+        content_id=(original.content_id if original else requested_content_id or None),
         intake_ready=ready,
         original_reference_id=original.id if original else None,
         cutout_reference_id=cutout.id if cutout else None,
+        cutout_signed_url=cutout_signed_url,
+        cutout_signed_url_expires_at=cutout_signed_url_expires_at,
         references=[
             ReferenceOut(
                 id=r.id,
@@ -103,7 +141,7 @@ async def list_pet_references(
                 version=r.version,
                 created_at=r.created_at,
             )
-            for r in refs
+            for r in scoped_refs
         ],
     )
 
