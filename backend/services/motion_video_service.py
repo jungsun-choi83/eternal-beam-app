@@ -20,6 +20,7 @@ resolve_video_generation_spec (Phase 5.1 — 승인 키프레임 게이트 포�
 from __future__ import annotations
 
 import asyncio
+import functools
 import io
 import logging
 import os
@@ -234,7 +235,7 @@ def analyzer_versions(providers: Sequence[Any]) -> dict[str, Any]:
         "motion_spec": motion_spec.MOTION_SPEC_VERSION,
         "contract": motion_spec.PHASE6_CONTRACT_VERSION,
         "prompt": motion_video_prompts.MOTION_VIDEO_PROMPT_VERSION,
-        "qa": motion_video_qa.MOTION_VIDEO_QA_VERSION,
+        "qa": motion_video_qa.active_qa_version(),
         "sampling": motion_video_qa.FRAME_SAMPLING_VERSION,
         "vlm_motion_qa": vlm_identity.VLM_MOTION_QA_VERSION,
         "providers": [f"{p.name}:{p.model_name()}" for p in providers],
@@ -521,6 +522,116 @@ async def _candidate_rows(version_id: str) -> list[dict[str, Any]]:
             logger.exception("모션 후보 조회 실패 (version=%s)", version_id)
             return []
     return [c for c in _MOCK_CANDIDATES if c.get("motion_version_id") == version_id]
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 무결성 게이트 (MOTION_QA_SEVERITY_GATE=integrity_only) — 전달 가능 후보
+#
+# QA 결정은 절대 고쳐 쓰지 않는다. 게이트가 켜지면 무결성 사유(motion_video_qa
+# .classify_reason → INTEGRITY)가 하나도 없는 REVIEW/FAIL 후보를 "전달 가능"으로
+# 본다. 발행/포장/재생/프리미엄 이행이 전부 candidate_is_publishable 하나를 본다.
+# ══════════════════════════════════════════════════════════════════════════
+
+SEVERITY_GATE_INTEGRITY_ONLY = "integrity_only"
+
+
+def severity_gate_mode(override: Optional[str] = None) -> str:
+    from . import motion_video_qa
+
+    return motion_video_qa.severity_gate_mode(override)
+
+
+def candidate_is_publishable(candidate: Any, *, mode: Optional[str] = None) -> bool:
+    """후보 행(dict) 또는 MotionCandidate → 전달 가능 여부. PASS 는 항상 참."""
+    from . import motion_video_qa
+
+    if isinstance(candidate, dict):
+        decision, qa = candidate.get("decision"), candidate.get("qa_result")
+    else:
+        decision, qa = getattr(candidate, "decision", None), getattr(candidate, "qa_result", None)
+    return motion_video_qa.is_publishable(qa or {}, decision=decision, mode=mode)
+
+
+def _breathing_evidence_key(qa: dict[str, Any]) -> tuple[float, float]:
+    metrics = ((qa.get("temporal") or {}).get("metrics") or {}) if isinstance(qa.get("temporal"), dict) else {}
+    snr = metrics.get("torso_snr")
+    osc = metrics.get("scale_oscillation")
+    return (
+        float(snr) if isinstance(snr, (int, float)) else 0.0,
+        float(osc) if isinstance(osc, (int, float)) else 0.0,
+    )
+
+
+def choose_publishable_candidate(
+    candidates: Sequence[dict[str, Any]], *, mode: Optional[str] = None
+) -> Optional[dict[str, Any]]:
+    """
+    PASS 가 없을 때 게이트가 고르는 후보 — 문서화된 규칙 (위에서부터 비교):
+      1. 결정: REVIEW 가 FAIL 보다 앞 (규칙 집합이 PASS 에 더 가깝다고 본 쪽)
+      2. 외관(COSMETIC) 사유 개수가 적은 쪽
+      3. 호흡 증거가 강한 쪽: torso_snr 내림차순, 그다음 scale_oscillation 내림차순
+         (시간축 지표가 없는 모션은 0 으로 취급 — 동점이면 다음 기준)
+      4. identity_similarity 내림차순
+      5. attempt 오름차순 (먼저 만든 것)
+    ERROR 후보와 무결성 사유가 있는 후보는 애초에 대상이 아니다.
+    """
+    from . import motion_video_qa
+
+    eligible = [
+        c for c in candidates
+        if str(c.get("decision") or "").upper() in (motion_video_qa.REVIEW, motion_video_qa.FAIL)
+        and candidate_is_publishable(c, mode=mode)
+    ]
+    if not eligible:
+        return None
+    decision_rank = {motion_video_qa.REVIEW: 0, motion_video_qa.FAIL: 1}
+
+    def _key(c: dict[str, Any]):
+        qa = c.get("qa_result") or {}
+        summary = motion_video_qa.severity_summary(qa)
+        snr, osc = _breathing_evidence_key(qa)
+        return (
+            decision_rank.get(str(c.get("decision") or "").upper(), 9),
+            len(summary["cosmetic"]),
+            -snr,
+            -osc,
+            -float(qa.get("identity_similarity") or -1.0),
+            int(c.get("attempt") or 0),
+        )
+
+    return sorted(eligible, key=_key)[0]
+
+
+def publication_severity_record(
+    candidate: dict[str, Any], *, publication_id: str, gate: str
+) -> dict[str, Any]:
+    """발행 시점의 감사 기록 — 어떤 사유가 있었고 어떤 게이트로 통과했는가."""
+    from . import motion_video_qa
+
+    qa = candidate.get("qa_result") or {}
+    summary = motion_video_qa.severity_summary(qa)
+    return {
+        "publication_id": publication_id,
+        "gate": gate,
+        "qa_decision": str(candidate.get("decision") or ""),
+        "qa_version": qa.get("qa_version"),
+        "severity_version": summary["version"],
+        "integrity": summary["integrity"],
+        "cosmetic": summary["cosmetic"],
+        "published_at": _now_iso(),
+    }
+
+
+def _gate_selection_reason(candidate: dict[str, Any]) -> str:
+    from . import motion_video_qa
+
+    summary = motion_video_qa.severity_summary(candidate.get("qa_result") or {})
+    return (
+        f"integrity_only gate: no PASS — cosmetic-only {candidate.get('decision')} candidate: "
+        f"{candidate.get('provider')} attempt {candidate.get('attempt')}; "
+        f"cosmetic={summary['cosmetic']}"
+    )
+
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1258,12 +1369,28 @@ async def build_motion_video(
 
     ranked = _rank(candidates)
     selected = ranked[0] if ranked and ranked[0]["decision"] == qa_mod.PASS else None
-    if selected:
-        status = STATUS_COMPLETE
-        selection_reason = (
-            f"best PASS candidate: {selected['provider']} attempt {selected['attempt']}, "
-            f"identity_similarity={selected['qa_result'].get('identity_similarity')}"
-        )
+    # 무결성 게이트: PASS 가 없으면 무결성 사유 없는 REVIEW/FAIL 후보를 전달용으로
+    # 고른다. 버전 status 는 그대로(review/failed) 두고 후보만 selected 로 표시한다 —
+    # 결정도 status 도 고쳐 쓰지 않는다.
+    gated = None
+    if selected is None and severity_gate_mode() == SEVERITY_GATE_INTEGRITY_ONLY:
+        gated = choose_publishable_candidate(candidates)
+    chosen = selected or gated
+    if chosen:
+        selected = chosen
+        if gated is None:
+            status = STATUS_COMPLETE
+            selection_reason = (
+                f"best PASS candidate: {selected['provider']} attempt {selected['attempt']}, "
+                f"identity_similarity={selected['qa_result'].get('identity_similarity')}"
+            )
+        else:
+            status = (
+                STATUS_REVIEW
+                if any(c["decision"] == qa_mod.REVIEW for c in candidates)
+                else STATUS_FAILED
+            )
+            selection_reason = _gate_selection_reason(selected)
         await canonical_pet_service._update(_candidates_table(), _MOCK_CANDIDATES, selected["id"], {"selected": True})
         selected["selected"] = True
         provenance = {
@@ -1312,6 +1439,11 @@ async def build_motion_video(
                 for d in ("PASS", "REVIEW", "FAIL", "ERROR")
             },
             "policy": policy,
+            **(
+                {"delivery": {"gate": SEVERITY_GATE_INTEGRITY_ONLY, "candidate_id": gated["id"],
+                              "qa_decision": gated["decision"]}}
+                if gated else {}
+            ),
         },
         "completed_at": _now_iso(),
     }
@@ -1485,6 +1617,11 @@ async def _evaluate_candidate_qa(
         qa["reasons"] = list(qa.get("reasons") or []) + [
             f"output_conformance:{r}" for r in conformance["reasons"]
         ]
+    # 무결성 게이트가 켜져 있을 때만 심각도 영수증을 싣는다 — 꺼져 있으면 저장
+    # 형식도 이전과 같다. 결정(decision)은 어느 경우에도 바뀌지 않는다.
+    gate = motion_video_qa.severity_gate_mode()
+    if gate != motion_video_qa.SEVERITY_GATE_OFF:
+        qa["severity"] = motion_video_qa.severity_receipt(qa, gate)
     return qa
 
 
@@ -1500,8 +1637,13 @@ async def reevaluate_motion_candidate(
     frame_sampler: Optional[Callable[[bytes], Optional[list[Optional[np.ndarray]]]]] = None,
     vlm_qa_fn: Optional[Callable[..., Optional[dict[str, Any]]]] = None,
     conformance_fn: Optional[Callable[[bytes, dict[str, Any]], dict[str, Any]]] = None,
+    vlm_cache_mode: Optional[str] = None,
 ) -> MotionVersion:
     """Re-run the current versioned QA against one already stored candidate.
+
+    ``vlm_cache_mode`` overrides ``VLM_QA_CACHE`` for this re-evaluation only.
+    ``"refresh"`` skips the same-version dedup and re-asks the VLM, overwriting
+    the cached answer (operator path to force one candidate to be re-judged).
 
     This operator path never invokes a generation provider and never uploads or
     replaces an asset.  The resulting candidate decision is derived from the
@@ -1552,10 +1694,12 @@ async def reevaluate_motion_candidate(
 
     previous_qa = dict(candidate.get("qa_result") or {})
     previous_vlm = dict(previous_qa.get("vlm") or {})
+    force_refresh = vlm_identity.qa_cache_mode(vlm_cache_mode) == vlm_identity.QA_CACHE_REFRESH
     if (
-        previous_qa.get("qa_version") == motion_video_qa.MOTION_VIDEO_QA_VERSION
+        previous_qa.get("qa_version") == motion_video_qa.active_qa_version()
         and previous_qa.get("sampling_version") == motion_video_qa.FRAME_SAMPLING_VERSION
         and previous_vlm.get("source") == vlm_identity.VLM_MOTION_QA_VERSION
+        and not force_refresh
     ):
         return _to_version(version_row, candidates, deduplicated=True)
 
@@ -1624,7 +1768,11 @@ async def reevaluate_motion_candidate(
         start_bytes=start_bytes,
         target_bytes=target_bytes,
         frame_sampler=frame_sampler or motion_video_qa.sample_frames,
-        vlm_qa_fn=vlm_qa_fn or vlm_identity.qa_motion_video,
+        vlm_qa_fn=(
+            functools.partial(vlm_qa_fn or vlm_identity.qa_motion_video, cache_mode=vlm_cache_mode)
+            if vlm_cache_mode
+            else (vlm_qa_fn or vlm_identity.qa_motion_video)
+        ),
         conformance_fn=conformance_fn or motion_video_qa.verify_output_conformance,
     )
 
@@ -1649,8 +1797,12 @@ async def reevaluate_motion_candidate(
 
     ranked = _rank(candidates)
     selected = ranked[0] if ranked and ranked[0].get("decision") == motion_video_qa.PASS else None
+    gated = None
+    if selected is None and severity_gate_mode() == SEVERITY_GATE_INTEGRITY_ONLY:
+        gated = choose_publishable_candidate(candidates)
+    chosen = selected or gated
     for row in candidates:
-        should_select = bool(selected and str(row.get("id")) == str(selected.get("id")))
+        should_select = bool(chosen and str(row.get("id")) == str(chosen.get("id")))
         if bool(row.get("selected")) != should_select:
             await canonical_pet_service._update(
                 _candidates_table(), _MOCK_CANDIDATES, str(row["id"]), {"selected": should_select}
@@ -1660,9 +1812,17 @@ async def reevaluate_motion_candidate(
     if selected:
         status = STATUS_COMPLETE
         selection_reason = (
-            f"best PASS candidate after {motion_video_qa.MOTION_VIDEO_QA_VERSION}: "
+            f"best PASS candidate after {motion_video_qa.active_qa_version()}: "
             f"{selected['provider']} attempt {selected['attempt']}"
         )
+    elif gated:
+        status = (
+            STATUS_REVIEW
+            if any(row.get("decision") == motion_video_qa.REVIEW for row in candidates)
+            else STATUS_FAILED
+        )
+        selection_reason = _gate_selection_reason(gated)
+        selected = gated
     elif any(row.get("decision") == motion_video_qa.REVIEW for row in candidates):
         status = STATUS_REVIEW
         selection_reason = "no PASS candidate — human review required"
@@ -1673,7 +1833,7 @@ async def reevaluate_motion_candidate(
     versions = dict(version_row.get("analyzer_versions") or {})
     versions.update(
         {
-            "qa": motion_video_qa.MOTION_VIDEO_QA_VERSION,
+            "qa": motion_video_qa.active_qa_version(),
             "sampling": motion_video_qa.FRAME_SAMPLING_VERSION,
             "vlm_motion_qa": vlm_identity.VLM_MOTION_QA_VERSION,
         }
@@ -1821,7 +1981,7 @@ async def qa_calibration_report(*, user_id: str) -> dict[str, Any]:
             buckets["false_fail"] += 1
 
     return {
-        "qa_version": motion_video_qa.MOTION_VIDEO_QA_VERSION,
+        "qa_version": motion_video_qa.active_qa_version(),
         "sample_count": len(pairs),
         "buckets": buckets,
         "matrix": matrix,

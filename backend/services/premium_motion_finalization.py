@@ -274,9 +274,12 @@ async def finalize_premium_motion(
         raise PremiumFinalizationError(
             "CANDIDATE_MISMATCH", "후보가 이 실행/펫/모션에 속하지 않습니다.", status=409
         )
-    if str(candidate.get("decision") or "").upper() != "PASS":
+    # 무결성 게이트(integrity_only)가 켜져 있으면 무결성 사유 없는 REVIEW/FAIL 도 이행한다.
+    from . import motion_video_service
+
+    if not motion_video_service.candidate_is_publishable(candidate):
         raise PremiumFinalizationError(
-            "CANDIDATE_NOT_PASS", "QA PASS 후보만 이행할 수 있습니다.", status=409
+            "CANDIDATE_NOT_PASS", "QA PASS(또는 무결성 게이트 통과) 후보만 이행할 수 있습니다.", status=409
         )
     derived = str(candidate.get("derived_video_path") or "").strip()
     fmt = motion_delivery_service.candidate_delivery_format(candidate)

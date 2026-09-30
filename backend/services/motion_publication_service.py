@@ -11,13 +11,17 @@ only the compatibility pointer consumed by the existing browser, Shaker, and ope
 
 from __future__ import annotations
 
+import logging
+
 import os
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 from . import asset_url_refresh, motion_video_service, pet_registry
+
+logger = logging.getLogger(__name__)
 
 BREATHING = "BREATHING"
 
@@ -45,6 +49,11 @@ class BreathingPublication:
     delivery_format: Optional[str] = None
     published_at: Optional[str] = None
     deduplicated: bool = False
+    #: 발행된 후보의 실제 QA 결정과 사유 (무결성 게이트 감사용). 기존 응답 모델에는
+    #: 노출하지 않는다 — 읽는 쪽 계약을 바꾸지 않는다.
+    qa_decision: Optional[str] = None
+    qa_reasons: list[str] = field(default_factory=list)
+    severity_gate: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -62,6 +71,8 @@ class PublishedBreathing:
     delivery_format: Optional[str] = None
     publication_id: Optional[str] = None
     content_id: Optional[str] = None
+    #: 발행 후보의 실제 QA 결정 (PASS | REVIEW | FAIL). 계보 행을 못 찾으면 None.
+    qa_decision: Optional[str] = None
 
 
 # Supabase 없이도 동일한 멱등 계약을 검증하기 위한 테스트/로컬 저장소.
@@ -159,9 +170,11 @@ async def _load_selected_candidate(
         raise MotionPublicationError(
             "SELECTED_CANDIDATE_INVALID", "선택 후보가 이 BREATHING 버전에 속하지 않습니다.", status=409
         )
-    if str(candidate.get("decision") or "").upper() != "PASS":
+    # 무결성 게이트(MOTION_QA_SEVERITY_GATE=integrity_only)가 켜져 있으면 무결성
+    # 사유가 없는 REVIEW/FAIL 후보도 전달 가능하다. 꺼져 있으면 PASS 만 (이전 동작).
+    if not motion_video_service.candidate_is_publishable(candidate):
         raise MotionPublicationError(
-            "CANDIDATE_NOT_PASS", "QA PASS 후보만 제품에 발행할 수 있습니다.", status=409
+            "CANDIDATE_NOT_PASS", "QA PASS(또는 무결성 게이트 통과) 후보만 제품에 발행할 수 있습니다.", status=409
         )
     return candidate
 
@@ -336,13 +349,21 @@ async def publish_breathing(
         )
 
     status = str(version.get("status") or "").lower()
-    if status != motion_video_service.STATUS_COMPLETE:
+    gate = motion_video_service.severity_gate_mode()
+    gated_statuses = (
+        (motion_video_service.STATUS_REVIEW, motion_video_service.STATUS_FAILED)
+        if gate == motion_video_service.SEVERITY_GATE_INTEGRITY_ONLY
+        else ()
+    )
+    if status != motion_video_service.STATUS_COMPLETE and status not in gated_statuses:
         code = {
             motion_video_service.STATUS_REVIEW: "MOTION_REVIEW_NOT_PUBLISHABLE",
             motion_video_service.STATUS_FAILED: "MOTION_FAILED_NOT_PUBLISHABLE",
         }.get(status, "MOTION_NOT_COMPLETE")
         raise MotionPublicationError(code, "완료된 QA PASS 모션만 발행할 수 있습니다.", status=409)
 
+    # review/failed 버전은 빌더가 게이트로 고른(selected) 전달 가능 후보가 있을 때만
+    # 여기까지 온다 — 후보 검증이 PASS 또는 무결성-청정을 요구한다.
     candidate = await _load_selected_candidate(version=version, user_id=uid, pet_id=pid)
     asset = _asset_location(candidate)
     signed_url = (sign_fn or asset_url_refresh.sign_object)(asset)
@@ -356,6 +377,10 @@ async def publish_breathing(
     published = await _publish_projection(
         user_id=uid, pet_id=pid, version=version, candidate=candidate, asset=asset
     )
+    severity = motion_video_service.publication_severity_record(
+        candidate, publication_id=str(published["publication_id"]), gate=gate
+    )
+    await _record_publication_severity(candidate, severity)
     return BreathingPublication(
         publication_id=str(published["publication_id"]),
         motion_version_id=str(version["id"]),
@@ -370,7 +395,38 @@ async def publish_breathing(
         delivery_format=delivery_format_for(candidate, asset.path),
         published_at=(str(published["published_at"]) if published.get("published_at") else None),
         deduplicated=bool(published.get("deduplicated")),
+        qa_decision=str(candidate.get("decision") or "") or None,
+        qa_reasons=list(severity.get("integrity") or []) + list(severity.get("cosmetic") or []),
+        severity_gate=gate,
     )
+
+
+async def _record_publication_severity(candidate: dict[str, Any], severity: dict[str, Any]) -> None:
+    """
+    발행 시점에 어떤 사유가 있었는지 후보 행(generation_metadata.publication)에 남긴다.
+
+    pet_motion_publications 에는 여분 컬럼이 없고 발행 RPC 의 인자도 고정이라(마이그레이션
+    없이 바꿀 수 없다), 후보 행의 jsonb 에 기록한다. 같은 publication_id 로 이미 기록돼
+    있으면 다시 쓰지 않는다 — 발행은 멱등이고 이 기록도 그렇다. 기록 실패는 발행을
+    되돌리지 않는다(감사 기록이지 발행 조건이 아니다).
+    """
+    from . import canonical_pet_service
+
+    metadata = dict(candidate.get("generation_metadata") or {})
+    existing = metadata.get("publication") if isinstance(metadata.get("publication"), dict) else {}
+    if existing.get("publication_id") == severity.get("publication_id"):
+        return
+    metadata["publication"] = severity
+    try:
+        await canonical_pet_service._update(
+            motion_video_service._candidates_table(),
+            motion_video_service._MOCK_CANDIDATES,
+            str(candidate["id"]),
+            {"generation_metadata": metadata},
+        )
+        candidate["generation_metadata"] = metadata
+    except Exception:
+        logger.warning("발행 심각도 기록 실패 (candidate=%s)", str(candidate.get("id"))[:8], exc_info=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -531,4 +587,5 @@ async def get_published_breathing(
         delivery_format=delivery_format_for(candidate, path),
         publication_id=publication_id,
         content_id=pet.content_id or pet_registry.content_id_of(pid),
+        qa_decision=(str(candidate.get("decision") or "") or None) if candidate else None,
     )

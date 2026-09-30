@@ -931,13 +931,40 @@ async def _canonical(run: PetGenerationRun):
         # normal durable resume takes over via the pinned-version branch above.
         if latest.id != replacement_source and latest.status != canonical_pet_service.STATUS_BUILDING:
             return latest, run
+    if not (run.reference_set_id and run.reference_set_version):
+        raise PetGenerationRunError(
+            "RUN_LINEAGE_INVALID", "실행에 고정된 레퍼런스 세트가 없습니다.", status=409
+        )
+    # 실행이 고정한 세트를 **그대로** 넘긴다 — build_canonical 이 세트를 다시
+    # 만들거나 최신을 고르면, 틱 사이에 env(PET_VLM_IDENTITY_ENABLED 등)가 달라진
+    # 워커가 다른 세트로 새 정본 버전을 만들어 계보가 갈라진다 (run 377b6c62).
     canonical = await canonical_pet_service.build_canonical(
         user_id=run.user_id,
         pet_id=run.pet_id,
         providers=_image_providers(run, durable_provider_jobs.OP_CANONICAL),
         skip_if_unchanged=not bool(latest and latest.id == replacement_source),
+        pinned_reference_set_id=run.reference_set_id,
+        pinned_reference_set_version=run.reference_set_version,
+        require_pass_capable_qa=True,
     )
     return canonical, run
+
+
+def _assert_canonical_lineage(run: PetGenerationRun, canonical: Any) -> None:
+    """정본이 실행의 계보(펫/레퍼런스 세트/신원 프로필)에 속하는지 — 핀을 쓰기 **전에** 본다."""
+    if (
+        str(getattr(canonical, "pet_id", "") or "") != str(run.pet_id or "")
+        or str(getattr(canonical, "user_id", "") or "") != str(run.user_id or "")
+    ):
+        raise PetGenerationRunError("RUN_LINEAGE_INVALID", "canonical 의 펫이 실행과 다릅니다.", status=409)
+    if (
+        str(canonical.reference_set_id or "") != str(run.reference_set_id or "")
+        or canonical.reference_set_version != run.reference_set_version
+    ):
+        raise PetGenerationRunError("RUN_LINEAGE_INVALID", "canonical 의 레퍼런스 세트가 실행과 다릅니다.", status=409)
+    identity_version = getattr(canonical, "identity_profile_version", None)
+    if identity_version is not None and identity_version != run.identity_profile_version:
+        raise PetGenerationRunError("RUN_LINEAGE_INVALID", "canonical 의 신원 프로필이 실행과 다릅니다.", status=409)
 
 
 async def _keyframe(run: PetGenerationRun, role: str, *, allow_canonical_reuse: bool = False):
@@ -967,6 +994,12 @@ async def _keyframe(run: PetGenerationRun, role: str, *, allow_canonical_reuse: 
     # operator asking for a fresh candidate should never get an alias of the
     # very Canonical the replacement may be trying to move away from.
     is_replacement_build = bool(latest and latest.id == replacement_source)
+    if not (run.canonical_version_id and run.canonical_version):
+        raise PetGenerationRunError(
+            "RUN_LINEAGE_INVALID", "실행에 고정된 canonical 이 없습니다.", status=409
+        )
+    # 실행이 고정한 정본을 **그대로** 넘긴다 — build_keyframe 이 최신 정본을
+    # 고르면, 틱 사이에 생긴 다른 정본 버전으로 키프레임 계보가 갈라진다.
     keyframe = await action_keyframe_service.build_keyframe(
         user_id=run.user_id,
         pet_id=run.pet_id,
@@ -974,8 +1007,24 @@ async def _keyframe(run: PetGenerationRun, role: str, *, allow_canonical_reuse: 
         providers=_image_providers(run, durable_provider_jobs.OP_KEYFRAME),
         skip_if_unchanged=not is_replacement_build,
         allow_canonical_reuse=allow_canonical_reuse and not is_replacement_build,
+        pinned_canonical_version_id=run.canonical_version_id,
+        pinned_canonical_version=run.canonical_version,
     )
     return keyframe, run
+
+
+def _assert_keyframe_lineage(run: PetGenerationRun, keyframe: Any) -> None:
+    """키프레임이 실행의 계보(펫/정본)에 속하는지 — 핀을 쓰기 **전에** 본다."""
+    if (
+        str(getattr(keyframe, "pet_id", "") or "") != str(run.pet_id or "")
+        or str(getattr(keyframe, "user_id", "") or "") != str(run.user_id or "")
+    ):
+        raise PetGenerationRunError("RUN_LINEAGE_INVALID", "키프레임의 펫이 실행과 다릅니다.", status=409)
+    if (
+        str(keyframe.canonical_version_id or "") != str(run.canonical_version_id or "")
+        or keyframe.canonical_version != run.canonical_version
+    ):
+        raise PetGenerationRunError("RUN_LINEAGE_INVALID", "키프레임의 canonical 이 실행과 다릅니다.", status=409)
 
 
 def _motion_matches(run: PetGenerationRun, motion: Any) -> bool:
@@ -1046,13 +1095,16 @@ async def _advance_keyframe_stage(
     keyframes: dict[str, Any],
 ) -> PetGenerationRun:
     """
-    Pin one keyframe role's version before judging its status (mirrors
+    Verify lineage, then pin one keyframe role's version before judging its status (mirrors
     _canonical()/_motion()) so a REVIEW keyframe is remembered across retries —
     _keyframe() then takes the pinned-version branch and never calls
     build_keyframe() again for the same version. Raises a distinct, recoverable
     KEYFRAME_QA_REVIEW (never the generic NOT_COMPLETE) when the role is
     REVIEW, since that state needs a human decision, not a repeated failure.
     """
+    # Lineage is verified **before** the pin is written: a keyframe built on
+    # another canonical must never be remembered on the run.
+    _assert_keyframe_lineage(run, keyframe)
     provider_state = _provider_state(run)
     operator_state = dict(provider_state.get("_operator") or {})
     replacements = dict(operator_state.get("keyframe_replacement_requests") or {})
@@ -1087,11 +1139,6 @@ async def _advance_keyframe_stage(
         keyframe.status, action_keyframe_service.STATUS_COMPLETE,
         "KEYFRAME_NOT_COMPLETE", "Phase 5 키프레임 QA PASS 결과가 없습니다.",
     )
-    if (
-        str(keyframe.canonical_version_id or "") != str(run.canonical_version_id or "")
-        or keyframe.canonical_version != run.canonical_version
-    ):
-        raise PetGenerationRunError("RUN_LINEAGE_INVALID", "키프레임의 canonical 이 실행과 다릅니다.", status=409)
     return run
 
 
@@ -1150,6 +1197,10 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
             run = await _progress(run, {"current_stage": stage})
             run = await _heartbeat(run)
             canonical, run = await _canonical(run)
+            # Lineage is verified **before** the pin is written: a canonical from
+            # another reference set must never be remembered on the run, or every
+            # Retry re-reads that pin and fails the same way forever.
+            _assert_canonical_lineage(run, canonical)
             # Pin the version **before** judging its status (mirrors _motion()) so a
             # REVIEW canonical is remembered across retries — _canonical() then takes
             # the pinned-version branch and never calls build_canonical() again for
@@ -1192,11 +1243,6 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
                 canonical.status, canonical_pet_service.STATUS_COMPLETE,
                 "CANONICAL_NOT_COMPLETE", "Phase 4 canonical QA PASS 결과가 없습니다.",
             )
-            if (
-                str(canonical.reference_set_id or "") != str(run.reference_set_id or "")
-                or canonical.reference_set_version != run.reference_set_version
-            ):
-                raise PetGenerationRunError("RUN_LINEAGE_INVALID", "canonical 의 레퍼런스 세트가 실행과 다릅니다.", status=409)
 
         spec = motion_spec.get_motion(run.motion_id)
         supported = (MOTION_BREATHING,) + premium_motion_finalization.PREMIUM_MOTIONS
@@ -1320,12 +1366,34 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
             if not selected:
                 raise PetGenerationRunError("MOTION_QA_INVALID", "선택된 QA PASS 후보를 확인하지 못했습니다.", status=409)
 
+        # ── 무결성 게이트 (MOTION_QA_SEVERITY_GATE=integrity_only) ─────────────
+        # PASS 가 없어도 빌더가 무결성 사유 없는 REVIEW/FAIL 후보를 selected 로 골라
+        # 뒀으면 그 후보를 PASS 와 똑같이 포장·발행한다. QA 결정/버전 status 는
+        # 그대로다 — 실행만 FAILED 대신 PUBLISHED 로 끝난다.
+        gated = None
+        if (
+            selected is None
+            and motion.selected_candidate_id
+            and motion_video_service.severity_gate_mode() == motion_video_service.SEVERITY_GATE_INTEGRITY_ONLY
+        ):
+            gated = next(
+                (
+                    candidate
+                    for candidate in motion.candidates
+                    if candidate.id == motion.selected_candidate_id
+                    and getattr(candidate, "selected", False)
+                    and motion_video_service.candidate_is_publishable(candidate)
+                ),
+                None,
+            )
+        deliverable = selected or gated
+
         # ── Phase 7G: QA 결정은 절대 바꾸지 않는다 — REVIEW 는 REVIEW 로 남는다.
         # 다만 PASS 든 REVIEW 든 재생 가능한 후보는 packed-alpha 파생물로 포장한다
         # (Phase 7F, 멱등). PASS 는 이어서 발행되고, REVIEW 는 발행 없이 개발/
         # 현재-실행 재생 리졸버(GET /generation-runs/{id}/playback)로만 보인다.
         review_candidate = None
-        if motion.status == motion_video_service.STATUS_REVIEW:
+        if deliverable is None and motion.status == motion_video_service.STATUS_REVIEW:
             review_candidates = [
                 c for c in motion.candidates if getattr(c, "decision", "") == "REVIEW"
             ]
@@ -1336,7 +1404,7 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
                 ),
                 default=None,
             )
-        packageable = selected or review_candidate
+        packageable = deliverable or review_candidate
         if packageable is not None:
             stage = STAGE_DELIVERY
             try:
@@ -1362,7 +1430,7 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
             except motion_delivery_service.MotionDeliveryError as exc:
                 raise PetGenerationRunError(exc.code, exc.message, status=exc.status) from exc
 
-        if motion.status == motion_video_service.STATUS_REVIEW:
+        if deliverable is None and motion.status == motion_video_service.STATUS_REVIEW:
             # 위 포장 블록은 진행 상황 표시를 위해 stage 를 DELIVERY 로 올렸을 수
             # 있다 — 하지만 REVIEW 는 QA 에서 비롯된 상태이므로, 실패로 남는
             # current_stage 는 원래 단계(QA)를 보존해야 한다. 그러지 않으면
@@ -1371,8 +1439,18 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
             # 일어나므로) 영원히 도달 불가능해진다.
             stage = STAGE_QA
             raise PetGenerationRunError("MOTION_QA_REVIEW", "Phase 6 후보가 사람 검토를 요구합니다.", status=409)
-        if motion.status != motion_video_service.STATUS_COMPLETE:
-            raise PetGenerationRunError("MOTION_QA_FAILED", "Phase 6 QA PASS 후보가 없습니다.", status=409)
+        if deliverable is None:
+            # 코드는 로그/last_error.code 에 남기고, 사용자에게는 단계 이름 없는 문장을 보낸다.
+            logger.warning(
+                "MOTION_QA_FAILED run=%s motion_version=%s status=%s — no deliverable candidate",
+                run.id, motion.id, motion.status,
+            )
+            raise PetGenerationRunError(
+                "MOTION_QA_FAILED",
+                "이번에 만든 영상이 품질 기준을 충족하지 못해 전달하지 못했습니다. 다시 시도해 주세요.",
+                status=409,
+            )
+        selected = deliverable
 
         stage = STAGE_PUBLICATION
         run = await _progress(run, {"current_stage": stage})
@@ -1661,6 +1739,52 @@ async def _stale_motion_pin(run: PetGenerationRun) -> bool:
     return True
 
 
+async def _stale_canonical_pin(run: PetGenerationRun) -> bool:
+    """
+    FAILED 실행의 canonical 핀이 **실행의 계보와 다른 정본**을 가리키는가.
+
+    예전 _execute 는 계보 검사 전에 핀을 썼다 — 다른 레퍼런스 세트로 만들어진
+    정본이 한 번 핀되면 Retry 가 매번 그 핀을 다시 읽고 RUN_LINEAGE_INVALID 로
+    똑같이 죽었다. True 는 "핀만 풀면 CANONICAL 이 고정된 세트로 다시 돈다"가
+    증명될 때만이다. 하나라도 애매하면 False — 기존 하드 가드가 그대로 판정한다:
+
+      * FAILED 가 아니거나, 하류 핀(키프레임/모션/발행)이 있으면 손대지 않는다
+      * 운영자 정본 교체 요청이 걸려 있으면 그 흐름에 맡긴다
+      * 핀된 정본 행을 못 읽으면 (다른 종류의 손상) 손대지 않는다
+      * 계보가 맞으면 스테일이 아니다
+      * 핀된 정본에 종료되지 않은 프로바이더 작업이 있으면 손대지 않는다
+
+    행은 지우지 않는다 — 실행의 핀만 비운다.
+    """
+    if run.status != STATUS_FAILED:
+        return False
+    if not (run.canonical_version_id and run.canonical_version):
+        return False
+    if run.keyframes or run.motion_version_id or run.publication_id:
+        return False
+    if dict((run.provider_state or {}).get("_operator") or {}).get("canonical_replacement_request"):
+        return False
+    try:
+        canonical = await canonical_pet_service.get_canonical(
+            user_id=run.user_id, pet_id=run.pet_id, version=run.canonical_version
+        )
+    except Exception:
+        return False
+    if not canonical or str(canonical.id) != str(run.canonical_version_id):
+        return False
+    try:
+        _assert_canonical_lineage(run, canonical)
+        return False
+    except PetGenerationRunError:
+        pass
+    for job in durable_provider_jobs.list_for_run(run.id):
+        if str(job.get("phase_version_id") or "") != str(run.canonical_version_id):
+            continue
+        if str(job.get("submission_status") or "") not in _TERMINAL_SUBMISSION_STATUSES:
+            return False
+    return True
+
+
 async def _join_other_active_run(run: PetGenerationRun) -> Optional[PetGenerationRun]:
     """
     `run` 을 QUEUED 로 되살리기 직전의 마지막 확인 — 같은 pet/motion/
@@ -1719,6 +1843,16 @@ async def retry_generation_run(*, user_id: str, run_id: str) -> PetGenerationRun
                 "selected_candidate_id": None,
                 "publication_id": None,
                 "current_stage": STAGE_MOTION_SPEC,
+            }
+        )
+    if await _stale_canonical_pin(run):
+        # 계보가 다른 정본 핀만 비운다 — 정본 버전/후보 행은 역사로 남는다.
+        # 신원/레퍼런스 핀은 그대로라 CANONICAL 은 고정된 세트로 다시 돈다.
+        updates.update(
+            {
+                "canonical_version_id": None,
+                "canonical_version": None,
+                "current_stage": STAGE_CANONICAL,
             }
         )
     # FAILED / CANCELLED / RECOVERY_REQUIRED 에서만 QUEUED 로 — 읽기와 쓰기 사이에

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -82,7 +83,29 @@ def harness_for_any_pet(harness: PipelineHarness) -> PipelineHarness:
     """PipelineHarness hard-asserts pet_id == PET in _capture; the fresh-pet
     tests drive a second pet through the same mocked pipeline."""
     harness._capture = lambda stage, kwargs: harness.calls.append(stage)  # type: ignore[method-assign]
+    # The orchestrator verifies canonical.pet_id against the run before pinning
+    # (RUN_LINEAGE_INVALID otherwise) — the shared mock canonical/keyframe must belong
+    # to whichever pet is being driven through the pipeline.
+    for service, names in (
+        (runs.canonical_pet_service, ("build_canonical", "get_canonical")),
+        (runs.action_keyframe_service, ("build_keyframe", "get_keyframe")),
+    ):
+        for name in names:
+            setattr(service, name, _for_requested_pet(getattr(service, name)))
     return harness
+
+
+def _for_requested_pet(mocked):
+    """Wrap a PipelineHarness canonical/keyframe mock (already monkeypatched, so pytest
+    restores the original at teardown) to answer as the requested pet."""
+
+    async def wrapper(**kwargs):
+        canonical = await mocked(**kwargs)
+        if canonical is None:
+            return None
+        return SimpleNamespace(**{**vars(canonical), "pet_id": kwargs["pet_id"]})
+
+    return wrapper
 
 
 def seed_second_pet():

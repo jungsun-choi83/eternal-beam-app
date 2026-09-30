@@ -98,6 +98,11 @@ import {
 } from '@/lib/phase1-intake-session'
 import { hasActiveGeneration, resolveResumeContentId } from '@/lib/generation-resume'
 import { hasLibraryFlowMarker } from '@/lib/library-flow-state'
+import {
+  matchingCutoutFallback,
+  type ActiveCutoutIdentity,
+} from '@/lib/durable-cutout-readiness'
+import { useDurableCutoutReadiness } from '@/lib/use-durable-cutout-readiness'
 
 type IntakeImageState = {
   status: 'pending' | 'uploading' | 'success' | 'error'
@@ -507,6 +512,47 @@ export function EternalBeamApp() {
   const intakeIdentity = activePetSlot.intakeIdentity
   const cutoutImage = activePetSlot.cutoutImage
   const selectedTheme = activePetSlot.selectedTheme
+
+  /**
+   * Phase-1 누끼 준비 여부는 슬롯의 표시용 data URL 이 아니라 서버 레퍼런스
+   * 대장이 정한다. 세션 영수증은 이미 알고 있는 cutout id 를 함께 고정해,
+   * 같은 pet/content 라도 다른 레퍼런스 응답을 화면에 붙이지 못하게 한다.
+   */
+  const storedPipelineForCutout = readStoredPipeline()
+  const pendingCutoutForDisplay = getPendingCutoutMeta()
+  const activeCutoutIdentity: ActiveCutoutIdentity | null = (() => {
+    const pipelineContentId = (storedPipelineForCutout?.content_id || '').trim()
+    const pipelinePetId = (storedPipelineForCutout?.phase1_intake?.pet_id || '').trim()
+    const slotContentId = (intakeIdentity?.contentId || '').trim()
+    const slotPetId = (intakeIdentity?.petId || '').trim()
+    const contentId = slotContentId || pipelineContentId || (pendingCutoutForDisplay?.contentId || '').trim()
+    if (!contentId) return null
+    const petId = slotPetId || pipelinePetId || `pet_${contentId}`
+    const pipelineMatches =
+      pipelineContentId === contentId && (!pipelinePetId || pipelinePetId === petId)
+    return {
+      petId,
+      contentId,
+      expectedCutoutReferenceId: pipelineMatches
+        ? storedPipelineForCutout?.phase1_intake?.cutout_reference_id ?? null
+        : null,
+    }
+  })()
+  const { state: durableCutout, refresh: refreshDurableCutout } =
+    useDurableCutoutReadiness(activeCutoutIdentity)
+  const loadingCutoutFallback = matchingCutoutFallback(
+    activeCutoutIdentity,
+    storedPipelineForCutout,
+    pendingCutoutForDisplay,
+  )
+  // Signed URLs remain runtime-only: never write them into PetIntakeSlot, whose snapshot
+  // serializer accepts HTTP URLs. Only an existing data URL wins (to avoid a visible image
+  // swap); an old HTTP URL must not outrank the freshly signed durable-object URL.
+  const existingDataCutout = cutoutImage?.startsWith('data:') ? cutoutImage : null
+  const effectiveCutoutImage =
+    existingDataCutout ||
+    (durableCutout.status === 'ready' ? durableCutout.displayUrl : null) ||
+    (durableCutout.status === 'loading' ? cutoutImage || loadingCutoutFallback : null)
 
   // 홈 대시보드 "나의 반려" 카드용 — 슬롯 배열을 그대로 UI 모델로 쓰지 않고
   // 화면이 필요한 최소 형태(자리 번호 + 미리보기 한 장)로 추린다.
@@ -1118,6 +1164,7 @@ export function EternalBeamApp() {
   const handleAIProcessingComplete = async (slotIndex: number, cutoutUrl: string) => {
     const thumb = await createDisplayCutoutUrl(cutoutUrl, 640)
     updatePetSlot(slotIndex, (slot) => ({ ...slot, cutoutImage: thumb }))
+    refreshDurableCutout()
     // 방금 쓰인 파이프라인/대기 누끼를 **이 슬롯 앞으로** 즉시 보관한다. 전환을
     // 기다리지 않는 이유: 그 사이 새로고침이 나면 어느 펫의 것인지 알 수 없다.
     capturePetSlotState(petSlots[slotIndex]?.slotId ?? petSlotIdForIndex(slotIndex))
@@ -1578,7 +1625,9 @@ export function EternalBeamApp() {
               className="h-full"
             >
               <ThemeSelectionScreen
-                cutoutImage={cutoutImage}
+                cutoutImage={effectiveCutoutImage}
+                cutoutReadiness={durableCutout.status}
+                onCutoutImageError={refreshDurableCutout}
                 // 카드·큰 미리보기·생성이 **같은 한 장**을 쓰게 한다.
                 originalPhoto={originalPhoto}
                 selectedTheme={selectedTheme}
@@ -1621,7 +1670,7 @@ export function EternalBeamApp() {
               className="h-full"
             >
               <PreviewScreen
-                cutoutImage={cutoutImage}
+                cutoutImage={effectiveCutoutImage}
                 originalPhoto={originalPhoto}
                 selectedTheme={selectedTheme}
                 language={language}

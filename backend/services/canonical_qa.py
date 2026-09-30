@@ -59,6 +59,11 @@ CORE_CHECKS = (
 ADVISORY_CHECKS = ("coat_pattern",)
 
 
+def pass_requires_vlm() -> bool:
+    """핵심 검사에 VLM 확언이 들어 있는가 — 그렇다면 VLM 없이는 PASS 가 불가능하다."""
+    return any(key.startswith("vlm_") for key in CORE_CHECKS)
+
+
 def decide(checks: dict[str, Any]) -> str:
     """검사표 → 삼값 판정.
 

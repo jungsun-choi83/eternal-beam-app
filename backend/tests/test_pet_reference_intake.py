@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from backend.routers import assets as assets_router
 from backend.routers import matting as matting_router
 from backend.routers import pet_references_v1 as references_router
+from backend.services import asset_url_refresh
 from backend.services import pet_reference_service as refs
 from backend.services import pet_registry
 
@@ -609,6 +610,13 @@ def test_derived_parent_must_be_same_pet_original(uploads):
 
 def test_phase1_get_reports_intake_ready(assets_client, monkeypatch):
     monkeypatch.setenv("ALLOW_INSECURE_TEST_AUTH", "1")
+    signed = []
+
+    def fake_sign(obj, *, ttl=None):
+        signed.append((obj, ttl))
+        return f"https://signed.test/{obj.path}?token=short-lived"
+
+    monkeypatch.setattr(asset_url_refresh, "sign_object", fake_sign)
     original = make_jpeg_bytes()
     created = assets_client.post(
         "/api/assets/original",
@@ -624,15 +632,123 @@ def test_phase1_get_reports_intake_ready(assets_client, monkeypatch):
     app = FastAPI()
     app.include_router(references_router.router, prefix="/api")
     response = ASGITestClient(app).get(
-        "/api/v1/pet/references/pet_stable", headers=_phase7b_auth()
+        "/api/v1/pet/references/pet_stable?content_id=stable", headers=_phase7b_auth()
     )
     assert response.status_code == 200
     body = response.json()
     assert body["intake_ready"] is True
     assert body["original_reference_id"] == created.json()["reference_id"]
     assert body["cutout_reference_id"] == created.json()["cutout_reference_id"]
+    assert body["content_id"] == "stable"
+    assert body["cutout_signed_url"].startswith("https://signed.test/")
+    assert body["cutout_signed_url_expires_at"]
     derived = next(item for item in body["references"] if item["role"] == "derived")
     assert derived["parent_reference_id"] == body["original_reference_id"]
+    assert signed == [
+        (
+            asset_url_refresh.StorageObject(
+                bucket=derived["bucket"], path=derived["object_path"]
+            ),
+            references_router.CUTOUT_SIGNED_URL_TTL_SECONDS,
+        )
+    ]
+
+
+def test_phase1_get_not_ready_and_wrong_scope_return_no_cutout_data(
+    assets_client, monkeypatch
+):
+    monkeypatch.setenv("ALLOW_INSECURE_TEST_AUTH", "1")
+    sign_calls = []
+    monkeypatch.setattr(
+        asset_url_refresh,
+        "sign_object",
+        lambda *args, **kwargs: sign_calls.append((args, kwargs)),
+    )
+    created = assets_client.post(
+        "/api/assets/original",
+        files={"file": ("dog.jpg", make_jpeg_bytes(), "image/jpeg")},
+        data=_phase7b_form(),
+        headers=_phase7b_auth(),
+    )
+    assert created.status_code == 200
+
+    app = FastAPI()
+    app.include_router(references_router.router, prefix="/api")
+    client = ASGITestClient(app)
+
+    not_ready = client.get(
+        "/api/v1/pet/references/pet_stable?content_id=stable",
+        headers=_phase7b_auth(),
+    )
+    assert not_ready.status_code == 200
+    assert not_ready.json()["intake_ready"] is False
+    assert not_ready.json()["cutout_signed_url"] is None
+    assert not_ready.json()["cutout_signed_url_expires_at"] is None
+
+    wrong_content = client.get(
+        "/api/v1/pet/references/pet_stable?content_id=another-slot",
+        headers=_phase7b_auth(),
+    )
+    assert wrong_content.status_code == 200
+    assert wrong_content.json()["intake_ready"] is False
+    assert wrong_content.json()["references"] == []
+    assert wrong_content.json()["cutout_signed_url"] is None
+
+    wrong_pet = client.get(
+        "/api/v1/pet/references/pet_other?content_id=stable",
+        headers=_phase7b_auth(),
+    )
+    assert wrong_pet.status_code == 200
+    assert wrong_pet.json()["references"] == []
+    assert wrong_pet.json()["cutout_signed_url"] is None
+
+    wrong_user = client.get(
+        "/api/v1/pet/references/pet_stable?content_id=stable",
+        headers=_phase7b_auth("mallory@test"),
+    )
+    assert wrong_user.status_code == 403
+    assert sign_calls == []
+
+
+def test_phase1_get_signs_parent_matched_cutout_not_latest_cutout(
+    assets_client, monkeypatch
+):
+    monkeypatch.setenv("ALLOW_INSECURE_TEST_AUTH", "1")
+    created = assets_client.post(
+        "/api/assets/original",
+        files={
+            "file": ("dog.jpg", make_jpeg_bytes(), "image/jpeg"),
+            "cutout_file": ("cutout.png", make_rgba_png_bytes(0.5), "image/png"),
+        },
+        data=_phase7b_form(),
+        headers=_phase7b_auth(),
+    )
+    assert created.status_code == 200
+    authoritative_path = created.json()["cutout_object_path"]
+    _run(
+        refs.record_derived(
+            user_id="alice@test",
+            content_id="stable",
+            object_path="alice@test/stable/references/latest_unparented_cutout.png",
+            derived_kind="cutout_client",
+        )
+    )
+    signed_paths = []
+
+    def fake_sign(obj, *, ttl=None):
+        signed_paths.append(obj.path)
+        return "https://signed.test/exact-cutout.png?token=short-lived"
+
+    monkeypatch.setattr(asset_url_refresh, "sign_object", fake_sign)
+    app = FastAPI()
+    app.include_router(references_router.router, prefix="/api")
+    response = ASGITestClient(app).get(
+        "/api/v1/pet/references/pet_stable?content_id=stable",
+        headers=_phase7b_auth(),
+    )
+    assert response.status_code == 200
+    assert signed_paths == [authoritative_path]
+    assert response.json()["cutout_reference_id"] == created.json()["cutout_reference_id"]
 
 
 def test_phase7b_stops_at_phase1_even_when_legacy_autobuild_flag_is_on(
