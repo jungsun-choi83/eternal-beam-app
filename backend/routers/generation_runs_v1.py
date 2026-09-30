@@ -169,7 +169,8 @@ async def get_run_playback(
             status=run.status,
             published=True,
             device_test_only=False,
-            qa_decision="PASS",
+            # 무결성 게이트로 발행된 REVIEW/FAIL 후보는 그 결정을 그대로 싣는다.
+            qa_decision=(getattr(published, "qa_decision", None) or "PASS"),
             url=published.url,
             delivery_format=published.delivery_format,
             background_baked=published.background_baked,

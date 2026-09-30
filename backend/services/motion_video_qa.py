@@ -1993,3 +1993,177 @@ def verify_output_conformance(
         "reasons": reasons,
         "probe": meta,
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 심각도 분류 (severity) — INTEGRITY vs COSMETIC, 그리고 무결성 게이트
+#
+# "지금은 무결성 문제만 전달을 막는다." QA 판정(PASS/REVIEW/FAIL)과 사유는 그대로
+# 저장되고(감사), 그 위에 **별도의** 전달 가능 여부를 계산한다. 결정은 절대 고쳐
+# 쓰지 않는다. 사유 문자열 하나하나를 INTEGRITY 또는 COSMETIC 으로 분류한다:
+#
+#   INTEGRITY — 다른 개체/해부학 붕괴/펫 중복/허용되지 않은 사람/장면 컷/구조
+#               강한 모순/출력 규격 위반, 그리고 신원을 **확인하지 못한** 경우
+#               (VLM 없음, 비교 가능한 프레임 없음). 하나라도 있으면 절대 전달 불가.
+#   COSMETIC  — 전신 펄스/이동/침하, 약하거나 불확실한 호흡 증거, 카메라·구도
+#               소견, 의도치 않은 큰 움직임, 루프 이음매, 요청 모션 미확인, 자문
+#               구조 신호, 해상도/길이 미달.
+#
+# 모르는 사유(새 규칙이 추가한 사유 포함)는 INTEGRITY 다 — 기본값은 "막는다".
+# 게이트: MOTION_QA_SEVERITY_GATE = off (기본, 이전 동작) | integrity_only.
+# ══════════════════════════════════════════════════════════════════════════
+
+import re as _re
+
+SEVERITY_VERSION = "motion-qa-severity-v1"
+SEVERITY_INTEGRITY = "INTEGRITY"
+SEVERITY_COSMETIC = "COSMETIC"
+
+SEVERITY_GATE_ENV = "MOTION_QA_SEVERITY_GATE"
+SEVERITY_GATE_OFF = "off"
+SEVERITY_GATE_INTEGRITY_ONLY = "integrity_only"
+SEVERITY_GATE_MODES = (SEVERITY_GATE_OFF, SEVERITY_GATE_INTEGRITY_ONLY)
+
+#: (매칭 방식, 패턴, 심각도). 위에서부터 첫 일치가 이긴다. 값이 붙는 사유
+#: ("identity_drift worst_frame 0.08 < 0.2")는 접두어로, 트레잇 이름이 끼는 사유
+#: ("structural_body_length_class_strong_contradiction …")는 정규식으로 잡는다.
+REASON_SEVERITY_RULES: tuple[tuple[str, str, str], ...] = (
+    # ── INTEGRITY: 신원 ──────────────────────────────────────────────────
+    ("prefix", "identity_drift", SEVERITY_INTEGRITY),
+    ("prefix", "identity_mean", SEVERITY_INTEGRITY),
+    ("prefix", "identity_crater_frame", SEVERITY_INTEGRITY),
+    ("prefix", "identity borderline", SEVERITY_INTEGRITY),        # 신원 미확정 = 막는다
+    ("prefix", "no_comparable_frames", SEVERITY_INTEGRITY),
+    ("prefix", "frame_sampling_unavailable", SEVERITY_INTEGRITY),
+    ("prefix", "vlm:same_pet_all_frames=no", SEVERITY_INTEGRITY),
+    ("prefix", "vlm_qa_unavailable", SEVERITY_INTEGRITY),          # 신원/해부학 미검증
+    # ── INTEGRITY: 해부학 / 구도 오염 / 장면 컷 ──────────────────────────
+    ("prefix", "vlm:anatomy_plausible_all_frames=no", SEVERITY_INTEGRITY),
+    ("prefix", "vlm_composition_contaminated", SEVERITY_INTEGRITY),  # 펫 중복 / 장면 컷 / 허용 안 된 사람
+    ("prefix", "scene_cut_or_swap", SEVERITY_INTEGRITY),
+    ("regex", r"^structural_.+_strong_contradiction", SEVERITY_INTEGRITY),
+    ("prefix", "anatomy_limb_count_or_placement_corrupted", SEVERITY_INTEGRITY),
+    ("prefix", "anatomy_joint_implausible", SEVERITY_INTEGRITY),
+    ("prefix", "anatomy_severe_body_deformation", SEVERITY_INTEGRITY),
+    # ── INTEGRITY: 출력 규격 위반 (FAIL 급) ──────────────────────────────
+    ("prefix", "output_conformance:aspect_mismatch", SEVERITY_INTEGRITY),
+    ("prefix", "output_conformance:audio_stream_present", SEVERITY_INTEGRITY),
+    # ── COSMETIC: 호흡 시간축 증거 ───────────────────────────────────────
+    ("prefix", "temporal_global_pulse_borderline", SEVERITY_COSMETIC),
+    ("prefix", "temporal_global_pulse", SEVERITY_COSMETIC),        # scale_range / drift / sag
+    ("prefix", "temporal_unlocalized_motion", SEVERITY_COSMETIC),
+    ("prefix", "temporal_no_breathing", SEVERITY_COSMETIC),
+    ("prefix", "vlm_motion_resolved_by_temporal_evidence", SEVERITY_COSMETIC),
+    # ── COSMETIC: 요청 모션 / 카메라 / 구도 소견 ─────────────────────────
+    ("prefix", "vlm:requested_motion_occurs=no", SEVERITY_COSMETIC),
+    ("prefix", "vlm_unintended_large_motion", SEVERITY_COSMETIC),  # …_contradicted_by_temporal_metrics 포함
+    ("prefix", "vlm_temporal_or_background_issue", SEVERITY_COSMETIC),
+    ("prefix", "vlm_did_not_reach_target", SEVERITY_COSMETIC),
+    ("prefix", "start_pose_", SEVERITY_COSMETIC),                  # _not_reached / _borderline / _unmeasurable
+    ("prefix", "target_pose_", SEVERITY_COSMETIC),
+    # ── COSMETIC: 시간 안정성 경계 / 루프 이음매 ─────────────────────────
+    ("prefix", "flicker adjacent", SEVERITY_COSMETIC),
+    ("prefix", "loop_ssim_below_threshold", SEVERITY_COSMETIC),
+    ("prefix", "loop_return_unmeasurable", SEVERITY_COSMETIC),
+    ("prefix", "end_pose_far_from_start", SEVERITY_COSMETIC),      # qa-v1 루프 사유
+    ("prefix", "locomotion_identity_resolved", SEVERITY_COSMETIC), # 정보성 (신원 PASS 로 해소됨)
+    # ── COSMETIC: 자문 구조 신호 ─────────────────────────────────────────
+    ("regex", r"^structural_.+_(drift|insufficient_visibility|pose_dependent_change_advisory)", SEVERITY_COSMETIC),
+    ("prefix", "structural_evidence_unavailable", SEVERITY_COSMETIC),
+    ("prefix", "structural_morphology_evidence_insufficient", SEVERITY_COSMETIC),
+    ("prefix", "structural_heuristic_borderline_vlm_anatomy_ok", SEVERITY_COSMETIC),
+    ("prefix", "anatomy_joint_borderline", SEVERITY_COSMETIC),
+    ("prefix", "anatomy_body_deformation_review", SEVERITY_COSMETIC),
+    ("prefix", "anatomy_body_deformation_pose_transition_advisory", SEVERITY_COSMETIC),
+    ("prefix", "advisory_checks_not_blocking", SEVERITY_COSMETIC),
+    ("prefix", "advisory_structural_fail_not_blocking", SEVERITY_COSMETIC),  # qa-v7 레거시
+    ("prefix", "vlm_evidence_from_stored_checks", SEVERITY_COSMETIC),        # 오프라인 재판정 표식
+    # ── COSMETIC: 출력 규격 미달 (REVIEW 급) ─────────────────────────────
+    ("prefix", "output_conformance:resolution_below_requested", SEVERITY_COSMETIC),
+    ("prefix", "output_conformance:duration_off", SEVERITY_COSMETIC),
+)
+
+#: 사유 문자열 없이도 FAIL 만으로 무결성 위반인 검사 — 방어적 이중 확인.
+INTEGRITY_CHECKS = (
+    "identity_over_time",
+    "temporal_stability",
+    "vlm_same_pet",
+    "vlm_anatomy",
+    "structural_morphology_consistency",
+    "anatomy_limb_count_placement",
+    "anatomy_joint_plausibility",
+    "anatomy_body_deformation",
+)
+
+
+def classify_reason(reason: Any) -> str:
+    """사유 문자열 하나 → INTEGRITY | COSMETIC. 빈 값/모르는 사유는 INTEGRITY."""
+    text = str(reason or "").strip()
+    if not text:
+        return SEVERITY_INTEGRITY
+    for kind, pattern, severity in REASON_SEVERITY_RULES:
+        if kind == "prefix" and text.startswith(pattern):
+            return severity
+        if kind == "regex" and _re.match(pattern, text):
+            return severity
+    return SEVERITY_INTEGRITY
+
+
+def severity_gate_mode(override: Optional[str] = None) -> str:
+    """인자 > 환경 변수 > off. 알 수 없는 값은 off (이전 동작) 로 닫힌다."""
+    value = str(override or os.getenv(SEVERITY_GATE_ENV) or SEVERITY_GATE_OFF).strip().lower()
+    return value if value in SEVERITY_GATE_MODES else SEVERITY_GATE_OFF
+
+
+def severity_summary(qa_result: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """저장된(또는 방금 만든) qa_result → 무결성/외관 사유 목록. 순수 함수, 부작용 없음."""
+    qa = qa_result or {}
+    integrity: list[str] = []
+    cosmetic: list[str] = []
+    for reason in qa.get("reasons") or []:
+        (integrity if classify_reason(reason) == SEVERITY_INTEGRITY else cosmetic).append(str(reason))
+    checks = qa.get("checks") or {}
+    integrity_checks = [name for name in INTEGRITY_CHECKS if checks.get(name) == FAIL]
+    for name in integrity_checks:
+        marker = f"check:{name}=FAIL"
+        if marker not in integrity:
+            integrity.append(marker)
+    return {
+        "version": SEVERITY_VERSION,
+        "integrity": integrity,
+        "cosmetic": cosmetic,
+        "integrity_checks": integrity_checks,
+    }
+
+
+def is_publishable(
+    qa_result: Optional[dict[str, Any]],
+    *,
+    decision: Optional[str] = None,
+    mode: Optional[str] = None,
+) -> bool:
+    """
+    전달 가능 여부. PASS 는 항상 참. 그 밖에는 게이트가 integrity_only 이고,
+    결정이 REVIEW/FAIL 이며(ERROR 는 QA 결과 자체가 없다), 무결성 사유가 하나도
+    없을 때만 참. 게이트 off 에서는 PASS 만 참 — 이전 동작 그대로.
+    """
+    qa = qa_result or {}
+    verdict = str(decision or qa.get("decision") or "").upper()
+    if verdict == PASS:
+        return True
+    if severity_gate_mode(mode) != SEVERITY_GATE_INTEGRITY_ONLY:
+        return False
+    if verdict not in (REVIEW, FAIL):
+        return False
+    return not severity_summary(qa)["integrity"]
+
+
+def severity_receipt(qa_result: Optional[dict[str, Any]], mode: Optional[str] = None) -> dict[str, Any]:
+    """qa_result 에 실을 감사 기록 — 분류 결과 + 게이트 모드 + 전달 가능 여부."""
+    resolved = severity_gate_mode(mode)
+    summary = severity_summary(qa_result)
+    return {
+        **summary,
+        "gate": resolved,
+        "publishable": is_publishable(qa_result, mode=resolved),
+    }

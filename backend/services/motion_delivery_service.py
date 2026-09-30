@@ -735,7 +735,10 @@ async def package_breathing_for_delivery(
             "CANDIDATE_MISMATCH", "후보가 이 모션 버전/펫에 속하지 않습니다.", status=409
         )
     decision = str(candidate.get("decision") or "").upper()
-    if decision in ("FAIL", "ERROR"):
+    # 무결성 게이트가 켜져 있으면 무결성 사유 없는 FAIL 도 전달 대상이다 (ERROR 는 항상 제외).
+    if decision == "ERROR" or (
+        decision == "FAIL" and not motions.candidate_is_publishable(candidate)
+    ):
         raise MotionDeliveryError(
             "CANDIDATE_NOT_PACKAGEABLE",
             "FAIL/ERROR 후보는 포장하지 않습니다.", status=409,
@@ -932,7 +935,9 @@ async def resolve_breathing_playback(
         )
 
     decision = str(candidate.get("decision") or "").upper()
-    if decision not in ("PASS", "REVIEW"):
+    if decision not in ("PASS", "REVIEW") and not (
+        decision == "FAIL" and motions.candidate_is_publishable(candidate)
+    ):
         raise MotionDeliveryError(
             "PLAYBACK_UNAVAILABLE", "FAIL/ERROR 후보는 재생하지 않습니다.", status=409
         )

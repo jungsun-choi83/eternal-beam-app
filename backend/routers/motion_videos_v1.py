@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
@@ -50,6 +50,9 @@ class BuildRequest(BaseModel):
 class QaRerunRequest(BaseModel):
     motion_version_id: str
     candidate_id: str
+    #: VLM_QA_CACHE 를 이 재실행에 한해 덮어쓴다 — "refresh" 는 후보 하나를 VLM 에
+    #: 강제로 다시 묻고 캐시 항목을 덮어쓴다. None 이면 환경 변수 그대로.
+    vlm_cache: Optional[Literal["off", "on", "refresh"]] = None
 
 
 class PublishBreathingRequest(BaseModel):
@@ -312,6 +315,7 @@ async def rerun_motion_qa(
             motion_id=motion_id,
             motion_version_id=body.motion_version_id,
             candidate_id=body.candidate_id,
+            vlm_cache_mode=body.vlm_cache,
         )
     except svc.MotionVideoError as e:
         raise _http(e) from e

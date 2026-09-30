@@ -1366,12 +1366,34 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
             if not selected:
                 raise PetGenerationRunError("MOTION_QA_INVALID", "선택된 QA PASS 후보를 확인하지 못했습니다.", status=409)
 
+        # ── 무결성 게이트 (MOTION_QA_SEVERITY_GATE=integrity_only) ─────────────
+        # PASS 가 없어도 빌더가 무결성 사유 없는 REVIEW/FAIL 후보를 selected 로 골라
+        # 뒀으면 그 후보를 PASS 와 똑같이 포장·발행한다. QA 결정/버전 status 는
+        # 그대로다 — 실행만 FAILED 대신 PUBLISHED 로 끝난다.
+        gated = None
+        if (
+            selected is None
+            and motion.selected_candidate_id
+            and motion_video_service.severity_gate_mode() == motion_video_service.SEVERITY_GATE_INTEGRITY_ONLY
+        ):
+            gated = next(
+                (
+                    candidate
+                    for candidate in motion.candidates
+                    if candidate.id == motion.selected_candidate_id
+                    and getattr(candidate, "selected", False)
+                    and motion_video_service.candidate_is_publishable(candidate)
+                ),
+                None,
+            )
+        deliverable = selected or gated
+
         # ── Phase 7G: QA 결정은 절대 바꾸지 않는다 — REVIEW 는 REVIEW 로 남는다.
         # 다만 PASS 든 REVIEW 든 재생 가능한 후보는 packed-alpha 파생물로 포장한다
         # (Phase 7F, 멱등). PASS 는 이어서 발행되고, REVIEW 는 발행 없이 개발/
         # 현재-실행 재생 리졸버(GET /generation-runs/{id}/playback)로만 보인다.
         review_candidate = None
-        if motion.status == motion_video_service.STATUS_REVIEW:
+        if deliverable is None and motion.status == motion_video_service.STATUS_REVIEW:
             review_candidates = [
                 c for c in motion.candidates if getattr(c, "decision", "") == "REVIEW"
             ]
@@ -1382,7 +1404,7 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
                 ),
                 default=None,
             )
-        packageable = selected or review_candidate
+        packageable = deliverable or review_candidate
         if packageable is not None:
             stage = STAGE_DELIVERY
             try:
@@ -1408,7 +1430,7 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
             except motion_delivery_service.MotionDeliveryError as exc:
                 raise PetGenerationRunError(exc.code, exc.message, status=exc.status) from exc
 
-        if motion.status == motion_video_service.STATUS_REVIEW:
+        if deliverable is None and motion.status == motion_video_service.STATUS_REVIEW:
             # 위 포장 블록은 진행 상황 표시를 위해 stage 를 DELIVERY 로 올렸을 수
             # 있다 — 하지만 REVIEW 는 QA 에서 비롯된 상태이므로, 실패로 남는
             # current_stage 는 원래 단계(QA)를 보존해야 한다. 그러지 않으면
@@ -1417,8 +1439,18 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
             # 일어나므로) 영원히 도달 불가능해진다.
             stage = STAGE_QA
             raise PetGenerationRunError("MOTION_QA_REVIEW", "Phase 6 후보가 사람 검토를 요구합니다.", status=409)
-        if motion.status != motion_video_service.STATUS_COMPLETE:
-            raise PetGenerationRunError("MOTION_QA_FAILED", "Phase 6 QA PASS 후보가 없습니다.", status=409)
+        if deliverable is None:
+            # 코드는 로그/last_error.code 에 남기고, 사용자에게는 단계 이름 없는 문장을 보낸다.
+            logger.warning(
+                "MOTION_QA_FAILED run=%s motion_version=%s status=%s — no deliverable candidate",
+                run.id, motion.id, motion.status,
+            )
+            raise PetGenerationRunError(
+                "MOTION_QA_FAILED",
+                "이번에 만든 영상이 품질 기준을 충족하지 못해 전달하지 못했습니다. 다시 시도해 주세요.",
+                status=409,
+            )
+        selected = deliverable
 
         stage = STAGE_PUBLICATION
         run = await _progress(run, {"current_stage": stage})

@@ -390,6 +390,138 @@ def _classification_cache_key(data: bytes, mime_type: str) -> str:
     return h.hexdigest()
 
 
+# ── QA 호출 캐시 (VLM_QA_CACHE) ─────────────────────────────────────────────
+# qa_canonical_image / qa_action_keyframe / qa_motion_video 는 위 두 분석기와 달리
+# 캐시가 전혀 없었다 — raw 저장 뒤 QA 기록 전 크래시, RAW_STORE_FAILED 복구,
+# QA 전용 버전 범프 뒤 qa-rerun 이 전부 같은 입력으로 유료 호출을 다시 냈다.
+#
+#   VLM_QA_CACHE = off (기본, 이전 동작 그대로) | on | refresh
+#   refresh 는 읽기를 건너뛰고 새 답을 **써서** 항목을 덮어쓴다 — 운영자가 후보
+#   하나를 강제로 다시 묻는 경로(reevaluate_* 의 vlm_cache_mode).
+#
+# 키 = 모델 + 종류 + 호출 버전 + 실제로 보낸 프롬프트/파라미터 + **실제로 보낸**
+# 이미지 바이트의 해시 (모션은 샘플 프레임 JPEG 그대로). 이미지 바이트는 저장하지
+# 않는다 — 행에는 해시 키와 파싱된 VLM 답만 남는다. 판정 이전의 원 답을 캐시하므로
+# 규칙이 바뀌어도 캐시된 답으로 다시 판정한다. 실패/거절/파싱 불가는 캐시하지 않는다.
+VLM_QA_CACHE_ENV = "VLM_QA_CACHE"
+QA_CACHE_OFF = "off"
+QA_CACHE_ON = "on"
+QA_CACHE_REFRESH = "refresh"
+QA_CACHE_MODES = (QA_CACHE_OFF, QA_CACHE_ON, QA_CACHE_REFRESH)
+
+KIND_CANONICAL_QA = "canonical_qa"
+KIND_KEYFRAME_QA = "keyframe_qa"
+KIND_MOTION_QA = "motion_qa"
+
+
+def qa_cache_mode(override: Optional[str] = None) -> str:
+    """인자 > 환경 변수 > off. 알 수 없는 값은 off (이전 동작) 로 닫힌다."""
+    value = str(override or os.getenv(VLM_QA_CACHE_ENV) or QA_CACHE_OFF).strip().lower()
+    return value if value in QA_CACHE_MODES else QA_CACHE_OFF
+
+
+def _qa_cache_key(
+    kind: str, version: str, images: Sequence[tuple[bytes, str]], params: dict[str, Any]
+) -> str:
+    h = hashlib.sha256()
+    for part in (model_name(), kind, version, json.dumps(params, sort_keys=True, default=str)):
+        h.update(part.encode("utf-8"))
+        h.update(b"\0")
+    for data, mime in images:
+        h.update((mime or "").encode("utf-8"))
+        h.update(b"\0")
+        h.update(hashlib.sha256(data).digest())
+        h.update(b"\0")
+    return h.hexdigest()
+
+
+def _image_block(data: bytes, mime: str) -> dict[str, Any]:
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": mime,
+            "data": base64.standard_b64encode(data).decode("ascii"),
+        },
+    }
+
+
+def _structured_qa_call(
+    content: list[dict[str, Any]], schema: dict[str, Any], *, label: str
+) -> Optional[dict[str, Any]]:
+    """한 번의 구조화 QA 호출. 비활성/실패/거절/파싱 실패는 전부 None (이전과 동일)."""
+    try:
+        import anthropic
+    except ImportError:
+        logger.warning("PET_VLM_IDENTITY_ENABLED=1 이지만 anthropic 패키지가 없습니다.")
+        return None
+    try:
+        client = anthropic.Anthropic()
+        response = client.messages.create(
+            model=model_name(),
+            max_tokens=2048,
+            messages=[{"role": "user", "content": content}],
+            output_config={"format": {"type": "json_schema", "schema": schema}},
+        )
+    except Exception:
+        logger.warning("VLM %s 호출 실패", label, exc_info=True)
+        return None
+    if getattr(response, "stop_reason", None) == "refusal":
+        return None
+    try:
+        text = next(b.text for b in response.content if b.type == "text")
+        result = json.loads(text)
+    except Exception:
+        logger.warning("VLM %s 응답 파싱 실패", label, exc_info=True)
+        return None
+    if not isinstance(result, dict):
+        return None
+    result["model"] = getattr(response, "model", model_name())
+    return result
+
+
+def _cached_qa_call(
+    *,
+    kind: str,
+    version: str,
+    images: Sequence[tuple[bytes, str]],
+    params: dict[str, Any],
+    call: Any,
+    cache_mode: Optional[str],
+) -> Optional[dict[str, Any]]:
+    """
+    QA 호출 1건을 캐시 정책으로 감싼다. off 면 call() 그대로 (락도 없다 — 이전 동작).
+    on 은 in-memory → durable 조회 뒤 single-flight 로 한 번만 호출하고 저장한다.
+    refresh 는 조회를 건너뛰되 저장은 한다. None 결과는 어떤 모드에서도 저장하지 않는다.
+    로그에는 종류/모드/키 접두어만 남긴다 — 이미지 데이터나 식별 정보는 없다.
+    """
+    mode = qa_cache_mode(cache_mode)
+    if mode == QA_CACHE_OFF:
+        return call()
+    key = _qa_cache_key(kind, version, images, params)
+    short = key[:12]
+    if mode == QA_CACHE_ON:
+        cached = _cached_result(key)
+        if cached is not None:
+            logger.info("[vlm-qa-cache] hit kind=%s key=%s", kind, short)
+            return cached
+    with _InflightLock(key):
+        if mode == QA_CACHE_ON:
+            cached = _cached_result(key)
+            if cached is not None:
+                logger.info("[vlm-qa-cache] hit kind=%s key=%s (after in-flight wait)", kind, short)
+                return cached
+        logger.info(
+            "[vlm-qa-cache] %s kind=%s key=%s", "refresh" if mode == QA_CACHE_REFRESH else "miss", kind, short
+        )
+        result = call()
+        if result is None:
+            logger.info("[vlm-qa-cache] not-stored kind=%s key=%s (no usable answer)", kind, short)
+            return None
+        _store_result(key, kind=kind, analyzer_version=version, result=result)
+        return result
+
+
 def clear_semantic_cache() -> None:
     """VLM 결과 캐시를 비운다 (테스트/운영 훅) — in-memory + durable(목업) 둘 다."""
     with _result_cache_lock:
@@ -701,62 +833,35 @@ def qa_canonical_image(
     candidate: bytes,
     references: Sequence[tuple[bytes, str]],
     candidate_mime: str = "image/png",
+    *,
+    cache_mode: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    """생성 후보 vs 실제 레퍼런스 — 구조화 QA. 실패/비활성은 None."""
+    """생성 후보 vs 실제 레퍼런스 — 구조화 QA. 실패/비활성은 None.
+
+    cache_mode: VLM_QA_CACHE 환경 변수를 이 호출에 한해 덮어쓴다 (운영자 refresh 용).
+    """
     if not is_enabled() or not candidate:
         return None
-    try:
-        import anthropic
-    except ImportError:
-        logger.warning("PET_VLM_IDENTITY_ENABLED=1 이지만 anthropic 패키지가 없습니다.")
-        return None
 
-    content: list[dict[str, Any]] = [
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": candidate_mime,
-                "data": base64.standard_b64encode(candidate).decode("ascii"),
-            },
-        }
-    ]
-    for data, mime in references[:MAX_IMAGES]:
-        if data:
-            content.append(
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": (mime or "image/jpeg"),
-                        "data": base64.standard_b64encode(data).decode("ascii"),
-                    },
-                }
-            )
+    images: list[tuple[bytes, str]] = [(candidate, candidate_mime)]
+    images += [(data, (mime or "image/jpeg")) for data, mime in references[:MAX_IMAGES] if data]
+    content: list[dict[str, Any]] = [_image_block(data, mime) for data, mime in images]
     content.append({"type": "text", "text": _CANONICAL_QA_PROMPT})
 
-    try:
-        client = anthropic.Anthropic()
-        response = client.messages.create(
-            model=model_name(),
-            max_tokens=2048,
-            messages=[{"role": "user", "content": content}],
-            output_config={"format": {"type": "json_schema", "schema": CANONICAL_QA_SCHEMA}},
-        )
-    except Exception:
-        logger.warning("VLM 정본 QA 호출 실패", exc_info=True)
-        return None
-    if getattr(response, "stop_reason", None) == "refusal":
-        return None
-    try:
-        text = next(b.text for b in response.content if b.type == "text")
-        result = json.loads(text)
-    except Exception:
-        logger.warning("VLM 정본 QA 응답 파싱 실패", exc_info=True)
-        return None
-    result["source"] = VLM_CANONICAL_QA_VERSION
-    result["model"] = getattr(response, "model", model_name())
-    return result
+    def _call() -> Optional[dict[str, Any]]:
+        result = _structured_qa_call(content, CANONICAL_QA_SCHEMA, label="정본 QA")
+        if result is not None:
+            result["source"] = VLM_CANONICAL_QA_VERSION
+        return result
+
+    return _cached_qa_call(
+        kind=KIND_CANONICAL_QA,
+        version=VLM_CANONICAL_QA_VERSION,
+        images=images,
+        params={"prompt": _CANONICAL_QA_PROMPT, "candidate_mime": candidate_mime},
+        call=_call,
+        cache_mode=cache_mode,
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -806,70 +911,40 @@ def qa_action_keyframe(
     required_pose: str,
     required_visibility: Sequence[str] = (),
     candidate_mime: str = "image/png",
+    cache_mode: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """키프레임 후보 vs 정본/실제 레퍼런스 + 요구 포즈 — 구조화 QA. 실패/비활성 None."""
     if not is_enabled() or not candidate:
         return None
-    try:
-        import anthropic
-    except ImportError:
-        logger.warning("PET_VLM_IDENTITY_ENABLED=1 이지만 anthropic 패키지가 없습니다.")
-        return None
 
-    content: list[dict[str, Any]] = [
-        {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": candidate_mime,
-                "data": base64.standard_b64encode(candidate).decode("ascii"),
-            },
-        }
-    ]
-    for data, mime in references[:MAX_IMAGES]:
-        if data:
-            content.append(
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": (mime or "image/jpeg"),
-                        "data": base64.standard_b64encode(data).decode("ascii"),
-                    },
-                }
-            )
-    content.append(
-        {
-            "type": "text",
-            "text": _KEYFRAME_QA_PROMPT_TEMPLATE.format(
-                required_pose=required_pose,
-                required_visibility=", ".join(required_visibility) or "(none specified)",
-            ),
-        }
+    images: list[tuple[bytes, str]] = [(candidate, candidate_mime)]
+    images += [(data, (mime or "image/jpeg")) for data, mime in references[:MAX_IMAGES] if data]
+    prompt = _KEYFRAME_QA_PROMPT_TEMPLATE.format(
+        required_pose=required_pose,
+        required_visibility=", ".join(required_visibility) or "(none specified)",
     )
+    content: list[dict[str, Any]] = [_image_block(data, mime) for data, mime in images]
+    content.append({"type": "text", "text": prompt})
 
-    try:
-        client = anthropic.Anthropic()
-        response = client.messages.create(
-            model=model_name(),
-            max_tokens=2048,
-            messages=[{"role": "user", "content": content}],
-            output_config={"format": {"type": "json_schema", "schema": KEYFRAME_QA_SCHEMA}},
-        )
-    except Exception:
-        logger.warning("VLM 키프레임 QA 호출 실패", exc_info=True)
-        return None
-    if getattr(response, "stop_reason", None) == "refusal":
-        return None
-    try:
-        text = next(b.text for b in response.content if b.type == "text")
-        result = json.loads(text)
-    except Exception:
-        logger.warning("VLM 키프레임 QA 응답 파싱 실패", exc_info=True)
-        return None
-    result["source"] = VLM_KEYFRAME_QA_VERSION
-    result["model"] = getattr(response, "model", model_name())
-    return result
+    def _call() -> Optional[dict[str, Any]]:
+        result = _structured_qa_call(content, KEYFRAME_QA_SCHEMA, label="키프레임 QA")
+        if result is not None:
+            result["source"] = VLM_KEYFRAME_QA_VERSION
+        return result
+
+    return _cached_qa_call(
+        kind=KIND_KEYFRAME_QA,
+        version=VLM_KEYFRAME_QA_VERSION,
+        images=images,
+        params={
+            "prompt": prompt,
+            "required_pose": required_pose,
+            "required_visibility": list(required_visibility),
+            "candidate_mime": candidate_mime,
+        },
+        call=_call,
+        cache_mode=cache_mode,
+    )
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -946,83 +1021,57 @@ def qa_motion_video(
     sample_fractions: Sequence[float],
     reference_image: Optional[tuple[bytes, str]] = None,
     target_image: Optional[tuple[bytes, str]] = None,
+    cache_mode: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """샘플 프레임들 + 레퍼런스 → 구조화 모션 QA. 실패/비활성은 None."""
     if not is_enabled() or not frame_images:
         return None
-    try:
-        import anthropic
-    except ImportError:
-        logger.warning("PET_VLM_IDENTITY_ENABLED=1 이지만 anthropic 패키지가 없습니다.")
-        return None
 
-    content: list[dict[str, Any]] = []
     # v1 truncated to six frames. That aliases a roughly two-cycle/5-second
     # BREATHING clip and can omit both intermediate phases and the true last
     # frame. Nine v2 samples fit within the provider's image-input contract.
     supplied_frames = list(frame_images[:12])
-    for data, mime in supplied_frames:
-        if data:
-            content.append(
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": (mime or "image/png"),
-                        "data": base64.standard_b64encode(data).decode("ascii"),
-                    },
-                }
-            )
+    images: list[tuple[bytes, str]] = [
+        (data, (mime or "image/png")) for data, mime in supplied_frames if data
+    ]
     for extra in (reference_image, target_image):
         if extra and extra[0]:
-            content.append(
-                {
-                    "type": "image",
-                    "source": {
-                        "type": "base64",
-                        "media_type": (extra[1] or "image/png"),
-                        "data": base64.standard_b64encode(extra[0]).decode("ascii"),
-                    },
-                }
-            )
-    if not content:
+            images.append((extra[0], (extra[1] or "image/png")))
+    if not images:
         return None
     target_note = (
         "; the very last image is the TARGET pose keyframe" if target_image else ""
     )
-    content.append(
-        {
-            "type": "text",
-            "text": _MOTION_QA_PROMPT_TEMPLATE.format(
-                n=len(supplied_frames),
-                fractions=list(sample_fractions[: len(supplied_frames)]),
-                motion_description=motion_description,
-                motion_class=motion_class,
-                target_note=target_note,
-                target_note2=(" (last image)" if target_image else ""),
-            ),
-        }
+    prompt = _MOTION_QA_PROMPT_TEMPLATE.format(
+        n=len(supplied_frames),
+        fractions=list(sample_fractions[: len(supplied_frames)]),
+        motion_description=motion_description,
+        motion_class=motion_class,
+        target_note=target_note,
+        target_note2=(" (last image)" if target_image else ""),
     )
+    content: list[dict[str, Any]] = [_image_block(data, mime) for data, mime in images]
+    content.append({"type": "text", "text": prompt})
 
-    try:
-        client = anthropic.Anthropic()
-        response = client.messages.create(
-            model=model_name(),
-            max_tokens=2048,
-            messages=[{"role": "user", "content": content}],
-            output_config={"format": {"type": "json_schema", "schema": MOTION_QA_SCHEMA}},
-        )
-    except Exception:
-        logger.warning("VLM 모션 QA 호출 실패", exc_info=True)
-        return None
-    if getattr(response, "stop_reason", None) == "refusal":
-        return None
-    try:
-        text = next(b.text for b in response.content if b.type == "text")
-        result = json.loads(text)
-    except Exception:
-        logger.warning("VLM 모션 QA 응답 파싱 실패", exc_info=True)
-        return None
-    result["source"] = VLM_MOTION_QA_VERSION
-    result["model"] = getattr(response, "model", model_name())
-    return result
+    def _call() -> Optional[dict[str, Any]]:
+        result = _structured_qa_call(content, MOTION_QA_SCHEMA, label="모션 QA")
+        if result is not None:
+            result["source"] = VLM_MOTION_QA_VERSION
+        return result
+
+    return _cached_qa_call(
+        kind=KIND_MOTION_QA,
+        version=VLM_MOTION_QA_VERSION,
+        images=images,
+        params={
+            "prompt": prompt,
+            "motion_description": motion_description,
+            "motion_class": motion_class,
+            "sample_fractions": [float(f) for f in sample_fractions[: len(supplied_frames)]],
+            "frame_count": len(supplied_frames),
+            "has_reference": bool(reference_image and reference_image[0]),
+            "has_target": bool(target_image and target_image[0]),
+        },
+        call=_call,
+        cache_mode=cache_mode,
+    )

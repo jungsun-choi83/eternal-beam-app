@@ -1029,10 +1029,15 @@ async def reevaluate_canonical_candidate(
     candidate_id: str,
     fetch_bytes: Optional[Callable[[Any], Optional[bytes]]] = None,
     cutout_fn: Optional[Callable[[bytes], Optional[bytes]]] = None,
+    vlm_cache_mode: Optional[str] = None,
 ) -> CanonicalVersion:
     """
     저장된 정본 후보 1건에 **현재** QA 를 다시 돌린다 — 프로바이더(이미지 생성)
     호출은 절대 없다.
+
+    vlm_cache_mode: VLM_QA_CACHE 를 이 재평가에 한해 덮어쓴다. "refresh" 는 같은
+    QA 버전이어도 중복 제거를 건너뛰고 VLM 에 다시 물어 캐시 항목을 덮어쓴다
+    (운영자가 후보 하나를 강제로 다시 묻는 경로).
 
     REVIEW 버전을 재구매 없이 회복하는 경로. build_canonical 의
     skip_if_unchanged 재사용은 "다시 만들지 않는다"만 보장할 뿐 "다시
@@ -1066,7 +1071,8 @@ async def reevaluate_canonical_candidate(
         raise CanonicalPetError("CANDIDATE_ASSET_MISSING", "재평가할 원본 이미지가 없습니다.", status=409)
 
     previous_qa = dict(candidate.get("qa_result") or {})
-    if previous_qa.get("qa_version") == canonical_qa.CANONICAL_QA_VERSION:
+    force_refresh = vlm_identity.qa_cache_mode(vlm_cache_mode) == vlm_identity.QA_CACHE_REFRESH
+    if previous_qa.get("qa_version") == canonical_qa.CANONICAL_QA_VERSION and not force_refresh:
         return _to_version(version_row, candidates, deduplicated=True)
 
     profile = await pet_identity_service.get_profile(
@@ -1115,7 +1121,9 @@ async def reevaluate_canonical_candidate(
         if data:
             vlm_ref_images.append((data, ref.mime_type or "image/jpeg"))
 
-    vlm_qa = vlm_identity.qa_canonical_image(raw_bytes, vlm_ref_images)
+    vlm_qa = vlm_identity.qa_canonical_image(
+        raw_bytes, vlm_ref_images, **({"cache_mode": vlm_cache_mode} if vlm_cache_mode else {})
+    )
     qa = canonical_qa.evaluate_candidate(
         cutout_rgba=cutout_rgba,
         profile=profile,

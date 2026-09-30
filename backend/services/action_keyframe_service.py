@@ -116,6 +116,25 @@ def analyzer_versions() -> dict[str, Any]:
     }
 
 
+#: 판정만 바꾸는 버전들 — 저장된 후보를 **다시 평가**할 뿐, 다시 만들지 않는다.
+#:
+#: canonical_pet_service.QA_ONLY_VERSION_KEYS / motion_video_service.QA_ONLY_VERSION_KEYS
+#: 와 같은 계약이다. 키프레임 스탬프는 정본 스탬프를 통째로 포함하므로 정본의 QA
+#: 키(canonical_qa)도 함께 뺀다. 예전에는 멱등/재개 판정이 스탬프 **전체**를
+#: 비교해서, QA 규칙 한 줄을 고치면 완료된 키프레임이 "달라진 것"으로 보여 새
+#: 버전(유료)이 만들어지고 building 중이던 키프레임은 재개되지 못했다.
+#:
+#: 여기 적힌 키만 비교에서 빠진다. 나머지(빌더/스펙/프롬프트/프로바이더/정본·세트·
+#: 신원 분석기)는 전부 생성에 영향을 준다고 본다 — 모르는 키의 기본값은 "다시
+#: 만든다"여야 조용히 낡은 자산을 재사용하는 실수가 생기지 않는다.
+QA_ONLY_VERSION_KEYS = ("keyframe_qa", "canonical_qa")
+
+
+def generation_versions(stamp: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """스탬프에서 **생성 결과를 바꾸는** 부분만 남긴다 (읽기 시점 투영 — 저장 형식 불변)."""
+    return {k: v for k, v in (stamp or {}).items() if k not in QA_ONLY_VERSION_KEYS}
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 키프레임 QA — 정본 QA + 포즈
 # ══════════════════════════════════════════════════════════════════════════
@@ -767,7 +786,9 @@ async def build_keyframe(
             latest.get("status") in (STATUS_COMPLETE, STATUS_REVIEW)
             and str(latest.get("canonical_version_id")) == str(canonical.id)
             and latest.get("prompt_version") == action_keyframe_spec.KEYFRAME_PROMPT_VERSION
-            and (latest.get("analyzer_versions") or {}) == versions_stamp
+            # QA 버전은 비교에서 빠진다 — 판정이 바뀌었다고 이미지를 다시 사지 않는다.
+            and generation_versions(latest.get("analyzer_versions"))
+            == generation_versions(versions_stamp)
         ):
             return _to_keyframe(latest, await _candidate_rows(str(latest["id"])), deduplicated=True)
 
@@ -782,7 +803,8 @@ async def build_keyframe(
         and str(resumable.get("canonical_version_id") or "") == str(canonical.id or "")
         and resumable.get("canonical_version") == canonical.version
         and resumable.get("prompt_version") == action_keyframe_spec.KEYFRAME_PROMPT_VERSION
-        and (resumable.get("analyzer_versions") or {}) == versions_stamp
+        and generation_versions(resumable.get("analyzer_versions"))
+        == generation_versions(versions_stamp)
     ):
         resumable = None
 
@@ -1238,6 +1260,7 @@ async def reevaluate_keyframe_candidate(
     candidate_id: str,
     fetch_bytes: Optional[Callable[[Any], Optional[bytes]]] = None,
     cutout_fn: Optional[Callable[[bytes], Optional[bytes]]] = None,
+    vlm_cache_mode: Optional[str] = None,
 ) -> ActionKeyframe:
     """
     저장된 키프레임 후보 1건에 **현재** QA 를 다시 돌린다 — 프로바이더(이미지
@@ -1278,9 +1301,13 @@ async def reevaluate_keyframe_candidate(
         raise ActionKeyframeError("CANDIDATE_ASSET_MISSING", "재평가할 원본 이미지가 없습니다.", status=409)
 
     previous_qa = dict(candidate.get("qa_result") or {})
+    # "refresh" 는 운영자가 이 후보를 VLM 에 다시 묻겠다는 뜻이다 — 같은 QA 버전의
+    # 중복 제거를 건너뛰고 캐시 항목을 덮어쓴다 (vlm_identity.qa_cache_mode 참고).
+    force_refresh = vlm_identity.qa_cache_mode(vlm_cache_mode) == vlm_identity.QA_CACHE_REFRESH
     if (
         previous_qa.get("qa_version") == KEYFRAME_QA_VERSION
         and previous_qa.get("base_qa_version") == canonical_qa.CANONICAL_QA_VERSION
+        and not force_refresh
     ):
         return _to_keyframe(kf_row, candidates, deduplicated=True)
 
@@ -1354,7 +1381,8 @@ async def reevaluate_keyframe_candidate(
                 reference_signatures.append(sig)
 
     vlm_qa = vlm_identity.qa_action_keyframe(
-        raw_bytes, vlm_ref_images, required_pose=spec.required_pose, required_visibility=spec.required_visibility
+        raw_bytes, vlm_ref_images, required_pose=spec.required_pose, required_visibility=spec.required_visibility,
+        **({"cache_mode": vlm_cache_mode} if vlm_cache_mode else {}),
     )
     qa = evaluate_keyframe_candidate(
         cutout_rgba=cutout_rgba,
