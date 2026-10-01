@@ -1,22 +1,50 @@
+using UnityEngine;
 using System;
-using System.Collections.Concurrent;
 using System.Net;
-using System.Net.Sockets;
 using System.Text;
 using System.Threading;
+using System.Net.Sockets;
+using System.Collections.Concurrent;
 using Newtonsoft.Json.Linq;
 
 namespace EternalBeam.Device
 {
-    /// <summary>
-    /// 순수 UDP JSON 수신기 — Unity API 무의존 (Editor 배치 검증/테스트에서도 그대로 쓴다).
-    ///
-    /// 계약 (python/pi_sse_server.py + eternal_beam_pi.py 관측치):
-    ///   * UDP :5005, 데이터그램 하나 = 컴팩트 JSON 오브젝트 하나.
-    ///   * /demo/pet-ready 1회 = "nfc_match" + "idle" 두 데이터그램 (같은 본문).
-    ///   * 같은 포트로 센서 이벤트(approach/touch/voice, pi_reset idle)도 온다 —
-    ///     모르는 event/키는 조용히 통과시킨다 (수신기가 계약을 좁히면 안 된다).
-    /// </summary>
+    public sealed class PetDeviceMessage
+    {
+        public bool Valid;
+        public string Raw;
+        public string Event;
+        public string ContentId;
+        public string PetId;
+        public string MotionId;
+        public string ThemeId;
+        public string VideoUrl;
+        public string PackedUrl;
+        public string DeliveryFormat;
+        public string Source;
+        public float? Brightness;
+        public float? Contrast;
+        public float? Saturation;
+        public float? Gamma;
+        public Color? Tint;
+        public float? VfxIntensity;
+
+        public string Summary()
+        {
+            if (!Valid) return $"[eb-udp] non-JSON datagram ({Raw?.Length ?? 0} bytes)";
+            string V(string s) => string.IsNullOrEmpty(s) ? "-" : s;
+            return "[eb-udp] event=" + V(Event)
+                 + " content_id=" + V(ContentId)
+                 + " pet_id=" + V(PetId)
+                 + " motion_id=" + V(MotionId)
+                 + " theme_id=" + V(ThemeId)
+                 + " video_url=" + V(VideoUrl)
+                 + " packed_url=" + V(PackedUrl)
+                 + " delivery_format=" + V(DeliveryFormat)
+                 + " source=" + V(Source);
+        }
+    }
+
     public sealed class UdpJsonListener : IDisposable
     {
         public const int DefaultPort = 5005;
@@ -48,13 +76,8 @@ namespace EternalBeam.Device
             }
         }
 
-        /// <summary>큐에서 원문 하나를 꺼낸다 — 호출 스레드는 호출자가 정한다(메인 스레드 권장).</summary>
         public bool TryDequeue(out string raw) => _queue.TryDequeue(out raw);
 
-        /// <summary>
-        /// 데이터그램 원문 → 관심 필드 요약. JSON 이 아니어도 던지지 않는다.
-        /// 모든 필드는 없으면 null — 선택 필드 관용이 계약이다.
-        /// </summary>
         public static PetDeviceMessage Parse(string raw)
         {
             var msg = new PetDeviceMessage { Raw = raw };
@@ -71,10 +94,25 @@ namespace EternalBeam.Device
                 msg.PackedUrl = (string)o["packed_url"];
                 msg.DeliveryFormat = (string)o["delivery_format"];
                 msg.Source = (string)o["source"];
+                msg.Brightness = o["brightness"]?.Value<float>();
+                msg.Contrast = o["contrast"]?.Value<float>();
+                msg.Saturation = o["saturation"]?.Value<float>();
+                msg.Gamma = o["gamma"]?.Value<float>();
+                var tint = o["tint"] as JArray;
+                if (tint != null && tint.Count >= 3)
+                {
+                    msg.Tint = new Color(
+                        tint[0].Value<float>(),
+                        tint[1].Value<float>(),
+                        tint[2].Value<float>(),
+                        tint.Count >= 4 ? tint[3].Value<float>() : 1f
+                    );
+                }
+                msg.VfxIntensity = o["vfx_intensity"]?.Value<float>();
             }
             catch (Exception)
             {
-                msg.Valid = false; // JSON 아님 — 버리지 않고 원문만 남긴다
+                msg.Valid = false;
             }
             return msg;
         }
@@ -83,37 +121,6 @@ namespace EternalBeam.Device
         {
             _running = false;
             _client.Close();
-        }
-    }
-
-    /// <summary>수신 요약 — 로깅/디스패치용. 전부 null 허용.</summary>
-    public sealed class PetDeviceMessage
-    {
-        public bool Valid;
-        public string Raw;
-        public string Event;
-        public string ContentId;
-        public string PetId;
-        public string MotionId;
-        public string ThemeId;
-        public string VideoUrl;
-        public string PackedUrl;
-        public string DeliveryFormat;
-        public string Source;
-
-        public string Summary()
-        {
-            if (!Valid) return $"[eb-udp] non-JSON datagram ({Raw?.Length ?? 0} bytes)";
-            string V(string s) => string.IsNullOrEmpty(s) ? "-" : s;
-            return "[eb-udp] event=" + V(Event)
-                 + " content_id=" + V(ContentId)
-                 + " pet_id=" + V(PetId)
-                 + " motion_id=" + V(MotionId)
-                 + " theme_id=" + V(ThemeId)
-                 + " video_url=" + V(VideoUrl)
-                 + " packed_url=" + V(PackedUrl)
-                 + " delivery_format=" + V(DeliveryFormat)
-                 + " source=" + V(Source);
         }
     }
 }

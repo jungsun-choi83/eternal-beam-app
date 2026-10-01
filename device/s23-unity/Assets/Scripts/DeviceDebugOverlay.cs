@@ -40,7 +40,6 @@ public class DeviceDebugOverlay : MonoBehaviour
         lastEvent = string.IsNullOrEmpty(eventName) ? "-" : eventName;
         motion = string.IsNullOrEmpty(motionId) ? "-" : motionId;
         videoUrl = string.IsNullOrEmpty(url) ? "-" : url;
-
         Refresh();
     }
 
@@ -58,9 +57,7 @@ public class DeviceDebugOverlay : MonoBehaviour
 
     private void Refresh()
     {
-        if (debugText == null)
-            return;
-
+        if (debugText == null) return;
         debugText.text =
             $"ETERNAL BEAM DEBUG\n" +
             $"UDP :5005    {udpStatus}\n" +
@@ -73,13 +70,8 @@ public class DeviceDebugOverlay : MonoBehaviour
 
     private string GetFileName(string url)
     {
-        if (string.IsNullOrEmpty(url) || url == "-")
-            return "-";
-
+        if (string.IsNullOrEmpty(url) || url == "-") return "-";
         int index = url.LastIndexOf('/');
-
-        return index >= 0
-            ? url.Substring(index + 1)
-            : url;
+        return index >= 0 ? url.Substring(index + 1) : url;
     }
 }

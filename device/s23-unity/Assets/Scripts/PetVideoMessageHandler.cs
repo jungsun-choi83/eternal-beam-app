@@ -31,6 +31,11 @@ public class PetVideoMessageHandler : MonoBehaviour
     private void HandleMessage(PetDeviceMessage msg)
     {
         if (msg == null || !msg.Valid) return;
+        if (msg.Event == "video_tuning")
+        {
+            HandleVideoTuning(msg);
+            return;
+        }
         switch (msg.Event)
         {
             case "idle":
@@ -128,5 +133,14 @@ public class PetVideoMessageHandler : MonoBehaviour
             return;
         }
         Debug.LogError("[Pet] Idle playback failed. Waiting for a new valid Idle message.");
+    }
+
+    private void HandleVideoTuning(PetDeviceMessage msg)
+    {
+        if (msg.Brightness.HasValue) crossfadeController.SetBrightness(msg.Brightness.Value);
+        if (msg.Contrast.HasValue) crossfadeController.SetContrast(msg.Contrast.Value);
+        if (msg.Saturation.HasValue) crossfadeController.SetSaturation(msg.Saturation.Value);
+        if (msg.Gamma.HasValue) crossfadeController.SetGamma(msg.Gamma.Value);
+        if (msg.Tint.HasValue) crossfadeController.SetTint(msg.Tint.Value);
     }
 }

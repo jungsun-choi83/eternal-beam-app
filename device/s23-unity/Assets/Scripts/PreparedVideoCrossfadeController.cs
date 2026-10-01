@@ -30,12 +30,15 @@ public class PreparedVideoCrossfadeController : MonoBehaviour
 
     private VideoPlayer currentPlayer;
     private VideoPlayer nextPlayer;
-
     private Material currentMaterial;
     private Material nextMaterial;
-
     private bool isSwitching = false;
     private bool nextFrameReady;
+    private float brightness = 1f;
+    private float contrast = 1f;
+    private float saturation = 1f;
+    private float gamma = 1f;
+    private Color tint = Color.white;
 
     private void Start()
     {
@@ -44,9 +47,11 @@ public class PreparedVideoCrossfadeController : MonoBehaviour
         nextPlayer = playerB;
         currentMaterial = materialA;
         nextMaterial = materialB;
+        ApplyTuning(currentMaterial);
+        ApplyTuning(nextMaterial);
         currentPlayer.isLooping = true;
         nextPlayer.isLooping = true;
-        SetMaterialAlpha(currentMaterial, 1f);
+        SetMaterialAlpha(currentMaterial, 0f);
         SetMaterialAlpha(nextMaterial, 0f);
         currentPlayer.clip = null;
         playerA.loopPointReached += OnVideoFinished;
@@ -107,6 +112,56 @@ public class PreparedVideoCrossfadeController : MonoBehaviour
         mat.SetFloat("_Fade", alpha);
     }
 
+    public void SetBrightness(float value)
+    {
+        brightness = value;
+        ApplyTuning(currentMaterial);
+    }
+
+    public void SetContrast(float value)
+    {
+        contrast = value;
+        ApplyTuning(currentMaterial);
+    }
+
+    public void SetSaturation(float value)
+    {
+        saturation = value;
+        ApplyTuning(currentMaterial);
+    }
+
+    public void SetGamma(float value)
+    {
+        gamma = value;
+        ApplyTuning(currentMaterial);
+    }
+
+    public void SetTint(Color value)
+    {
+        tint = value;
+        ApplyTuning(currentMaterial);
+    }
+
+    public void SetVideoTuning(float brightness, float contrast, float saturation, float gamma, Color tint)
+    {
+        if (currentMaterial == null) return;
+        currentMaterial.SetFloat("_Brightness", brightness);
+        currentMaterial.SetFloat("_Contrast", contrast);
+        currentMaterial.SetFloat("_Saturation", saturation);
+        currentMaterial.SetFloat("_Gamma", gamma);
+        currentMaterial.SetColor("_Tint", tint);
+    }
+
+    private void ApplyTuning(Material mat)
+    {
+        if (mat == null) return;
+        mat.SetFloat("_Brightness", brightness);
+        mat.SetFloat("_Contrast", contrast);
+        mat.SetFloat("_Saturation", saturation);
+        mat.SetFloat("_Gamma", gamma);
+        mat.SetColor("_Tint", tint);
+    }
+
     private IEnumerator SwitchRoutine(VideoClip targetClip)
     {
         isSwitching = true;
@@ -114,6 +169,7 @@ public class PreparedVideoCrossfadeController : MonoBehaviour
         debugOverlay?.SetError("-");
         nextPlayer.Stop();
         nextPlayer.clip = targetClip;
+        ApplyTuning(nextMaterial);
         SetMaterialAlpha(nextMaterial, 0f);
         nextPlayer.Prepare();
         while (!nextPlayer.isPrepared) yield return null;
@@ -153,6 +209,7 @@ public class PreparedVideoCrossfadeController : MonoBehaviour
         nextPlayer.source = VideoSource.Url;
         nextPlayer.url = videoUrl;
         nextPlayer.isLooping = loop;
+        ApplyTuning(nextMaterial);
         SetMaterialAlpha(nextMaterial, 0f);
         Debug.Log($"[Crossfade] Preparing URL={nextPlayer.url}, Loop={nextPlayer.isLooping}");
         nextPlayer.Prepare();
