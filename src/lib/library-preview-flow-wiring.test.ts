@@ -426,6 +426,7 @@ test("My Library: Play on Beam(onPlayOnBeam)이 preview 단계 콜백 안에서 
   assert.ok(themeIdx > 0 && petIdx > 0 && themeIdx < petIdx, "Play on Beam 순서가 preview 단계 밖에 있거나 뒤바뀌었다");
   assert.match(block, /pet_id:\s*selectedPet\.petId/);
   assert.match(block, /motion_id:\s*selectedMotion\.motionId/);
+  assert.match(block, /spawn_vfx:\s*"heart"/);
 });
 
 // ── 실제 버그 재현: 백엔드 delivery_format=null → PreviewScreen 까지 추적 ────
@@ -504,6 +505,7 @@ test("Play on Beam: theme_play 가 먼저, pet_asset 이 다음 — 둘 다 현�
   assert.match(callback, /theme_id:\s*currentTheme\.themeKey/, "현재 선택된 테마를 쓰지 않는다");
   assert.match(callback, /pet_id:\s*selectedPet\.petId/, "현재 선택된 펫을 쓰지 않는다");
   assert.match(callback, /motion_id:\s*selectedMotion\.motionId/, "현재 선택된 모션을 쓰지 않는다");
+  assert.match(callback, /spawn_vfx:\s*"heart"/, "로컬 VFX 선택자를 보내지 않는다");
 });
 
 test("Play on Beam: 두 명령의 결과를 모두 확인한 뒤에만 ok:true 를 돌려준다 — 결과를 무시하지 않는다", () => {

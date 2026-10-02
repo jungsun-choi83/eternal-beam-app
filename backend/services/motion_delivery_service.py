@@ -48,7 +48,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 import numpy as np
 
@@ -126,6 +126,19 @@ class MotionDeliveryResult:
     matte_backend: str
     warnings: list[str] = field(default_factory=list)
     deduplicated: bool = False
+
+
+@dataclass(frozen=True)
+class StreamingPackResult:
+    """ViTMatte 스트리밍 포장의 작은 결과 메타 — 프레임 배열은 보관하지 않는다."""
+
+    frame_count: int
+    fps: float
+    width: int
+    height: int
+    matte: dict[str, Any]
+    stabilization: dict[str, Any]
+    warnings: list[str]
 
 
 # HYBRID_USE_SUPABASE=0 (테스트/로컬)에서 업로드된 파생 객체 경로를 기억한다 —
@@ -355,6 +368,165 @@ def encode_video(frames: list[np.ndarray], fps: float) -> bytes:
             return f.read()
 
 
+def _read_exact(stream: Any, size: int) -> bytes:
+    """파이프에서 정확히 한 프레임만 읽는다. EOF면 지금까지 읽은 바이트를 반환."""
+    chunks: list[bytes] = []
+    remaining = size
+    while remaining > 0:
+        chunk = stream.read(remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def _iter_decoded_video(
+    video_bytes: bytes,
+    *,
+    probe: Optional[dict[str, Any]] = None,
+) -> Iterator[tuple[np.ndarray, float, int, int]]:
+    """
+    mp4를 ffmpeg stdout에서 RGB 프레임 하나씩 읽는다.
+
+    decode_video()와 픽셀 포맷·fps 해석은 같지만 raw stdout 전체를 capture하지
+    않는다. 임시 입력 파일은 제너레이터가 끝날 때까지 유지된다.
+    """
+    reused = _usable_reused_probe(probe)
+    with tempfile.TemporaryDirectory(prefix="eb_delivery_stream_dec_") as td:
+        src = os.path.join(td, "input.mp4")
+        with open(src, "wb") as f:
+            f.write(video_bytes)
+        meta = reused or _probe_stream(src)
+        w, h, fps = int(meta["width"]), int(meta["height"]), float(meta["fps"])
+        frame_size = w * h * 3
+        try:
+            proc = subprocess.Popen(
+                [
+                    "ffmpeg", "-v", "error", "-i", src,
+                    "-f", "rawvideo", "-pix_fmt", "rgb24", "-",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError as exc:
+            raise MotionDeliveryError(
+                "DELIVERY_TOOLING_UNAVAILABLE", "ffmpeg 이 필요합니다.", status=503
+            ) from exc
+
+        yielded = 0
+        try:
+            assert proc.stdout is not None
+            while True:
+                raw = _read_exact(proc.stdout, frame_size)
+                if not raw:
+                    break
+                if len(raw) != frame_size:
+                    raise MotionDeliveryError(
+                        "DELIVERY_DECODE_FAILED",
+                        f"원본 영상의 마지막 프레임이 불완전합니다 ({len(raw)}/{frame_size} bytes).",
+                    )
+                yielded += 1
+                frame = np.frombuffer(raw, dtype=np.uint8).reshape(h, w, 3)
+                yield frame, fps, w, h
+            stderr = (proc.stderr.read() if proc.stderr is not None else b"")[-500:]
+            code = proc.wait(timeout=300)
+            if code != 0:
+                raise MotionDeliveryError(
+                    "DELIVERY_DECODE_FAILED", f"원본 영상 디코딩 실패: {stderr!r}"
+                )
+            if yielded <= 0:
+                raise MotionDeliveryError(
+                    "DELIVERY_DECODE_FAILED", "원본 영상을 디코딩하지 못했습니다."
+                )
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if proc.stderr is not None:
+                proc.stderr.close()
+
+
+class _StreamingVideoEncoder:
+    """encode_video()와 같은 x264 설정으로 packed 프레임을 stdin에 바로 쓴다."""
+
+    def __init__(self, output_path: str, *, width: int, height: int, fps: float):
+        self.output_path = output_path
+        self.width = int(width)
+        self.height = int(height)
+        self.fps = float(fps)
+        self.frame_count = 0
+        crf = os.getenv("MOTION_DELIVERY_CRF", "16")
+        try:
+            self.proc = subprocess.Popen(
+                [
+                    "ffmpeg", "-y", "-v", "error",
+                    "-f", "rawvideo", "-pix_fmt", "rgb24",
+                    "-s", f"{self.width}x{self.height}",
+                    "-r", f"{self.fps:.6f}", "-i", "-",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", crf,
+                    "-preset", "medium", "-movflags", "+faststart", "-an",
+                    self.output_path,
+                ],
+                stdin=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError as exc:
+            raise MotionDeliveryError(
+                "DELIVERY_TOOLING_UNAVAILABLE", "ffmpeg 이 필요합니다.", status=503
+            ) from exc
+
+    def write(self, frame: np.ndarray) -> None:
+        if frame.shape != (self.height, self.width, 3):
+            raise MotionDeliveryError(
+                "DELIVERY_ENCODE_FAILED",
+                f"packed 프레임 크기가 바뀌었습니다: {frame.shape} != "
+                f"({self.height}, {self.width}, 3)",
+            )
+        if self.proc.stdin is None:
+            raise MotionDeliveryError("DELIVERY_ENCODE_FAILED", "ffmpeg stdin 이 닫혔습니다.")
+        contiguous = np.ascontiguousarray(frame, dtype=np.uint8)
+        try:
+            self.proc.stdin.write(memoryview(contiguous).cast("B"))
+        except (BrokenPipeError, OSError) as exc:
+            stderr = (self.proc.stderr.read() if self.proc.stderr is not None else b"")[-500:]
+            raise MotionDeliveryError(
+                "DELIVERY_ENCODE_FAILED", f"packed 스트리밍 인코딩 실패: {stderr!r}"
+            ) from exc
+        self.frame_count += 1
+
+    def finish(self) -> None:
+        if self.proc.stdin is not None and not self.proc.stdin.closed:
+            self.proc.stdin.close()
+        stderr = (self.proc.stderr.read() if self.proc.stderr is not None else b"")[-500:]
+        try:
+            code = self.proc.wait(timeout=600)
+        except subprocess.TimeoutExpired as exc:
+            self.proc.kill()
+            self.proc.wait()
+            raise MotionDeliveryError(
+                "DELIVERY_ENCODE_FAILED", "packed 스트리밍 인코딩 시간이 초과됐습니다."
+            ) from exc
+        finally:
+            if self.proc.stderr is not None:
+                self.proc.stderr.close()
+        if code != 0 or not os.path.isfile(self.output_path):
+            raise MotionDeliveryError(
+                "DELIVERY_ENCODE_FAILED", f"packed 인코딩 실패: {stderr!r}"
+            )
+
+    def abort(self) -> None:
+        if self.proc.stdin is not None and not self.proc.stdin.closed:
+            self.proc.stdin.close()
+        if self.proc.poll() is None:
+            self.proc.kill()
+            self.proc.wait()
+        if self.proc.stderr is not None and not self.proc.stderr.closed:
+            self.proc.stderr.close()
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 매트 추출
 # ══════════════════════════════════════════════════════════════════════════
@@ -478,8 +650,8 @@ def matte_bgmodel(frames: list[np.ndarray]) -> tuple[list[np.ndarray], dict[str,
     return alphas, diag
 
 
-def matte_vitmatte(frames: list[np.ndarray]) -> tuple[list[np.ndarray], dict[str, Any]]:
-    """기존 스틸 매팅 스택(YOLO→SAM2→ViTMatte)을 프레임마다 호출. 무겁지만 정밀."""
+def _matte_vitmatte_frame(frame: np.ndarray) -> np.ndarray:
+    """기존 프레임별 YOLO→SAM2→ViTMatte 호출을 그대로 보존한 단일 프레임 래퍼."""
     try:
         from PIL import Image
 
@@ -488,24 +660,27 @@ def matte_vitmatte(frames: list[np.ndarray]) -> tuple[list[np.ndarray], dict[str
         raise MotionDeliveryError(
             "MATTE_BACKEND_UNAVAILABLE", "vitmatte 백엔드 의존성이 없습니다.", status=503
         ) from exc
-    alphas: list[np.ndarray] = []
-    for frame in frames:
-        buf = io.BytesIO()
-        Image.fromarray(frame, "RGB").save(buf, format="PNG")
-        try:
-            cutout_png = vitmatte_service.matte_foreground(buf.getvalue())
-        except Exception as exc:
-            raise MotionDeliveryError(
-                "MATTE_BACKEND_FAILED", f"vitmatte 프레임 매팅 실패: {exc}", status=503
-            ) from exc
-        rgba = np.array(Image.open(io.BytesIO(cutout_png)).convert("RGBA"))
-        if rgba.shape[:2] != frame.shape[:2]:
-            rgba = np.array(
-                Image.fromarray(rgba, "RGBA").resize(
-                    (frame.shape[1], frame.shape[0]), Image.LANCZOS
-                )
+    buf = io.BytesIO()
+    Image.fromarray(frame, "RGB").save(buf, format="PNG")
+    try:
+        cutout_png = vitmatte_service.matte_foreground(buf.getvalue())
+    except Exception as exc:
+        raise MotionDeliveryError(
+            "MATTE_BACKEND_FAILED", f"vitmatte 프레임 매팅 실패: {exc}", status=503
+        ) from exc
+    rgba = np.array(Image.open(io.BytesIO(cutout_png)).convert("RGBA"))
+    if rgba.shape[:2] != frame.shape[:2]:
+        rgba = np.array(
+            Image.fromarray(rgba, "RGBA").resize(
+                (frame.shape[1], frame.shape[0]), Image.LANCZOS
             )
-        alphas.append((rgba[:, :, 3].astype(np.float32)) / 255.0)
+        )
+    return (rgba[:, :, 3].astype(np.float32)) / 255.0
+
+
+def matte_vitmatte(frames: list[np.ndarray]) -> tuple[list[np.ndarray], dict[str, Any]]:
+    """기존 스틸 매팅 스택(YOLO→SAM2→ViTMatte)을 프레임마다 호출. 무겁지만 정밀."""
+    alphas = [_matte_vitmatte_frame(frame) for frame in frames]
     return alphas, {"backend": "vitmatte"}
 
 
@@ -548,6 +723,104 @@ def stabilize_alpha(alphas: list[np.ndarray]) -> tuple[list[np.ndarray], dict[st
         "mean_frame_delta_before": round(flicker_before, 5),
         "mean_frame_delta_after": round(flicker_after, 5),
     }
+
+
+class _RollingAlphaStabilizer:
+    """
+    stabilize_alpha()의 수학을 프레임 스트림에 그대로 적용한다.
+
+    중앙 프레임의 3-frame median에 미래 알파 1장이 필요하므로 첫 3장만 잠시
+    모은다. 그 뒤에는 이전 알파 1장 + 현재 RGB/알파 + 새 RGB/알파만 유지한다.
+    1~2프레임 클립은 기존 함수처럼 안정화를 전혀 적용하지 않는다.
+    """
+
+    def __init__(self, ema_k: Optional[float] = None):
+        resolved = _env_float("MOTION_DELIVERY_ALPHA_EMA", 0.25) if ema_k is None else ema_k
+        self.ema_k = min(0.6, max(0.0, float(resolved)))
+        self._initial: list[tuple[np.ndarray, np.ndarray]] = []
+        self._started = False
+        self._prev_alpha: Optional[np.ndarray] = None
+        self._current: Optional[tuple[np.ndarray, np.ndarray]] = None
+        self._previous_output: Optional[np.ndarray] = None
+        self._last_raw: Optional[np.ndarray] = None
+        self._before_sum = 0.0
+        self._before_count = 0
+        self._after_sum = 0.0
+        self._after_count = 0
+
+    def _record_raw_delta(self, alpha: np.ndarray) -> None:
+        if self._last_raw is not None:
+            self._before_sum += float(np.abs(alpha - self._last_raw).mean())
+            self._before_count += 1
+        self._last_raw = alpha
+
+    def _stabilized(self, matte: np.ndarray) -> np.ndarray:
+        if self._previous_output is None:
+            out = matte
+        else:
+            out = (
+                matte * (1.0 - self.ema_k) + self._previous_output * self.ema_k
+            ).astype(np.float32)
+            self._after_sum += float(np.abs(out - self._previous_output).mean())
+            self._after_count += 1
+        self._previous_output = out
+        return out
+
+    def push(
+        self, frame: np.ndarray, alpha: np.ndarray
+    ) -> list[tuple[np.ndarray, np.ndarray]]:
+        self._record_raw_delta(alpha)
+        if not self._started:
+            self._initial.append((frame, alpha))
+            if len(self._initial) < 3:
+                return []
+
+            (f0, a0), (f1, a1), (f2, a2) = self._initial
+            self._initial = []
+            first = self._stabilized(a0)
+            middle_matte = np.median(np.stack([a0, a1, a2]), axis=0).astype(np.float32)
+            middle = self._stabilized(middle_matte)
+            self._prev_alpha = a1
+            self._current = (f2, a2)
+            self._started = True
+            return [(f0, first), (f1, middle)]
+
+        assert self._prev_alpha is not None and self._current is not None
+        current_frame, current_alpha = self._current
+        current_matte = np.median(
+            np.stack([self._prev_alpha, current_alpha, alpha]), axis=0
+        ).astype(np.float32)
+        current_out = self._stabilized(current_matte)
+        self._prev_alpha = current_alpha
+        self._current = (frame, alpha)
+        return [(current_frame, current_out)]
+
+    def finish(self) -> list[tuple[np.ndarray, np.ndarray]]:
+        if not self._started:
+            # 기존 stabilize_alpha: len < 3 이면 입력 객체/값을 그대로 반환.
+            out = self._initial
+            self._initial = []
+            return out
+        assert self._current is not None
+        frame, last_raw_alpha = self._current
+        last = self._stabilized(last_raw_alpha)
+        self._current = None
+        self._prev_alpha = None
+        return [(frame, last)]
+
+    def diagnostics(self) -> dict[str, Any]:
+        if not self._started:
+            return {"temporal_median": False, "ema": 0.0}
+        return {
+            "temporal_median": True,
+            "ema": self.ema_k,
+            "mean_frame_delta_before": round(
+                self._before_sum / max(1, self._before_count), 5
+            ),
+            "mean_frame_delta_after": round(
+                self._after_sum / max(1, self._after_count), 5
+            ),
+        }
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -616,6 +889,118 @@ def validate_packed_frames(packed: list[np.ndarray]) -> list[str]:
     return warnings
 
 
+def _validate_streamed_packed(
+    *,
+    width: int,
+    packed_height: int,
+    chroma_samples: list[tuple[float, float]],
+) -> list[str]:
+    """validate_packed_frames()의 동일 규칙을 작은 chroma 스칼라만으로 적용."""
+    if not chroma_samples:
+        raise MotionDeliveryError("PACKED_INVALID", "packed 프레임이 없습니다.")
+    if packed_height % 2 != 0:
+        raise MotionDeliveryError("PACKED_INVALID", "packed 높이는 짝수여야 합니다.")
+    if packed_height / max(1, width) < 1.0:
+        raise MotionDeliveryError("PACKED_INVALID", "packed 는 세로(h/w≥1)여야 합니다.")
+    top_chroma, bottom_chroma = chroma_samples[len(chroma_samples) // 2]
+    if bottom_chroma > ALPHA_MATTE_MAX_CHROMA:
+        raise MotionDeliveryError(
+            "PACKED_INVALID",
+            f"알파 절반이 무채색이 아닙니다 (chroma={bottom_chroma:.2f} > "
+            f"{ALPHA_MATTE_MAX_CHROMA}).",
+        )
+    warnings: list[str] = []
+    if top_chroma < max(bottom_chroma, 1.0) * MIN_COLOR_TO_MATTE_RATIO:
+        warnings.append("packed_autodetect_uncertain")
+    return warnings
+
+
+def stream_vitmatte_to_packed_file(
+    video_bytes: bytes,
+    output_path: str,
+    *,
+    probe: Optional[dict[str, Any]] = None,
+    matte_frame_fn: Optional[Callable[[np.ndarray], np.ndarray]] = None,
+) -> StreamingPackResult:
+    """
+    ViTMatte 전용 스트리밍 포장.
+
+    기존 프레임별 매팅을 그대로 호출하고, stabilize_alpha와 같은 3-frame
+    median+EMA를 rolling state로 계산한 뒤 packed 한 장을 ffmpeg stdin에 바로
+    쓴다. 디코드 RGB/알파/packed 전체 목록이나 인코딩된 mp4 bytes를 만들지 않는다.
+
+    matte_frame_fn은 결정론적 회귀/벤치마크 주입점이다. 운영 기본값은 기존
+    `_matte_vitmatte_frame`이며 모델 로딩/YOLO/SAM2/ViTMatte 동작을 바꾸지 않는다.
+    """
+    matter = matte_frame_fn or _matte_vitmatte_frame
+    stabilizer = _RollingAlphaStabilizer()
+    encoder: Optional[_StreamingVideoEncoder] = None
+    chroma_samples: list[tuple[float, float]] = []
+    decoded_count = 0
+    width = height = 0
+    fps = 0.0
+
+    def emit(frame: np.ndarray, alpha: np.ndarray) -> None:
+        nonlocal encoder
+        packed = build_packed_frames([frame], [alpha])[0]
+        half = packed.shape[0] // 2
+        chroma_samples.append((_avg_chroma(packed[:half]), _avg_chroma(packed[half:])))
+        if encoder is None:
+            encoder = _StreamingVideoEncoder(
+                output_path,
+                width=packed.shape[1],
+                height=packed.shape[0],
+                fps=fps,
+            )
+        encoder.write(packed)
+
+    try:
+        for frame, frame_fps, frame_w, frame_h in _iter_decoded_video(
+            video_bytes, probe=probe
+        ):
+            decoded_count += 1
+            if decoded_count == 1:
+                fps, width, height = frame_fps, frame_w, frame_h
+            alpha = matter(frame)
+            if tuple(alpha.shape[:2]) != tuple(frame.shape[:2]):
+                raise MotionDeliveryError(
+                    "MATTE_BACKEND_FAILED",
+                    f"ViTMatte 알파 크기가 프레임과 다릅니다: {alpha.shape} != {frame.shape[:2]}",
+                )
+            for ready_frame, ready_alpha in stabilizer.push(frame, alpha):
+                emit(ready_frame, ready_alpha)
+
+        for ready_frame, ready_alpha in stabilizer.finish():
+            emit(ready_frame, ready_alpha)
+        if encoder is None:
+            raise MotionDeliveryError("DELIVERY_DECODE_FAILED", "원본에서 프레임을 얻지 못했습니다.")
+        encoder.finish()
+    except Exception:
+        if encoder is not None:
+            encoder.abort()
+        raise
+
+    if encoder.frame_count != decoded_count:
+        raise MotionDeliveryError(
+            "DELIVERY_ENCODE_FAILED",
+            f"디코드/인코드 프레임 수가 다릅니다 ({decoded_count}/{encoder.frame_count}).",
+        )
+    warnings = _validate_streamed_packed(
+        width=width,
+        packed_height=height * 2,
+        chroma_samples=chroma_samples,
+    )
+    return StreamingPackResult(
+        frame_count=decoded_count,
+        fps=fps,
+        width=width,
+        height=height * 2,
+        matte={"backend": "vitmatte"},
+        stabilization=stabilizer.diagnostics(),
+        warnings=warnings,
+    )
+
+
 def candidate_delivery_format(candidate: dict[str, Any]) -> Optional[str]:
     """
     후보의 전달 포맷 — 배포 순서 내성 판독.
@@ -662,7 +1047,8 @@ def _download_raw(bucket: str, path: str) -> Optional[bytes]:
         return None
 
 
-async def _upload_derived(path: str, data: bytes) -> None:
+async def _upload_derived(path: str, data: Any) -> None:
+    """bytes 또는 storage3가 지원하는 로컬 파일 경로를 기존 업로더에 전달."""
     if _use_db() and supabase_assets.get_client():
         await supabase_assets.upload_asset_to_storage(path, data, "video/mp4")
         return
@@ -782,35 +1168,61 @@ async def package_breathing_for_delivery(
             "CANDIDATE_ASSET_UNAVAILABLE", "저장된 raw 영상을 불러오지 못했습니다.", status=503
         )
 
-    if decode_fn is not None:
-        frames, fps = decode_fn(raw)
-    else:
-        # QA(motion_video_qa.verify_output_conformance)가 이 **같은 불변**
-        # raw 바이트에 대해 이미 뽑아 둔 width/height/fps 가 candidate 에
-        # 남아 있으면 재사용한다 — decode_video 가 같은 영상을 다시
-        # ffprobe 하지 않는다. 없거나 불완전하면 decode_video 가 스스로
-        # 안전하게 자체 probe 로 되돌아간다.
-        reused_probe = (
-            (candidate.get("qa_result") or {}).get("output_conformance") or {}
-        ).get("probe")
-        frames, fps = decode_video(raw, probe=reused_probe)
-    if not frames:
-        raise MotionDeliveryError("DELIVERY_DECODE_FAILED", "원본에서 프레임을 얻지 못했습니다.")
-
     backend_name, backend = ("injected", matte_fn) if matte_fn else _select_matte_backend()
-    alphas, matte_diag = backend(frames)
-    if len(alphas) != len(frames):
-        raise MotionDeliveryError("MATTE_BACKEND_FAILED", "프레임/알파 수가 일치하지 않습니다.")
+    # QA(motion_video_qa.verify_output_conformance)가 이 **같은 불변** raw 바이트에
+    # 대해 이미 뽑아 둔 width/height/fps 가 있으면 두 코덱 경로 모두 재사용한다.
+    reused_probe = (
+        (candidate.get("qa_result") or {}).get("output_conformance") or {}
+    ).get("probe")
 
-    alphas, stab_diag = stabilize_alpha(alphas)
-    packed = build_packed_frames(frames, alphas)
-    warnings = validate_packed_frames(packed)
-
-    packed_bytes = (encode_fn or encode_video)(packed, fps)
-    if upload_fn is not None:
-        await _maybe_await(upload_fn(derived_path, packed_bytes))
+    # 운영 ViTMatte만 스트리밍한다. 주입 함수가 하나라도 있으면 기존 테스트/재사용
+    # 계약을 지키기 위해 종전 batch 경로를 그대로 탄다. bgmodel은 이번 변경 범위 밖이다.
+    stream_vitmatte = (
+        backend_name == "vitmatte"
+        and decode_fn is None
+        and encode_fn is None
+        and matte_fn is None
+    )
+    if stream_vitmatte:
+        with tempfile.TemporaryDirectory(prefix="eb_delivery_stream_pack_") as td:
+            packed_path = os.path.join(td, "out.mp4")
+            streamed = stream_vitmatte_to_packed_file(
+                raw, packed_path, probe=reused_probe
+            )
+            if upload_fn is not None:
+                # 테스트/외부 주입 계약은 bytes를 유지한다. 운영 업로드는 아래에서
+                # 로컬 경로를 storage3에 넘겨 인코딩 결과 전체를 RAM에 올리지 않는다.
+                with open(packed_path, "rb") as f:
+                    await _maybe_await(upload_fn(derived_path, f.read()))
+            else:
+                await _upload_derived(derived_path, packed_path)
+        fps = streamed.fps
+        frame_count = streamed.frame_count
+        matte_diag = streamed.matte
+        stab_diag = streamed.stabilization
+        warnings = streamed.warnings
     else:
-        await _upload_derived(derived_path, packed_bytes)
+        if decode_fn is not None:
+            frames, fps = decode_fn(raw)
+        else:
+            frames, fps = decode_video(raw, probe=reused_probe)
+        if not frames:
+            raise MotionDeliveryError("DELIVERY_DECODE_FAILED", "원본에서 프레임을 얻지 못했습니다.")
+
+        alphas, matte_diag = backend(frames)
+        if len(alphas) != len(frames):
+            raise MotionDeliveryError("MATTE_BACKEND_FAILED", "프레임/알파 수가 일치하지 않습니다.")
+
+        alphas, stab_diag = stabilize_alpha(alphas)
+        packed = build_packed_frames(frames, alphas)
+        warnings = validate_packed_frames(packed)
+
+        packed_bytes = (encode_fn or encode_video)(packed, fps)
+        if upload_fn is not None:
+            await _maybe_await(upload_fn(derived_path, packed_bytes))
+        else:
+            await _upload_derived(derived_path, packed_bytes)
+        frame_count = len(frames)
 
     # ── 후보 갱신 — raw_* 는 절대 만지지 않는다 ────────────────────────────
     meta = dict(candidate.get("generation_metadata") or {})
@@ -821,7 +1233,7 @@ async def package_breathing_for_delivery(
         "matte": matte_diag,
         "stabilization": stab_diag,
         "fps": round(float(fps), 4),
-        "frame_count": len(frames),
+        "frame_count": frame_count,
         "source_raw_video_path": raw_path,
         "warnings": warnings,
         "packaged_at": _now_iso(),
@@ -851,7 +1263,7 @@ async def package_breathing_for_delivery(
         derived_bucket=bucket,
         derived_video_path=derived_path,
         raw_video_path=raw_path,
-        frame_count=len(frames),
+        frame_count=frame_count,
         fps=float(fps),
         matte_backend=str(matte_diag.get("backend", backend_name)),
         warnings=warnings,

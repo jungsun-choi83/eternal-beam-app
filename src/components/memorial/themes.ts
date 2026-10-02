@@ -37,18 +37,7 @@ export function getThemeFloorY(theme: MemorialTheme | null | undefined): number 
   return Math.min(1, Math.max(0.5, v));
 }
 
-/**
- * "내 사진으로 나만의 배경 만들기" 테마의 고정 id/key.
- *
- * ⚠️ **10 이다. 9 가 아니다.** 9 는 Beach 가 이미 쓰고 있었고, getMemorialTheme 은
- * `.find()` 라 배열에서 먼저 나오는 Beach 를 돌려줬다. 그 결과 이 테마는 id 로는
- * **영영 조회되지 않았다** — persistThemeChoice(CUSTOM_PHOTO_BG_THEME_ID) 가
- * localStorage 에 9 를 쓰면, 그것을 되읽는 모든 화면이 Beach 를 그렸다.
- *
- * 고치는 방향을 이쪽으로 잡은 이유: Beach 의 id 를 바꾸면 이미 9 를 저장해 둔
- * 사용자의 테마가 통째로 옮겨간다. 이쪽을 옮기면 저장된 9 는 예전과 똑같이
- * Beach 로 읽히고(동작 변화 없음), 앞으로의 커스텀 배경만 제대로 조회된다.
- */
+
 export const CUSTOM_PHOTO_BG_THEME_ID = 10;
 export const CUSTOM_PHOTO_BG_THEME_KEY = "custom_photo_bg";
 
@@ -198,32 +187,35 @@ export const memorialThemes: MemorialTheme[] = [
     floorY: 0.93,
   },
   {
-    id: CUSTOM_PHOTO_BG_THEME_ID,
-    name: "My Photo, Animated",
-    nameKo: "내 사진으로 나만의 배경",
-    themeKey: CUSTOM_PHOTO_BG_THEME_KEY,
-    gradient: "from-fuchsia-950 via-purple-900 to-black",
-    accent: "#c084fc",
-    premium: true,
-    // 생성 전에는 고정 배경이 없다. 예전 경로(custom_photo_bg.jpg)는 파일 자체가
-    // 없어서 카드가 깨진 이미지로 보였다 — 테마 gradient 자리표시자로 대체.
-    thumb: "/theme-thumbs/custom_photo_bg_placeholder.jpg",
-    // bgVideo 없음 — 고정 에셋이 아니라 사용자별로 생성됨(custom-background-store.ts 참고).
-    requiresGeneration: true,
+    id: 12,
+    name: "Cherry Blossom",
+    nameKo: "벚꽃길",
+    themeKey: "cherry_blossom",
+    gradient: "from-pink-900 via-rose-700 to-black",
+    accent: "#f9a8d4",
+    premium: false,
+
+    thumb: "/theme-thumbs/cherry_blossom.jpg",
+    bgVideo: "/backgrounds/cherry_blossom/cherry_blossom.mp4",
+    floorY: 0.90,
   },
+  
+  // {
+  //   id: CUSTOM_PHOTO_BG_THEME_ID,
+  //   name: "My Photo, Animated",
+  //   nameKo: "내 사진으로 나만의 배경",
+  //   themeKey: CUSTOM_PHOTO_BG_THEME_KEY,
+  //   gradient: "from-fuchsia-950 via-purple-900 to-black",
+  //   accent: "#c084fc",
+  //   premium: true,
+  //   // 생성 전에는 고정 배경이 없다. 예전 경로(custom_photo_bg.jpg)는 파일 자체가
+  //   // 없어서 카드가 깨진 이미지로 보였다 — 테마 gradient 자리표시자로 대체.
+  //   thumb: "/theme-thumbs/custom_photo_bg_placeholder.jpg",
+  //   // bgVideo 없음 — 고정 에셋이 아니라 사용자별로 생성됨(custom-background-store.ts 참고).
+  //   requiresGeneration: true,
+  // },
 ];
 
-/**
- * 테마 카드(선택 그리드의 썸네일)가 그릴 이미지 주소 — **카탈로그가 한 곳에서 푼다.**
- *
- * - 원본 사진 테마: 고객이 올린 사진 자체. 없으면 "" 를 돌려 주고 카드는 빈
- *   자리표시자를 그린다(고정 에셋을 두면 다른 사진처럼 보인다).
- * - 그 외 모든 테마(유료·커스텀 포함): 카탈로그의 `thumb`. 커스텀 배경도 생성 전에
- *   보여 줄 자기 자리표시자 에셋(custom_photo_bg_placeholder.jpg)을 갖고 있다.
- *
- * 화면이 `/theme-thumbs/...` 경로를 따로 들고 있지 않게 하려는 것이다 — 경로는
- * 위 목록만이 안다.
- */
 export function getThemeCardThumb(
   theme: MemorialTheme,
   originalPhoto?: string | null
@@ -245,21 +237,6 @@ export function getMemorialThemeByKey(themeKey: string | null | undefined): Memo
   return memorialThemes.find((t) => t.themeKey === key);
 }
 
-/**
- * 앱 전체의 **기본 테마** 단일 출처.
- *
- * 왜 fresh_forest(id 8)인가 — 배열 첫 번째라서가 아니라 실제 동작이 그렇다:
- *   * python/pi_sse_server.py 의 /demo/play 가 theme_id 기본값으로 "fresh_forest"
- *     를 세 곳에서 쓴다 (123, 132, 221행)
- *   * pi-sensor-bridge.triggerForestMachineDemo() → triggerThemeOnDevice("fresh_forest")
- *   * 기기 데모(forest-demo-config)의 FOREST_THEME_ID 가 8
- *   * freeMemorialThemes[0] 도 fresh_forest
- * 반면 id 1(snow_forest)은 과거 번호 체계의 잔재이고, themes.ts 주석대로 한동안
- * mp4 가 없어 목록에서 제외되기까지 했다. 그런데도 preview-screen 과
- * credit-pipeline 은 snow_forest 로 폴백해 두 기본값이 서로 달랐다.
- *
- * ⚠️ 이 값은 **폴백 전용**이다. 사용자가 명시적으로 고른 테마가 항상 이긴다.
- */
 export const DEFAULT_THEME_ID = 8;
 
 /** DEFAULT_THEME_ID 의 themeKey (백엔드 place_id / 기기 theme_id 로 나가는 값). */

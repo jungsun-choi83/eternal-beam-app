@@ -274,6 +274,27 @@ def test_stabilize_alpha_reduces_flicker():
     assert len(stabilized) == len(alphas)
 
 
+@pytest.mark.parametrize("count", [1, 2, 3, 4, 9])
+def test_rolling_stabilizer_is_pixel_identical_to_batch(count):
+    """스트리밍 경로가 기존 3-frame median + EMA 수학을 한 픽셀도 바꾸지 않는다."""
+    rng = np.random.default_rng(100 + count)
+    frames = [rng.integers(0, 256, (12, 10, 3), dtype=np.uint8) for _ in range(count)]
+    alphas = [rng.random((12, 10), dtype=np.float32) for _ in range(count)]
+    expected, expected_diag = delivery.stabilize_alpha(alphas)
+
+    rolling = delivery._RollingAlphaStabilizer()
+    actual_pairs = []
+    for frame, alpha in zip(frames, alphas):
+        actual_pairs.extend(rolling.push(frame, alpha))
+    actual_pairs.extend(rolling.finish())
+
+    assert len(actual_pairs) == count
+    assert rolling.diagnostics() == expected_diag
+    for index, (actual_frame, actual_alpha) in enumerate(actual_pairs):
+        assert actual_frame is frames[index]
+        np.testing.assert_array_equal(actual_alpha, expected[index])
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 멱등 / 게이트
 # ══════════════════════════════════════════════════════════════════════════
@@ -470,6 +491,86 @@ def test_real_ffmpeg_roundtrip_produces_browser_detectable_packed():
     alpha = bottom[:, :, 0]
     assert alpha[55, 32] > 200
     assert alpha[5, 5] < 30
+
+
+@pytest.mark.skipif(not _has_ffmpeg(), reason="ffmpeg/ffprobe 필요")
+def test_streamed_vitmatte_pack_matches_batch_pixels_and_codec_contract(tmp_path):
+    """모델만 결정론 함수로 주입해 batch/stream의 나머지 전 과정을 실제 ffmpeg로 비교."""
+    source_frames = _frames(10)
+    # 시간 중앙값이 실제로 일하도록 프레임마다 작은 알파 변화를 만든다.
+    for i, frame in enumerate(source_frames):
+        frame[30:80, 16 + (i % 3):48] = PET_COLOR
+    source = delivery.encode_video(source_frames, FPS)
+    decoded, fps = delivery.decode_video(source)
+
+    def matte_frame(frame):
+        # H.264 디코드 뒤 실제 픽셀에서 결정되는 float32 알파.
+        return (frame[:, :, 0].astype(np.float32) / 255.0)
+
+    batch_alphas = [matte_frame(frame) for frame in decoded]
+    batch_alphas, batch_diag = delivery.stabilize_alpha(batch_alphas)
+    batch_packed = delivery.build_packed_frames(decoded, batch_alphas)
+    batch_warnings = delivery.validate_packed_frames(batch_packed)
+    batch_bytes = delivery.encode_video(batch_packed, fps)
+
+    streamed_path = tmp_path / "streamed.mp4"
+    streamed = delivery.stream_vitmatte_to_packed_file(
+        source,
+        str(streamed_path),
+        matte_frame_fn=matte_frame,
+    )
+    streamed_frames, streamed_fps = delivery.decode_video(streamed_path.read_bytes())
+    batch_frames, batch_fps = delivery.decode_video(batch_bytes)
+
+    assert streamed.frame_count == len(decoded) == 10
+    assert streamed.width == W and streamed.height == 2 * H
+    assert streamed.fps == pytest.approx(fps)
+    assert streamed_fps == pytest.approx(batch_fps)
+    assert streamed.stabilization == batch_diag
+    assert streamed.warnings == batch_warnings
+    assert len(streamed_frames) == len(batch_frames) == 10
+    for actual, expected in zip(streamed_frames, batch_frames):
+        np.testing.assert_array_equal(actual, expected)
+
+
+@pytest.mark.skipif(not _has_ffmpeg(), reason="ffmpeg/ffprobe 필요")
+def test_package_uses_streaming_only_for_uninjected_vitmatte(monkeypatch):
+    _seed()
+    monkeypatch.setenv("MOTION_DELIVERY_MATTE_BACKEND", "vitmatte")
+    monkeypatch.setattr(
+        delivery,
+        "_matte_vitmatte_frame",
+        lambda frame: (frame[:, :, 0].astype(np.float32) / 255.0),
+    )
+    source = delivery.encode_video(_frames(5), FPS)
+    uploaded = {}
+
+    async def upload(path, local_path):
+        uploaded["path"] = path
+        uploaded["local_path"] = local_path
+        assert isinstance(local_path, str)
+        with open(local_path, "rb") as f:
+            uploaded["data"] = f.read()
+        delivery._MOCK_DELIVERY_OBJECTS.add(path)
+
+    monkeypatch.setattr(delivery, "_upload_derived", upload)
+
+    result = _run(
+        delivery.package_breathing_for_delivery(
+            user_id=USER,
+            pet_id=PET,
+            motion_version_id=VERSION_ID,
+            video_bytes=source,
+        )
+    )
+
+    assert result.matte_backend == "vitmatte"
+    assert result.frame_count == 5
+    assert uploaded["path"] == PACKED_PATH
+    assert uploaded["local_path"].endswith("out.mp4")
+    packed, fps = delivery.decode_video(uploaded["data"])
+    assert len(packed) == 5 and packed[0].shape == (2 * H, W, 3)
+    assert fps == pytest.approx(FPS)
 
 
 _UPLOADED: dict = {}

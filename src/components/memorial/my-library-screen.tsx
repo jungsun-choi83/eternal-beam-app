@@ -832,6 +832,7 @@ export function MyLibraryScreen({
             event: "pet_asset",
             pet_id: selectedPet.petId,
             motion_id: selectedMotion.motionId,
+            spawn_vfx: "heart",
           });
           return petResult.ok
             ? { ok: true, commandId: petResult.command_id }

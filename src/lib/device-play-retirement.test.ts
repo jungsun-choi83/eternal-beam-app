@@ -129,7 +129,13 @@ test("playPublishedOnBeam: theme_play 성공 뒤에만 pet_asset 이 나간다",
   assert.equal(sent[0].event, "theme_play");
   assert.equal(sent[1].event, "pet_asset");
   assert.deepEqual(sent[0], { device_id: "beam-001", event: "theme_play", theme_id: "fresh_forest" });
-  assert.deepEqual(sent[1], { device_id: "beam-001", event: "pet_asset", pet_id: "pet_abc", motion_id: "BREATHING" });
+  assert.deepEqual(sent[1], {
+    device_id: "beam-001",
+    event: "pet_asset",
+    pet_id: "pet_abc",
+    motion_id: "BREATHING",
+    spawn_vfx: "heart",
+  });
 });
 
 test("playPublishedOnBeam: theme_play 실패면 pet_asset 을 보내지 않고 진짜 실패를 돌려준다", async () => {
