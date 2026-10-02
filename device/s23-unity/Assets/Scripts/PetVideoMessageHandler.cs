@@ -1,16 +1,24 @@
 using UnityEngine;
+using UnityEngine.Video;
 using EternalBeam.Device;
 
 public class PetVideoMessageHandler : MonoBehaviour
 {
     [SerializeField] private UdpJsonReceiver receiver;
     [SerializeField] private PreparedVideoCrossfadeController crossfadeController;
+    [SerializeField] private TweenActionController tweenActionController;
     private string idleVideoUrl;
-    private bool isActionPlaying;
     private string pendingActionUrl;
     private string pendingActionEvent;
+    private string currentActionEvent;
+    private string startingEvent;
+    private bool isActionPlaying;
     private bool isReady;
     private bool waitingForInitialIdle;
+
+    [Header("Demo Mode")]
+    public bool demoModeEnabled = false;
+    [SerializeField] private LocalMotionClipReferenceTester localMotionReference;
 
     private void OnEnable()
     {
@@ -31,12 +39,18 @@ public class PetVideoMessageHandler : MonoBehaviour
     private void HandleMessage(PetDeviceMessage msg)
     {
         if (msg == null || !msg.Valid) return;
-        if (msg.Event == "video_tuning")
+        string eventName = msg.Event?.ToLowerInvariant();
+        if (eventName == "demo_init")
+        {
+            HandleDemoInit();
+            return;
+        }
+        if (eventName == "video_tuning")
         {
             HandleVideoTuning(msg);
             return;
         }
-        switch (msg.Event)
+        switch (eventName)
         {
             case "idle":
             case "touch":
@@ -47,62 +61,76 @@ public class PetVideoMessageHandler : MonoBehaviour
             default:
                 return;
         }
-        if (!isReady && msg.Event != "idle")
+        if (!isReady && eventName != "idle")
         {
-            Debug.Log($"[Pet] Not ready - waiting for initial Idle, ignored Event={msg.Event}");
+            Debug.Log($"[Pet] Not ready - waiting for initial Idle, ignored Event={eventName}");
             return;
         }
         string url = !string.IsNullOrEmpty(msg.PackedUrl) ? msg.PackedUrl : msg.VideoUrl;
         if (string.IsNullOrEmpty(url))
         {
-            Debug.LogWarning($"[Pet] No video URL for event={msg.Event}, motion={msg.MotionId}");
-            return;
-        }
-        if (msg.Event == "idle")
-        {
-            idleVideoUrl = url;
-            Debug.Log($"[Pet] Idle URL saved: {idleVideoUrl}");
-            if (isActionPlaying)
+            if (demoModeEnabled)
             {
-                Debug.Log("[Pet] Idle received during Action - saved but playback ignored");
+                url = "__demo_local__";
+            }
+            else
+            {
+                Debug.LogWarning($"[Pet] No video URL for event={eventName}, motion={msg.MotionId}");
                 return;
             }
+        }
+        if (eventName == "idle")
+        {
+            idleVideoUrl = url;
+            if (isActionPlaying) return;
             if (!isReady) waitingForInitialIdle = true;
-            crossfadeController.RequestSwitch(url, true);
+            RequestMotion(eventName, url, true);
             return;
         }
         if (isActionPlaying)
         {
-            if (msg.Event == "touch")
+            if (eventName == "touch")
             {
+                if (currentActionEvent == "touch")
+                {
+                    pendingActionUrl = null;
+                    pendingActionEvent = null;
+                    return;
+                }
                 pendingActionUrl = url;
-                pendingActionEvent = msg.Event;
+                pendingActionEvent = eventName;
                 Debug.Log($"[Pet] Action already playing - Touch queued URL={url}");
+                return;
             }
-            else
-            {
-                Debug.Log($"[Pet] Action already playing - ignored Event={msg.Event}");
-            }
+            Debug.Log($"[Pet] Action already playing - ignored Event={eventName}");
             return;
         }
         isActionPlaying = true;
-        Debug.Log($"[Pet] Motion={msg.MotionId} URL={url}");
-        crossfadeController.RequestSwitch(url, false);
+        currentActionEvent = eventName;
+        Debug.Log($"[Pet] Motion={msg.MotionId} Event={eventName} URL={url}");
+        RequestMotion(eventName, url, false);
     }
 
     private void HandleVideoPlaybackStarted()
     {
+        if (startingEvent == "touch")
+        {
+            Transform target = crossfadeController.GetIncomingRenderObject();
+            tweenActionController.PlayComeCloserAction(target);
+        }
         if (!isReady && waitingForInitialIdle)
         {
             waitingForInitialIdle = false;
             isReady = true;
             Debug.Log("[Pet] Initial Idle playback started → READY");
         }
+        startingEvent = null;
     }
 
     private void HandleActionFinished()
     {
         isActionPlaying = false;
+        currentActionEvent = null;
         if (!string.IsNullOrEmpty(pendingActionUrl))
         {
             string nextUrl = pendingActionUrl;
@@ -110,8 +138,9 @@ public class PetVideoMessageHandler : MonoBehaviour
             pendingActionUrl = null;
             pendingActionEvent = null;
             isActionPlaying = true;
+            currentActionEvent = nextEvent;
             Debug.Log($"[Pet] Action finished → playing queued Event={nextEvent}");
-            crossfadeController.RequestSwitch(nextUrl, false);
+            RequestMotion(nextEvent, nextUrl, false);
             return;
         }
         if (string.IsNullOrEmpty(idleVideoUrl))
@@ -120,7 +149,7 @@ public class PetVideoMessageHandler : MonoBehaviour
             return;
         }
         Debug.Log("[Pet] Action finished → returning to Idle");
-        crossfadeController.RequestSwitch(idleVideoUrl, true);
+        RequestMotion("idle", idleVideoUrl, true);
     }
 
     private void HandlePlaybackFailed()
@@ -128,19 +157,78 @@ public class PetVideoMessageHandler : MonoBehaviour
         if (isActionPlaying)
         {
             isActionPlaying = false;
+            currentActionEvent = null;
+            pendingActionUrl = null;
+            pendingActionEvent = null;
             Debug.LogWarning("[Pet] Action playback failed → returning to Idle");
-            if (!string.IsNullOrEmpty(idleVideoUrl)) crossfadeController.RequestSwitch(idleVideoUrl, true);
+            if (!string.IsNullOrEmpty(idleVideoUrl)) RequestMotion("idle", idleVideoUrl, true);
             return;
         }
         Debug.LogError("[Pet] Idle playback failed. Waiting for a new valid Idle message.");
     }
 
+    private void HandleDemoInit()
+    {
+        Debug.Log("[Pet] Demo Init received");
+        isReady = false;
+        waitingForInitialIdle = true;
+        isActionPlaying = false;
+        currentActionEvent = null;
+        pendingActionUrl = null;
+        pendingActionEvent = null;
+        startingEvent = null;
+        if (demoModeEnabled)
+        {
+            VideoClip idleClip = localMotionReference.GetMotion(PetMotion.Idle);
+            crossfadeController.RequestSwitch(idleClip, true);
+            Debug.Log("[Pet] Demo Init → Local Idle requested");
+            return;
+        }
+        Debug.LogWarning("[Pet] Demo Init received while Demo Mode is disabled");
+    }
+
     private void HandleVideoTuning(PetDeviceMessage msg)
     {
+        if (msg.Target?.ToLowerInvariant() != "pet") return;
+        crossfadeController.SetPetTransform(msg.PositionX, msg.PositionY, msg.ScaleX, msg.ScaleY);
         if (msg.Brightness.HasValue) crossfadeController.SetBrightness(msg.Brightness.Value);
         if (msg.Contrast.HasValue) crossfadeController.SetContrast(msg.Contrast.Value);
         if (msg.Saturation.HasValue) crossfadeController.SetSaturation(msg.Saturation.Value);
         if (msg.Gamma.HasValue) crossfadeController.SetGamma(msg.Gamma.Value);
         if (msg.Tint.HasValue) crossfadeController.SetTint(msg.Tint.Value);
     }
+
+    #region Demo Mode Testing
+    private PetMotion GetMotionType(string eventName)
+    {
+        switch (eventName)
+        {
+            case "idle":
+                return PetMotion.Idle;
+            case "touch":
+                return PetMotion.Touch;
+            case "approach":
+                return PetMotion.Approach;
+            case "voice":
+                return PetMotion.Voice;
+            case "nfc_match":
+                return PetMotion.NfcMatch;
+            default:
+                return PetMotion.Idle;
+        }
+    }
+
+    private void RequestMotion(string eventName, string url, bool loop)
+    {
+        startingEvent = eventName;
+        if (demoModeEnabled)
+        {
+            PetMotion motion = GetMotionType(eventName);
+            VideoClip clip = localMotionReference.GetMotion(motion);
+            crossfadeController.RequestSwitch(clip, loop);
+            return;
+        }
+        crossfadeController.RequestSwitch(url, loop);
+    }
+    #endregion
 }

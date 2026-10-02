@@ -22,6 +22,11 @@ namespace EternalBeam.Device
         public string PackedUrl;
         public string DeliveryFormat;
         public string Source;
+        public string Target;
+        public float? PositionX;
+        public float? PositionY;
+        public float? ScaleX;
+        public float? ScaleY;
         public float? Brightness;
         public float? Contrast;
         public float? Saturation;
@@ -94,6 +99,11 @@ namespace EternalBeam.Device
                 msg.PackedUrl = (string)o["packed_url"];
                 msg.DeliveryFormat = (string)o["delivery_format"];
                 msg.Source = (string)o["source"];
+                msg.Target = (string)o["target"];
+                msg.PositionX = o["position_x"]?.Value<float>();
+                msg.PositionY = o["position_y"]?.Value<float>();
+                msg.ScaleX = o["scale_x"]?.Value<float>();
+                msg.ScaleY = o["scale_y"]?.Value<float>();
                 msg.Brightness = o["brightness"]?.Value<float>();
                 msg.Contrast = o["contrast"]?.Value<float>();
                 msg.Saturation = o["saturation"]?.Value<float>();

@@ -100,7 +100,7 @@ public class MotionTestScript : MonoBehaviour
 
         ResetPositions();
 
-        videoController.RequestSwitch(idleClip);
+        videoController.RequestSwitch(idleClip, false);
     }
 
 
@@ -115,7 +115,7 @@ public class MotionTestScript : MonoBehaviour
 
         isApproaching = true;
 
-        videoController.RequestSwitch(approachClip);
+        videoController.RequestSwitch(approachClip, false);
 
         approachRoutine = StartCoroutine(ApproachRoutine());
     }
@@ -247,7 +247,7 @@ public class MotionTestScript : MonoBehaviour
         Debug.Log("[MotionTest] Switch back to Idle");
 
         // Existing controller handles crossfade.
-        videoController.RequestSwitch(idleClip);
+        videoController.RequestSwitch(idleClip, false);
     }
 
 

@@ -16,6 +16,10 @@ public class PreparedVideoCrossfadeController : MonoBehaviour
     [SerializeField] private VideoPlayer playerA;
     [SerializeField] private VideoPlayer playerB;
 
+    [Header("Render Objects")]
+    [SerializeField] private Transform renderObjectA;
+    [SerializeField] private Transform renderObjectB;
+
     [Header("Materials")]
     [SerializeField] private Material materialA;
     [SerializeField] private Material materialB;
@@ -72,17 +76,22 @@ public class PreparedVideoCrossfadeController : MonoBehaviour
 
     private void Update()
     {
-        if (Input.GetKeyDown(KeyCode.Alpha1)) RequestSwitch(winterClip);
-        else if (Input.GetKeyDown(KeyCode.Alpha2)) RequestSwitch(springClip);
-        else if (Input.GetKeyDown(KeyCode.Alpha3)) RequestSwitch(halloweenClip);
+        if (Input.GetKeyDown(KeyCode.Alpha1)) RequestSwitch(winterClip, false);
+        else if (Input.GetKeyDown(KeyCode.Alpha2)) RequestSwitch(springClip, false);
+        else if (Input.GetKeyDown(KeyCode.Alpha3)) RequestSwitch(halloweenClip, false);
     }
 
-    public void RequestSwitch(VideoClip targetClip)
+    public Transform GetIncomingRenderObject()
+    {
+        return nextPlayer == playerA ? renderObjectA : renderObjectB;
+    }
+
+    public void RequestSwitch(VideoClip targetClip, bool loop)
     {
         if (isSwitching) return;
         if (targetClip == null) return;
         if (currentPlayer.clip == targetClip) return;
-        StartCoroutine(SwitchRoutine(targetClip));
+        StartCoroutine(SwitchRoutine(targetClip, loop));
     }
 
     public void RequestSwitch(string videoUrl, bool loop = true)
@@ -160,6 +169,25 @@ public class PreparedVideoCrossfadeController : MonoBehaviour
         mat.SetFloat("_Saturation", saturation);
         mat.SetFloat("_Gamma", gamma);
         mat.SetColor("_Tint", tint);
+    }
+
+    public void SetPetTransform(float? positionX, float? positionY, float? scaleX, float? scaleY)
+    {
+        ApplyPetTransform(renderObjectA, positionX, positionY, scaleX, scaleY);
+        ApplyPetTransform(renderObjectB, positionX, positionY, scaleX, scaleY);
+    }
+
+    private void ApplyPetTransform(Transform target, float? positionX, float? positionY, float? scaleX, float? scaleY)
+    {
+        if (target == null) return;
+        Vector3 position = target.localPosition;
+        if (positionX.HasValue) position.x = positionX.Value;
+        if (positionY.HasValue) position.y = positionY.Value;
+        target.localPosition = position;
+        Vector3 scale = target.localScale;
+        if (scaleX.HasValue) scale.x = scaleX.Value;
+        if (scaleY.HasValue) scale.y = scaleY.Value;
+        target.localScale = scale;
     }
 
     private IEnumerator SwitchRoutine(VideoClip targetClip)
@@ -290,12 +318,54 @@ public class PreparedVideoCrossfadeController : MonoBehaviour
         debugOverlay?.SetError(message);
         isSwitching = false;
         nextFrameReady = false;
-        if (nextPlayer != null)
+        if (source != null)
         {
-            nextPlayer.frameReady -= OnNextFrameReady;
-            nextPlayer.sendFrameReadyEvents = false;
-            nextPlayer.Stop();
+            source.frameReady -= OnNextFrameReady;
+            source.sendFrameReadyEvents = false;
+            source.Stop();
         }
         OnVideoPlaybackFailed?.Invoke();
     }
+
+    #region Testing
+    private IEnumerator SwitchRoutine(VideoClip targetClip, bool loop)
+    {
+        isSwitching = true;
+        debugOverlay?.SetPlayerStatus("PREPARING");
+        debugOverlay?.SetError("-");
+        nextPlayer.Stop();
+        nextPlayer.source = VideoSource.VideoClip;
+        nextPlayer.clip = targetClip;
+        nextPlayer.isLooping = loop;
+        ApplyTuning(nextMaterial);
+        SetMaterialAlpha(nextMaterial, 0f);
+        nextPlayer.Prepare();
+        while (!nextPlayer.isPrepared) yield return null;
+        debugOverlay?.SetPlayerStatus("PREPARED");
+        nextFrameReady = false;
+        nextPlayer.sendFrameReadyEvents = true;
+        nextPlayer.frameReady += OnNextFrameReady;
+        nextPlayer.Play();
+        debugOverlay?.SetPlayerStatus("WAITING FRAME");
+        while (!nextFrameReady) yield return null;
+        debugOverlay?.SetPlayerStatus("PLAYING");
+        OnVideoPlaybackStarted?.Invoke();
+        nextPlayer.frameReady -= OnNextFrameReady;
+        nextPlayer.sendFrameReadyEvents = false;
+        float t = 0f;
+        while (t < fadeDuration)
+        {
+            t += Time.deltaTime;
+            float alpha = Mathf.Clamp01(t / fadeDuration);
+            SetMaterialAlpha(currentMaterial, 1f - alpha);
+            SetMaterialAlpha(nextMaterial, alpha);
+            yield return null;
+        }
+        SetMaterialAlpha(currentMaterial, 0f);
+        SetMaterialAlpha(nextMaterial, 1f);
+        currentPlayer.Stop();
+        SwapRoles();
+        isSwitching = false;
+    }
+    #endregion
 }

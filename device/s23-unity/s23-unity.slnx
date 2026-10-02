@@ -1,5 +1,6 @@
 ﻿<Solution>
   <Project Path="EternalBeam.Device.Editor.csproj" />
+  <Project Path="Assembly-CSharp-firstpass.csproj" />
   <Project Path="EternalBeam.Device.csproj" />
   <Project Path="EternalBeam.Device.Tests.csproj" />
 </Solution>
