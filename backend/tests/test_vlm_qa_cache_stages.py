@@ -103,6 +103,17 @@ def _kind_calls(calls, schema):
     return [c for c in calls if c["output_config"]["format"]["schema"] is schema]
 
 
+def _targeted_calls(calls, task=None):
+    selected = []
+    for call in calls:
+        text = call["messages"][0]["content"][-1].get("text", "")
+        if "_VLM only" not in text:
+            continue
+        if task is None or f"{task} only" in text:
+            selected.append(call)
+    return selected
+
+
 def _flaky_first_upload(monkeypatch, storage):
     state = {"n": 0}
 
@@ -141,14 +152,15 @@ def test_canonical_raw_store_failed_recovery_makes_no_second_vlm_call(storage, m
 
     with pytest.raises(jobs.ProviderRecoveryRequired):
         _build_canonical(h, [provider], storage)
-    # 정본은 VLM 태스크를 raw 저장과 동시에 띄운다 — 첫 시도의 답은 이미 캐시에 있다.
-    assert len(_kind_calls(calls, vlm.CANONICAL_QA_SCHEMA)) == 1
+    # Phase 8은 raw/cutout 결정론 QA 전에는 VLM을 시작하지 않는다.
+    assert len(_kind_calls(calls, vlm.CANONICAL_QA_SCHEMA)) == 0
 
     completed = _build_canonical(h, [provider], storage)
     assert completed.status == canon.STATUS_COMPLETE
     assert provider.submissions == 1
-    assert len(_kind_calls(calls, vlm.CANONICAL_QA_SCHEMA)) == 1, "복구는 캐시된 답을 쓴다"
-    assert completed.candidates[0].qa_result["checks"]["vlm_same_pet"] == "PASS"
+    assert len(_kind_calls(calls, vlm.CANONICAL_QA_SCHEMA)) == 0
+    assert completed.candidates[0].qa_result["checks"]["vlm_same_pet"] == "unknown"
+    assert completed.candidates[0].qa_result["vlm_escalation"]["decision"] == "SKIP"
 
 
 def test_canonical_crash_between_raw_upload_and_qa_persist_makes_no_second_vlm_call(storage, monkeypatch):
@@ -165,7 +177,7 @@ def test_canonical_crash_between_raw_upload_and_qa_persist_makes_no_second_vlm_c
     rows = _run(canon._version_rows(PET))
     assert len(rows) == 1 and rows[0]["status"] == canon.STATUS_BUILDING
     n_after_crash = len(_kind_calls(calls, vlm.CANONICAL_QA_SCHEMA))
-    assert n_after_crash == 1  # 동시에 띄운 VLM 태스크는 끝났고 답은 캐시에 남았다
+    assert n_after_crash == 0  # 결정론 QA 전 crash — VLM은 시작되지 않는다
 
     completed = _build_canonical(h, [provider], storage)
     assert completed.status == canon.STATUS_COMPLETE
@@ -178,7 +190,7 @@ def test_canonical_qa_only_bump_then_rerun_makes_no_vlm_call(storage, monkeypatc
     h = _seed_three_ref_pet(monkeypatch)
     calls = install_fake_anthropic(monkeypatch)
     v = _build_canonical(h, [FakeProvider("runway", [GOOD()])], storage)
-    assert v.status == canon.STATUS_COMPLETE and len(calls) == 1
+    assert v.status == canon.STATUS_COMPLETE and len(calls) == 0
     before = v.candidates[0].qa_result
 
     monkeypatch.setattr(canonical_qa, "CANONICAL_QA_VERSION", "canonical-qa-v999-test")
@@ -189,14 +201,14 @@ def test_canonical_qa_only_bump_then_rerun_makes_no_vlm_call(storage, monkeypatc
     after = next(c for c in rerun.candidates if c.id == v.candidates[0].id).qa_result
     assert after["qa_version"] == "canonical-qa-v999-test"
     assert after["decision"] == before["decision"] and after["checks"] == before["checks"]
-    assert len(calls) == 1, "QA 전용 범프 뒤 재판정은 캐시된 VLM 답으로 한다"
+    assert len(calls) == 0, "clear deterministic QA remains VLM-free after a QA-only bump"
 
 
 def test_canonical_operator_refresh_asks_the_vlm_again_and_overwrites(storage, monkeypatch):
     h = _seed_three_ref_pet(monkeypatch)
     calls = install_fake_anthropic(monkeypatch)
     v = _build_canonical(h, [FakeProvider("runway", [GOOD()])], storage)
-    assert len(calls) == 1
+    assert len(calls) == 0
 
     # 같은 QA 버전 — 평소라면 dedup 으로 아무것도 안 한다. refresh 는 강제로 다시 묻는다.
     rerun = _run(canon.reevaluate_canonical_candidate(
@@ -204,11 +216,11 @@ def test_canonical_operator_refresh_asks_the_vlm_again_and_overwrites(storage, m
         fetch_bytes=_fetch_for(h, storage), cutout_fn=lambda raw: raw, vlm_cache_mode="refresh",
     ))
     assert rerun.deduplicated is False
-    assert len(calls) == 2
-    assert len([r for r in vlm._MOCK_DURABLE_CACHE.values() if r["kind"] == vlm.KIND_CANONICAL_QA]) == 1
+    assert len(_targeted_calls(calls)) == 2  # explicit full review: identity + anatomy
+    assert len([r for r in vlm._MOCK_DURABLE_CACHE.values() if r["kind"].startswith(vlm.KIND_TARGETED_QA)]) == 2
     # 이후 일반 재사용은 새 항목을 읽는다.
     _build_canonical(h, [FakeProvider("runway", [GOOD()])], storage, skip_if_unchanged=False)
-    assert len(calls) == 2
+    assert len(_targeted_calls(calls)) == 2
 
 
 def test_canonical_decisions_identical_with_cache_on_and_off(storage, monkeypatch):
@@ -219,7 +231,7 @@ def test_canonical_decisions_identical_with_cache_on_and_off(storage, monkeypatc
     monkeypatch.setenv(vlm.VLM_QA_CACHE_ENV, "on")
     on_miss = _build_canonical(h, [FakeProvider("runway", [GOOD()])], storage, skip_if_unchanged=False)
     on_hit = _build_canonical(h, [FakeProvider("runway", [GOOD()])], storage, skip_if_unchanged=False)
-    assert len(calls) == 2  # off 1회 + on miss 1회; hit 은 호출 없음
+    assert len(calls) == 0  # clear evidence skips VLM regardless of cache mode
     for a, b in ((off, on_miss), (on_miss, on_hit)):
         assert a.status == b.status == canon.STATUS_COMPLETE
         assert a.candidates[0].qa_result["decision"] == b.candidates[0].qa_result["decision"]
@@ -232,13 +244,13 @@ def test_canonical_decisions_identical_with_cache_on_and_off(storage, monkeypatc
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def test_keyframe_qa_only_bump_then_rerun_makes_no_vlm_call(storage, monkeypatch):
+def test_keyframe_qa_only_bump_invalidates_targeted_vlm_cache(storage, monkeypatch):
     h, _canonical = _prepare_canonical(monkeypatch, storage)   # 정본 QA 는 스텁, 키프레임 QA 는 진짜
     _use_real_qa(monkeypatch, "keyframe")
     calls = install_fake_anthropic(monkeypatch)
     k = _build_kf(h, [FakeProvider("runway", [GOOD()])])
     assert k.status == kf.STATUS_COMPLETE
-    assert len(_kind_calls(calls, vlm.KEYFRAME_QA_SCHEMA)) == 1
+    assert len(_targeted_calls(calls, "POSE_VLM")) == 1
     before = k.candidates[0].qa_result
 
     monkeypatch.setattr(kf, "KEYFRAME_QA_VERSION", "keyframe-qa-v999-test")
@@ -248,8 +260,9 @@ def test_keyframe_qa_only_bump_then_rerun_makes_no_vlm_call(storage, monkeypatch
     ))
     after = next(c for c in rerun.candidates if c.id == k.candidates[0].id).qa_result
     assert after["qa_version"] == "keyframe-qa-v999-test"
-    assert after["decision"] == before["decision"] == "PASS" and after["checks"] == before["checks"]
-    assert len(_kind_calls(calls, vlm.KEYFRAME_QA_SCHEMA)) == 1
+    assert after["decision"] == before["decision"] == "REVIEW" and after["checks"] == before["checks"]
+    assert after["business_qa"]["delivery_action"] in {"DELIVER", "DELIVER_WITH_ADVISORY"}
+    assert len(_targeted_calls(calls, "POSE_VLM")) == 2
 
 
 def test_keyframe_durable_resume_and_rebuild_reuse_the_cached_answer(storage, monkeypatch):
@@ -274,19 +287,19 @@ def test_keyframe_durable_resume_and_rebuild_reuse_the_cached_answer(storage, mo
     provider = YieldOnce("runway")
     with pytest.raises(jobs.ProviderWorkPending):
         _build_kf(h, [provider])
-    assert len(_kind_calls(calls, vlm.KEYFRAME_QA_SCHEMA)) == 0   # 결과가 없으니 QA 도 없다
+    assert len(_targeted_calls(calls)) == 0   # 결과가 없으니 QA 도 없다
 
     resumed = _build_kf(h, [provider])
     assert resumed.status == kf.STATUS_COMPLETE
-    assert len(_kind_calls(calls, vlm.KEYFRAME_QA_SCHEMA)) == 1
+    assert len(_targeted_calls(calls, "POSE_VLM")) == 1
 
     forced = _build_kf(h, [FakeProvider("runway", [GOOD()])], skip_if_unchanged=False)
     assert forced.version == 2 and forced.candidates[0].decision == resumed.candidates[0].decision
-    assert len(_kind_calls(calls, vlm.KEYFRAME_QA_SCHEMA)) == 1, "같은 입력 → 캐시"
+    assert len(_targeted_calls(calls, "POSE_VLM")) == 1, "같은 입력 → 캐시"
 
     again = _build_kf(h, [FakeProvider("runway", [GOOD()])])
     assert again.deduplicated is True
-    assert len(_kind_calls(calls, vlm.KEYFRAME_QA_SCHEMA)) == 1
+    assert len(_targeted_calls(calls, "POSE_VLM")) == 1
 
 
 def test_keyframe_operator_refresh_forces_one_new_call(storage, monkeypatch):
@@ -294,13 +307,13 @@ def test_keyframe_operator_refresh_forces_one_new_call(storage, monkeypatch):
     _use_real_qa(monkeypatch, "keyframe")
     calls = install_fake_anthropic(monkeypatch)
     k = _build_kf(h, [FakeProvider("runway", [GOOD()])])
-    n = len(_kind_calls(calls, vlm.KEYFRAME_QA_SCHEMA))
+    n = len(_targeted_calls(calls))
     rerun = _run(kf.reevaluate_keyframe_candidate(
         user_id=USER, pet_id=PET, keyframe_id=k.id, candidate_id=k.candidates[0].id,
         fetch_bytes=h.kf_fetch, cutout_fn=lambda raw: raw, vlm_cache_mode="refresh",
     ))
     assert rerun.deduplicated is False
-    assert len(_kind_calls(calls, vlm.KEYFRAME_QA_SCHEMA)) == n + 1
+    assert len(_targeted_calls(calls)) == n + 3  # full refresh: identity + anatomy + pose
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -308,7 +321,7 @@ def test_keyframe_operator_refresh_forces_one_new_call(storage, monkeypatch):
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def test_motion_raw_store_failed_recovery_then_qa_bump_rerun_uses_one_vlm_call(storage, monkeypatch):
+def test_motion_raw_store_failed_recovery_then_qa_bump_recomputes_vlm(storage, monkeypatch):
     # 빌드는 (플레이트가 켜져 있으면) 클린 플레이트를, 재판정은 raw 키프레임을 VLM 레퍼런스로
     # 보낸다 — 아래 별도 테스트가 그 사실을 고정한다. 여기서는 플레이트를 꺼서 두 경로가
     # 같은 입력을 보내게 하고, 캐시가 재판정을 공짜로 만드는지 본다.
@@ -324,15 +337,15 @@ def test_motion_raw_store_failed_recovery_then_qa_bump_rerun_uses_one_vlm_call(s
     with pytest.raises(jobs.ProviderRecoveryRequired):
         _build_motion(h, "BREATHING", [provider])
     # 모션은 raw 저장 **뒤에** QA 를 돈다 — 첫 시도에서는 VLM 이 아직 호출되지 않았다.
-    assert len(_kind_calls(calls, vlm.MOTION_QA_SCHEMA)) == 0
+    assert len(_targeted_calls(calls)) == 0
 
     completed = _build_motion(h, "BREATHING", [provider])
     assert completed.status == mv.STATUS_COMPLETE and provider.submissions == 1
-    assert len(_kind_calls(calls, vlm.MOTION_QA_SCHEMA)) == 1
+    assert len(_targeted_calls(calls, "MOTION_VLM")) == 1
     before = completed.candidates[0].qa_result
     assert before["qa_version"] == "motion-video-qa-v9"
 
-    # QA 전용 범프 (v10 규칙 집합) → qa-rerun: 같은 프레임/레퍼런스/프롬프트 → 캐시 hit.
+    # QA 전용 범프 (v10 규칙 집합) → qa-rerun: QA 버전이 달라 캐시는 의도적으로 miss 한다.
     monkeypatch.setenv(motion_video_qa.MOTION_VIDEO_QA_RULESET_ENV, "v10")
     rerun = _run(mv.reevaluate_motion_candidate(
         user_id=USER, pet_id=PET, motion_id="BREATHING", motion_version_id=completed.id,
@@ -341,9 +354,15 @@ def test_motion_raw_store_failed_recovery_then_qa_bump_rerun_uses_one_vlm_call(s
     ))
     after = next(c for c in rerun.candidates if c.id == completed.candidates[0].id).qa_result
     assert after["qa_version"] == "motion-video-qa-v10"
+    # The combined identity+anatomy call now answers what used to stay unknown.
     assert after["decision"] == before["decision"] == "PASS"
-    assert after["vlm"] == before["vlm"]
-    assert len(_kind_calls(calls, vlm.MOTION_QA_SCHEMA)) == 1
+    assert after["business_qa"]["delivery_action"] in {"DELIVER", "DELIVER_WITH_ADVISORY"}
+    assert after["vlm"]["requested_motion_occurs"] == before["vlm"]["requested_motion_occurs"]
+    before_task = before["vlm"]["targeted_vlm_evidence"]["MOTION_VLM"]
+    after_task = after["vlm"]["targeted_vlm_evidence"]["MOTION_VLM"]
+    assert before_task["cache_receipt"]["status"] == "computed"
+    assert after_task["cache_receipt"]["status"] == "computed"
+    assert len(_targeted_calls(calls, "MOTION_VLM")) == 2
     assert provider.submissions == 1
 
 
@@ -359,7 +378,7 @@ def test_motion_rerun_with_clean_plate_sends_a_different_reference_than_the_buil
     _use_real_qa(monkeypatch, "motion")
     calls = install_fake_anthropic(monkeypatch)
     v = _build_motion(h, "BREATHING", [FakeVideoProvider("seedance", [GOOD()])])
-    assert v.status == mv.STATUS_COMPLETE and len(_kind_calls(calls, vlm.MOTION_QA_SCHEMA)) == 1
+    assert v.status == mv.STATUS_COMPLETE and len(_targeted_calls(calls, "MOTION_VLM")) == 1
     build_ref = [b for b in calls[-1]["messages"][0]["content"] if b["type"] == "image"][-1]["source"]["data"]
 
     monkeypatch.setenv(motion_video_qa.MOTION_VIDEO_QA_RULESET_ENV, "v10")
@@ -368,7 +387,7 @@ def test_motion_rerun_with_clean_plate_sends_a_different_reference_than_the_buil
         candidate_id=v.candidates[0].id, video_bytes=GOOD(), fetch_bytes=h.kf_fetch,
         frame_sampler=sampler_identical, conformance_fn=conformance_ok,
     ))
-    assert len(_kind_calls(calls, vlm.MOTION_QA_SCHEMA)) == 2
+    assert len(_targeted_calls(calls, "MOTION_VLM")) == 2
     rerun_ref = [b for b in calls[-1]["messages"][0]["content"] if b["type"] == "image"][-1]["source"]["data"]
     assert rerun_ref != build_ref, "miss 의 원인은 레퍼런스 이미지(plate vs raw) 차이다"
 
@@ -378,14 +397,14 @@ def test_motion_operator_refresh_forces_one_new_call_and_keeps_history(storage, 
     _use_real_qa(monkeypatch, "motion")
     calls = install_fake_anthropic(monkeypatch)
     v = _build_motion(h, "BREATHING", [FakeVideoProvider("seedance", [GOOD()])])
-    assert v.status == mv.STATUS_COMPLETE and len(_kind_calls(calls, vlm.MOTION_QA_SCHEMA)) == 1
+    assert v.status == mv.STATUS_COMPLETE and len(_targeted_calls(calls, "MOTION_VLM")) == 1
 
     same = _run(mv.reevaluate_motion_candidate(
         user_id=USER, pet_id=PET, motion_id="BREATHING", motion_version_id=v.id,
         candidate_id=v.candidates[0].id, video_bytes=GOOD(), fetch_bytes=h.kf_fetch,
         frame_sampler=sampler_identical, conformance_fn=conformance_ok,
     ))
-    assert same.deduplicated is True and len(_kind_calls(calls, vlm.MOTION_QA_SCHEMA)) == 1
+    assert same.deduplicated is True and len(_targeted_calls(calls, "MOTION_VLM")) == 1
 
     refreshed = _run(mv.reevaluate_motion_candidate(
         user_id=USER, pet_id=PET, motion_id="BREATHING", motion_version_id=v.id,
@@ -393,7 +412,8 @@ def test_motion_operator_refresh_forces_one_new_call_and_keeps_history(storage, 
         frame_sampler=sampler_identical, conformance_fn=conformance_ok, vlm_cache_mode="refresh",
     ))
     assert refreshed.deduplicated is False
-    assert len(_kind_calls(calls, vlm.MOTION_QA_SCHEMA)) == 2
+    # prior motion + identity/anatomy calls, then the full three-task refresh
+    assert len(_targeted_calls(calls)) == 5
     cand = next(c for c in refreshed.candidates if c.id == v.candidates[0].id)
     assert cand.generation_metadata["qa_history"], "이전 판정은 감사 기록으로 남는다"
 
@@ -407,7 +427,10 @@ def test_motion_decisions_identical_with_cache_on_and_off(storage, monkeypatch):
     monkeypatch.setenv(vlm.VLM_QA_CACHE_ENV, "on")
     on_miss = _build_motion(h, "BREATHING", [FakeVideoProvider("seedance", [GOOD()])], skip_if_unchanged=False)
     on_hit = _build_motion(h, "BREATHING", [FakeVideoProvider("seedance", [GOOD()])], skip_if_unchanged=False)
-    assert len(_kind_calls(calls, vlm.MOTION_QA_SCHEMA)) == 2
+    assert len(_targeted_calls(calls, "MOTION_VLM")) == 2
     for a, b in ((off, on_miss), (on_miss, on_hit)):
         assert a.candidates[0].qa_result["decision"] == b.candidates[0].qa_result["decision"] == "PASS"
+        assert a.candidates[0].qa_result["business_qa"]["delivery_action"] in {
+            "DELIVER", "DELIVER_WITH_ADVISORY"
+        }
         assert a.candidates[0].qa_result["checks"] == b.candidates[0].qa_result["checks"]

@@ -69,6 +69,11 @@ def _run(coro):
 VLM_QA_OK = {
     "same_pet": "yes",
     "same_pet_confidence": "high",
+    "face_head_consistent": "yes",
+    "ear_muzzle_consistent": "yes",
+    "distinctive_markings_consistent": "yes",
+    "persistent_morphology_consistent": "yes",
+    "presentation_difference_only": "no",
     "anatomy_plausible": "yes",
     "single_pet": "yes",
     "human_present": "no",
@@ -85,7 +90,9 @@ VLM_QA_OK = {
 
 def install_vlm_qa(monkeypatch, result):
     monkeypatch.setattr(
-        vlm_identity, "qa_canonical_image", lambda candidate, references, candidate_mime="image/png": result
+        vlm_identity,
+        "qa_canonical_image",
+        lambda candidate, references, candidate_mime="image/png", **kwargs: result,
     )
 
 
@@ -314,11 +321,12 @@ def _build_direct(h: Harness, providers, *, cutout_fn, **kw):
 
 def test_postprocessing_branches_overlap_and_still_completes(uploads, monkeypatch):
     """
-    raw storage / matting-cutout / VLM QA prep start together once image bytes
-    exist; cutout upload overlaps clean-plate construction after matting.
+    raw storage / matting-cutout start together once image bytes exist; cutout
+    upload overlaps clean-plate construction after matting. Clear deterministic
+    evidence skips VLM under Phase 8.
     Proven by wall-clock: each instrumented step sleeps DELAY, and if they
-    ran sequentially the whole build would take >= 5*DELAY (raw, cutout,
-    vlm_qa, cutout_upload/plate_build, plate_upload). Overlapped, it must
+    ran sequentially the whole build would take >= 4*DELAY (raw, cutout,
+    cutout_upload/plate_build, plate_upload). Overlapped, it must
     take well under that, and the recorded intervals must actually overlap.
     """
     import asyncio
@@ -384,16 +392,16 @@ def test_postprocessing_branches_overlap_and_still_completes(uploads, monkeypatc
     elapsed = time.monotonic() - t0
 
     # 요구 2: 필요한 모든 분기가 끝나야 완료된다 — 완료됐다는 것 자체가
-    # cutout/vlm_qa/uploads 모두 기다렸다는 증거다.
+    # cutout/uploads 모두 기다렸다는 증거다.
     assert v.status == svc.STATUS_COMPLETE
     sel = next(c for c in v.candidates if c.selected)
     assert sel.error is None
 
-    # 완전 순차라면 >= 5*DELAY (raw, cutout, vlm_qa, cutout_upload 또는
+    # 완전 순차라면 >= 4*DELAY (raw, cutout, cutout_upload 또는
     # plate_build, plate_upload). 겹치면 2~3*DELAY 근방이어야 한다.
     assert elapsed < DELAY * 4, (
         f"postprocessing branches did not overlap: {elapsed:.3f}s "
-        f"(sequential would be >= {DELAY * 5:.3f}s)"
+        f"(sequential would be >= {DELAY * 4:.3f}s)"
     )
 
     def overlaps(a: str, b: str) -> bool:
@@ -402,7 +410,7 @@ def test_postprocessing_branches_overlap_and_still_completes(uploads, monkeypatc
         return a_start < b_end and b_start < a_end
 
     assert overlaps("upload_raw", "cutout"), "raw 저장이 매팅과 겹치지 않았다"
-    assert overlaps("upload_raw", "vlm_qa"), "raw 저장이 VLM QA 준비와 겹치지 않았다"
+    assert "vlm_qa" not in intervals, "clear Canonical evidence should skip VLM"
     assert overlaps("upload_cutout", "plate_build"), "누끼 업로드가 클린 플레이트 생성과 겹치지 않았다"
 
 
@@ -438,12 +446,11 @@ def test_postprocessing_reuses_bytes_and_makes_no_duplicate_calls(uploads, monke
     assert v.status == svc.STATUS_COMPLETE
     assert provider.calls == 1  # 유료 생성은 한 번만
 
-    # 매팅/VLM QA 는 candidate 당 정확히 한 번 — provider 가 이미 돌려준
-    # image_bytes 를 그대로 넘겨받았다 (재다운로드/재디코딩 없음).
+    # 매팅은 candidate 당 정확히 한 번이고 clear evidence라 VLM은 생략된다.
     assert len(cutout_calls) == 1
     assert cutout_calls[0] == image
-    assert len(vlm_calls) == 1
-    assert vlm_calls[0][0] == image
+    assert vlm_calls == []
+    assert v.candidates[0].qa_result["vlm_escalation"]["decision"] == "SKIP"
 
     # raw/cutout/plate 업로드도 각각 정확히 한 번.
     raw_uploads = [p for p in uploads if p.endswith("_raw.png")]
@@ -487,7 +494,8 @@ def test_cutout_upload_failure_does_not_break_plate_or_qa(uploads, monkeypatch):
     assert sel.cutout_object_path is None  # 실패한 분기만 비어있다
     assert sel.plate_object_path is not None  # 나머지 분기는 정상 완료
     assert sel.plate_object_path in uploads
-    assert sel.qa_result.get("decision") == canonical_qa.PASS  # QA 도 정상 진행
+    assert sel.qa_result.get("decision") == canonical_qa.REVIEW  # legacy VLM unknown 보존
+    assert sel.qa_result["business_qa"]["delivery_action"] == "DELIVER"
 
 
 def test_postprocessing_outputs_identical_to_sequential_shape(uploads, monkeypatch):
@@ -633,9 +641,31 @@ def test_primary_success_with_three_complementary_references(uploads, monkeypatc
     # 점진적 조기 중단: stop_after_passes 기본 1 — 첫 PASS 에서 즉시 멈춘다.
     assert primary.calls == 1
     sel = next(c for c in v.candidates if c.selected)
-    assert sel.provider == "runway" and sel.decision == "PASS"
+    assert sel.provider == "runway" and sel.decision == "REVIEW"
+    assert sel.qa_result["business_qa"]["delivery_action"] == "DELIVER"
+    assert sel.qa_result["vlm_escalation"]["decision"] == "SKIP"
     assert sel.qa_result["identity_similarity"] is not None
     assert v.qa_summary["canonical_confidence"] == "normal"
+
+
+def test_enhanced_first_candidate_is_selected_without_candidate_two(uploads, monkeypatch):
+    h = _seed_three_ref_pet(monkeypatch)
+    install_vlm_qa(
+        monkeypatch,
+        {**VLM_QA_OK, "presentation_difference_only": "yes"},
+    )
+    enhanced = make_pet_cutout_png(body=(195, 145, 95), patch=(255, 255, 250))
+    primary = FakeProvider("runway", [enhanced, GOOD()])
+    fallback = FakeProvider("gpt_image", [GOOD()])
+
+    version = _build(h, [primary, fallback])
+    selected = next(candidate for candidate in version.candidates if candidate.selected)
+
+    assert version.status == svc.STATUS_COMPLETE
+    assert primary.calls == 1 and fallback.calls == 0
+    assert selected.attempt == 1
+    assert selected.qa_result["business_qa"]["integrity_status"] == "PASS"
+    assert selected.qa_result["business_qa"]["retry_action"] == "STOP"
 
 
 def test_one_reference_limited_case_lowers_confidence(uploads, monkeypatch):
@@ -703,7 +733,7 @@ def test_primary_provider_failure_falls_back(uploads, monkeypatch):
     assert len(errors) == 3 and all(c.error for c in errors)
 
 
-def test_primary_qa_failure_falls_back(uploads, monkeypatch):
+def test_identity_support_failure_delivers_first_candidate_without_fallback(uploads, monkeypatch):
     h = _seed_three_ref_pet(monkeypatch)
     install_vlm_qa(monkeypatch, VLM_QA_OK)
     # 전혀 다른 코트의 이미지 → 신원 시그니처/코트 계열 FAIL.
@@ -712,13 +742,20 @@ def test_primary_qa_failure_falls_back(uploads, monkeypatch):
 
     v = _build(h, [primary, fallback])
     assert v.status == svc.STATUS_COMPLETE
-    assert next(c for c in v.candidates if c.selected).provider == "gpt_image"
-    assert all(c.decision == "FAIL" for c in v.candidates if c.provider == "runway")
+    selected = next(c for c in v.candidates if c.selected)
+    assert selected.provider == "runway"
+    assert primary.calls == 1 and fallback.calls == 0
+    assert selected.decision == "FAIL"  # legacy decision remains available
+    assert selected.qa_result["business_qa"]["delivery_action"] == "DELIVER_WITH_ADVISORY"
+    assert selected.qa_result["business_qa"]["retry_action"] == "STOP"
+    assert selected.qa_result["business_qa"]["integrity_status"] == "PASS"
+    diagnostic = selected.qa_result["business_qa"]["authority_evidence"]["DIAGNOSTIC_ONLY"]
+    assert "identity_similarity" in diagnostic
 
 
-def test_candidate_limits_are_enforced_and_configurable(uploads, monkeypatch):
+def test_cosmetic_review_stops_after_first_candidate_despite_legacy_limits(uploads, monkeypatch):
     h = _seed_three_ref_pet(monkeypatch)
-    # VLM QA 없음 → 후보는 최대 REVIEW → PASS 0 → 상한까지 시도 후 폴백도 상한까지.
+    # VLM QA 없음 → legacy REVIEW지만 business-v1은 전달 후 추가 과금을 멈춘다.
     install_vlm_qa(monkeypatch, None)
     monkeypatch.setenv("CANONICAL_MAX_PRIMARY", "2")
     monkeypatch.setenv("CANONICAL_MAX_FALLBACK", "1")
@@ -726,22 +763,23 @@ def test_candidate_limits_are_enforced_and_configurable(uploads, monkeypatch):
     fallback = FakeProvider("gpt_image", [GOOD()] * 10)
 
     v = _build(h, [primary, fallback])
-    assert primary.calls == 2 and fallback.calls == 1
-    assert v.qa_summary["candidate_count"] == 3
+    assert primary.calls == 1 and fallback.calls == 0
+    assert v.qa_summary["candidate_count"] == 1
+    assert v.qa_summary["business_qa"]["version"] == "business-v1"
 
 
-def test_review_status_without_vlm_confirmation(uploads, monkeypatch):
-    """합성 임계값만으로는 절대 자동 승인되지 않는다 — VLM 확언 없으면 REVIEW."""
+def test_legacy_review_without_vlm_is_business_deliverable(uploads, monkeypatch):
+    """VLM 미확언은 legacy REVIEW로 보존되지만 고객 결과를 없애지는 않는다."""
     h = _seed_three_ref_pet(monkeypatch)
     install_vlm_qa(monkeypatch, None)
 
     v = _build(h, [FakeProvider("runway", [GOOD(), GOOD(), GOOD()])])
-    assert v.status == svc.STATUS_REVIEW
-    assert v.selected_candidate_id is None
+    assert v.status == svc.STATUS_COMPLETE
+    assert v.selected_candidate_id is not None
     assert all(c.decision == "REVIEW" for c in v.candidates)
-    # 선택되지 않았으므로 generated 대장 기록도 없다.
+    assert v.candidates[0].qa_result["business_qa"]["delivery_action"] == "DELIVER"
     ledger = _run(refs.list_references(user_id=USER, pet_id=PET))
-    assert not any(r.role == refs.ROLE_GENERATED for r in ledger)
+    assert any(r.role == refs.ROLE_GENERATED for r in ledger)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -985,7 +1023,8 @@ def test_qa_rerun_reuses_existing_candidate_and_flips_review_to_pass(object_stor
         return h.bytes_by_path.get(ref.object_path) or object_storage.get(ref.object_path)
 
     v = _build(h, [primary])
-    assert v.status == svc.STATUS_REVIEW
+    assert v.status == svc.STATUS_COMPLETE
+    assert v.candidates[0].decision == "REVIEW"
     calls_after_build = primary.calls
     stale_candidate_id = v.candidates[0].id
 
@@ -998,10 +1037,11 @@ def test_qa_rerun_reuses_existing_candidate_and_flips_review_to_pass(object_stor
             user_id=USER,
             pet_id=PET,
             canonical_version_id=v.id,
-            candidate_id=stale_candidate_id,
-            fetch_bytes=fetch,
-            cutout_fn=lambda raw: raw,
-        )
+                candidate_id=stale_candidate_id,
+                fetch_bytes=fetch,
+                cutout_fn=lambda raw: raw,
+                vlm_cache_mode="refresh",
+            )
     )
 
     assert updated.status == svc.STATUS_COMPLETE

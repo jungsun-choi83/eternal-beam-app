@@ -149,36 +149,37 @@ def test_second_run_reuses_all_five_without_new_provider_calls(storage, monkeypa
         assert second["keyframes"][role]["id"] == first["keyframes"][role]["id"], role
 
 
-def test_review_masters_are_not_reused_pack_builds_fresh_version(storage, monkeypatch):
-    """REVIEW 는 재사용 대상이 아니다 — 팩의 목적은 승인(COMPLETE) 마스터 5장.
-
-    라이브 실측 회귀: VLM 없이 만들어진 REVIEW 정본을 서비스 dedup 게이트가
-    재사용해 팩이 영원히 REVIEW 에 갇혔다. 팩은 최신이 COMPLETE 가 아니면
-    새 버전 빌드를 강제해야 한다.
-    """
+def test_advisory_review_masters_are_delivered_and_reused(storage, monkeypatch):
+    """Legacy REVIEW evidence remains visible but no longer forces paid regeneration."""
     h = _seed_three_ref_pet(monkeypatch)
     _install_motion_bomb(monkeypatch)
 
     def fetch(ref):
         return h.bytes_by_path.get(ref.object_path) or storage.get(ref.object_path)
 
-    # 1차: VLM 전무 → 정본 REVIEW 로 남는다 (키프레임 단계에서 정지, 예외).
+    # 1차: VLM 전무 → legacy REVIEW 는 보존하되 business-v1 은 advisory 로 전달한다.
     install_vlm_qa(monkeypatch, None)
     install_kf_vlm(monkeypatch, None)
-    with pytest.raises(kf.ActionKeyframeError):
-        _pack(fetch, FakeProvider("runway", [GOOD()] * 20))
-    stuck = _run(canon.get_canonical(user_id=USER, pet_id=PET))
-    assert stuck.status == canon.STATUS_REVIEW
+    first_provider = FakeProvider("runway", [GOOD()] * 20)
+    first = _pack(fetch, first_provider)
+    canonical = _run(canon.get_canonical(user_id=USER, pet_id=PET))
+    assert canonical.status == canon.STATUS_COMPLETE
+    assert canonical.candidates[0].decision == "REVIEW"
+    assert canonical.candidates[0].qa_result["business_qa"]["delivery_action"] == "DELIVER"
+    assert first_provider.calls == 5
 
-    # 2차: VLM 복구 → REVIEW v1 을 재사용하지 않고 v2 를 새로 빌드해 COMPLETE.
+    # 2차: VLM 복구 후에도 이미 deliverable 인 v1 을 재사용해 추가 결제를 막는다.
     install_vlm_qa(monkeypatch, VLM_QA_OK)
     install_kf_vlm(monkeypatch, VLM_KF_OK)
-    report = _pack(fetch, FakeProvider("runway", [GOOD()] * 20))
+    second_provider = FakeProvider("runway", [GOOD()] * 20)
+    report = _pack(fetch, second_provider)
     assert report["canonical"]["status"] == canon.STATUS_COMPLETE
-    assert report["canonical"]["version"] == 2
-    assert report["canonical"]["reused"] is False
+    assert report["canonical"]["version"] == 1
+    assert report["canonical"]["reused"] is True
+    assert second_provider.calls == 0
     for role in REFERENCE_PACK_ROLES:
         assert report["keyframes"][role]["status"] == kf.STATUS_COMPLETE, role
+        assert report["keyframes"][role]["reused"] is True, role
 
 
 def test_pack_keyframes_are_reusable_by_motion_runs_by_role(storage, monkeypatch):

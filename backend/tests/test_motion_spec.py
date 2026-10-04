@@ -139,6 +139,80 @@ def test_registry_qa_structural_domain_declares_morphology_consistency_check():
 
 
 @pytest.mark.parametrize(
+    ("motion_id", "expected_domains", "absent_domains"),
+    [
+        (
+            "BREATHING",
+            {
+                "identity_continuity", "temporal_stability", "motion_correctness",
+                "global_motion_integrity", "composition_integrity",
+                "severe_anatomy", "loop_usability",
+            },
+            {"structural_continuity", "direction_travel", "interaction_correctness"},
+        ),
+        (
+            "LIE_DOWN",
+            {"identity_continuity", "start_state", "target_pose", "motion_correctness", "anatomy", "structural_continuity"},
+            {"direction_travel", "interaction_correctness"},
+        ),
+        (
+            "RUN",
+            {"identity_continuity", "motion_correctness", "direction_travel", "limb_joint_integrity", "structural_continuity"},
+            {"target_pose", "interaction_correctness"},
+        ),
+        (
+            "PET_HEAD",
+            {"identity_continuity", "interaction_correctness", "anatomy", "structural_continuity", "human_hand_policy"},
+            {"target_pose", "direction_travel"},
+        ),
+    ],
+)
+def test_registry_owns_business_qa_domains_by_motion_class(
+    motion_id, expected_domains, absent_domains
+):
+    contract = ms.MOTIONS[motion_id].requirements["qa"]["business"]
+
+    assert contract["version"] == ms.MOTION_QA_CONTRACT_VERSION
+    assert contract["motion_class"] == ms.MOTIONS[motion_id].motion_class
+    assert expected_domains <= set(contract["domains"])
+    assert absent_domains.isdisjoint(contract["domains"])
+
+
+def test_registry_owns_motion_check_authority_and_applicability():
+    micro = ms.MOTIONS["BREATHING"].requirements["qa"]["business"]
+    transition = ms.MOTIONS["LIE_DOWN"].requirements["qa"]["business"]
+    locomotion = ms.MOTIONS["RUN"].requirements["qa"]["business"]
+    interaction = ms.MOTIONS["PET_HEAD"].requirements["qa"]["business"]
+
+    assert micro["structural_required"] is False
+    assert micro["check_authority"]["temporal_stability"] == "QUALITY_ADVISORY"
+    assert micro["check_authority"]["loop_return"] == "QUALITY_ADVISORY"
+    assert micro["authority_profile"] == "breathing-v2"
+    assert micro["domains"]["motion_correctness"]["required_checks"] == [
+        "breathing_motion_correctness"
+    ]
+    assert micro["check_authority"]["vlm_motion"] == "DIAGNOSTIC_ONLY"
+    assert micro["check_authority"]["temporal_breathing"] == "DIAGNOSTIC_ONLY"
+    assert micro["check_authority"]["breathing_global_motion_integrity"] == "QUALITY_ADVISORY"
+    assert (
+        micro["check_authority"]["breathing_catastrophic_motion_integrity"]
+        == "INTEGRITY_HARD"
+    )
+    assert transition["check_authority"]["reaches_target_pose"] == "INTEGRITY_HARD"
+    assert locomotion["check_authority"]["vlm_direction_travel"] == "INTEGRITY_HARD"
+    assert interaction["check_authority"]["vlm_human_hand_policy"] == "INTEGRITY_HARD"
+    assert interaction["domains"]["human_hand_policy"]["allow_generated_hand"] is True
+
+    # Runtime repeatability and QA endpoint return are distinct registry facts.
+    # BLINKING is not an indefinitely loopable state, but it must return to the
+    # start pose and therefore still receives loop-return QA.
+    blinking = ms.MOTIONS["BLINKING"].requirements["qa"]["business"]
+    assert ms.MOTIONS["BLINKING"].loopable is False
+    assert blinking["loop_return_required"] is True
+    assert blinking["domains"]["loop_usability"]["required_checks"] == ["loop_return"]
+
+
+@pytest.mark.parametrize(
     "motion_id",
     ["PET_HEAD", "LOOK_UP", "COME_CLOSER", "LIE_DOWN"],
 )
@@ -283,6 +357,12 @@ def test_micro_resolves_single_reusable_keyframe(storage, monkeypatch):
     assert blink["start_keyframe"]["keyframe_id"] == built["NEUTRAL_IDLE"].id
     assert breath["start_keyframe"]["raw"]["object_path"]
     assert breath["canonical_version_id"] == canonical.id
+    inherited = breath["start_keyframe"]["approved_qa_evidence"]
+    assert inherited["valid"] is True
+    assert inherited["source_stage"] == "KEYFRAME"
+    assert {"identity", "pose", "morphology_profile", "reference_set"} <= set(
+        inherited["domains"]
+    )
 
 
 def test_transition_resolves_start_and_target(storage, monkeypatch):
@@ -311,15 +391,16 @@ def test_missing_start_keyframe_fails_safely(storage, monkeypatch):
     assert e.value.code == "KEYFRAME_REQUIRED" and e.value.status == 409
 
 
-def test_review_keyframe_is_not_silently_used(storage, monkeypatch):
+def test_advisory_review_keyframe_is_business_deliverable(storage, monkeypatch):
     h, _ = _prepare_canonical(monkeypatch, storage)
-    install_kf_vlm(monkeypatch, None)  # VLM 없음 → 키프레임 REVIEW
+    install_kf_vlm(monkeypatch, None)  # VLM 없음 → legacy REVIEW evidence
     k = _build_kf(h, [FakeProvider("runway", [GOOD(), GOOD(), GOOD()])])
-    assert k.status == kf.STATUS_REVIEW
+    assert k.status == kf.STATUS_COMPLETE
+    assert k.candidates[0].decision == "REVIEW"
+    assert k.candidates[0].qa_result["business_qa"]["delivery_action"] == "DELIVER_WITH_ADVISORY"
 
-    with pytest.raises(ms.MotionSpecError) as e:
-        _resolve("BREATHING")
-    assert e.value.code == "KEYFRAME_REQUIRED"
+    spec = _resolve("BREATHING")
+    assert spec["start_keyframe"]["keyframe_id"] == k.id
 
 
 def test_locomotion_falls_back_with_warning(storage, monkeypatch):

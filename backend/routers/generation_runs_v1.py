@@ -36,6 +36,21 @@ class CancelGenerationRunRequest(BaseModel):
     reason: str = Field(default="user_cancelled", min_length=1, max_length=200)
 
 
+class BusinessQAFeedbackRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    accepted: bool
+    complaints: list[str] = Field(default_factory=list, max_length=4)
+    comment: str | None = Field(default=None, max_length=1000)
+
+
+class BusinessQAFeedbackResponse(BaseModel):
+    run_id: str
+    accepted: bool
+    complaints: list[str]
+    recorded: bool = True
+
+
 class GenerationRunResponse(BaseModel):
     run_id: str
     user_id: str
@@ -45,6 +60,7 @@ class GenerationRunResponse(BaseModel):
     request_kind: str
     idempotency_key: str
     status: str
+    terminal_state: str | None = None
     current_stage: str
     identity_profile_id: str | None = None
     identity_profile_version: int | None = None
@@ -70,10 +86,43 @@ class GenerationRunResponse(BaseModel):
     lease_recoveries: int = 0
 
 
+#: Internal Business QA receipts (authority evidence, advisory reasons, legacy
+#: decision). Only the derived terminal_state is customer-facing.
+_INTERNAL_PROVIDER_STATE_KEYS = frozenset({"_business_qa"})
+_BUSINESS_DELIVER_ACTIONS = frozenset({"DELIVER", "DELIVER_WITH_ADVISORY"})
+
+
 def _response(run: service.PetGenerationRun) -> GenerationRunResponse:
     hidden = {"id", "execution_token"}
     payload = {key: value for key, value in service.run_dict(run).items() if key not in hidden}
+    payload["terminal_state"] = (
+        ((run.provider_state or {}).get("_business_qa") or {}).get("terminal_state")
+    )
+    payload["provider_state"] = {
+        key: value
+        for key, value in dict(payload.get("provider_state") or {}).items()
+        if key not in _INTERNAL_PROVIDER_STATE_KEYS
+    }
     return GenerationRunResponse(run_id=run.id, **payload)
+
+
+def _public_qa_decision(run: service.PetGenerationRun, legacy: str | None) -> str:
+    """Customer-facing QA label for a playback response.
+
+    A published run whose Business QA receipt authorized delivery reports PASS;
+    the advisory flag and the stored legacy decision stay internal. Without a
+    delivering receipt the legacy value is returned unchanged.
+    """
+
+    business = dict(((run.provider_state or {}).get("_business_qa") or {}))
+    receipt = business.get("decision") if isinstance(business.get("decision"), dict) else {}
+    if (
+        run.status == service.STATUS_PUBLISHED
+        and receipt.get("delivery_action") in _BUSINESS_DELIVER_ACTIONS
+        and receipt.get("integrity_status") != "FAIL"
+    ):
+        return "PASS"
+    return legacy or "PASS"
 
 
 def _http(exc: service.PetGenerationRunError) -> HTTPException:
@@ -114,6 +163,39 @@ async def get_generation_run(
     return _response(run)
 
 
+@router.post("/{run_id}/feedback", response_model=BusinessQAFeedbackResponse)
+async def record_business_qa_feedback(
+    run_id: str,
+    body: BusinessQAFeedbackRequest,
+    user: AuthedUser = Depends(require_user),
+):
+    """Record Phase-12 product feedback; it has no QA or retry authority."""
+
+    from ..services import business_qa_user_test
+
+    try:
+        run = await service.get_generation_run(user_id=user.user_id, run_id=run_id)
+        row = business_qa_user_test.record_feedback(
+            run=run,
+            user_id=user.user_id,
+            accepted=body.accepted,
+            complaints=body.complaints,
+            comment=body.comment,
+        )
+    except service.PetGenerationRunError as exc:
+        raise _http(exc) from exc
+    except business_qa_user_test.UserTestError as exc:
+        raise HTTPException(
+            status_code=exc.status,
+            detail={"code": exc.code, "message": exc.message},
+        ) from exc
+    return BusinessQAFeedbackResponse(
+        run_id=run.id,
+        accepted=bool(row["accepted"]),
+        complaints=list(row.get("complaints") or []),
+    )
+
+
 class RunPlaybackResponse(BaseModel):
     run_id: str
     status: str
@@ -131,6 +213,9 @@ class RunPlaybackResponse(BaseModel):
     motion_version_id: str | None = None
     candidate_id: str | None = None
     breathing_object_path: str | None = None
+    terminal_state: str | None = None
+    fallback_tier: str | None = None
+    asset_kind: str | None = None
 
 
 @router.get("/{run_id}/playback", response_model=RunPlaybackResponse)
@@ -143,7 +228,8 @@ async def get_run_playback(
 
     PUBLISHED 실행은 발행 포인터(하이드레이션과 같은 근거)로 답한다.
     REVIEW 로 끝난 실행은 포장된 후보를 **발행 없이** 돌려준다 — QA 상태는
-    그대로 REVIEW 이고, pets 포인터는 만들어지지 않는다. FAIL/ERROR 는 409.
+    그대로 REVIEW 이고, pets 포인터는 만들어지지 않는다. Phase 7 fallback은
+    기록된 provenance에서 재생 URL만 다시 해석하며 발행/소유권 포인터를 바꾸지 않는다.
     """
     try:
         run = await service.get_generation_run(user_id=user.user_id, run_id=run_id)
@@ -152,6 +238,38 @@ async def get_run_playback(
 
     from ..services import motion_delivery_service as delivery
     from ..services import motion_publication_service as publication
+    from ..services import customer_fallback_service as fallback_service
+
+    business = dict(((run.provider_state or {}).get("_business_qa") or {}))
+    if business.get("terminal_state") == service.BUSINESS_DELIVERED_FALLBACK:
+        asset = business.get("fallback_asset")
+        if not isinstance(asset, dict):
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "FALLBACK_PROVENANCE_MISSING", "message": "Fallback asset provenance is missing."},
+            )
+        try:
+            url = fallback_service.resolve_fallback_url(asset)
+        except fallback_service.FallbackInfrastructureError as exc:
+            raise HTTPException(
+                status_code=503, detail={"code": exc.code, "message": exc.message}
+            ) from exc
+        return RunPlaybackResponse(
+            run_id=run.id,
+            status=run.status,
+            published=False,
+            device_test_only=False,
+            qa_decision="FALLBACK",
+            url=url,
+            delivery_format=str(asset.get("delivery_format") or "") or None,
+            background_baked=False,
+            motion_version_id=str(asset.get("motion_version_id") or "") or None,
+            candidate_id=str(asset.get("candidate_id") or "") or None,
+            breathing_object_path=str(asset.get("object_path") or "") or None,
+            terminal_state=service.BUSINESS_DELIVERED_FALLBACK,
+            fallback_tier=str(asset.get("tier") or "") or None,
+            asset_kind=str(asset.get("asset_kind") or "") or None,
+        )
 
     # 발행 포인터(pets.breathing_*)는 BREATHING 전용이다 — 프리미엄 실행(Phase 7H)의
     # 발행 재생은 아래 delivery 리졸버가 후보의 packed 파생물로 직접 해석한다.
@@ -170,13 +288,14 @@ async def get_run_playback(
             published=True,
             device_test_only=False,
             # 무결성 게이트로 발행된 REVIEW/FAIL 후보는 그 결정을 그대로 싣는다.
-            qa_decision=(getattr(published, "qa_decision", None) or "PASS"),
+            qa_decision=_public_qa_decision(run, getattr(published, "qa_decision", None)),
             url=published.url,
             delivery_format=published.delivery_format,
             background_baked=published.background_baked,
             motion_version_id=published.motion_version_id,
             candidate_id=run.selected_candidate_id,
             breathing_object_path=published.breathing_object_path,
+            terminal_state=service.BUSINESS_DELIVERED_GENERATED,
         )
 
     if not run.motion_version_id:
@@ -187,13 +306,17 @@ async def get_run_playback(
                 "message": "이 실행은 아직 재생 가능한 모션을 만들지 못했습니다.",
             },
         )
+    from ..services import business_qa
+
     try:
-        playback = await delivery.resolve_breathing_playback(
-            user_id=user.user_id,
-            pet_id=run.pet_id,
-            motion_version_id=run.motion_version_id,
-            candidate_id=run.selected_candidate_id,
-        )
+        # Unpublished playback is gated under the run's stamped QA authority.
+        with business_qa.qa_authority_scope(business_qa.run_qa_authority(run.provider_state)):
+            playback = await delivery.resolve_breathing_playback(
+                user_id=user.user_id,
+                pet_id=run.pet_id,
+                motion_version_id=run.motion_version_id,
+                candidate_id=run.selected_candidate_id,
+            )
     except delivery.MotionDeliveryError as exc:
         raise HTTPException(
             status_code=exc.status, detail={"code": exc.code, "message": exc.message}
@@ -205,13 +328,17 @@ async def get_run_playback(
         # BREATHING 은 위 분기가 담당하므로 여기 도달하면 항상 미발행(REVIEW)이다.
         published=(run.status == service.STATUS_PUBLISHED),
         device_test_only=(run.status != service.STATUS_PUBLISHED),
-        qa_decision=playback.qa_decision,
+        qa_decision=_public_qa_decision(run, playback.qa_decision),
         url=playback.url,
         delivery_format=playback.delivery_format,
         background_baked=False,
         motion_version_id=playback.motion_version_id,
         candidate_id=playback.candidate_id,
         breathing_object_path=playback.derived_video_path,
+        terminal_state=(
+            service.BUSINESS_DELIVERED_GENERATED
+            if run.status == service.STATUS_PUBLISHED else None
+        ),
     )
 
 

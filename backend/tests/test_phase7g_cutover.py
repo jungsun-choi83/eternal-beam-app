@@ -15,6 +15,8 @@ from fastapi import FastAPI
 from backend.routers import generation_runs_v1
 from backend.services import (
     asset_url_refresh,
+    business_qa,
+    customer_fallback_service,
     motion_delivery_service as delivery,
     motion_publication_service,
     motion_video_service as motions,
@@ -240,6 +242,59 @@ def test_playback_rejects_other_user(storage, monkeypatch, client: ASGITestClien
         f"/api/v1/pet/generation-runs/{result.id}/playback", headers=_auth(OTHER)
     )
     assert response.status_code in (403, 404)
+
+
+# FAILED = rows persisted before fallback delivery completed as PUBLISHED.
+@pytest.mark.parametrize("run_status", [runs.STATUS_PUBLISHED, runs.STATUS_FAILED])
+def test_delivered_fallback_playback_uses_persisted_provenance_without_repointing(
+    storage, monkeypatch, client: ASGITestClient, run_status
+):
+    result, _ = _review_run_via_worker(monkeypatch)
+    row = next(item for item in runs._MOCK_RUNS if item["id"] == result.id)
+    row["status"] = run_status
+    row["last_error"] = None
+    row["current_stage"] = runs.STAGE_DELIVERY
+    row["provider_state"] = {
+        "_business_qa": {
+            "version": business_qa.BUSINESS_QA_VERSION,
+            "terminal_state": business_qa.DELIVERED_FALLBACK,
+            "fallback_resolution": "RESOLVED",
+            "fallback_asset": {
+                "version": customer_fallback_service.FALLBACK_POLICY_VERSION,
+                "tier": customer_fallback_service.TIER_CANONICAL_IDLE,
+                "asset_kind": "canonical_image",
+                "delivery_format": customer_fallback_service.FORMAT_CANONICAL_IDLE,
+                "bucket": "user-assets",
+                "object_path": "canonical/safe_cutout.png",
+                "provenance": {"source": "pet_canonical_candidates"},
+            },
+        }
+    }
+    monkeypatch.setattr(
+        asset_url_refresh,
+        "sign_object",
+        lambda obj: f"https://storage.test/{obj.bucket}/{obj.path}?token=fresh",
+    )
+
+    run_response = client.get(
+        f"/api/v1/pet/generation-runs/{result.id}", headers=_auth()
+    )
+    assert run_response.status_code == 200
+    assert run_response.json()["terminal_state"] == business_qa.DELIVERED_FALLBACK
+
+    response = client.get(
+        f"/api/v1/pet/generation-runs/{result.id}/playback", headers=_auth()
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["qa_decision"] == "FALLBACK"
+    assert body["terminal_state"] == business_qa.DELIVERED_FALLBACK
+    assert body["fallback_tier"] == customer_fallback_service.TIER_CANONICAL_IDLE
+    assert body["asset_kind"] == "canonical_image"
+    assert body["device_test_only"] is False
+    assert body["url"].endswith("safe_cutout.png?token=fresh")
+    assert motion_publication_service._MOCK_PUBLICATIONS == []
+    assert pet_registry._MOCK_PETS.get(PET) is None
 
 
 def test_playback_for_published_run_uses_publication_pointer(

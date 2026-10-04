@@ -108,7 +108,7 @@ def test_complete_keyframe_is_reused_after_qa_only_bump(storage, monkeypatch, bu
     assert len(_rows()) == 1
     # 재사용된 키프레임은 저장된 QA 판정을 그대로 가진다 — 새 QA 버전으로
     # 재평가되지 않는다 (canonical/motion 도 같다; 재평가는 qa-rerun 의 몫).
-    assert again.candidates[0].qa_result["qa_version"] == "keyframe-qa-v1"
+    assert again.candidates[0].qa_result["qa_version"] == "keyframe-qa-v2"
     assert again.candidates[0].decision == first.candidates[0].decision
 
 
@@ -300,7 +300,7 @@ def test_qa_decision_for_same_inputs_is_unchanged_by_the_fix(storage, monkeypatc
     assert after["decision"] == before["decision"] == "PASS"
     assert after["checks"] == before["checks"]
     assert after["identity_decision"] == before["identity_decision"]
-    assert after["qa_version"] == "keyframe-qa-v999-test" and before["qa_version"] == "keyframe-qa-v1"
+    assert after["qa_version"] == "keyframe-qa-v999-test" and before["qa_version"] == "keyframe-qa-v2"
 
 
 # ── 실행 오케스트레이터: 재시도 / 새 실행은 핀·최신 완료 키프레임을 그대로 쓴다 ──

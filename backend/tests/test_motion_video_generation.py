@@ -15,6 +15,8 @@ from fastapi import FastAPI
 
 from backend.routers import motion_videos_v1
 from backend.services import action_keyframe_service as kf
+from backend.services import breathing_temporal_qa as breathing_qa
+from backend.services import business_qa
 from backend.services import canonical_pet_service as canon
 from backend.services import durable_provider_jobs
 from backend.services import motion_spec as ms
@@ -77,6 +79,10 @@ VLM_MV_OK = {
     "same_pet_all_frames": "yes",
     "anatomy_plausible_all_frames": "yes",
     "requested_motion_occurs": "yes",
+    "locomotion_form_correct": "yes",
+    "direction_travel_correct": "yes",
+    "interaction_correct": "yes",
+    "human_hand_policy_ok": "yes",
     "unintended_large_motion": "no",
     "single_pet": "yes",
     "duplicated_pet": "no",
@@ -555,16 +561,15 @@ def test_interaction_pet_head(storage, monkeypatch):
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def test_review_keyframe_rejected(storage, monkeypatch):
+def test_legacy_review_keyframe_is_business_deliverable(storage, monkeypatch):
     h, _ = _prepare_canonical(monkeypatch, storage)
     install_kf_vlm(monkeypatch, None)  # 키프레임 REVIEW
     k = _build_kf(h, [FakeProvider("runway", [GOOD(), GOOD(), GOOD()])])
-    assert k.status == kf.STATUS_REVIEW
+    assert k.status == kf.STATUS_COMPLETE
+    assert k.candidates[0].decision == "REVIEW"
     install_mv_vlm(monkeypatch, VLM_MV_OK)
-
-    with pytest.raises(mv.MotionVideoError) as e:
-        _build_motion(h, "BREATHING", [FakeVideoProvider("seedance", [GOOD()])])
-    assert e.value.code == "KEYFRAME_REQUIRED"
+    motion = _build_motion(h, "BREATHING", [FakeVideoProvider("seedance", [GOOD()])])
+    assert motion.status == mv.STATUS_COMPLETE
 
 
 def test_live_safety_blocks_before_any_row(storage, monkeypatch):
@@ -783,7 +788,7 @@ def test_progressive_generation_qa_gates_each_next_attempt(storage, monkeypatch)
     assert next(c for c in v.candidates if c.selected).attempt == 2
 
 
-def test_qa_failure_triggers_fallback(storage, monkeypatch):
+def test_two_hard_qa_failures_stop_paid_generation_and_request_fallback(storage, monkeypatch):
     h, _ = _prepare_pipeline(monkeypatch, storage)
 
     calls = {"n": 0}
@@ -802,25 +807,76 @@ def test_qa_failure_triggers_fallback(storage, monkeypatch):
     fallback = FakeVideoProvider("kling", [GOOD()])
     v = _build_motion(h, "BREATHING", [primary, fallback], sampler=drifting_sampler)
 
-    assert v.status == mv.STATUS_COMPLETE
+    assert v.status == mv.STATUS_REVIEW
     assert all(c.decision == "FAIL" for c in v.candidates if c.provider == "seedance")
-    assert next(c for c in v.candidates if c.selected).provider == "kling"
+    assert primary.calls == 2 and fallback.calls == 0
+    assert v.selected_candidate_id is None
+    assert v.qa_summary["business_qa"]["selected"]["retry_action"] == "FALLBACK"
+    assert v.qa_summary["business_qa"]["selected"]["terminal_state"] == "DELIVERED_FALLBACK"
 
 
-def test_candidate_limits_and_persistence(storage, monkeypatch):
+def test_cosmetic_review_stops_after_one_and_persists_both_decisions(storage, monkeypatch):
     h, _ = _prepare_pipeline(monkeypatch, storage)
-    install_mv_vlm(monkeypatch, None)  # VLM 없음 → 전부 REVIEW → 상한까지
+    install_mv_vlm(monkeypatch, None)  # legacy REVIEW → deliver with advisory
     monkeypatch.setenv("PHASE6_MAX_PRIMARY", "2")
     monkeypatch.setenv("PHASE6_MAX_FALLBACK", "1")
     primary = FakeVideoProvider("seedance", [GOOD()] * 10)
     fallback = FakeVideoProvider("kling", [GOOD()] * 10)
 
     v = _build_motion(h, "BREATHING", [primary, fallback])
-    assert primary.calls == 2 and fallback.calls == 1
-    assert v.status == mv.STATUS_REVIEW and v.selected_candidate_id is None
+    assert primary.calls == 1 and fallback.calls == 0
+    assert v.status == mv.STATUS_COMPLETE and v.selected_candidate_id is not None
+    assert v.candidates[0].decision == "REVIEW"
+    assert v.candidates[0].qa_result["business_qa"]["retry_action"] == "STOP"
     # 후보는 QA 이전에 저장된다 — raw 가 전부 스토리지에 있다.
     for c in v.candidates:
         assert c.raw_video_path in storage
+
+
+def test_breathing_temporal_pass_stops_after_candidate_one_despite_vlm_motion_no(
+    storage, monkeypatch
+):
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+    install_mv_vlm(
+        monkeypatch,
+        {**VLM_MV_OK, "requested_motion_occurs": "no"},
+    )
+
+    async def temporal_pass(motion_id, video_bytes, start_rgb, frames):
+        return (
+            {
+                "version": breathing_qa.BREATHING_TEMPORAL_QA_VERSION,
+                "verdict": breathing_qa.VERDICT_BREATHING,
+                "reason": None,
+                "advisories": [],
+            },
+            list(frames or []),
+            tuple(qa_mod.SAMPLE_FRACTIONS),
+        )
+
+    monkeypatch.setattr(mv, "_breathing_evidence", temporal_pass)
+    primary = FakeVideoProvider("seedance", [GOOD(), GOOD()])
+    version = _build_motion(h, "BREATHING", [primary])
+
+    assert primary.calls == 1
+    assert len(version.candidates) == 1
+    assert version.status == mv.STATUS_COMPLETE
+    candidate = version.candidates[0]
+    assert candidate.selected is True
+    # Temporal authority settles the motion question; the VLM is still asked
+    # the combined identity+anatomy question. Its motion "no" stays advisory:
+    # the legacy decision records it, Business QA delivers.
+    assert candidate.decision == "FAIL"
+    assert candidate.qa_result["vlm_escalation"]["decision"] == "CALL"
+    assert candidate.qa_result["vlm_escalation"]["requested_tasks"] == ["IDENTITY_ANATOMY_VLM"]
+    assert candidate.qa_result["vlm_escalation"]["reason_codes"] == [
+        "breathing_temporal_authority_clear",
+        "breathing_identity_anatomy_required",
+    ]
+    assert candidate.qa_result["business_qa"]["integrity_status"] == "PASS"
+    assert candidate.qa_result["business_qa"]["authority_profile"] == "breathing-v2"
+    assert candidate.qa_result["business_qa"]["delivery_action"] == "DELIVER"
+    assert candidate.qa_result["business_qa"]["retry_action"] == "STOP"
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -861,6 +917,23 @@ def test_qa_scene_cut_fails_temporal():
     r = _eval([_good_frame(), white_frame(), _good_frame(), _good_frame(), _good_frame()])
     assert r["checks"]["temporal_stability"] == "FAIL"
     assert r["decision"] == "FAIL"
+
+
+def test_registry_contract_promotes_only_severe_temporal_failure_to_integrity():
+    contract = ms.motion_snapshot(ms.MOTIONS["BLINKING"])
+    result = _eval(
+        [_good_frame(), white_frame(), _good_frame(), _good_frame(), _good_frame()],
+        contract=contract,
+    )
+    business_qa.attach_business_result(
+        result, attempt_number=1, request_kind="MICRO"
+    )
+
+    assert result["checks"]["temporal_stability"] == "FAIL"
+    assert result["motion_business_contract"]["check_authority"]["temporal_stability"] == "QUALITY_ADVISORY"
+    assert result["business_signals"]["motion_temporal_integrity"] == "FAIL"
+    assert result["business_qa"]["integrity_status"] == "FAIL"
+    assert result["business_qa"]["retry_action"] == "REGENERATE"
 
 
 def test_qa_loop_return_review_when_end_pose_differs():
@@ -1447,7 +1520,8 @@ def test_versioned_qa_rerun_reuses_asset_and_is_idempotent(storage, monkeypatch)
     install_mv_vlm(monkeypatch, old_unknown)
     provider = FakeVideoProvider("seedance", [GOOD()])
     version = _build_motion(h, "BREATHING", [provider])
-    assert version.status == mv.STATUS_REVIEW
+    assert version.status == mv.STATUS_COMPLETE
+    assert version.candidates[0].decision == "REVIEW"
     candidate = version.candidates[0]
 
     calls = {"vlm": 0}
@@ -1495,6 +1569,52 @@ def test_versioned_qa_rerun_reuses_asset_and_is_idempotent(storage, monkeypatch)
     assert duplicate.deduplicated is True
     assert calls["vlm"] == 1
     assert provider.calls == 1
+
+
+def test_motion_contract_version_bump_requalifies_without_regeneration(storage, monkeypatch):
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+    provider = FakeVideoProvider("seedance", [GOOD()])
+    version = _build_motion(h, "BREATHING", [provider])
+    candidate = version.candidates[0]
+    stored_qa = dict(candidate.qa_result)
+    stored_contract = dict(stored_qa["motion_business_contract"])
+    stored_contract["version"] = "motion-qa-contract-old"
+    stored_qa["motion_business_contract"] = stored_contract
+    _run(
+        canon._update(
+            mv._candidates_table(),
+            mv._MOCK_CANDIDATES,
+            candidate.id,
+            {"qa_result": stored_qa},
+        )
+    )
+
+    calls = {"vlm": 0}
+
+    def current_vlm(*args, **kwargs):
+        calls["vlm"] += 1
+        return VLM_MV_OK
+
+    rerun = _run(
+        mv.reevaluate_motion_candidate(
+            user_id=USER,
+            pet_id=PET,
+            motion_id="BREATHING",
+            motion_version_id=version.id,
+            candidate_id=candidate.id,
+            video_bytes=GOOD(),
+            fetch_bytes=h.kf_fetch,
+            frame_sampler=sampler_identical,
+            vlm_qa_fn=current_vlm,
+            conformance_fn=conformance_ok,
+        )
+    )
+
+    assert rerun.deduplicated is False
+    assert calls["vlm"] == 1
+    assert provider.calls == 1
+    refreshed = next(c for c in rerun.candidates if c.id == candidate.id)
+    assert refreshed.qa_result["motion_business_contract"]["version"] == ms.MOTION_QA_CONTRACT_VERSION
 
 
 def test_qa_rerun_rejects_wrong_user(storage, monkeypatch):
@@ -1698,6 +1818,40 @@ def test_qa_locomotion_close_approach_passes_with_normalized_identity():
     assert r["checks"]["identity_over_time"] == "PASS"
     assert r["decision"] == "PASS"
     assert r["qa_version"] == qa_mod.MOTION_VIDEO_QA_VERSION
+
+
+def test_locomotion_contract_checks_gait_and_direction_as_hard_integrity():
+    contract = ms.motion_snapshot(ms.MOTIONS["RUN"])
+    result = _eval_loco(
+        [_approach_frame(s) for s in _APPROACH_SIZES],
+        contract=contract,
+        vlm={**VLM_MV_OK, "direction_travel_correct": "no"},
+    )
+    business_qa.attach_business_result(
+        result, attempt_number=1, request_kind="LOCOMOTION"
+    )
+
+    assert result["checks"]["vlm_locomotion_form"] == "PASS"
+    assert result["checks"]["vlm_direction_travel"] == "FAIL"
+    assert result["business_domains"]["direction_travel"]["status"] == "FAIL"
+    assert result["business_qa"]["retry_action"] == "REGENERATE"
+
+
+def test_interaction_contract_enforces_registry_human_hand_policy():
+    contract = ms.motion_snapshot(ms.MOTIONS["PET_HEAD"])
+    result = _eval_loco(
+        [_approach_frame(s) for s in _APPROACH_SIZES],
+        contract=contract,
+        vlm={**VLM_MV_OK, "human_present": "yes", "human_hand_policy_ok": "no"},
+    )
+    business_qa.attach_business_result(
+        result, attempt_number=1, request_kind="INTERACTION"
+    )
+
+    assert contract["video_compat"]["allow_generated_hand"] is True
+    assert result["checks"]["vlm_human_hand_policy"] == "FAIL"
+    assert result["business_domains"]["human_hand_policy"]["status"] == "FAIL"
+    assert result["business_qa"]["retry_action"] == "REGENERATE"
 
 
 def test_qa_micro_uses_normalized_signature_but_keeps_worst_frame_rule():

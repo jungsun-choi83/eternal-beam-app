@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
-from . import asset_url_refresh, motion_video_service, pet_registry
+from . import asset_url_refresh, business_qa, motion_video_service, pet_registry
 
 logger = logging.getLogger(__name__)
 
@@ -121,8 +121,33 @@ async def _load_version(motion_version_id: str) -> dict[str, Any]:
     return row
 
 
+def _is_grandfathered_legacy_pass(candidate: dict[str, Any]) -> bool:
+    """Legacy-PASS candidate without a receipt created before the cutover.
+
+    Only the direct (no-run) publish route honours this, so already-approved
+    historical BREATHING videos stay publishable after legacy authority retires.
+    """
+
+    if business_qa.receipt(candidate.get("qa_result") or {}) is not None:
+        return False
+    if str(candidate.get("decision") or "").upper() != business_qa.PASS:
+        return False
+    created = str(candidate.get("created_at") or "")
+    try:
+        return datetime.fromisoformat(created.replace("Z", "+00:00")) < datetime.fromisoformat(
+            business_qa.LEGACY_PASS_CUTOVER_AT
+        )
+    except ValueError:
+        return False
+
+
 async def _load_selected_candidate(
-    *, version: dict[str, Any], user_id: str, pet_id: str
+    *,
+    version: dict[str, Any],
+    user_id: str,
+    pet_id: str,
+    allow_grandfathered_legacy_pass: bool = False,
+    require_publishable: bool = True,
 ) -> dict[str, Any]:
     selected_id = str(version.get("selected_candidate_id") or "").strip()
     if not selected_id:
@@ -172,7 +197,13 @@ async def _load_selected_candidate(
         )
     # 무결성 게이트(MOTION_QA_SEVERITY_GATE=integrity_only)가 켜져 있으면 무결성
     # 사유가 없는 REVIEW/FAIL 후보도 전달 가능하다. 꺼져 있으면 PASS 만 (이전 동작).
-    if not motion_video_service.candidate_is_publishable(candidate):
+    if not require_publishable:
+        return candidate
+    if not motion_video_service.candidate_is_publishable(candidate, motion_id=BREATHING) and not (
+        allow_grandfathered_legacy_pass
+        and business_qa.legacy_authority_retired(BREATHING)
+        and _is_grandfathered_legacy_pass(candidate)
+    ):
         raise MotionPublicationError(
             "CANDIDATE_NOT_PASS", "QA PASS(또는 무결성 게이트 통과) 후보만 제품에 발행할 수 있습니다.", status=409
         )
@@ -251,6 +282,13 @@ async def _publish_projection(
                         "p_selected_candidate_id": str(candidate["id"]),
                         "p_bucket": asset.bucket,
                         "p_object_path": asset.path,
+                        # Sent only when legacy authority is retired (needs the
+                        # 20261104 migration). Legacy mode keeps the 6-arg call.
+                        **(
+                            {"p_qa_authority": business_qa.QA_AUTHORITY_BUSINESS}
+                            if business_qa.legacy_authority_retired(BREATHING)
+                            else {}
+                        ),
                     },
                 )
                 .execute()
@@ -330,6 +368,7 @@ async def publish_breathing(
     pet_id: str,
     motion_version_id: str,
     sign_fn: Optional[Callable[[asset_url_refresh.StorageObject], Optional[str]]] = None,
+    allow_grandfathered_legacy_pass: bool = False,
 ) -> BreathingPublication:
     """Validate and publish one existing Phase 6 BREATHING QA PASS asset."""
     uid = (user_id or "").strip()
@@ -353,6 +392,8 @@ async def publish_breathing(
     gated_statuses = (
         (motion_video_service.STATUS_REVIEW, motion_video_service.STATUS_FAILED)
         if gate == motion_video_service.SEVERITY_GATE_INTEGRITY_ONLY
+        # The severity gate is legacy authority: not consulted once retired.
+        and not business_qa.legacy_authority_retired(BREATHING)
         else ()
     )
     if status != motion_video_service.STATUS_COMPLETE and status not in gated_statuses:
@@ -364,7 +405,12 @@ async def publish_breathing(
 
     # review/failed 버전은 빌더가 게이트로 고른(selected) 전달 가능 후보가 있을 때만
     # 여기까지 온다 — 후보 검증이 PASS 또는 무결성-청정을 요구한다.
-    candidate = await _load_selected_candidate(version=version, user_id=uid, pet_id=pid)
+    candidate = await _load_selected_candidate(
+        version=version,
+        user_id=uid,
+        pet_id=pid,
+        allow_grandfathered_legacy_pass=allow_grandfathered_legacy_pass,
+    )
     asset = _asset_location(candidate)
     signed_url = (sign_fn or asset_url_refresh.sign_object)(asset)
     if not signed_url:
@@ -395,6 +441,9 @@ async def publish_breathing(
         delivery_format=delivery_format_for(candidate, asset.path),
         published_at=(str(published["published_at"]) if published.get("published_at") else None),
         deduplicated=bool(published.get("deduplicated")),
+        # Internal audit fields (actual decision + reasons). The HTTP response
+        # model does not expose them; the customer-facing label is on
+        # PublishedBreathing.
         qa_decision=str(candidate.get("decision") or "") or None,
         qa_reasons=list(severity.get("integrity") or []) + list(severity.get("cosmetic") or []),
         severity_gate=gate,
@@ -570,7 +619,15 @@ async def get_published_breathing(
     if version_id:
         try:
             version = await _load_version(version_id)
-            candidate = await _load_selected_candidate(version=version, user_id=uid, pet_id=pid)
+            # Hydration reads an asset that is already published. Once legacy
+            # authority is retired the QA gate is not re-applied here (the
+            # publish gate was the authority); legacy mode is unchanged.
+            candidate = await _load_selected_candidate(
+                version=version,
+                user_id=uid,
+                pet_id=pid,
+                require_publishable=not business_qa.legacy_authority_retired(BREATHING),
+            )
         except MotionPublicationError:
             # 포인터는 살아 있는데 계보 행을 못 찾는 경우 — 포맷은 경로로 추정한다.
             candidate = None
@@ -587,5 +644,11 @@ async def get_published_breathing(
         delivery_format=delivery_format_for(candidate, path),
         publication_id=publication_id,
         content_id=pet.content_id or pet_registry.content_id_of(pid),
-        qa_decision=(str(candidate.get("decision") or "") or None) if candidate else None,
+        qa_decision=(
+            business_qa.customer_qa_decision(
+                candidate.get("qa_result"), str(candidate.get("decision") or "") or None
+            )
+            if candidate
+            else None
+        ),
     )

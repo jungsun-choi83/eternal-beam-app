@@ -325,34 +325,31 @@ def test_pinned_refset_that_cannot_be_loaded_fails_closed(uploads, monkeypatch):
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def test_vlm_off_submits_nothing_when_pass_is_impossible(uploads, monkeypatch):
+def test_vlm_off_clear_deterministic_candidate_still_delivers(uploads, monkeypatch):
     h, refset_v1 = _seed_vlm_off_refset()
-    delegate = AsyncDelegate(statuses=(SUCCEEDED,))
-    fallback = FakeProvider("gpt_image", [make_pet_cutout_png()])
+    provider = FakeProvider("gpt_image", [make_pet_cutout_png()])
 
-    with pytest.raises(svc.CanonicalPetError) as error:
-        _build(h, [_worker_provider(delegate), fallback], refset_v1, require_pass_capable_qa=True)
+    canonical = _build(h, [provider], refset_v1, require_pass_capable_qa=True)
 
-    assert error.value.code == "CANONICAL_QA_NOT_CONFIGURED"
-    assert error.value.status == 503
-    assert "PET_VLM_IDENTITY_ENABLED" in error.value.message
-    assert delegate.submit_calls == 0 and fallback.calls == 0
-    assert jobs._MOCK_JOBS == []
-    assert _lineage_counts()["canonicals"] == 0, "버전 행도 만들지 않는다"
+    assert canonical.status == svc.STATUS_COMPLETE
+    assert provider.calls == 1
+    selected = next(candidate for candidate in canonical.candidates if candidate.selected)
+    assert selected.qa_result["vlm_escalation"]["decision"] == "SKIP"
+    assert selected.qa_result["business_qa"]["delivery_action"] == "DELIVER"
 
 
-def test_vlm_enabled_without_credentials_submits_nothing(uploads, monkeypatch):
+def test_vlm_enabled_without_credentials_can_use_clear_deterministic_qa(uploads, monkeypatch):
     h, refset_v1 = _seed_vlm_off_refset()
     monkeypatch.setenv("PET_VLM_IDENTITY_ENABLED", "1")
     provider = FakeProvider("gpt_image", [make_pet_cutout_png()])
 
-    with pytest.raises(svc.CanonicalPetError) as error:
-        _build(h, [provider], refset_v1, require_pass_capable_qa=True)
+    canonical = _build(h, [provider], refset_v1, require_pass_capable_qa=True)
 
-    assert error.value.code == "CANONICAL_QA_NOT_CONFIGURED"
-    assert "ANTHROPIC_API_KEY" in error.value.message
-    assert provider.calls == 0
-    assert _lineage_counts()["canonicals"] == 0
+    assert canonical.status == svc.STATUS_COMPLETE
+    assert provider.calls == 1
+    selected = next(candidate for candidate in canonical.candidates if candidate.selected)
+    assert selected.qa_result["vlm_escalation"]["decision"] == "SKIP"
+    assert selected.qa_result["business_qa"]["delivery_action"] == "DELIVER"
 
 
 def test_pass_capable_qa_config_generates_normally(uploads, monkeypatch):

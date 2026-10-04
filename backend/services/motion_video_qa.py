@@ -31,6 +31,7 @@ import logging
 import os
 import subprocess
 import tempfile
+from copy import deepcopy
 from typing import Any, Optional
 
 import numpy as np
@@ -1000,6 +1001,210 @@ def _domain_status(
     return REVIEW
 
 
+def _business_integrity_signal(status: Any) -> str:
+    """Expose only severe FAIL/unknown as hard; ordinary REVIEW stays advisory."""
+
+    value = str(status or UNKNOWN)
+    if value == FAIL:
+        return FAIL
+    if value == UNKNOWN:
+        return REVIEW
+    return PASS
+
+
+#: breathing-v2 catastrophic gate (existing temporal metrics only).
+#: PROVISIONAL — one negative control: midpoint between the largest
+#: human-accepted scale_range (0.0473) and the one human-rejected whole-body
+#: scale pulse (0.0569). Re-derive when more labelled failures exist.
+BREATHING_CATASTROPHIC_SCALE_RANGE = 0.052
+#: With VLM identity/anatomy unconfirmed, scale_range above this is REVIEW
+#: (still deliverable with advisory; never FAIL).
+BREATHING_UNCONFIRMED_SCALE_REVIEW = 0.040
+#: UNVALIDATED backstop — no stored candidate reaches it (human-accepted drift
+#: goes up to 0.1056). Drift below it is advisory-only.
+BREATHING_CATASTROPHIC_DRIFT_FRAC = 0.20
+#: TEMPORARY (2026-10-03): the scale_range/height gate is advisory (REVIEW), not a
+#: hard FAIL. The foreground-height measurement cannot separate a real size pulse
+#: (48e31aff, 0.057) from floor reflections / low-contrast keying on acceptable
+#: clips (MiniMax 5c4b9e16 / adec172b, 0.105). The 0.052 threshold is unchanged and
+#: still recorded. Restore the hard gate with BREATHING_QA_SCALE_RANGE_HARD=1 once
+#: a calibrated detector exists. The drift backstop stays a hard FAIL.
+BREATHING_SCALE_RANGE_HARD_DEFAULT = False
+
+
+def _breathing_catastrophic_motion(
+    checks: dict[str, str],
+    temporal: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    """breathing-v2 hard gate: whole-body scale pulse faking the breath.
+
+    Missing metrics never fail, and a VLM unknown can only produce REVIEW.
+    """
+
+    metrics = temporal.get("metrics")
+    metrics = metrics if isinstance(metrics, dict) else {}
+    thresholds = {
+        "scale_range_fail": _f(
+            "BREATHING_QA_CATASTROPHIC_SCALE_RANGE", BREATHING_CATASTROPHIC_SCALE_RANGE
+        ),
+        "scale_range_review_when_vlm_unconfirmed": _f(
+            "BREATHING_QA_UNCONFIRMED_SCALE_REVIEW", BREATHING_UNCONFIRMED_SCALE_REVIEW
+        ),
+        "drift_frac_fail": _f(
+            "BREATHING_QA_CATASTROPHIC_DRIFT_FRAC", BREATHING_CATASTROPHIC_DRIFT_FRAC
+        ),
+    }
+
+    def _num(name: str) -> Optional[float]:
+        value = metrics.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+
+    scale_range = _num("scale_range")
+    drift = _num("translation_drift_frac_of_pet")
+    vlm_confirmed = (
+        checks.get("vlm_same_pet") == PASS and checks.get("vlm_anatomy") == PASS
+    )
+    scale_hard = os.getenv(
+        "BREATHING_QA_SCALE_RANGE_HARD", "1" if BREATHING_SCALE_RANGE_HARD_DEFAULT else "0"
+    ).strip().lower() in ("1", "true", "yes")
+    scale_over = scale_range is not None and scale_range >= thresholds["scale_range_fail"]
+    status, rule = PASS, None
+    if scale_over and scale_hard:
+        status, rule = FAIL, "scale_range_catastrophic_PROVISIONAL"
+    elif drift is not None and drift >= thresholds["drift_frac_fail"]:
+        status, rule = FAIL, "drift_backstop_UNVALIDATED"
+    elif scale_over:
+        status, rule = REVIEW, "scale_range_advisory_TEMPORARY"
+    elif (
+        scale_range is not None
+        and scale_range > thresholds["scale_range_review_when_vlm_unconfirmed"]
+        and not vlm_confirmed
+    ):
+        status, rule = REVIEW, "scale_range_elevated_vlm_unconfirmed"
+    return status, {
+        "status": status,
+        "rule": rule,
+        "scale_range": scale_range,
+        "translation_drift_frac_of_pet": drift,
+        "vlm_confirmed": vlm_confirmed,
+        "scale_range_gate": "hard" if scale_hard else "advisory_TEMPORARY",
+        "thresholds": thresholds,
+    }
+
+
+def _breathing_business_signals(
+    checks: dict[str, str],
+    temporal_qa: Optional[dict[str, Any]],
+    reasons: list[str],
+    *,
+    authority_profile: Optional[str] = None,
+) -> tuple[dict[str, str], Optional[dict[str, Any]]]:
+    """Translate preserved BREATHING evidence into business-v1 authority signals."""
+
+    from .business_qa import BREATHING_AUTHORITY_V1
+
+    temporal = temporal_qa if isinstance(temporal_qa, dict) else {}
+    verdict = str(temporal.get("verdict") or "unmeasurable")
+    temporal_status = str(checks.get("temporal_breathing") or UNKNOWN)
+    legacy_profile = authority_profile == BREATHING_AUTHORITY_V1
+
+    if legacy_profile:
+        global_motion = (
+            FAIL if verdict == "global_pulse" and temporal_status == FAIL else PASS
+        )
+    else:
+        # breathing-v2: sway / drift / scale_trend / moderate scale change is
+        # a quality finding. The catastrophic signal below owns the hard gate.
+        global_motion = REVIEW if verdict == "global_pulse" else PASS
+
+    signals = {
+        # Absence/uncertainty is a quality concern. The analyzer is primary,
+        # but only global corruption is allowed to spend another candidate.
+        "breathing_motion_correctness": (
+            PASS if verdict == "breathing_detected" else REVIEW
+        ),
+        "breathing_global_motion_integrity": global_motion,
+        # Legacy vlm_composition conflates contamination with presentation.
+        # Only the explicit contamination branch retains hard authority.
+        "breathing_composition_integrity": (
+            FAIL if "vlm_composition_contaminated" in reasons else PASS
+        ),
+        "breathing_periodicity": PASS,
+        "breathing_modulation": PASS,
+        "breathing_head_motion": PASS,
+    }
+    catastrophic_evidence: Optional[dict[str, Any]] = None
+    if not legacy_profile:
+        status, catastrophic_evidence = _breathing_catastrophic_motion(checks, temporal)
+        signals["breathing_catastrophic_motion_integrity"] = status
+    advisory_signal = {
+        "periodic_score": "breathing_periodicity",
+        "torso_energy_modulation": "breathing_modulation",
+        "head_to_torso_ratio": "breathing_head_motion",
+    }
+    for finding in temporal.get("advisories") or []:
+        if not isinstance(finding, dict):
+            continue
+        name = advisory_signal.get(str(finding.get("check") or ""))
+        if name:
+            signals[name] = REVIEW
+    return signals, catastrophic_evidence
+
+
+def _motion_business_evidence(
+    spec_contract: dict[str, Any],
+    checks: dict[str, str],
+    *,
+    temporal_qa: Optional[dict[str, Any]],
+    reasons: list[str],
+) -> tuple[Optional[dict[str, Any]], dict[str, str], dict[str, Any]]:
+    """Materialize the registry-owned class contract beside legacy QA."""
+
+    contract = (
+        (((spec_contract.get("requirements") or {}).get("qa") or {}).get("business"))
+        if isinstance(spec_contract, dict)
+        else None
+    )
+    if not isinstance(contract, dict):
+        return None, {}, {}
+
+    persisted = deepcopy(contract)
+    persisted["motion_id"] = spec_contract.get("motion_id")
+    signals: dict[str, str] = {
+        "motion_temporal_integrity": _business_integrity_signal(
+            checks.get("temporal_stability")
+        ),
+    }
+    if bool(contract.get("structural_required")):
+        signals["motion_structural_integrity"] = _business_integrity_signal(
+            checks.get("structural_morphology_consistency")
+        )
+    catastrophic_evidence: Optional[dict[str, Any]] = None
+    if str(spec_contract.get("motion_id") or "").upper() == "BREATHING":
+        breathing_signals, catastrophic_evidence = _breathing_business_signals(
+            checks,
+            temporal_qa,
+            reasons,
+            authority_profile=contract.get("authority_profile"),
+        )
+        signals.update(breathing_signals)
+
+    domain_evidence = {**checks, **signals}
+    domains: dict[str, Any] = {}
+    for name, domain in dict(contract.get("domains") or {}).items():
+        required = [str(check) for check in (domain.get("required_checks") or [])]
+        domains[str(name)] = {
+            **dict(domain),
+            "required_checks": required,
+            "status": _domain_status(domain_evidence, required),
+        }
+    if catastrophic_evidence is not None and "catastrophic_motion_integrity" in domains:
+        domains["catastrophic_motion_integrity"]["evidence"] = catastrophic_evidence
+    return persisted, signals, domains
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 평가
 # ══════════════════════════════════════════════════════════════════════════
@@ -1271,6 +1476,9 @@ def evaluate_motion_video(
         "checks": judged["checks"],
         "domains": judged["domains"],
         "advisories": judged["advisories"],
+        "motion_business_contract": judged["motion_business_contract"],
+        "business_signals": judged["business_signals"],
+        "business_domains": judged["business_domains"],
         # v10 — 판정 단계가 무엇을 완화/강등했는지 (v9 에서는 비어 있다).
         "judgement": judged["judgement"],
         "reasons": judged["reasons"],
@@ -1303,6 +1511,10 @@ JUDGEMENT_CHECKS = frozenset(
         "vlm_motion",
         "vlm_composition",
         "vlm_target_pose",
+        "vlm_locomotion_form",
+        "vlm_direction_travel",
+        "vlm_interaction",
+        "vlm_human_hand_policy",
         "temporal_breathing",
     }
 )
@@ -1477,9 +1689,41 @@ def apply_judgement(
             else:
                 checks[check_name] = "unknown"
 
+        class_specific = {
+            "LOCOMOTION": (
+                ("vlm_locomotion_form", "locomotion_form_correct"),
+                ("vlm_direction_travel", "direction_travel_correct"),
+            ),
+            "INTERACTION": (
+                ("vlm_interaction", "interaction_correct"),
+                ("vlm_human_hand_policy", "human_hand_policy_ok"),
+            ),
+        }
+        for check_name, key in class_specific.get(motion_class, ()):
+            # Compatibility for stored/test v2 evidence: absence means the old
+            # contract did not ask this question. New v3 responses always do.
+            if key not in vlm_qa:
+                continue
+            val = v(key)
+            checks[check_name] = (
+                PASS if val == "yes" else (FAIL if val == "no" else "unknown")
+            )
+            if val == "no":
+                reasons.append(f"vlm:{key}=no")
+
         composition = PASS
-        if v("duplicated_pet") == "yes" or v("scene_cut") == "yes" or v("human_present") == "yes" and not (
-            (compat.get("allow_generated_hand")) and motion_class == "INTERACTION"
+        human_policy_failed = (
+            motion_class == "INTERACTION"
+            and "human_hand_policy_ok" in vlm_qa
+            and v("human_hand_policy_ok") == "no"
+        )
+        if (
+            v("duplicated_pet") == "yes"
+            or v("scene_cut") == "yes"
+            or human_policy_failed
+            or v("human_present") == "yes" and not (
+                (compat.get("allow_generated_hand")) and motion_class == "INTERACTION"
+            )
         ):
             composition = FAIL
             reasons.append("vlm_composition_contaminated")
@@ -1693,6 +1937,12 @@ def apply_judgement(
             "status": _domain_status(checks, motion_required),
         },
     }
+    motion_business_contract, business_signals, business_domains = _motion_business_evidence(
+        spec_contract,
+        checks,
+        temporal_qa=temporal_qa,
+        reasons=reasons,
+    )
     judgement["demoted_from_fail"] = sorted(demoted_from_fail)
     judgement["temporal_gate_ratios"] = gate_ratios
     judgement["temporal_gates_pass"] = temporal_gates_pass if v10 else None
@@ -1705,6 +1955,9 @@ def apply_judgement(
         "domains": domains,
         "advisories": {"checks": sorted(advisory_checks), "findings": advisory_findings},
         "judgement": judgement,
+        "motion_business_contract": motion_business_contract,
+        "business_signals": business_signals,
+        "business_domains": business_domains,
     }
 
 
@@ -1746,17 +1999,23 @@ def rescore_stored_qa_result(
     def _required(domain: str) -> list[str]:
         return list(((domains.get(domain) or {}).get("required_checks")) or [])
 
+    qa_requirements = {
+        "structural_anatomy": {"required_checks": _required("structural_anatomy")},
+        "identity": {"required_checks": _required("identity")},
+        "motion_specific": {"required_checks": _required("motion_execution")},
+    }
+    if spec:
+        current_business = (((spec.requirements or {}).get("qa") or {}).get("business"))
+        if isinstance(current_business, dict):
+            # Offline replay keeps the stored legacy measurement applicability,
+            # but evaluates business authority against the current registry
+            # contract. This is QA-only and never regenerates a video.
+            qa_requirements["business"] = deepcopy(current_business)
     spec_contract = {
         "motion_id": motion_id,
         "motion_class": resolved_class,
         "video_compat": dict(spec.video_compat) if spec else {},
-        "requirements": {
-            "qa": {
-                "structural_anatomy": {"required_checks": _required("structural_anatomy")},
-                "identity": {"required_checks": _required("identity")},
-                "motion_specific": {"required_checks": _required("motion_execution")},
-            }
-        },
+        "requirements": {"qa": qa_requirements},
     }
     structural_evidence = ((domains.get("structural_anatomy") or {}).get("morphology_consistency")) or {"enabled": False}
 
@@ -1817,6 +2076,9 @@ def rescore_stored_qa_result(
         "reasons": out_reasons,
         "judgement": judged["judgement"],
         "advisories": judged["advisories"],
+        "motion_business_contract": judged["motion_business_contract"],
+        "business_signals": judged["business_signals"],
+        "business_domains": judged["business_domains"],
         "temporal_verdict": (temporal or {}).get("verdict") if temporal else None,
         "temporal_reclassified": temporal_reclassified,
         "stored_decision": qa_result.get("decision"),

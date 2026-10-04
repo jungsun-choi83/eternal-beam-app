@@ -47,6 +47,7 @@ export interface ProviderJobSummary {
 
 export interface GenerationProgressRunLike {
   status?: string | null;
+  terminal_state?: string | null;
   current_stage?: string | null;
   provider_state?: Record<string, ProviderJobSummary> | null;
   last_error?: { code?: string | null; message?: string | null } | null;
@@ -115,6 +116,18 @@ export function deriveGenerationProgress(
   if (!run) return { kind: "stage", stage: "preparing_pet", waiting: false };
 
   const status = String(run.status || "").toUpperCase();
+  const terminalState = String(run.terminal_state || "").toUpperCase();
+
+  if (terminalState === "DELIVERED_GENERATED" || terminalState === "DELIVERED_FALLBACK") {
+    return { kind: "stage", stage: "complete", waiting: false };
+  }
+  if (terminalState === "TRUE_INFRASTRUCTURE_FAILURE") {
+    return {
+      kind: "error",
+      recoverable: true,
+      message: run.last_error?.message ?? null,
+    };
+  }
 
   if (TERMINAL_ERROR_STATUS.has(status)) {
     return {

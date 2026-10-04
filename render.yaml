@@ -20,6 +20,20 @@ services:
         value: "0"
       - key: PET_BATCH_USE_SUPABASE
         value: "1"
+      # Limited Business QA cohort. The two allowlist values must be entered
+      # identically on web and worker before the cohort is enabled.
+      - key: BUSINESS_QA_USER_TEST_MODE
+        value: allowlist
+      - key: BUSINESS_QA_USER_TEST_PET_IDS
+        sync: false
+      - key: PHASE6_LIVE_MODE
+        value: allowlist
+      - key: PHASE6_LIVE_ALLOWLIST
+        sync: false
+      - key: BUSINESS_QA_SHADOW_TELEMETRY
+        value: "1"
+      - key: PET_VLM_IDENTITY_ENABLED
+        value: "1"
       - key: CREDIT_COST_PER_PLACE
         value: "4"
       - key: STARTER_CREDITS
@@ -113,6 +127,22 @@ services:
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
         sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: RUNWAY_API_KEY
+        sync: false
+      - key: FAL_KEY
+        sync: false
+      - key: SEEDANCE_API_KEY
+        sync: false
+      - key: ARK_API_KEY
+        sync: false
+      - key: KLING_ACCESS_KEY
+        sync: false
+      - key: KLING_SECRET_KEY
+        sync: false
       - key: LUMA_API_KEY
         sync: false
 
@@ -137,7 +167,7 @@ services:
     plan: standard
     runtime: docker
     dockerfilePath: ./Dockerfile
-    dockerCommand: python -m backend.workers.pet_generation_worker
+    dockerCommand: exec python -m backend.workers.pet_generation_worker
     autoDeploy: true
     envVars:
       - key: PYTHONUNBUFFERED
@@ -171,14 +201,26 @@ services:
       # 게이트. GENERATION_MOCK(아래)과는 별개 스위치 — GENERATION_MOCK 은
       # video_generation.py 의 구(WAN/Luma) 파이프라인만 막고 이 게이트에는
       # 아무 영향이 없다. 이 값이 없으면(기본 off) MOTION_GENERATION 단계가
-      # 항상 LIVE_GENERATION_BLOCKED(403)로 실패한다 — "all"은 pet_id 무관
-      # 전체 허용이라 PHASE6_LIVE_ALLOWLIST 는 넣지 않는다(둘 중 하나만 유효).
+      # 항상 LIVE_GENERATION_BLOCKED(403)로 실패한다. Limited cohort 에서는
+      # Business QA cohort 와 동일한 pet allowlist 만 허용한다.
       # 정본/키프레임 이미지(CANONICAL_GENERATION_MOCK/KEYFRAME_GENERATION_
       # MOCK, canonical_image_providers.py)는 이 값과 무관하게 별도 스위치이고
       # 여기 없으므로 기본값(0=실 생성)으로 남는다 — 배포 전 그것이 의도한
       # 상태인지 반드시 별도로 확인한다.
       - key: PHASE6_LIVE_MODE
-        value: "all"
+        value: allowlist
+      - key: PHASE6_LIVE_ALLOWLIST
+        sync: false
+      - key: BUSINESS_QA_USER_TEST_MODE
+        value: allowlist
+      - key: BUSINESS_QA_USER_TEST_PET_IDS
+        sync: false
+      - key: BUSINESS_QA_SHADOW_TELEMETRY
+        value: "1"
+      - key: PET_VLM_IDENTITY_ENABLED
+        value: "1"
+      - key: MOTION_DELIVERY_MATTE_BACKEND
+        value: "vitmatte"
       # 아래부터는 웹 서비스와 동일하게 맞춘 생성 파이프라인 설정.
       # 값이 갈라지면(예: 한쪽만 GENERATION_MOCK=1) 웹이 큐에 넣은 run 을
       # 워커가 다른 프로바이더 모드로 처리해버리는 불일치가 생긴다 — 값을
@@ -207,6 +249,22 @@ services:
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: RUNWAY_API_KEY
+        sync: false
+      - key: FAL_KEY
+        sync: false
+      - key: SEEDANCE_API_KEY
+        sync: false
+      - key: ARK_API_KEY
+        sync: false
+      - key: KLING_ACCESS_KEY
+        sync: false
+      - key: KLING_SECRET_KEY
         sync: false
       - key: LUMA_API_KEY
         sync: false

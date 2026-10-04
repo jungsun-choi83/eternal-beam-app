@@ -6,6 +6,8 @@ import numpy as np
 import pytest
 
 from backend.services import breathing_temporal_qa as bt
+from backend.services import business_qa
+from backend.services import motion_spec
 from backend.services import motion_video_qa as qa
 
 H, W = 398, 224  # 분석 해상도 그대로 생성 — 리사이즈 무영향
@@ -246,6 +248,7 @@ def test_unmeasurable_paths_claim_nothing():
 
 _CONTRACT = {"motion_id": "BREATHING", "motion_class": "MICRO",
              "video_compat": {"returns_to_start_pose": True}}
+_BUSINESS_CONTRACT = motion_spec.motion_snapshot(motion_spec.MOTIONS["BREATHING"])
 
 
 def _vlm(motion: str) -> dict:
@@ -258,14 +261,21 @@ def _vlm(motion: str) -> dict:
     }
 
 
-def _evaluate(vlm_motion: str, temporal: dict | None) -> dict:
+def _evaluate(
+    vlm_motion: str,
+    temporal: dict | None,
+    *,
+    contract=_CONTRACT,
+    vlm_overrides: dict | None = None,
+) -> dict:
     img = KEYFRAME
+    vlm = {**_vlm(vlm_motion), **dict(vlm_overrides or {})}
     return qa.evaluate_motion_video(
         frames=[img, img, img],
-        spec_contract=_CONTRACT,
+        spec_contract=contract,
         start_keyframe_rgb=img,
         target_keyframe_rgb=None,
-        vlm_qa=_vlm(vlm_motion),
+        vlm_qa=vlm,
         temporal_qa=temporal,
     )
 
@@ -283,6 +293,153 @@ def test_vlm_no_still_fails_despite_temporal_evidence():
     out = _evaluate("no", {"verdict": bt.VERDICT_BREATHING})
     assert out["checks"]["vlm_motion"] == "FAIL"
     assert out["decision"] == "FAIL"
+
+
+def _attach_business(out: dict, *, attempt: int = 1) -> dict:
+    business_qa.attach_business_result(
+        out, attempt_number=attempt, request_kind="MICRO", fallback_available=True
+    )
+    return out["business_qa"]
+
+
+def test_business_temporal_pass_overrules_vlm_motion_no_for_product_action():
+    out = _evaluate(
+        "no",
+        {"verdict": bt.VERDICT_BREATHING, "advisories": []},
+        contract=_BUSINESS_CONTRACT,
+    )
+    receipt = _attach_business(out)
+
+    assert out["decision"] == "FAIL"  # legacy shadow result is preserved
+    assert out["checks"]["vlm_motion"] == "FAIL"
+    assert out["business_signals"]["breathing_motion_correctness"] == "PASS"
+    assert receipt["integrity_status"] == "PASS"
+    assert receipt["delivery_action"] == "DELIVER"
+    assert receipt["retry_action"] == "STOP"
+    assert receipt["authority_evidence"]["DIAGNOSTIC_ONLY"]["vlm_motion"] == "FAIL"
+
+
+def test_business_natural_breathing_with_minor_loop_issue_is_deliverable():
+    out = _evaluate(
+        "yes",
+        {"verdict": bt.VERDICT_BREATHING, "advisories": []},
+        contract=_BUSINESS_CONTRACT,
+    )
+    out["checks"]["loop_return"] = "REVIEW"
+    out["decision"] = "REVIEW"
+    receipt = _attach_business(out)
+
+    assert receipt["integrity_status"] == "PASS"
+    assert receipt["delivery_action"] == "DELIVER_WITH_ADVISORY"
+    assert receipt["retry_action"] == "STOP"
+
+
+def test_business_periodicity_modulation_and_head_findings_are_advisory():
+    temporal = {
+        "verdict": bt.VERDICT_BREATHING,
+        "advisories": [
+            {"check": "periodic_score", "status": "REVIEW"},
+            {"check": "torso_energy_modulation", "status": "REVIEW"},
+            {"check": "head_to_torso_ratio", "status": "REVIEW"},
+        ],
+    }
+    out = _evaluate("yes", temporal, contract=_BUSINESS_CONTRACT)
+    receipt = _attach_business(out)
+
+    assert out["business_signals"]["breathing_periodicity"] == "REVIEW"
+    assert out["business_signals"]["breathing_modulation"] == "REVIEW"
+    assert out["business_signals"]["breathing_head_motion"] == "REVIEW"
+    assert receipt["integrity_status"] == "PASS"
+    assert receipt["retry_action"] == "STOP"
+
+
+def test_business_minor_vlm_visual_instability_is_advisory():
+    out = _evaluate(
+        "yes",
+        {"verdict": bt.VERDICT_BREATHING, "advisories": []},
+        contract=_BUSINESS_CONTRACT,
+        vlm_overrides={"camera_stable": "no", "major_flicker": "yes"},
+    )
+    receipt = _attach_business(out)
+
+    assert out["checks"]["vlm_composition"] == "REVIEW"
+    assert out["business_signals"]["breathing_composition_integrity"] == "PASS"
+    assert receipt["integrity_status"] == "PASS"
+    assert receipt["quality_status"] == "REVIEW"
+    assert receipt["delivery_action"] == "DELIVER_WITH_ADVISORY"
+    assert receipt["retry_action"] == "STOP"
+
+
+@pytest.mark.parametrize("reason", ["scale_range", "camera_translation_drift"])
+def test_business_moderate_global_pulse_is_advisory(reason):
+    out = _evaluate(
+        "yes",
+        {
+            "verdict": bt.VERDICT_GLOBAL_PULSE,
+            "reason": reason,
+            "advisories": [],
+            "metrics": {"scale_range": 0.0223, "translation_drift_frac_of_pet": 0.0349},
+        },
+        contract=_BUSINESS_CONTRACT,
+    )
+    receipt = _attach_business(out)
+
+    assert out["checks"]["temporal_breathing"] == "FAIL"  # legacy evidence preserved
+    assert out["business_signals"]["breathing_global_motion_integrity"] == "REVIEW"
+    assert out["business_signals"]["breathing_catastrophic_motion_integrity"] == "PASS"
+    assert receipt["integrity_status"] == "PASS"
+    assert receipt["delivery_action"] == "DELIVER_WITH_ADVISORY"
+    assert receipt["retry_action"] == "STOP"
+
+
+_CATASTROPHIC_PULSE = {
+    "verdict": bt.VERDICT_GLOBAL_PULSE,
+    "reason": "scale_range",
+    "advisories": [],
+    "metrics": {"scale_range": 0.05686, "translation_drift_frac_of_pet": 0.00331},
+}
+
+
+def test_business_catastrophic_scale_pulse_is_blocking(monkeypatch):
+    monkeypatch.setenv("BREATHING_QA_SCALE_RANGE_HARD", "1")  # restored hard gate
+    out = _evaluate("yes", _CATASTROPHIC_PULSE, contract=_BUSINESS_CONTRACT)
+    receipt = _attach_business(out)
+
+    assert out["business_signals"]["breathing_catastrophic_motion_integrity"] == "FAIL"
+    assert receipt["integrity_status"] == "FAIL"
+    assert receipt["delivery_action"] == "BLOCK"
+    assert receipt["retry_action"] == "REGENERATE"
+
+
+def test_business_second_catastrophic_failure_falls_back(monkeypatch):
+    monkeypatch.setenv("BREATHING_QA_SCALE_RANGE_HARD", "1")  # restored hard gate
+    out = _evaluate("yes", _CATASTROPHIC_PULSE, contract=_BUSINESS_CONTRACT)
+    receipt = _attach_business(out, attempt=2)
+    assert receipt["retry_action"] == "FALLBACK"
+    assert receipt["terminal_state"] == business_qa.DELIVERED_FALLBACK
+
+
+@pytest.mark.parametrize(
+    "vlm_overrides",
+    [
+        {"same_pet_all_frames": "no"},
+        {"anatomy_plausible_all_frames": "no"},
+        {"duplicated_pet": "yes"},
+        {"scene_cut": "yes"},
+        {"human_present": "yes"},
+    ],
+)
+def test_business_identity_anatomy_and_contamination_remain_hard(vlm_overrides):
+    out = _evaluate(
+        "yes",
+        {"verdict": bt.VERDICT_BREATHING, "advisories": []},
+        contract=_BUSINESS_CONTRACT,
+        vlm_overrides=vlm_overrides,
+    )
+    receipt = _attach_business(out)
+
+    assert receipt["integrity_status"] == "FAIL"
+    assert receipt["retry_action"] == "REGENERATE"
 
 
 def test_global_pulse_blocks_promotion_even_when_vlm_says_yes():

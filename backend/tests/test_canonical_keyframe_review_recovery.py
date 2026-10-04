@@ -35,7 +35,9 @@ import pytest
 
 from backend.services import (
     action_keyframe_service,
+    business_qa,
     canonical_pet_service,
+    customer_fallback_service,
     motion_spec,
     pet_generation_run_service as runs,
     pet_reference_service,
@@ -136,6 +138,77 @@ def test_review_keyframe_does_not_loop(storage, monkeypatch):
     assert second.last_error["code"] == "KEYFRAME_QA_REVIEW"
     assert harness.counts["canonical_build"] == 1  # upstream not re-derived either
     assert harness.counts["keyframe_build"] == 1  # retry never re-derives/re-buys
+
+
+def _attach_attempt_two_fallback(candidate, request_kind):
+    qa_result = {
+        "qa_version": "fallback-test-v1",
+        "decision": "FAIL",
+        "checks": {"vlm_anatomy": "FAIL"},
+        "reasons": ["severe_anatomy_corruption"],
+    }
+    business_qa.attach_business_result(
+        qa_result,
+        attempt_number=2,
+        request_kind=request_kind,
+        fallback_available=True,
+    )
+    candidate.decision = "FAIL"
+    candidate.qa_result = qa_result
+
+
+def _install_resolved_fallback(monkeypatch):
+    async def resolve(**kwargs):
+        return customer_fallback_service.CustomerFallbackAsset(
+            tier=customer_fallback_service.TIER_CANONICAL_STILL,
+            asset_kind="canonical_image",
+            user_id=kwargs["user_id"],
+            pet_id=kwargs["pet_id"],
+            requested_motion_id=kwargs["motion_id"],
+            delivery_format=customer_fallback_service.FORMAT_CANONICAL_STILL,
+            bucket="user-assets",
+            object_path="canonical/approved.png",
+            canonical_version_id="canonical-approved",
+            provenance={"source": "pet_canonical_candidates"},
+        )
+
+    monkeypatch.setattr(customer_fallback_service, "resolve_best_safe_fallback", resolve)
+
+
+def test_canonical_budget_exhaustion_returns_business_fallback(storage, monkeypatch):
+    seed_intake()
+    harness = PipelineHarness(monkeypatch, canonical_status=canonical_pet_service.STATUS_REVIEW)
+    _attach_attempt_two_fallback(harness.canonical.candidates[0], "CANONICAL")
+    _install_resolved_fallback(monkeypatch)
+
+    start(key="canonical:business-fallback")
+    result = work()
+
+    assert result.current_stage == runs.STAGE_DELIVERY
+    assert result.last_error is None
+    receipt = result.provider_state["_business_qa"]
+    assert receipt["terminal_state"] == business_qa.DELIVERED_FALLBACK
+    assert receipt["source_kind"] == "CANONICAL"
+    assert receipt["fallback_asset"]["tier"] == customer_fallback_service.TIER_CANONICAL_STILL
+    assert harness.counts["keyframe_build"] == 0
+    assert harness.counts["motion_build"] == 0
+
+
+def test_keyframe_budget_exhaustion_returns_business_fallback(storage, monkeypatch):
+    seed_intake()
+    harness = PipelineHarness(monkeypatch, keyframe_status=action_keyframe_service.STATUS_REVIEW)
+    _attach_attempt_two_fallback(harness.keyframe.candidates[0], "KEYFRAME")
+    _install_resolved_fallback(monkeypatch)
+
+    start(key="keyframe:business-fallback")
+    result = work()
+
+    assert result.current_stage == runs.STAGE_DELIVERY
+    assert result.last_error is None
+    receipt = result.provider_state["_business_qa"]
+    assert receipt["terminal_state"] == business_qa.DELIVERED_FALLBACK
+    assert receipt["source_kind"] == "KEYFRAME:NEUTRAL_IDLE"
+    assert harness.counts["motion_build"] == 0
 
 
 # 5. Explicit replacement builds exactly one new paid canonical version ────

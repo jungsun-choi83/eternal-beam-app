@@ -22,6 +22,7 @@ from backend.services import (
     pet_reference_service,
     pet_reference_set_service,
     pet_registry,
+    qa_shadow_telemetry,
 )
 
 from .conftest import ASGITestClient, make_jpeg_bytes
@@ -154,6 +155,14 @@ class PipelineHarness:
             id="00000000-0000-0000-0000-000000000602",
             selected=True,
             decision="PASS",
+            generation_metadata={
+                "provider_identity": {
+                    "logical_model": "minimax_h3_max_turbo",
+                    "vendor": "fal",
+                    "vendor_model": "minimax/h3-max-turbo/image-to-video",
+                    "adapter": "FalMinimaxH3MaxTurboProvider",
+                }
+            },
         )
         self.motion = SimpleNamespace(
             id="00000000-0000-0000-0000-000000000601",
@@ -320,10 +329,47 @@ def test_happy_path_persists_full_lineage_and_reaches_mocked_phase7a(storage, mo
     assert result.motion_version == 1
     assert result.selected_candidate_id == harness.motion.selected_candidate_id
     assert result.publication_id == harness.publication.publication_id
+    assert result.provider_state["_business_qa"]["version"] == "business-v1"
+    assert result.provider_state["_business_qa"]["terminal_state"] == "DELIVERED_GENERATED"
+    assert result.provider_state["_business_qa"]["provider_identity"] == {
+        "logical_model": "minimax_h3_max_turbo",
+        "vendor": "fal",
+        "vendor_model": "minimax/h3-max-turbo/image-to-video",
+        "adapter": "FalMinimaxH3MaxTurboProvider",
+    }
     assert harness.calls.index("identity") < harness.calls.index("reference_set")
     assert harness.calls.index("canonical") < harness.calls.index("keyframe")
     assert harness.calls.index("motion_spec") < harness.calls.index("motion")
     assert harness.calls.index("motion") < harness.calls.index("publication")
+
+
+def test_shadow_telemetry_observes_pipeline_without_extra_paid_work(storage, monkeypatch):
+    seed_intake()
+    harness = PipelineHarness(monkeypatch)
+
+    queued = start()
+    result = work()
+
+    assert result.status == runs.STATUS_PUBLISHED
+    assert harness.counts["canonical_build"] == 1
+    assert harness.counts["keyframe_build"] == 1
+    assert harness.counts["motion_build"] == 1
+    assert harness.counts["publication"] == 1
+
+    rows = qa_shadow_telemetry.rows_for_run(queued.id)
+    stages = {row["stage"] for row in rows}
+    assert {"RUN", "CANONICAL", "KEYFRAME", "MOTION"} <= stages
+    aggregate = next(row for row in rows if row["stage"] == "RUN")
+    assert aggregate["fallback_used"] is False
+    assert aggregate["metadata"]["terminal_state"] == "DELIVERED_GENERATED"
+    assert aggregate["timings"]["upload_to_cutout_ms"] is not None
+    assert aggregate["timings"]["queue_wait_ms"] is not None
+    assert aggregate["timings"]["worker_claim_ms"] >= 0
+    assert aggregate["timings"]["total_request_ms"] is not None
+    assert {
+        "CANONICAL", "KEYFRAMES", "MOTION_GENERATION", "QA", "PUBLICATION"
+    } <= set(aggregate["timings"]["stages"])
+    assert aggregate["vlm_call_count"] == 0
 
 
 def test_motion_build_reuses_stage_motion_spec_contract(storage, monkeypatch):
@@ -908,4 +954,3 @@ def test_migration_persists_lineage_and_uses_an_atomic_claim():
     assert "create or replace function public.claim_pet_generation_run" in sql
     assert "for update" in sql
     assert "to service_role" in sql
-

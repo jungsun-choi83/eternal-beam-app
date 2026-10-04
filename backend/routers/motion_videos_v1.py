@@ -222,6 +222,9 @@ async def publish_breathing(
             user_id=user.user_id,
             pet_id=pet_id,
             motion_version_id=body.motion_version_id,
+            # Direct (no-run) route: pre-cutover legacy-PASS candidates stay
+            # publishable after legacy QA authority retires.
+            allow_grandfathered_legacy_pass=True,
         )
     except publication_svc.MotionPublicationError as e:
         raise HTTPException(

@@ -42,6 +42,7 @@ PROVIDER_MOCK = "mock"
 MODEL_WAN_2_2_TURBO = "wan_2_2_turbo"
 MODEL_WAN_2_1_FLF = "wan_2_1_flf"
 MODEL_WAN_3_MOTION_REFERENCE = "wan_3_motion_reference"
+MODEL_MINIMAX_H3_MAX_TURBO = "minimax_h3_max_turbo"
 
 VENDOR_RUNWAY = "runway"
 VENDOR_FAL = "fal"
@@ -113,6 +114,10 @@ class VideoGenerationProvider:
     def vendor_model_id(self) -> str:
         return self.model_name()
 
+    def estimate_cost_usd(self, payload: dict[str, Any]) -> Optional[float]:
+        """Estimated USD for one clip built from ``payload``; None = no confirmed price."""
+        return None
+
     def identity(self) -> dict[str, str]:
         return {
             "logical_model": self.logical_model_id,
@@ -147,6 +152,113 @@ def provider_identity(provider: Any) -> dict[str, str]:
         ),
         "vendor_model": str(vendor_model or ""),
     }
+
+
+# ── job timing — queue 와 run 을 분리해 기록한다 ────────────────────────────
+# durable 경로는 submit/check/collect 가 서로 다른 워커 틱(프로세스)에서 돌 수
+# 있으므로 monotonic 이 아니라 epoch 초를 job metadata 에 박제한다. 경계는
+# **폴링으로 관측한 시점**이라 폴링 간격만큼의 오차가 있다.
+TIMING_SUBMITTED = "submitted_at_epoch"
+TIMING_STARTED = "started_at_epoch"
+TIMING_COMPLETED = "completed_at_epoch"
+_TIMING_KEYS = (TIMING_SUBMITTED, TIMING_STARTED, TIMING_COMPLETED)
+
+
+def job_timing_marks(
+    saved: Optional[dict[str, Any]], *, running: bool = False, done: bool = False
+) -> dict[str, float]:
+    """Carry persisted timing marks forward and stamp the first observed transition."""
+    marks = {
+        key: float(value)
+        for key, value in ((k, (saved or {}).get(k)) for k in _TIMING_KEYS)
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    }
+    now = time.time()
+    if running and TIMING_STARTED not in marks:
+        marks[TIMING_STARTED] = now
+    if done and TIMING_COMPLETED not in marks:
+        marks[TIMING_COMPLETED] = now
+    return marks
+
+
+def job_timing_usage(metadata: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """queue_sec / run_sec / total_sec from persisted marks. Unknown stays None.
+
+    The split is recorded only when polling actually observed the running state.
+    A provider-reported inference time is not the run time (it excludes model
+    load / encode / upload), so it is never used to back-fill the split.
+    """
+    marks = job_timing_marks(metadata)
+    submitted = marks.get(TIMING_SUBMITTED)
+    started = marks.get(TIMING_STARTED)
+    completed = marks.get(TIMING_COMPLETED)
+    total = max(0.0, completed - submitted) if submitted and completed else None
+    queue_sec: Optional[float] = None
+    run_sec: Optional[float] = None
+    source = "unknown"
+    if submitted and started and completed:
+        queue_sec = max(0.0, started - submitted)
+        run_sec = max(0.0, completed - started)
+        source = "poll"
+
+    def _r(value: Optional[float]) -> Optional[float]:
+        return round(value, 2) if value is not None else None
+
+    return {
+        "queue_sec": _r(queue_sec),
+        "run_sec": _r(run_sec),
+        "total_sec": _r(total),
+        "timing_source": source,
+    }
+
+
+def strip_audio_track(video_bytes: bytes) -> tuple[bytes, dict[str, Any]]:
+    """Losslessly drop audio streams (``-c copy -an``). No audio → bytes unchanged.
+
+    실패해도 유료 결과를 버리지 않는다 — 원본을 그대로 돌려주고 사유를 남긴다
+    (오디오가 남아 있으면 출력 규격 QA 가 그대로 잡는다).
+    """
+    import json as _json
+    import subprocess
+    import tempfile
+
+    src = dst = ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+            tmp.write(video_bytes)
+            src = tmp.name
+        probe = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json", "-show_streams", src],
+            capture_output=True, text=True, timeout=30,
+        )
+        streams = (_json.loads(probe.stdout or "{}") or {}).get("streams") or []
+        if not streams:
+            return video_bytes, {"audio_stripped": False, "audio_strip_error": "ffprobe_no_streams"}
+        if not any(s.get("codec_type") == "audio" for s in streams):
+            return video_bytes, {"audio_stripped": False}
+        dst = src + ".noaudio.mp4"
+        run = subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-i", src, "-c", "copy", "-an",
+             "-movflags", "+faststart", dst],
+            capture_output=True, text=True, timeout=120,
+        )
+        if run.returncode != 0 or not os.path.exists(dst) or os.path.getsize(dst) == 0:
+            return video_bytes, {
+                "audio_stripped": False,
+                "audio_strip_error": (run.stderr or "ffmpeg_failed")[:200],
+            }
+        with open(dst, "rb") as fh:
+            return fh.read(), {"audio_stripped": True}
+    except Exception as exc:  # ffmpeg 미설치/타임아웃 등
+        logger.warning("audio strip failed: %s", exc)
+        return video_bytes, {"audio_stripped": False, "audio_strip_error": str(exc)[:200]}
+    finally:
+        for path in (src, dst):
+            if path:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
 
 
 def _download(url: str) -> bytes:
@@ -514,6 +626,10 @@ class FalVideoProvider(VideoGenerationProvider):
     def build_payload(self, request: MotionVideoRequest) -> dict[str, Any]:  # pragma: no cover
         raise NotImplementedError
 
+    def normalize_output(self, video_bytes: bytes) -> tuple[bytes, dict[str, Any]]:
+        """Adapter hook: bring the vendor file to the pipeline's output contract."""
+        return video_bytes, {}
+
     def submit(self, request: MotionVideoRequest):
         from .provider_job_contract import PENDING, ProviderSubmission
 
@@ -566,6 +682,8 @@ class FalVideoProvider(VideoGenerationProvider):
             metadata={
                 "status_url": str(status_url),
                 "response_url": str(response_url),
+                TIMING_SUBMITTED: time.time(),
+                "estimated_cost_usd": self.estimate_cost_usd(payload),
             },
         )
 
@@ -605,9 +723,14 @@ class FalVideoProvider(VideoGenerationProvider):
             )
         body = response.json() or {}
         provider_status = str(body.get("status") or "").upper()
-        persisted = {
+        persisted: dict[str, Any] = {
             "status_url": status_url,
             "response_url": response_url,
+            **job_timing_marks(
+                metadata,
+                running=provider_status == "IN_PROGRESS",
+                done=provider_status == "COMPLETED",
+            ),
         }
         if provider_status == "COMPLETED":
             return ProviderJobCheck(SUCCEEDED, provider_status, metadata=persisted)
@@ -659,8 +782,16 @@ class FalVideoProvider(VideoGenerationProvider):
         usage: dict[str, Any] = {}
         if result.get("seed") is not None:
             usage["seed"] = result["seed"]
+        timings = result.get("timings")
+        inference = timings.get("inference") if isinstance(timings, dict) else None
+        if isinstance(inference, (int, float)) and not isinstance(inference, bool):
+            usage["provider_inference_sec"] = round(float(inference), 2)
+        usage.update(job_timing_usage(metadata))
+        usage["estimated_cost_usd"] = (metadata or {}).get("estimated_cost_usd")
+        video_bytes, output_notes = self.normalize_output(_download(url))
+        usage.update(output_notes)
         return MotionVideoResult(
-            video_bytes=_download(url),
+            video_bytes=video_bytes,
             provider=self.logical_model_id,
             model=self.vendor_model_id,
             external_job_id=external_job_id,
@@ -820,6 +951,98 @@ class FalWan3StandardProvider(FalVideoProvider):
         if request.end_image_url:
             payload["end_image_url"] = request.end_image_url
         return payload
+
+
+class FalMinimaxH3MaxTurboProvider(FalVideoProvider):
+    """MiniMax H3 Max Turbo I2V on fal — schema fixed from fal's OpenAPI (2026-10).
+
+    입력: prompt(필수), prompt_expansion_mode(필수), image_url, end_image_url?,
+          duration(0.92..15 float), resolution(480P|768P|1080P)
+    출력: {"video": {"url": ...}, "expanded_prompt", "timings"}
+    aspect_ratio 파라미터는 없다 — 캔버스는 시작 이미지가 결정한다. 오디오를 끄는
+    파라미터도 없으므로 결과 파일에서 오디오 트랙을 무손실로 제거해 파이프라인의
+    "오디오 없음" 계약을 맞춘다. 길이/해상도는 파이프라인 output_spec 을 그대로
+    읽어 매핑할 뿐, 여기서 기본값을 정하지 않는다.
+    """
+
+    name = MODEL_MINIMAX_H3_MAX_TURBO
+    logical_model_id = MODEL_MINIMAX_H3_MAX_TURBO
+    adapter_id = "FalMinimaxH3MaxTurboProvider"
+    supports_durable_jobs = True
+    supports_end_frame = True
+    default_model = "minimax/h3-max-turbo/image-to-video"
+
+    #: 파이프라인 해상도 → fal enum. 720p 는 가장 가까운 상위 네이티브(768P).
+    RESOLUTION_MAP = {"480p": "480P", "720p": "768P", "768p": "768P", "1080p": "1080P"}
+    MIN_DURATION_SEC = 0.92
+    MAX_DURATION_SEC = 15.0
+    PROMPT_EXPANSION_MODES = ("disabled", "balanced", "quality")
+    #: 프로모션 종료(10/15) 이후 정가, USD / 초.
+    PRICE_PER_SEC_USD = {"480P": 0.025, "768P": 0.04, "1080P": 0.08}
+
+    def model_name(self) -> str:
+        # Wan 3 과 같은 이유로 env 로 다른 엔드포인트에 흘러가지 않게 고정한다.
+        return self.default_model
+
+    def _prompt_expansion_mode(self) -> str:
+        mode = (os.getenv("FAL_MINIMAX_H3_PROMPT_EXPANSION") or "disabled").strip().lower()
+        if mode not in self.PROMPT_EXPANSION_MODES:
+            raise VideoProviderError(
+                "PROVIDER_CONTRACT",
+                f"FAL_MINIMAX_H3_PROMPT_EXPANSION={mode!r} 는 지원되지 않습니다 — "
+                f"허용값: {', '.join(self.PROMPT_EXPANSION_MODES)}",
+            )
+        return mode
+
+    def build_payload(self, request: MotionVideoRequest) -> dict[str, Any]:
+        spec = request.output_spec
+        if spec.get("audio"):
+            raise VideoProviderError(
+                "PROVIDER_CONTRACT",
+                "MiniMax H3 Max Turbo adapter 는 오디오 트랙을 항상 제거합니다 — audio=True 요청 불가.",
+            )
+        requested_resolution = str(spec.get("resolution") or "").strip().lower()
+        resolution = self.RESOLUTION_MAP.get(requested_resolution)
+        if not resolution:
+            raise VideoProviderError(
+                "PROVIDER_CONTRACT",
+                f"MiniMax H3 Max Turbo resolution 은 480p/720p/1080p 만 매핑됩니다: "
+                f"{spec.get('resolution')!r}",
+            )
+        raw_duration = spec.get("duration_sec")
+        try:
+            duration = float(raw_duration)
+        except (TypeError, ValueError) as exc:
+            raise VideoProviderError(
+                "PROVIDER_CONTRACT",
+                f"MiniMax H3 Max Turbo duration_sec 이 필요합니다: {raw_duration!r}",
+            ) from exc
+        if not self.MIN_DURATION_SEC <= duration <= self.MAX_DURATION_SEC:
+            raise VideoProviderError(
+                "PROVIDER_CONTRACT",
+                f"MiniMax H3 Max Turbo duration 은 {self.MIN_DURATION_SEC}..{self.MAX_DURATION_SEC:g}s "
+                f"범위여야 합니다: {raw_duration!r}",
+            )
+        payload: dict[str, Any] = {
+            "prompt": request.prompt,
+            "prompt_expansion_mode": self._prompt_expansion_mode(),
+            "image_url": request.start_image_url,
+            "duration": int(duration) if duration.is_integer() else duration,
+            "resolution": resolution,
+        }
+        if request.end_image_url:
+            payload["end_image_url"] = request.end_image_url
+        return payload
+
+    def estimate_cost_usd(self, payload: dict[str, Any]) -> Optional[float]:
+        rate = self.PRICE_PER_SEC_USD.get(str(payload.get("resolution")))
+        duration = payload.get("duration")
+        if rate is None or not isinstance(duration, (int, float)):
+            return None
+        return round(rate * float(duration), 4)
+
+    def normalize_output(self, video_bytes: bytes) -> tuple[bytes, dict[str, Any]]:
+        return strip_audio_track(video_bytes)
 
 
 class FalWanProvider(FalVideoProvider):
@@ -1019,7 +1242,37 @@ class RunwayVideoProvider(VideoGenerationProvider):
             "[motion-receipt] provider=%s(runway) model=%s external_id=%s",
             self.name, self.model_name(), task_id,
         )
-        return ProviderSubmission(external_job_id=task_id)
+        return ProviderSubmission(
+            external_job_id=task_id, metadata={TIMING_SUBMITTED: time.time()}
+        )
+
+    def check_persisted(
+        self, external_job_id: str, metadata: Optional[dict[str, Any]] = None
+    ):
+        from dataclasses import replace
+
+        check = self.check(external_job_id)
+        marks = job_timing_marks(
+            metadata,
+            running=check.provider_status == "RUNNING",
+            done=check.status == "SUCCEEDED",
+        )
+        return replace(check, metadata={**check.metadata, **marks})
+
+    def collect_persisted(
+        self, external_job_id: str, metadata: Optional[dict[str, Any]] = None
+    ) -> MotionVideoResult:
+        from dataclasses import replace
+
+        result = self.collect(external_job_id)
+        return replace(
+            result,
+            usage={
+                **result.usage,
+                **job_timing_usage(metadata),
+                "estimated_cost_usd": self.estimate_cost_usd({}),
+            },
+        )
 
     def check(self, external_job_id: str):
         from .provider_job_contract import FAILED, PENDING, SUCCEEDED, ProviderJobCheck
@@ -1331,6 +1584,7 @@ _MODEL_VENDOR_ADAPTERS: dict[str, dict[str, VideoGenerationProvider]] = {
     },
     MODEL_WAN_2_2_TURBO: {VENDOR_FAL: FalWanProvider()},
     MODEL_WAN_2_1_FLF: {VENDOR_FAL: FalWanFlfProvider()},
+    MODEL_MINIMAX_H3_MAX_TURBO: {VENDOR_FAL: FalMinimaxH3MaxTurboProvider()},
 }
 
 _MODEL_ALIASES: dict[str, str] = {
@@ -1343,6 +1597,7 @@ _MODEL_VENDOR_ENV: dict[str, str] = {
     PROVIDER_SEEDANCE: "MOTION_VENDOR_SEEDANCE",
     PROVIDER_KLING_3: "MOTION_VENDOR_KLING_3",
     PROVIDER_WAN_3_STANDARD: "MOTION_VENDOR_WAN_3_STANDARD",
+    MODEL_MINIMAX_H3_MAX_TURBO: "MOTION_VENDOR_MINIMAX_H3_MAX_TURBO",
 }
 _LEGACY_TRANSPORT_ENV: dict[str, str] = {
     PROVIDER_SEEDANCE: "SEEDANCE_TRANSPORT",
@@ -1355,6 +1610,7 @@ _ALLOWED_VENDORS: dict[str, tuple[str, ...]] = {
     PROVIDER_WAN_3_STANDARD: (VENDOR_RUNWAY, VENDOR_FAL, VENDOR_DIRECT),
     MODEL_WAN_2_2_TURBO: (VENDOR_FAL,),
     MODEL_WAN_2_1_FLF: (VENDOR_FAL,),
+    MODEL_MINIMAX_H3_MAX_TURBO: (VENDOR_FAL,),
 }
 _AUTO_VENDOR_ORDER: dict[str, tuple[str, ...]] = {
     PROVIDER_SEEDANCE: (VENDOR_RUNWAY, VENDOR_FAL, VENDOR_BYTEPLUS),
@@ -1362,6 +1618,7 @@ _AUTO_VENDOR_ORDER: dict[str, tuple[str, ...]] = {
     PROVIDER_WAN_3_STANDARD: (VENDOR_RUNWAY, VENDOR_FAL),
     MODEL_WAN_2_2_TURBO: (VENDOR_FAL,),
     MODEL_WAN_2_1_FLF: (VENDOR_FAL,),
+    MODEL_MINIMAX_H3_MAX_TURBO: (VENDOR_FAL,),
 }
 _MOCK = MockVideoProvider()
 
@@ -1369,6 +1626,14 @@ _MOCK = MockVideoProvider()
 def _logical_model_id(name: str) -> str:
     key = (name or "").strip().lower()
     return _MODEL_ALIASES.get(key, key)
+
+
+def registered_logical_models() -> tuple[str, ...]:
+    return tuple(sorted(_MODEL_VENDOR_ADAPTERS))
+
+
+def is_registered_model(name: str) -> bool:
+    return _logical_model_id(name) in _MODEL_VENDOR_ADAPTERS
 
 
 def _legacy_transport_vendor(logical_model_id: str, value: str) -> str:

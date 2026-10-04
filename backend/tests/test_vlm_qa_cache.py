@@ -22,14 +22,41 @@ import pytest
 from backend.services import vlm_identity as vlm
 
 CANON_OK = {
-    "same_pet": "yes", "same_pet_confidence": "high", "anatomy_plausible": "yes", "single_pet": "yes",
+    "same_pet": "yes", "same_pet_confidence": "high",
+    "face_head_consistent": "yes", "ear_muzzle_consistent": "yes",
+    "distinctive_markings_consistent": "yes", "persistent_morphology_consistent": "yes",
+    "presentation_difference_only": "no",
+    "anatomy_plausible": "yes", "single_pet": "yes",
     "human_present": "no", "accessories_present": "no", "background_neutral": "yes", "pose_neutral": "yes",
     "full_body_visible": "yes", "major_occlusion": "no", "identity_notes": "",
 }
-KF_OK = {**CANON_OK, "pose_matches": "yes", "pose_confidence": "high",
-         "body_orientation_ok": "yes", "required_regions_visible": "yes"}
+
+
+def test_keyframe_v2_explicitly_adopts_canonical_semantic_identity_fields():
+    phase2_fields = {
+        "face_head_consistent",
+        "ear_muzzle_consistent",
+        "distinctive_markings_consistent",
+        "persistent_morphology_consistent",
+        "presentation_difference_only",
+    }
+    assert phase2_fields <= set(vlm.CANONICAL_QA_SCHEMA["required"])
+    assert phase2_fields <= set(vlm.KEYFRAME_QA_SCHEMA["required"])
+    assert vlm.VLM_CANONICAL_QA_VERSION == "vlm-canonical-qa-v2"
+    assert vlm.VLM_KEYFRAME_QA_VERSION == "vlm-keyframe-qa-v2"
+
+
+KF_OK = {
+    key: value
+    for key, value in CANON_OK.items()
+    if key in vlm.KEYFRAME_QA_SCHEMA["properties"]
+}
+KF_OK.update({"pose_matches": "yes", "pose_confidence": "high",
+              "body_orientation_ok": "yes", "required_regions_visible": "yes"})
 MOTION_OK = {
     "same_pet_all_frames": "yes", "anatomy_plausible_all_frames": "yes", "requested_motion_occurs": "yes",
+    "locomotion_form_correct": "yes", "direction_travel_correct": "yes",
+    "interaction_correct": "yes", "human_hand_policy_ok": "yes",
     "unintended_large_motion": "no", "single_pet": "yes", "duplicated_pet": "no", "human_present": "no",
     "scene_cut": "no", "major_flicker": "no", "camera_stable": "yes", "background_neutral": "yes",
     "ends_in_target_pose": "unknown", "notes": "",
@@ -67,7 +94,16 @@ def install_fake_anthropic(monkeypatch, *, payloads=None, hold: threading.Event 
             if release is not None:
                 release.wait(5)     # 두 번째 호출자가 도착할 때까지 붙잡는다
             schema = kwargs["output_config"]["format"]["schema"]
-            payload = answers[id(schema)]
+            payload = answers.get(id(schema))
+            if payload is None:
+                # Phase 9 targeted schemas are strict subsets assembled per
+                # unresolved question. Project the established fixture answer
+                # onto that schema instead of coupling this fake to dict identity.
+                available = {**CANON_OK, **KF_OK, **MOTION_OK}
+                payload = {
+                    key: available.get(key, "unknown")
+                    for key in schema.get("properties", {})
+                }
 
             class _TextBlock:
                 type = "text"
@@ -108,15 +144,15 @@ def _motion(frames=(b"f0", b"f1", b"f2"), desc="breathing", cls="MICRO", fractio
 # ── 모드 ─────────────────────────────────────────────────────────────────────
 
 
-def test_mode_defaults_to_off_and_unknown_values_are_off(monkeypatch):
+def test_mode_defaults_to_on_and_unknown_values_are_on(monkeypatch):
     monkeypatch.delenv(vlm.VLM_QA_CACHE_ENV, raising=False)
-    assert vlm.qa_cache_mode() == "off"
+    assert vlm.qa_cache_mode() == "on"
     monkeypatch.setenv(vlm.VLM_QA_CACHE_ENV, "sometimes")
-    assert vlm.qa_cache_mode() == "off"
+    assert vlm.qa_cache_mode() == "on"
     monkeypatch.setenv(vlm.VLM_QA_CACHE_ENV, "ON")
     assert vlm.qa_cache_mode() == "on"
     assert vlm.qa_cache_mode("refresh") == "refresh"   # 인자가 환경보다 우선
-    assert vlm.qa_cache_mode("bogus") == "off"
+    assert vlm.qa_cache_mode("bogus") == "on"
 
 
 def test_flag_off_keeps_previous_behavior_no_reads_no_writes(monkeypatch):
@@ -211,6 +247,37 @@ def test_same_bytes_do_not_collide_across_call_kinds(monkeypatch):
     assert len(calls) == 2
     kinds = {row["kind"] for row in vlm._MOCK_DURABLE_CACHE.values()}
     assert kinds == {vlm.KIND_CANONICAL_QA, vlm.KIND_KEYFRAME_QA}
+
+
+def test_motion_class_context_is_in_prompt_and_cache_identity(monkeypatch):
+    calls = install_fake_anthropic(monkeypatch)
+
+    first = _motion(
+        cls="LOCOMOTION",
+        desc="walk toward the viewer",
+        expected_direction="toward camera",
+    )
+    same = _motion(
+        cls="LOCOMOTION",
+        desc="walk toward the viewer",
+        expected_direction="toward camera",
+    )
+    changed = _motion(
+        cls="LOCOMOTION",
+        desc="walk toward the viewer",
+        expected_direction="screen left",
+    )
+
+    assert first == same == changed
+    assert len(calls) == 2
+    prompt = next(
+        block["text"]
+        for block in calls[0]["messages"][0]["content"]
+        if block["type"] == "text"
+    )
+    assert "Expected direction/travel: toward camera" in prompt
+    assert "locomotion_form_correct" in prompt
+    assert "direction_travel_correct" in prompt
 
 
 # ── 실패는 굳지 않는다 / 동시 호출은 한 번 ────────────────────────────────────

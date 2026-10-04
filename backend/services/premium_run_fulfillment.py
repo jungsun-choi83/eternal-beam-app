@@ -100,7 +100,9 @@ async def submit_premium_run(
         )
         # 같은 열쇠의 기존 실행이 이미 종료(실패)돼 있으면 되살린다 — 구독 모드의
         # 재구매가 대표적이다. PUBLISHED/진행 중이면 retry 는 그대로 돌려준다.
-        if run.status in (runs.STATUS_FAILED, runs.STATUS_CANCELLED):
+        if run.status in (
+            runs.STATUS_FAILED, runs.STATUS_CANCELLED
+        ) or runs.is_delivered_fallback(run):
             run = await runs.retry_generation_run(user_id=user_id, run_id=run.id)
         return run.id
     except runs.PetGenerationRunError as exc:

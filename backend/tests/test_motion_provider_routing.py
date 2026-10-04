@@ -25,7 +25,16 @@ class _Provider:
         return self._available
 
 
-def test_breathing_resolves_wan_then_seedance():
+def test_breathing_resolves_minimax_then_seedance(monkeypatch):
+    monkeypatch.delenv("MOTION_MODEL_BREATHING", raising=False)
+    assert ms.provider_order_for_motion("BREATHING") == (
+        ms.PROVIDER_MINIMAX_H3_MAX_TURBO,
+        ms.PROVIDER_SEEDANCE,
+    )
+
+
+def test_breathing_resolves_wan_then_seedance_when_configured(monkeypatch):
+    monkeypatch.setenv("MOTION_MODEL_BREATHING", "wan_3_standard")
     assert ms.provider_order_for_motion("BREATHING") == (
         ms.PROVIDER_WAN_3_STANDARD,
         ms.PROVIDER_SEEDANCE,
@@ -66,7 +75,8 @@ def test_swapping_motion_spec_order_changes_service_resolution(monkeypatch):
         (ms.PROVIDER_KLING_3, ms.PROVIDER_SEEDANCE),
     )
 
-    contract = ms.motion_snapshot(ms.MOTIONS["BREATHING"])
+    # BLINKING: 모션별 모델 설정(MOTION_MODEL_*)이 없는 MICRO 모션 — 클래스 순서 그대로.
+    contract = ms.motion_snapshot(ms.MOTIONS["BLINKING"])
     resolved, available, _requirements = mvs._resolve_providers_for_contract(contract)
 
     assert contract["provider_order"] == [ms.PROVIDER_KLING_3, ms.PROVIDER_SEEDANCE]

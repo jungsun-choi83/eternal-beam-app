@@ -26,6 +26,8 @@ export interface GenerationRunProviderJob {
 export interface GenerationRun {
   run_id: string;
   status: string;
+  /** Business QA terminal outcome; legacy orchestration status remains compatible. */
+  terminal_state?: "DELIVERED_GENERATED" | "DELIVERED_FALLBACK" | "TRUE_INFRASTRUCTURE_FAILURE" | null;
   current_stage: string;
   pet_id: string;
   motion_version_id?: string | null;
@@ -42,19 +44,29 @@ export interface RunPlayback {
   status: string;
   /** true = Phase 7A 발행 재생. false = 발행 없는 개발/현재-실행 재생(REVIEW). */
   published: boolean;
-  /** 데이터베이스의 실제 QA 결정 (PASS | REVIEW). 가공되지 않는다. */
+  /** 데이터베이스 QA 결정, 또는 명시적 고객 fallback 표시. */
   qa_decision: string;
   url: string;
   delivery_format?: string | null;
   background_baked: boolean;
   motion_version_id?: string | null;
   candidate_id?: string | null;
+  terminal_state?: string | null;
+  fallback_tier?: string | null;
+  asset_kind?: string | null;
 }
 
 export interface RunApiDeps {
   fetchFn?: typeof globalThis.fetch;
   getToken?: typeof getPremiumAccessToken;
   apiBase?: string;
+}
+
+export interface BusinessQAFeedback {
+  run_id: string;
+  accepted: boolean;
+  complaints: string[];
+  recorded: boolean;
 }
 
 export class GenerationRunError extends Error {
@@ -151,6 +163,31 @@ export async function getRunPlayback(
   return authedRequest<RunPlayback>(
     `/api/v1/pet/generation-runs/${encodeURIComponent(runId)}/playback`,
     { method: "GET" },
+    deps
+  );
+}
+
+/** Phase 12 user-test feedback. This endpoint never changes QA or retries. */
+export async function submitBusinessQAFeedback(
+  runId: string,
+  feedback: {
+    accepted: boolean;
+    complaints?: Array<"IDENTITY" | "ANATOMY" | "MOTION" | "OTHER">;
+    comment?: string;
+  },
+  deps: RunApiDeps = {}
+): Promise<BusinessQAFeedback> {
+  return authedRequest<BusinessQAFeedback>(
+    `/api/v1/pet/generation-runs/${encodeURIComponent(runId)}/feedback`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        accepted: feedback.accepted,
+        complaints: feedback.complaints ?? [],
+        comment: feedback.comment,
+      }),
+    },
     deps
   );
 }

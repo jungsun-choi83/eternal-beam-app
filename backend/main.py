@@ -288,8 +288,10 @@ app.include_router(motion_references_v1.router, prefix="/api", tags=["motion-ref
 # Phase 7C durable orchestration. The browser creates/queries one run; this
 # server-owned coordinator invokes Phase 2–7A without exposing phase fan-out.
 from .routers import generation_runs_v1  # noqa: E402
+from .routers import business_qa_ops_v1  # noqa: E402
 
 app.include_router(generation_runs_v1.router, prefix="/api", tags=["pet-generation-runs"])
+app.include_router(business_qa_ops_v1.router, prefix="/api", tags=["business-qa-ops"])
 
 # Optional heavy pipeline endpoints (Luma/generate). Disable by default on lightweight deployments.
 _enable_generate = os.getenv("ENABLE_GENERATE_API", "0").strip().lower() in ("1", "true", "yes")

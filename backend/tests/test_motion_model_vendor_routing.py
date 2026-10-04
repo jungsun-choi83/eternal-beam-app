@@ -200,6 +200,7 @@ def test_vendor_swap_requires_no_motion_spec_change(monkeypatch):
 
 
 def test_wan_3_vendor_swap_requires_no_motion_spec_change(monkeypatch):
+    monkeypatch.setenv("MOTION_MODEL_BREATHING", "wan_3_standard")
     original = ms.provider_order_for_motion("BREATHING")
     assert original[0] == "wan_3_standard"
 
@@ -281,6 +282,7 @@ def test_durable_worker_preserves_fal_model_order(monkeypatch):
     assert [provider.logical_model_id for provider in filtered] == ["kling_3"]
 
     monkeypatch.setenv("MOTION_VENDOR_WAN_3_STANDARD", "fal")
+    monkeypatch.setenv("MOTION_MODEL_BREATHING", "wan_3_standard")
     micro = runs._video_providers(run, "BREATHING")
     assert [provider.logical_model_id for provider in micro] == [
         "wan_3_standard",

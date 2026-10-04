@@ -19,12 +19,15 @@ MOTION_VIDEO_PROMPT_VERSION = "motion-video-prompt-v2"
 _IDENTITY_LOCK = (
     "The exact same pet as in the supplied reference image(s). Do not alter the "
     "face, fur colors, markings, ears, body proportions, paws or tail at any point "
-    "in the video. No new objects, no other animals, no scenery. The plain neutral "
-    "background stays exactly as in the reference: a single flat tone, with no "
-    "contact shadow under the pet, no cast shadow on the background and no "
-    "reflection appearing at any point — not even while the pet moves or its paws "
-    "touch the ground. Camera and framing remain "
-    "completely fixed. No text, no stylization."
+    "in the video. No new objects, no other animals, no scenery. "
+    "The background must remain a single flat matte neutral tone with no texture, "
+    "no gradient, no vignette, no floor plane and no horizon line. "
+    "There must be no contact shadow under the pet, no cast shadow, no reflection, "
+    "no glossy surface and no ambient grounding darkening of any kind. "
+    "The pet silhouette must remain clean and clearly separated from the background, "
+    "including around the ears, fur edges, paws, legs and tail. "
+    "All paws must remain fully visible and cleanly separated. "
+    "Camera and framing remain completely fixed. No text, no stylization."
 )
 
 
@@ -33,6 +36,9 @@ def _micro(spec_contract: dict[str, Any], description: str) -> str:
         _IDENTITY_LOCK,
         f"The pet stays in the same pose and position. Only this subtle natural "
         f"motion occurs: {description}.",
+        "No other intentional or expressive behavior occurs. The pet remains silent: "
+        "no barking, vocalizing, panting, licking, chewing, or unnecessary mouth, jaw "
+        "or tongue movement. If audio is generated, it must be absolute silence.",
         "No body translation, no walking, no large movement of any kind.",
     ]
     if (spec_contract.get("video_compat") or {}).get("returns_to_start_pose"):

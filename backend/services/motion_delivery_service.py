@@ -1122,9 +1122,16 @@ async def package_breathing_for_delivery(
         )
     decision = str(candidate.get("decision") or "").upper()
     # 무결성 게이트가 켜져 있으면 무결성 사유 없는 FAIL 도 전달 대상이다 (ERROR 는 항상 제외).
-    if decision == "ERROR" or (
-        decision == "FAIL" and not motions.candidate_is_publishable(candidate)
-    ):
+    from . import business_qa
+
+    if business_qa.legacy_authority_retired(candidate.get("motion_id")):
+        # Receipt-only: package exactly what Business QA authorizes to deliver.
+        not_packageable = not motions.candidate_is_publishable(candidate)
+    else:
+        not_packageable = decision == "ERROR" or (
+            decision == "FAIL" and not motions.candidate_is_publishable(candidate)
+        )
+    if not_packageable:
         raise MotionDeliveryError(
             "CANDIDATE_NOT_PACKAGEABLE",
             "FAIL/ERROR 후보는 포장하지 않습니다.", status=409,
@@ -1347,9 +1354,15 @@ async def resolve_breathing_playback(
         )
 
     decision = str(candidate.get("decision") or "").upper()
-    if decision not in ("PASS", "REVIEW") and not (
-        decision == "FAIL" and motions.candidate_is_publishable(candidate)
-    ):
+    from . import business_qa
+
+    if business_qa.legacy_authority_retired(candidate.get("motion_id")):
+        playable = motions.candidate_is_publishable(candidate)
+    else:
+        playable = decision in ("PASS", "REVIEW") or (
+            decision == "FAIL" and motions.candidate_is_publishable(candidate)
+        )
+    if not playable:
         raise MotionDeliveryError(
             "PLAYBACK_UNAVAILABLE", "FAIL/ERROR 후보는 재생하지 않습니다.", status=409
         )
