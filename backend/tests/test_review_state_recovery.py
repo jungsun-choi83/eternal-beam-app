@@ -221,7 +221,7 @@ def test_replacement_worker_builds_exactly_one_new_version_then_reuses_it(monkey
         status=runs.STATUS_RUNNING,
         current_stage=runs.STAGE_MOTION_GENERATION,
         canonical_version_id=source.canonical_version_id,
-        keyframes={"NEUTRAL_IDLE": {"id": source.start_keyframe_id, "version": 1}},
+        keyframes={"STAND_READY": {"id": source.start_keyframe_id, "version": 1}},
         motion_spec_version=motion_spec.MOTION_SPEC_VERSION,
         provider_state={"_operator": {"replacement_request": {"source_motion_version_id": source.id}}},
     )

@@ -1516,18 +1516,13 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
             stage = STAGE_KEYFRAMES
             run = await _progress(run, {"current_stage": stage})
             run = await _heartbeat(run)
-            # BREATHING → NEUTRAL_IDLE Canonical reuse: only this motion's start
-            # keyframe may skip real keyframe generation when the approved
-            # Canonical already satisfies the NEUTRAL_IDLE contract on its own.
-            # Every other motion (incl. the other NEUTRAL_IDLE-starting idles)
-            # keeps generating a real keyframe, same as before.
-            keyframe, run = await _keyframe(
-                run,
-                spec.start_keyframe_role,
-                allow_canonical_reuse=(
-                    run.motion_id == MOTION_BREATHING and spec.start_keyframe_role == "NEUTRAL_IDLE"
-                ),
-            )
+            # HOME = STAND_READY (motion-spec-v16): the home keyframe is always a
+            # generated standing still. The Canonical is never aliased as the
+            # BREATHING/home start pose and its posture is never inspected —
+            # a sitting or lying Canonical must not become the home pose.
+            # Every STAND_READY-starting motion shares the one keyframe that
+            # _keyframe() resolves for this run's pinned Canonical.
+            keyframe, run = await _keyframe(run, spec.start_keyframe_role)
             keyframes = dict(run.keyframes)
             run = await _advance_keyframe_stage(run, spec.start_keyframe_role, keyframe, keyframes)
             if _is_business_fallback(run):
@@ -1995,13 +1990,12 @@ async def start_generation_run(
         cutover = business_qa_user_test.cutover_receipt(user_id=uid, pet_id=pid)
     except business_qa_user_test.UserTestError as exc:
         raise PetGenerationRunError(exc.code, exc.message, status=exc.status) from exc
-    content_id, original, cutout = await _validate_intake_evidence(uid, pid)
     now = _now_iso()
     row = {
         "id": str(uuid.uuid4()),
         "user_id": uid,
         "pet_id": pid,
-        "content_id": content_id,
+        "content_id": None,
         "motion_id": motion,
         "request_kind": kind,
         "idempotency_key": key,
@@ -2036,8 +2030,15 @@ async def start_generation_run(
         row["product_key"] = (product_key or "").strip() or None
         row["reservation_ledger_id"] = (reservation_ledger_id or "").strip() or None
         row["credits_reserved"] = int(credits_reserved or 0)
-    async with _start_lock(uid, pid, motion, kind):
-        run, _created = await _insert_or_get(row)
+    # 실행 행이 생기는 순간 이 펫의 사진·누끼가 잠긴다(pet_inputs_locked). 인테이크
+    # 검증과 삽입을 펫 입력 문의 **단독** 구간에서 한 번에 한다 — 업로드/동기화/
+    # 거절(공유 구간)이 "잠금 확인"과 "쓰기" 사이에 이 삽입을 끼워 넣을 수 없고,
+    # 이 검증이 본 증거가 삽입 전에 바뀔 수도 없다.
+    async with pet_reference_service.pet_input_gate(pid).exclusive():
+        content_id, original, cutout = await _validate_intake_evidence(uid, pid)
+        row["content_id"] = content_id
+        async with _start_lock(uid, pid, motion, kind):
+            run, _created = await _insert_or_get(row)
     qa_shadow_telemetry.start_run(
         run,
         upload_cutout_ms=qa_shadow_telemetry.upload_to_cutout_ms(original, cutout),
@@ -2533,6 +2534,44 @@ async def get_generation_run(*, user_id: str, run_id: str) -> PetGenerationRun:
     if run.user_id != (user_id or "").strip():
         raise PetGenerationRunError("PET_NOT_OWNED", "이 생성 실행에 접근할 권한이 없습니다.", status=403)
     return run
+
+
+#: 이 상태의 실행은 펫의 사진/누끼를 잠그지 않는다 — 사용자가 사진을 고쳐
+#: 다시 시도할 수 있어야 한다. 그 밖의 모든 상태(진행 중 + PUBLISHED)는 잠근다.
+UNLOCKING_RUN_STATUSES = (STATUS_FAILED, STATUS_CANCELLED)
+
+
+async def pet_has_locking_run(pet_id: str) -> bool:
+    """
+    이 펫에 FAILED/CANCELLED 가 **아닌** 생성 실행이 하나라도 있는가.
+
+    motion/request_kind/소유자를 가리지 않는다 — 어떤 실행이든 시작됐다면 그
+    실행은 당시의 원본·누끼에 계보를 핀으로 잡고 있다. 조회 실패는 예외로
+    올린다: "모른다"를 "잠기지 않았다"로 답하면 안 된다.
+    """
+    pid = (pet_id or "").strip()
+    if not pid:
+        return False
+    client = _supabase() if _use_db() else None
+    if client:
+        try:
+            result = await asyncio.to_thread(
+                lambda: client.table(_table())
+                .select("id")
+                .eq("pet_id", pid)
+                .not_.in_("status", list(UNLOCKING_RUN_STATUSES))
+                .limit(1)
+                .execute()
+            )
+            return bool(getattr(result, "data", None))
+        except Exception as exc:
+            raise PetGenerationRunError(
+                "GENERATION_RUNS_UNAVAILABLE", "생성 실행을 확인하지 못했습니다.", status=503
+            ) from exc
+    return any(
+        r.get("pet_id") == pid and r.get("status") not in UNLOCKING_RUN_STATUSES
+        for r in _MOCK_RUNS
+    )
 
 
 def run_dict(run: PetGenerationRun) -> dict[str, Any]:

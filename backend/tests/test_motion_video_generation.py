@@ -155,7 +155,7 @@ def white_frame() -> np.ndarray:
     return np.full((150, 200, 3), 255, dtype=np.uint8)
 
 
-def _prepare_pipeline(monkeypatch, storage, roles=("NEUTRAL_IDLE",)):
+def _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY",)):
     h, canonical = _prepare_canonical(monkeypatch, storage)
     install_kf_vlm(monkeypatch, VLM_KF_OK)
     for role in roles:
@@ -433,7 +433,7 @@ def test_prompts_by_class_and_no_themes(storage, monkeypatch):
     from backend.services.motion_video_prompts import build_motion_video_prompt
     from backend.services.theme_catalog import ALL_THEME_KEYS
 
-    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("NEUTRAL_IDLE", "STAND_READY", "LIE"))
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY", "LIE"))
     breath = _build_motion(h, "BREATHING", [FakeVideoProvider("seedance", [GOOD()])])
     lie = _build_motion(h, "LIE_DOWN", [FakeVideoProvider("kling", [GOOD()])])
 
@@ -469,7 +469,7 @@ def test_provider_receives_the_keyframe_clean_plate_not_the_raw_keyframe(storage
     v = _build_motion(h, "BREATHING", [provider])
     assert v.status == mv.STATUS_COMPLETE
 
-    keyframe = _run(kf.get_keyframe(user_id=USER, pet_id=PET, keyframe_role="NEUTRAL_IDLE"))
+    keyframe = _run(kf.get_keyframe(user_id=USER, pet_id=PET, keyframe_role="STAND_READY"))
     sel = next(c for c in keyframe.candidates if c.selected)
     assert sel.plate_object_path and sel.plate_object_path in storage
 
@@ -500,7 +500,7 @@ def test_motion_fails_closed_when_no_keyframe_plate_can_be_built(storage, monkey
 
 
 def test_transition_sends_both_frames(storage, monkeypatch):
-    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("NEUTRAL_IDLE", "STAND_READY", "LIE"))
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY", "LIE"))
     provider = FakeVideoProvider("kling", [GOOD()])
 
     v = _build_motion(h, "LIE_DOWN", [provider])
@@ -515,7 +515,7 @@ def test_transition_sends_both_frames(storage, monkeypatch):
 
 
 def test_transition_without_end_capable_provider_fails_safely(storage, monkeypatch):
-    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("NEUTRAL_IDLE", "STAND_READY", "LIE"))
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY", "LIE"))
     incapable = FakeVideoProvider("seedance", [GOOD()], end_frame=False)
 
     with pytest.raises(mv.MotionVideoError) as e:
@@ -564,7 +564,7 @@ def test_interaction_pet_head(storage, monkeypatch):
 def test_legacy_review_keyframe_is_business_deliverable(storage, monkeypatch):
     h, _ = _prepare_canonical(monkeypatch, storage)
     install_kf_vlm(monkeypatch, None)  # 키프레임 REVIEW
-    k = _build_kf(h, [FakeProvider("runway", [GOOD(), GOOD(), GOOD()])])
+    k = _build_kf(h, [FakeProvider("runway", [GOOD(), GOOD(), GOOD()])], role="STAND_READY")
     assert k.status == kf.STATUS_COMPLETE
     assert k.candidates[0].decision == "REVIEW"
     install_mv_vlm(monkeypatch, VLM_MV_OK)
@@ -683,7 +683,7 @@ def test_clean_plate_available_skips_raw_keyframe_download(storage, monkeypatch)
     """
     h, _ = _prepare_pipeline(monkeypatch, storage)
 
-    keyframe = _run(kf.get_keyframe(user_id=USER, pet_id=PET, keyframe_role="NEUTRAL_IDLE"))
+    keyframe = _run(kf.get_keyframe(user_id=USER, pet_id=PET, keyframe_role="STAND_READY"))
     selected = next(c for c in keyframe.candidates if c.id == keyframe.selected_candidate_id)
     assert selected.plate_object_path  # 전제: 정상 빌드는 플레이트를 만들어 둔다
 
@@ -1659,7 +1659,7 @@ def test_provenance_chain(storage, monkeypatch):
     h, canonical = _prepare_pipeline(monkeypatch, storage)
     v = _build_motion(h, "BREATHING", [FakeVideoProvider("seedance", [GOOD()])])
 
-    kf_row = _run(kf.get_keyframe(user_id=USER, pet_id=PET, keyframe_role="NEUTRAL_IDLE"))
+    kf_row = _run(kf.get_keyframe(user_id=USER, pet_id=PET, keyframe_role="STAND_READY"))
     assert v.start_keyframe_id == kf_row.id
     assert v.start_keyframe_version == kf_row.version
     assert v.canonical_version_id == canonical.id

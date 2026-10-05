@@ -177,7 +177,7 @@ def _classify_temporal_metrics(
 
 def pet_mask_from_neutral_gray(keyframe_rgb: np.ndarray) -> Optional[np.ndarray]:
     """
-    NEUTRAL_IDLE 키프레임 → 펫 마스크(bool). 테두리 중앙값 배경색 대비 거리
+    홈(STAND_READY) 키프레임 → 펫 마스크(bool). 테두리 중앙값 배경색 대비 거리
     키잉 — motion_delivery_service 의 bgmodel 과 같은 계약(평탄한 중립 회색)에
     기댄다. 마스크가 비정상(거의 전부/거의 없음)이면 None.
     """

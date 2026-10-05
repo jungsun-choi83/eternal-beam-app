@@ -16,6 +16,10 @@ const trigger = readFileSync(
   "utf8",
 );
 const slotState = readFileSync(new URL("./pet-slot-state.ts", import.meta.url), "utf8");
+const intakeSession = readFileSync(
+  new URL("./phase1-intake-session.ts", import.meta.url),
+  "utf8",
+);
 const pending = readFileSync(new URL("./pending-generation.ts", import.meta.url), "utf8");
 
 test("upload UI accepts up to 3 images and shows per-image removal/status surface", () => {
@@ -101,10 +105,16 @@ test("a second selection appends up to 3 photos instead of replacing them", () =
   assert.match(handler, /const room = MAX_IMAGES_PER_PET - existing\.length/);
   assert.match(handler, /files\.slice\(0, room\)/);
   assert.match(handler, /\[\.\.\.base, \.\.\.urls\]\.slice\(0, MAX_IMAGES_PER_PET\)/);
-  // 같은 펫에 장을 더하는 것이므로 업로드 신원은 새로 발급하지 않는다.
+  // 같은 펫에 장을 더하는 것이므로 업로드 신원은 새로 발급하지 않는다. 그 규칙은
+  // identityForAddedPhotos 로 옮겨졌다(빈 자리는 언제나 새 신원 — 동작은
+  // phase1-intake-session.test.ts 가 검증한다).
   assert.match(
     handler,
-    /existing\.length > 0\s*\? slot\.intakeIdentity \?\? readPhase1Intake\(slotId\) \?\? beginPhase1Intake\(slotId\)\s*: beginPhase1Intake\(slotId\)/s,
+    /const identity = identityForAddedPhotos\(slotId, existing\.length, slot\.intakeIdentity\)/,
+  );
+  assert.match(
+    intakeSession,
+    /if \(existingPhotoCount > 0\) \{\s*return current \?\? readPhase1Intake\(slotId\) \?\? beginPhase1Intake\(slotId, createContentId\);\s*\}\s*return beginPhase1Intake\(slotId, createContentId\);/,
   );
   assert.equal(app.split("const MAX_IMAGES_PER_PET = 3").length - 1, 1);
 });

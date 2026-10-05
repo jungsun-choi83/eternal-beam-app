@@ -80,6 +80,30 @@ export function beginPhase1Intake(
   return identity;
 }
 
+/**
+ * 사진을 **더할 때** 쓸 신원.
+ *
+ * - 자리에 이미 사진이 있으면 같은 아이에 장을 더하는 것이다 — 신원을 그대로 쓴다.
+ * - 자리가 비어 있으면 **언제나 새 신원**이다. 남아 있던 신원(화면 상태든 저장된
+ *   값이든)을 물려받지 않는다.
+ *
+ * 두 번째 규칙이 잠금과 맞물린다: 새로고침 뒤에는 사진이 복원되지 않아 자리가
+ * 비어 돌아오는데, 그 자리에는 이미 생성이 시작된(잠긴) 아이의 신원이 남아 있을
+ * 수 있다. 빈 자리에서 고른 사진은 그 아이를 고치는 것이 아니라 **새 아이**다 —
+ * 새 content_id/pet_id 로 올라가고, 잠긴 아이와 그 계보는 손대지 않는다.
+ */
+export function identityForAddedPhotos(
+  slotId: string,
+  existingPhotoCount: number,
+  current?: Phase1IntakeIdentity | null,
+  createContentId: () => string = defaultContentId,
+): Phase1IntakeIdentity {
+  if (existingPhotoCount > 0) {
+    return current ?? readPhase1Intake(slotId) ?? beginPhase1Intake(slotId, createContentId);
+  }
+  return beginPhase1Intake(slotId, createContentId);
+}
+
 export function readPhase1Intake(slotId: string): Phase1IntakeIdentity | null {
   const slot = requireSlotId(slotId);
   return readAll()[slot] ?? null;

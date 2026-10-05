@@ -123,15 +123,15 @@ def test_review_keyframe_does_not_loop(storage, monkeypatch):
     assert first.status == runs.STATUS_FAILED
     assert first.current_stage == runs.STAGE_KEYFRAMES
     assert first.last_error["code"] == "KEYFRAME_QA_REVIEW"
-    assert first.last_error["keyframe_role"] == "NEUTRAL_IDLE"
-    assert first.keyframes["NEUTRAL_IDLE"]["id"] == harness.keyframe.id
+    assert first.last_error["keyframe_role"] == "STAND_READY"
+    assert first.keyframes["STAND_READY"]["id"] == harness.keyframe.id
     assert harness.counts["canonical_build"] == 1  # canonical (upstream) still completed once
     assert harness.counts["keyframe_build"] == 1
     assert harness.counts["motion_build"] == 0  # never reached
 
     resumed = _run(runs.retry_generation_run(user_id=started.user_id, run_id=started.id))
     assert resumed.status == runs.STATUS_QUEUED
-    assert resumed.keyframes["NEUTRAL_IDLE"]["id"] == harness.keyframe.id  # pin preserved
+    assert resumed.keyframes["STAND_READY"]["id"] == harness.keyframe.id  # pin preserved
 
     second = work()
     assert second.current_stage == runs.STAGE_KEYFRAMES
@@ -207,7 +207,7 @@ def test_keyframe_budget_exhaustion_returns_business_fallback(storage, monkeypat
     assert result.last_error is None
     receipt = result.provider_state["_business_qa"]
     assert receipt["terminal_state"] == business_qa.DELIVERED_FALLBACK
-    assert receipt["source_kind"] == "KEYFRAME:NEUTRAL_IDLE"
+    assert receipt["source_kind"] == "KEYFRAME:STAND_READY"
     assert harness.counts["motion_build"] == 0
 
 
@@ -393,8 +393,8 @@ def test_keyframe_replacement_worker_builds_exactly_one_new_version_then_reuses_
 def test_keyframe_replacement_bypasses_canonical_reuse_even_when_requested(monkeypatch):
     """A pending replacement must always win over Canonical reuse.
 
-    Simulates the exact call shape BREATHING's start-keyframe call makes
-    (allow_canonical_reuse=True passed in by _execute()), but with an active
+    Simulates a caller opting into Canonical reuse (allow_canonical_reuse=True;
+    _execute() no longer does since HOME moved to STAND_READY), with an active
     keyframe_replacement_requests["NEUTRAL_IDLE"] entry pinned to the current
     latest version — an operator explicitly asked for a fresh generated
     candidate, so the alias-Canonical shortcut must not fire even though the
@@ -454,8 +454,7 @@ def test_keyframe_replacement_bypasses_canonical_reuse_even_when_requested(monke
         },
     )
 
-    # Mirrors _execute(): BREATHING's NEUTRAL_IDLE start call always asks
-    # for reuse — the replacement pin must still win.
+    # Even when a caller asks for reuse, the replacement pin must still win.
     built, run = _run(runs._keyframe(run, "NEUTRAL_IDLE", allow_canonical_reuse=True))
     assert built.id == replacement.id
     assert len(build_calls) == 1

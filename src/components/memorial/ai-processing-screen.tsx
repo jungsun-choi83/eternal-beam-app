@@ -44,8 +44,11 @@ import { setPendingCutout } from "@/lib/pending-generation";
 import {
   persistPhase1Intake,
   buildPhase1IntakeReceipt,
+  Phase1IntakeError,
   type ReadyIntakePair,
 } from "@/lib/original-reference";
+import { beginIntakePass, type IntakePass } from "@/lib/reference-sync";
+import { isPhase1LockedError } from "@/lib/pet-input-lock";
 import { getEternalBeamUserId } from "@/lib/eternal-beam-user";
 import { getPremiumAccessToken } from "@/lib/premium-auth-token";
 import { syncEternalBeamIdentity } from "@/lib/supabase-auth";
@@ -430,6 +433,8 @@ export function AIProcessingScreen({
   const [showCompare, setShowCompare] = useState(false);
   const [idlePreviewUrl, setIdlePreviewUrl] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
+  /** 사진 집합 동기화가 건너뛰어졌거나 실패했을 때의 **비차단** 알림. */
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
   const [step1Index, setStep1Index] = useState(0);
   const [step1Fading, setStep1Fading] = useState(false);
   const [step2Index, setStep2Index] = useState(0);
@@ -452,6 +457,22 @@ export function AIProcessingScreen({
           : [],
     [uploadedImages, uploadedImage],
   );
+
+  /**
+   * 지금 UI 에 있는 **모든** 사진 — 업로드 대상만 추린 intakeImages 가 아니다.
+   * 서버 동기화는 이 목록에 없는 원본을 물리므로, 한 장이라도 빠지면 안 된다.
+   */
+  const currentPhotos = useMemo(
+    () =>
+      uploadedImages && uploadedImages.length > 0
+        ? uploadedImages
+        : uploadedImage
+          ? [uploadedImage]
+          : [],
+    [uploadedImages, uploadedImage],
+  );
+  const currentPhotosRef = useRef(currentPhotos);
+  currentPhotosRef.current = currentPhotos;
 
   useEffect(() => {
     if (intakeImages.length === 0) return;
@@ -570,9 +591,13 @@ export function AIProcessingScreen({
     };
 
     (async () => {
+      // 이 펫의 처리 패스. 끝나면(성공·실패·취소 모두) 반드시 닫는다 — 닫지 않으면
+      // 같은 펫의 다음 패스가 시작하지 못한다.
+      let intakePass: IntakePass | null = null;
       setProcessingActive(true);
       await new Promise((r) => setTimeout(r, 50));
       setError(null);
+      setSyncNotice(null);
       setCutoutPreview(null);
       setShowCompare(false);
       setIdlePreviewUrl(null);
@@ -603,6 +628,25 @@ export function AIProcessingScreen({
         let successCount = 0;
         let failedCount = 0;
         const total = intakeImages.length;
+
+        // 업로드 **전에** 대장을 지금의 사진 집합에 맞춘다: 빠지거나 바뀐 사진이
+        // 물러나 자리가 비므로, 교체한 사진이 같은 패스에서 409 없이 올라간다.
+        // 같은 펫의 앞선 패스가 아직 돌고 있으면 그것이 끝날 때까지 기다린다.
+        // 동기화 실패는 패스를 막지 않는다 — 알림만 띄운다.
+        intakePass = await beginIntakePass({
+          petId: stableIdentity.petId,
+          photos: currentPhotosRef.current,
+          accessToken: auth.token,
+          isCurrent: () => !cancelled && myToken === runTokenRef.current,
+          onNotice: (notice) => {
+            if (cancelled || myToken !== runTokenRef.current) return;
+            setSyncNotice(notice.kind === "hash_failed" ? t.syncSkippedNotice : t.syncFailedNotice);
+          },
+        });
+        if (!intakePass) return; // 기다리는 사이 이 패스가 낡았다
+        // 생성이 이미 시작된 펫이다 — 사진을 더 올리지 않고 그 사실을 알려 준다.
+        if (intakePass.locked) throw new Error(t.photosLocked);
+        const preSyncOk = intakePass.preSyncOk;
 
         for (let index = 0; index < total; index += 1) {
           const sourceImage = intakeImages[index];
@@ -694,13 +738,28 @@ export function AIProcessingScreen({
               setShowCompare(true);
             }
           } catch (imageError) {
-            const msg = imageError instanceof Error ? imageError.message : String(imageError);
+            let msg = imageError instanceof Error ? imageError.message : String(imageError);
+            if (
+              imageError instanceof Phase1IntakeError &&
+              imageError.code === "PHASE1_ORIGINAL_LIMIT"
+            ) {
+              // 자리가 없다는 뜻이다. 사전 동기화가 실패했다면 뺀 사진이 아직
+              // 자리를 쥐고 있는 것이므로, 무엇을 하면 되는지 알려 준다.
+              msg = preSyncOk ? t.originalLimitReached : t.originalLimitAfterSyncFailure;
+            } else if (isPhase1LockedError(imageError)) {
+              // 다른 탭이나 예전 앱이 그 사이 생성을 시작했다.
+              msg = t.photosLocked;
+            }
             onImageStateChangeRef.current?.(index, { status: "error", error: msg });
             failedCount += 1;
           }
 
           if (cancelled || myToken !== runTokenRef.current) return;
         }
+
+        // 루프 **뒤에** 같은 전체 목록으로 한 번 더 — 멱등한 안전망이다. 이번
+        // 패스에서 업로드가 실패한 사진도 목록에 있으므로 예전 행은 살아남는다.
+        await intakePass.finish({ syncAfter: true });
 
         dumpImageTrace();
 
@@ -773,6 +832,8 @@ export function AIProcessingScreen({
           fail(msg);
         }
       } finally {
+        // 취소·예외로 루프를 빠져나온 경우에도 패스를 닫는다 (이미 닫혔으면 무동작).
+        await intakePass?.finish({ syncAfter: false });
         if (!cancelled && myToken === runTokenRef.current) {
           setProcessingActive(false);
         }
@@ -879,6 +940,12 @@ export function AIProcessingScreen({
 
             {!error && currentStep === 0 && elapsedSec >= 3 ? (
               <p className="ai-processing-screen__hint">{t.waitHint}</p>
+            ) : null}
+
+            {syncNotice && !error ? (
+              <div className="eb-notice eb-notice--warning" role="status">
+                {syncNotice}
+              </div>
             ) : null}
 
             {error ? (

@@ -35,6 +35,11 @@ video_anchor 계약). 브라우저 재생기(idle-loop-video)는 세 모드만 �
   vitmatte         기존 스틸 매팅 스택(YOLO→SAM2→ViTMatte)을 프레임마다 호출.
                    품질 우선, 무겁다. MOTION_DELIVERY_MATTE_BACKEND=vitmatte.
 
+bgmodel 결과는 포장 전에 내부 구멍 QA(matte_hole_qa)를 거친다. 실루엣 안쪽에
+둘러싸인 투명 구멍이 여러 표본 프레임에서 반복되면 같은 raw 를 vitmatte 로
+**한 번** 다시 포장한다 (MOTION_DELIVERY_HOLE_QA=0 으로 끈다). 메타:
+delivery.matte_fallback.
+
 시간 안정화는 백엔드와 무관하게 적용된다: 3프레임 시간 중앙값(단일 프레임
 구멍/깜빡임 제거) + 제한 EMA(가장자리 펌핑 완화).
 """
@@ -52,7 +57,7 @@ from typing import Any, Callable, Iterator, Optional
 
 import numpy as np
 
-from . import asset_url_refresh, canonical_pet_service, supabase_assets
+from . import asset_url_refresh, canonical_pet_service, matte_hole_qa, supabase_assets
 from . import motion_video_service as motions
 
 logger = logging.getLogger(__name__)
@@ -691,6 +696,60 @@ def _select_matte_backend() -> tuple[str, Callable[[list[np.ndarray]], tuple[lis
     return "bgmodel", matte_bgmodel
 
 
+def _run_matte(
+    backend: Callable[[list[np.ndarray]], tuple[list[np.ndarray], dict[str, Any]]],
+    frames: list[np.ndarray],
+) -> tuple[list[np.ndarray], dict[str, Any]]:
+    alphas, diag = backend(frames)
+    if len(alphas) != len(frames):
+        raise MotionDeliveryError("MATTE_BACKEND_FAILED", "프레임/알파 수가 일치하지 않습니다.")
+    return alphas, diag
+
+
+def _fallback_failed(exc: MotionDeliveryError) -> MotionDeliveryError:
+    """ViTMatte 폴백 실패 — bgmodel 로 되돌아가지 않는다(구멍 난 매트를 내보내지 않는다)."""
+    return MotionDeliveryError(
+        exc.code,
+        f"bgmodel 내부 구멍 QA 실패 후 vitmatte 폴백도 실패했습니다: {exc.message}",
+        status=exc.status,
+    )
+
+
+#: 코트 위험도 — **메타데이터 전용**. 폴백 여부는 오직 구멍 QA 가 정한다.
+_LIGHT_COAT_MIN_LUMA = 190.0
+_LIGHT_COAT_MIN_FRACTION = 0.5
+_DARK_MARKING_MAX_LUMA = 100.0
+
+
+async def _coat_risk(pet_id: str) -> dict[str, Any]:
+    """신원 프로필 코트 팔레트 → 밝은/흰 코트 여부. 실패해도 포장은 계속된다."""
+    from . import pet_background, pet_identity_service
+
+    try:
+        rows = await pet_identity_service._profile_rows(pet_id)
+    except Exception:
+        logger.warning("coat risk: identity profile unavailable (pet=%s)", pet_id, exc_info=True)
+        return {"coat_risk": "unknown", "reason": "profile_unavailable"}
+    if not rows:
+        return {"coat_risk": "unknown", "reason": "no_identity_profile"}
+    latest = max(rows, key=lambda r: int(r.get("version") or 0))
+    colors = pet_background._coat_colors(latest.get("visual_identity"))
+    if not colors:
+        return {"coat_risk": "unknown", "reason": "coat_palette_unavailable"}
+
+    def luma(rgb: list[int]) -> float:
+        return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
+
+    light = sum(c["fraction"] for c in colors if luma(c["rgb"]) >= _LIGHT_COAT_MIN_LUMA)
+    dark = sum(c["fraction"] for c in colors if luma(c["rgb"]) < _DARK_MARKING_MAX_LUMA)
+    return {
+        "coat_risk": "light_or_white" if light >= _LIGHT_COAT_MIN_FRACTION else "not_light",
+        "light_fraction": round(light, 4),
+        "dark_fraction": round(dark, 4),
+        "profile_version": int(latest.get("version") or 0),
+    }
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 시간 안정화
 # ══════════════════════════════════════════════════════════════════════════
@@ -1190,7 +1249,7 @@ async def package_breathing_for_delivery(
         and encode_fn is None
         and matte_fn is None
     )
-    if stream_vitmatte:
+    async def stream_vitmatte_and_upload() -> StreamingPackResult:
         with tempfile.TemporaryDirectory(prefix="eb_delivery_stream_pack_") as td:
             packed_path = os.path.join(td, "out.mp4")
             streamed = stream_vitmatte_to_packed_file(
@@ -1203,6 +1262,17 @@ async def package_breathing_for_delivery(
                     await _maybe_await(upload_fn(derived_path, f.read()))
             else:
                 await _upload_derived(derived_path, packed_path)
+        return streamed
+
+    # bgmodel → 내부 구멍 QA → (실패 시) 같은 raw 를 ViTMatte 로 한 번만 다시 포장.
+    # QA 는 인코딩/업로드 **전에** 돌므로 실패한 bgmodel 포장은 어디에도 남지 않고,
+    # 후보 행은 아래에서 최종 결과로 한 번만 갱신된다.
+    hole_qa: Optional[dict[str, Any]] = None
+    coat: Optional[dict[str, Any]] = None
+    fallback_used = False
+
+    if stream_vitmatte:
+        streamed = await stream_vitmatte_and_upload()
         fps = streamed.fps
         frame_count = streamed.frame_count
         matte_diag = streamed.matte
@@ -1216,28 +1286,76 @@ async def package_breathing_for_delivery(
         if not frames:
             raise MotionDeliveryError("DELIVERY_DECODE_FAILED", "원본에서 프레임을 얻지 못했습니다.")
 
-        alphas, matte_diag = backend(frames)
-        if len(alphas) != len(frames):
-            raise MotionDeliveryError("MATTE_BACKEND_FAILED", "프레임/알파 수가 일치하지 않습니다.")
-
+        alphas, matte_diag = _run_matte(backend, frames)
         alphas, stab_diag = stabilize_alpha(alphas)
-        packed = build_packed_frames(frames, alphas)
-        warnings = validate_packed_frames(packed)
 
-        packed_bytes = (encode_fn or encode_video)(packed, fps)
-        if upload_fn is not None:
-            await _maybe_await(upload_fn(derived_path, packed_bytes))
+        if backend_name == "bgmodel" and matte_hole_qa.hole_qa_enabled():
+            coat = await _coat_risk(pid)
+            hole_qa = matte_hole_qa.evaluate(alphas)
+            fallback_used = not hole_qa["passed"]
+            if fallback_used:
+                logger.info(
+                    "delivery hole QA failed (candidate=%s coat_risk=%s failed=%s/%s "
+                    "max_fraction=%.4f max_count=%d) — repackaging with vitmatte",
+                    cand_id,
+                    coat.get("coat_risk"),
+                    len(hole_qa["failed_frames"]),
+                    len(hole_qa["sampled_frames"]),
+                    hole_qa["max_hole_fraction"],
+                    hole_qa["max_hole_count"],
+                )
+
+        streamed_fallback = fallback_used and decode_fn is None and encode_fn is None
+        if streamed_fallback:
+            del frames, alphas  # 운영 경로: ViTMatte 는 raw 에서 다시 스트리밍한다.
+            try:
+                streamed = await stream_vitmatte_and_upload()
+            except MotionDeliveryError as exc:
+                raise _fallback_failed(exc) from exc
+            fps = streamed.fps
+            frame_count = streamed.frame_count
+            matte_diag = streamed.matte
+            stab_diag = streamed.stabilization
+            warnings = streamed.warnings
         else:
-            await _upload_derived(derived_path, packed_bytes)
-        frame_count = len(frames)
+            if fallback_used:
+                try:
+                    alphas, matte_diag = _run_matte(matte_vitmatte, frames)
+                except MotionDeliveryError as exc:
+                    raise _fallback_failed(exc) from exc
+                alphas, stab_diag = stabilize_alpha(alphas)
+            packed = build_packed_frames(frames, alphas)
+            warnings = validate_packed_frames(packed)
+
+            packed_bytes = (encode_fn or encode_video)(packed, fps)
+            if upload_fn is not None:
+                await _maybe_await(upload_fn(derived_path, packed_bytes))
+            else:
+                await _upload_derived(derived_path, packed_bytes)
+            frame_count = len(frames)
+
+    final_backend = str(matte_diag.get("backend", backend_name))
 
     # ── 후보 갱신 — raw_* 는 절대 만지지 않는다 ────────────────────────────
     meta = dict(candidate.get("generation_metadata") or {})
     meta["delivery"] = {
         "format": DELIVERY_PACKED_ALPHA,
         "packaging_version": PACKAGING_VERSION,
-        "matte_backend": matte_diag.get("backend", backend_name),
+        "matte_backend": final_backend,
         "matte": matte_diag,
+        "matte_fallback": {
+            "requested_backend": backend_name,
+            "final_backend": final_backend,
+            "fallback_used": fallback_used,
+            "fallback_reason": "enclosed_internal_holes" if fallback_used else None,
+            "coat_risk": (coat or {}).get("coat_risk"),
+            "coat": coat,
+            "sampled_frames": (hole_qa or {}).get("sampled_frames"),
+            "failed_frames": (hole_qa or {}).get("failed_frames"),
+            "max_hole_fraction": (hole_qa or {}).get("max_hole_fraction"),
+            "max_hole_count": (hole_qa or {}).get("max_hole_count"),
+            "hole_qa": hole_qa,
+        },
         "stabilization": stab_diag,
         "fps": round(float(fps), 4),
         "frame_count": frame_count,
@@ -1272,7 +1390,7 @@ async def package_breathing_for_delivery(
         raw_video_path=raw_path,
         frame_count=frame_count,
         fps=float(fps),
-        matte_backend=str(matte_diag.get("backend", backend_name)),
+        matte_backend=final_backend,
         warnings=warnings,
         deduplicated=False,
     )

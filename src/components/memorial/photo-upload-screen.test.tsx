@@ -154,3 +154,195 @@ describe("PhotoUploadScreen upload DOM", () => {
     expect(childrenAfter[1]).toBe(wrapperBefore);
   });
 });
+
+describe("PhotoUploadScreen locked photos (generation started)", () => {
+  function LockedHarness({ locked }: { locked: boolean }) {
+    return (
+      <PhotoUploadScreen
+        language="en"
+        uploadedImage="blob:mock/a.png"
+        uploadedImages={["blob:mock/a.png", "blob:mock/b.png"]}
+        onImageUpload={() => {}}
+        onImagesUpload={() => {}}
+        onReplaceImage={() => {}}
+        onRemoveImage={() => {}}
+        maxImages={3}
+        photosLocked={locked}
+        onContinue={() => {}}
+        onBack={() => {}}
+      />
+    );
+  }
+
+  it("before generation: add, replace and remove are all available", () => {
+    const { container } = render(<LockedHarness locked={false} />);
+    expect(screen.queryByText(/can no longer be added, removed or replaced/)).toBeNull();
+    expect(container.querySelectorAll(".pet-intake__thumb")).toHaveLength(2);
+    // 장마다 교체 + 삭제 버튼.
+    expect(container.querySelectorAll(".pet-intake__thumb-btn")).toHaveLength(4);
+    expect(mainFileInput(container).disabled).toBe(false);
+  });
+
+  it("after generation started: photos stay visible but cannot be changed", () => {
+    const { container } = render(<LockedHarness locked />);
+    expect(screen.getByText(/can no longer be added, removed or replaced/)).toBeTruthy();
+    expect(container.querySelectorAll(".pet-intake__thumb")).toHaveLength(2);
+    expect(container.querySelectorAll(".pet-intake__thumb-btn")).toHaveLength(0);
+    expect(mainFileInput(container).disabled).toBe(true);
+  });
+});
+
+// ── 멀티 포토: 한 펫의 사진 배열 / 펫 사이의 격리 ───────────────────────────
+
+/**
+ * EternalBeamApp 의 펫 슬롯 상태를 흉내 낸 부모. 규칙은 앱과 같다:
+ *   - 펫마다 자기 사진 배열 하나 (petSlots[i].uploadedImages)
+ *   - 사진 추가는 **활성 펫의 배열에** 붙는다 (handleImagesUpload)
+ *   - 펫 전환은 활성 번호만 바꾼다 (selectPetSlot) — 배열은 건드리지 않는다
+ *   - Start 는 활성 펫의 배열을 처리 화면에 넘긴다 (uploadedImages={activePetSlot.uploadedImages})
+ * (앱 쪽 배선은 src/lib/multi-photo-submission.test.ts 가 소스로 고정한다.)
+ */
+function MultiPetHarness({ onStart }: { onStart: (petIndex: number, photos: string[]) => void }) {
+  const [slots, setSlots] = useState<string[][]>([[]]);
+  const [active, setActive] = useState(0);
+  const photos = slots[active] ?? [];
+  return (
+    <PhotoUploadScreen
+      language="en"
+      uploadedImage={photos[0] ?? null}
+      uploadedImages={photos}
+      petSlotsCount={slots.length}
+      activePetSlotIndex={active}
+      maxPetSlots={3}
+      onSelectPetSlot={setActive}
+      onAddPetSlot={() => {
+        setSlots((prev) => [...prev, []]);
+        setActive(slots.length);
+      }}
+      onImageUpload={() => {}}
+      onImagesUpload={(files) => {
+        const index = active;
+        setSlots((prev) =>
+          prev.map((slot, i) => (i === index ? [...slot, ...files.map((f) => f.name)].slice(0, 3) : slot)),
+        );
+      }}
+      onRemoveImage={() => {}}
+      onReplaceImage={() => {}}
+      maxImages={3}
+      onContinue={() => onStart(active, photos)}
+      onBack={() => {}}
+    />
+  );
+}
+
+function addPhotoInput(container: HTMLElement) {
+  return container.querySelector<HTMLInputElement>(".pet-intake__add-photo input[type='file']");
+}
+
+function thumbs(container: HTMLElement) {
+  return container.querySelectorAll(".pet-intake__thumb").length;
+}
+
+describe("PhotoUploadScreen multi-photo per pet", () => {
+  it("adds a 2nd and 3rd photo to the SAME pet through the add-photo tile, and Start submits all of them", () => {
+    const onStart = vi.fn();
+    const { container } = render(<MultiPetHarness onStart={onStart} />);
+
+    setInputFiles(mainFileInput(container), [makeImageFile("A.png")]);
+    expect(thumbs(container)).toBe(1);
+    fireEvent.click(screen.getByText("Start"));
+    expect(onStart).toHaveBeenLastCalledWith(0, ["A.png"]);
+
+    // 사진이 한 장 있으면 "같은 아이에 사진 추가" 타일이 보인다.
+    expect(screen.getByText("Add photo")).toBeTruthy();
+    setInputFiles(addPhotoInput(container)!, [makeImageFile("B.png")]);
+    expect(thumbs(container)).toBe(2);
+    fireEvent.click(screen.getByText("Start"));
+    expect(onStart).toHaveBeenLastCalledWith(0, ["A.png", "B.png"]);
+
+    setInputFiles(addPhotoInput(container)!, [makeImageFile("C.png")]);
+    expect(thumbs(container)).toBe(3);
+    fireEvent.click(screen.getByText("Start"));
+    expect(onStart).toHaveBeenLastCalledWith(0, ["A.png", "B.png", "C.png"]);
+
+    // 여전히 펫은 하나다 — 사진을 더했다고 펫이 늘지 않는다.
+    expect(container.querySelectorAll(".pet-intake__tab")).toHaveLength(1);
+    // 3장이 차면 추가 타일은 사라진다.
+    expect(addPhotoInput(container)).toBeNull();
+    expect(screen.queryByText("Add photo")).toBeNull();
+  });
+
+  it("several files picked at once all go to the active pet", () => {
+    const onStart = vi.fn();
+    const { container } = render(<MultiPetHarness onStart={onStart} />);
+    setInputFiles(mainFileInput(container), [makeImageFile("A.png"), makeImageFile("B.png"), makeImageFile("C.png")]);
+    fireEvent.click(screen.getByText("Start"));
+    expect(onStart).toHaveBeenLastCalledWith(0, ["A.png", "B.png", "C.png"]);
+  });
+
+  it("each pet keeps its own photos: Pet 1's never enter Pet 2's submission, and switching preserves both", () => {
+    const onStart = vi.fn();
+    const { container } = render(<MultiPetHarness onStart={onStart} />);
+
+    setInputFiles(mainFileInput(container), [makeImageFile("A.png"), makeImageFile("B.png"), makeImageFile("C.png")]);
+    expect(thumbs(container)).toBe(3);
+
+    // "Add pet" 는 **새 펫**을 만든다 — 사진을 더하는 버튼이 아니다.
+    fireEvent.click(screen.getByText("Add pet"));
+    expect(container.querySelectorAll(".pet-intake__tab")).toHaveLength(2);
+    expect(thumbs(container)).toBe(0);
+    setInputFiles(mainFileInput(container), [makeImageFile("D.png")]);
+    expect(thumbs(container)).toBe(1);
+    fireEvent.click(screen.getByText("Start"));
+    expect(onStart).toHaveBeenLastCalledWith(1, ["D.png"]);
+
+    // 펫 1로 돌아가면 세 장이 그대로다.
+    fireEvent.click(screen.getByText("Pet 1"));
+    expect(thumbs(container)).toBe(3);
+    fireEvent.click(screen.getByText("Start"));
+    expect(onStart).toHaveBeenLastCalledWith(0, ["A.png", "B.png", "C.png"]);
+
+    // 다시 펫 2 — 한 장 그대로, 펫 1의 사진은 섞이지 않았다.
+    fireEvent.click(screen.getByText("Pet 2"));
+    expect(thumbs(container)).toBe(1);
+    setInputFiles(addPhotoInput(container)!, [makeImageFile("E.png")]);
+    fireEvent.click(screen.getByText("Start"));
+    expect(onStart).toHaveBeenLastCalledWith(1, ["D.png", "E.png"]);
+
+    fireEvent.click(screen.getByText("Pet 1"));
+    fireEvent.click(screen.getByText("Start"));
+    expect(onStart).toHaveBeenLastCalledWith(0, ["A.png", "B.png", "C.png"]);
+  });
+
+  it("the add-photo tile is not offered for a locked pet or an empty one", () => {
+    const { container, rerender } = render(
+      <PhotoUploadScreen
+        language="en"
+        uploadedImage="blob:mock/a.png"
+        uploadedImages={["blob:mock/a.png"]}
+        onImageUpload={() => {}}
+        onImagesUpload={() => {}}
+        maxImages={3}
+        photosLocked
+        onContinue={() => {}}
+        onBack={() => {}}
+      />,
+    );
+    expect(addPhotoInput(container)).toBeNull();
+
+    rerender(
+      <PhotoUploadScreen
+        language="en"
+        uploadedImage={null}
+        uploadedImages={[]}
+        onImageUpload={() => {}}
+        onImagesUpload={() => {}}
+        maxImages={3}
+        onContinue={() => {}}
+        onBack={() => {}}
+      />,
+    );
+    // 빈 자리에서는 큰 선택 영역이 그 역할을 한다.
+    expect(addPhotoInput(container)).toBeNull();
+  });
+});

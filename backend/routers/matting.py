@@ -121,14 +121,22 @@ async def post_matting_cutout(
             try:
                 from ..services import pet_reference_service
 
-                await pet_reference_service.record_derived(
-                    user_id=user_id,
-                    content_id=cid,
-                    object_path=path,
-                    derived_kind="cutout_vitmatte",
-                    mime_type="image/png",
-                    diagnostics=quality_meta,
-                )
+                # 잠긴 펫(생성이 시작됨)에는 새 누끼 행을 남기지 않는다. 판정
+                # 불가(예외)도 아래 except 로 떨어져 기록하지 않는다. 누끼 응답
+                # 계약은 그대로다.
+                if await pet_reference_service.pet_inputs_locked(
+                    pet_reference_service.pet_id_for_content(cid)
+                ):
+                    logger.info("matting/cutout: 잠긴 펫이라 누끼를 대장에 남기지 않는다 (cid=%s)", cid)
+                else:
+                    await pet_reference_service.record_derived(
+                        user_id=user_id,
+                        content_id=cid,
+                        object_path=path,
+                        derived_kind="cutout_vitmatte",
+                        mime_type="image/png",
+                        diagnostics=quality_meta,
+                    )
             except Exception:
                 logger.warning(
                     "matting/cutout: 파생 레퍼런스 기록 실패 (cid=%s)", cid, exc_info=True

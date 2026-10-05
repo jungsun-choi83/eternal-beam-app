@@ -266,7 +266,8 @@ def test_all_roles_exist_and_keyframes_are_reused():
         if m.target_keyframe_role:
             assert m.target_keyframe_role in kf_spec.KEYFRAME_ROLES
     # 하나의 키프레임이 여러 모션을 감당한다 — 불필요한 스틸 생성 방지.
-    assert len(ms.motions_for_keyframe_role("NEUTRAL_IDLE")) >= 5
+    # v16: 그 하나가 STAND_READY(HOME) 다 — 홈/아이들/서기 액션 전부.
+    assert len(ms.motions_for_keyframe_role("STAND_READY")) >= 10
     lie_users = ms.motions_for_keyframe_role("LIE")
     assert {"LIE_IDLE", "LIE_DOWN", "STAND_UP", "FALL_ASLEEP"} <= set(lie_users)
 
@@ -274,7 +275,7 @@ def test_all_roles_exist_and_keyframes_are_reused():
 def test_transitions_declare_explicit_start_target_pairs():
     pairs = {
         "LIE_DOWN": ("STAND_READY", "LIE"),  # Phase 4: 눕기는 선 자세에서 시작
-        "STAND_UP": ("LIE", "NEUTRAL_IDLE"),
+        "STAND_UP": ("LIE", "STAND_READY"),  # v16: 홈(STAND_READY)으로 복귀
         "FALL_ASLEEP": ("LIE", "SLEEP"),
         "WAKE_UP": ("SLEEP", "LIE"),
     }
@@ -304,16 +305,20 @@ def test_sit_stand_bridges_repair_seated_home_seam():
         assert spec.requires_target_keyframe is True
         assert spec.preferred_video_strategy == ms.STRATEGY_START_END
         assert spec.loopable is False
-    # STAND_UP 은 브리지가 필요 없다 — 끝 프레임이 곧 홈(NEUTRAL_IDLE) 키프레임
-    # 이미지라 눕기→홈 복귀는 구성상 이음매가 없다. 여기를 STAND_READY 로 바꾸면
-    # 없던 이음매가 생긴다.
-    assert ms.MOTIONS["STAND_UP"].target_keyframe_role == "NEUTRAL_IDLE"
+    # STAND_UP 은 브리지가 필요 없다 — 끝 프레임이 곧 홈 키프레임 이미지라
+    # 눕기→홈 복귀는 구성상 이음매가 없다. v16 부터 홈은 STAND_READY 다:
+    # 목표가 홈 역할과 어긋나면 없던 이음매가 생긴다.
+    assert (
+        ms.MOTIONS["STAND_UP"].target_keyframe_role
+        == ms.MOTIONS["BREATHING"].start_keyframe_role
+        == "STAND_READY"
+    )
 
 
 def test_interaction_does_not_require_human_in_keyframe():
     spec = ms.MOTIONS["PET_HEAD"]
     assert spec.motion_class == ms.CLASS_INTERACTION
-    assert spec.start_keyframe_role == "NEUTRAL_IDLE"
+    assert spec.start_keyframe_role == "STAND_READY"
     assert spec.video_compat["requires_human_in_keyframe"] is False
 
 
@@ -331,7 +336,7 @@ def test_locomotion_exposes_motion_reference_metadata():
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def _prepare_keyframes(monkeypatch, storage, roles=("NEUTRAL_IDLE",)):
+def _prepare_keyframes(monkeypatch, storage, roles=("STAND_READY",)):
     h, canonical = _prepare_canonical(monkeypatch, storage)
     install_kf_vlm(monkeypatch, VLM_KF_OK)
     built = {}
@@ -353,8 +358,8 @@ def test_micro_resolves_single_reusable_keyframe(storage, monkeypatch):
     assert breath["target_keyframe"] is None
     assert breath["loopable"] is True and blink["loopable"] is False
     # 두 모션이 **같은** 키프레임을 재사용한다.
-    assert breath["start_keyframe"]["keyframe_id"] == built["NEUTRAL_IDLE"].id
-    assert blink["start_keyframe"]["keyframe_id"] == built["NEUTRAL_IDLE"].id
+    assert breath["start_keyframe"]["keyframe_id"] == built["STAND_READY"].id
+    assert blink["start_keyframe"]["keyframe_id"] == built["STAND_READY"].id
     assert breath["start_keyframe"]["raw"]["object_path"]
     assert breath["canonical_version_id"] == canonical.id
     inherited = breath["start_keyframe"]["approved_qa_evidence"]
@@ -363,6 +368,46 @@ def test_micro_resolves_single_reusable_keyframe(storage, monkeypatch):
     assert {"identity", "pose", "morphology_profile", "reference_set"} <= set(
         inherited["domains"]
     )
+
+
+HOME_FAMILY = (
+    "BREATHING", "BLINKING", "EAR_TWITCHING", "HEAD_TILTING", "TAIL_WAGGING",
+    "LOOK_UP", "PET_HEAD",
+)
+
+
+def test_home_family_and_standing_actions_start_from_stand_ready():
+    """v16: HOME = STAND_READY. 홈·아이들·서기 액션이 전부 같은 역할에서 시작한다."""
+    for mid in HOME_FAMILY + ("COME_CLOSER", "LIE_DOWN", "RUN", "WALK"):
+        assert ms.MOTIONS[mid].start_keyframe_role == "STAND_READY", mid
+    # 런타임 모션 중 NEUTRAL_IDLE 에서 시작/종료하는 것은 휴면 중인 앉기 전이뿐이다.
+    assert set(ms.motions_for_keyframe_role("NEUTRAL_IDLE")) == {
+        "SIT_TO_STAND", "STAND_TO_SIT", "SIT_DOWN",
+    }
+    assert ms.MOTIONS["BREATHING"].description == "Calm, natural resting breathing only."
+    assert ms.MOTION_SPEC_VERSION == "motion-spec-v16"
+
+
+def test_one_stand_ready_keyframe_serves_home_idles_and_come_closer(storage, monkeypatch):
+    """홈/아이들/COME_CLOSER 가 **하나의** STAND_READY 키프레임을 공유한다 —
+    모션마다 서기 스틸을 따로 만들지 않고, NEUTRAL_IDLE 은 필요 없다."""
+    h, canonical, built = _prepare_keyframes(monkeypatch, storage, roles=("STAND_READY",))
+    home = built["STAND_READY"]
+
+    for mid in HOME_FAMILY + ("COME_CLOSER",):
+        contract = _resolve(mid)
+        assert contract["start_keyframe"]["role"] == "STAND_READY", mid
+        assert contract["start_keyframe"]["keyframe_id"] == home.id, mid
+        assert contract["start_keyframe"]["version"] == home.version, mid
+        assert contract["canonical_version_id"] == canonical.id, mid
+
+    # 다시 빌드를 요청해도 같은 버전이 재사용된다 — 유료 호출 0, 새 행 0.
+    provider = FakeProvider("runway", [GOOD(), GOOD(), GOOD()])
+    again = _build_kf(h, [provider], role="STAND_READY")
+    assert again.id == home.id and again.version == home.version
+    assert provider.calls == 0
+    rows = _run(kf.list_keyframes(user_id=USER, pet_id=PET))
+    assert [k.keyframe_role for k in rows] == ["STAND_READY"]
 
 
 def test_transition_resolves_start_and_target(storage, monkeypatch):
@@ -394,7 +439,7 @@ def test_missing_start_keyframe_fails_safely(storage, monkeypatch):
 def test_advisory_review_keyframe_is_business_deliverable(storage, monkeypatch):
     h, _ = _prepare_canonical(monkeypatch, storage)
     install_kf_vlm(monkeypatch, None)  # VLM 없음 → legacy REVIEW evidence
-    k = _build_kf(h, [FakeProvider("runway", [GOOD(), GOOD(), GOOD()])])
+    k = _build_kf(h, [FakeProvider("runway", [GOOD(), GOOD(), GOOD()])], role="STAND_READY")
     assert k.status == kf.STATUS_COMPLETE
     assert k.candidates[0].decision == "REVIEW"
     assert k.candidates[0].qa_result["business_qa"]["delivery_action"] == "DELIVER_WITH_ADVISORY"

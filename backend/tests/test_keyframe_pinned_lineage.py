@@ -33,7 +33,7 @@ from .test_pet_identity_profile import make_pet_cutout_png
 from .test_pet_reference_sets import PET, USER, Harness
 
 RUN_ID = "00000000-0000-0000-0000-0000000377b6"
-ROLE = "NEUTRAL_IDLE"
+ROLE = "STAND_READY"
 
 
 def _run(coro):

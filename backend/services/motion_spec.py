@@ -12,8 +12,9 @@ IDLE_TEMPLATE_ORDER 의 5개 키는 BREATHING 계열의 **생성 변형**이지 
 모션이 아니다 — 여기 등장하지 않는다.
 
 ── 키프레임 재사용 ─────────────────────────────────────────────────────────
-모션은 시작(및 전이면 목표) 키프레임 **역할**만 가리킨다. NEUTRAL_IDLE 하나가
-호흡/깜빡임/귀/머리/꼬리 모션 전부를 감당한다 — 불필요한 스틸을 만들지 않는다.
+모션은 시작(및 전이면 목표) 키프레임 **역할**만 가리킨다. STAND_READY(HOME)
+하나가 호흡/깜빡임/귀/머리/꼬리 모션과 서서 시작하는 액션 전부를 감당한다 —
+불필요한 스틸을 만들지 않는다 (v16 이전에는 NEUTRAL_IDLE 이 이 자리였다).
 
 ── 전략 ────────────────────────────────────────────────────────────────────
 MICRO       IMAGE_TO_VIDEO          시작 포즈로 되돌아오는 작은 움직임
@@ -88,7 +89,16 @@ from .business_qa import (
 #     structural_morphology_consistency 를 정본 요구사항으로 선언.
 # v15: 모션 클래스 기본 + 모션별 override 가능한 영상 provider 순서를 이 파일의
 #      정본으로 이동. 생성 서비스/adapter registry 는 이 순서를 소비할 뿐이다.
-MOTION_SPEC_VERSION = "motion-spec-v15"
+# v16 (2026-10-05, STAND_READY = HOME): 홈(BREATHING)과 서 있는 홈 아이들 계열
+#      (BLINKING/EAR_TWITCHING/HEAD_TILTING/TAIL_WAGGING/LOOK_UP/PET_HEAD)의 시작
+#      키프레임을 NEUTRAL_IDLE → STAND_READY 로 이관하고, STAND_UP 의 목표도
+#      STAND_READY 로 맞춘다 (홈으로 복귀하는 전이). 이제 홈·아이들·COME_CLOSER·
+#      LIE_DOWN 이 **하나의** STAND_READY 스틸을 공유한다 — 아이들 사이 자세
+#      점프도, 정본의 나쁜 자세가 홈이 되는 일도 없다. BREATHING 서술은
+#      제품 계약의 정확한 문구로 고정하고, 전략/길이/provider 순서는 불변이다.
+#      ⚠️ v11 과 같은 주의: 이 범프로 v15 이하에 핀된 FAILED 런은 재시도 시
+#      _stale_motion_pin 이 언핀하고 현행 스펙으로 재생성한다(유료).
+MOTION_SPEC_VERSION = "motion-spec-v16"
 # v2 (Phase 6.6): pet_motion_profile 추가 + motion_reference 가 라이브러리에서
 # 해석된 실제 자산/버전/호환성/출처를 담는다 (미해석 시 기존 v1 형태 + 경고 유지).
 # v3 (Phase 4): resolve 계약에 motion_type + requirements 를 동봉한다.
@@ -204,27 +214,25 @@ MOTIONS: dict[str, MotionSpec] = {
     # ── MICRO — 기존 런타임 모션 id 그대로 ──────────────────────────────
     BREATHING_HOME_STATE: _micro(
         BREATHING_HOME_STATE,
-        "Calm, natural resting breathing. "
-        "Small natural movement in the shoulders, head and fur is allowed. "
-        "The pet stays in the same overall pose and position. "
-        "Do not walk, slide, translate, stretch, squash or uniformly scale the whole body.",
-        "NEUTRAL_IDLE", loopable=True,
+        "Calm, natural resting breathing only.",
+        "STAND_READY", loopable=True,
     ),
-    "BLINKING": _micro("BLINKING", "자연스러운 눈 깜빡임 1~2회", "NEUTRAL_IDLE"),
-    "EAR_TWITCHING": _micro("EAR_TWITCHING", "귀 움찔거림", "NEUTRAL_IDLE"),
-    "HEAD_TILTING": _micro("HEAD_TILTING", "호기심 어린 고개 갸웃", "NEUTRAL_IDLE"),
-    "TAIL_WAGGING": _micro("TAIL_WAGGING", "부드러운 꼬리 흔들기", "NEUTRAL_IDLE"),
+    "BLINKING": _micro("BLINKING", "자연스러운 눈 깜빡임 1~2회", "STAND_READY"),
+    "EAR_TWITCHING": _micro("EAR_TWITCHING", "귀 움찔거림", "STAND_READY"),
+    "HEAD_TILTING": _micro("HEAD_TILTING", "호기심 어린 고개 갸웃", "STAND_READY"),
+    "TAIL_WAGGING": _micro("TAIL_WAGGING", "부드러운 꼬리 흔들기", "STAND_READY"),
     # ── MICRO — 새 모션 (기존 어디에도 없던 것만 새 id) ─────────────────
-    # v9: 상용화하며 시작 키프레임을 NEUTRAL_IDLE 로 — 중립 자세에서 올려다보고
-    # 되돌아오는 모션이므로 전용 LOOK_UP 스틸이 필요 없다(키프레임 재사용 원칙,
-    # 추가 생성 비용 0). 서술은 PET_HEAD v8 과 같은 긍정형 영어 장면 묘사.
+    # v9: 상용화하며 전용 LOOK_UP 스틸 대신 홈 키프레임을 재사용 — 홈 자세에서
+    # 올려다보고 되돌아오는 모션이다(키프레임 재사용 원칙, 추가 생성 비용 0).
+    # v16 부터 그 홈 키프레임은 STAND_READY 다. 서술은 PET_HEAD v8 과 같은
+    # 긍정형 영어 장면 묘사.
     "LOOK_UP": _micro(
         "LOOK_UP",
         "The pet lifts its head and looks up attentively, as if hearing a "
         "familiar voice from above. It holds the upward gaze for a moment with "
         "a soft curious expression, then naturally lowers its head back to the "
         "exact starting pose",
-        "NEUTRAL_IDLE",
+        "STAND_READY",
     ),
     "HAPPY": _micro("HAPPY", "반가운 알림 반응 — 귀 쫑긋, 밝은 표정, 가벼운 몸짓", "HAPPY"),
     "LIE_IDLE": _micro(
@@ -255,6 +263,8 @@ MOTIONS: dict[str, MotionSpec] = {
     # STAND_READY 포즈끼리 맞아 어떤 디졸브보다 깨끗하다. **수요 기반**이다:
     # 홈이 이미 서 있는 펫은 생성할 이유가 없고(자산 없음 = 런타임이 직행),
     # 생성 여부 결정이 곧 "브리지를 틀 것인가"의 신호다.
+    # v16: 홈이 항상 STAND_READY 라 두 브리지는 수요가 없다(자산 없음 = 런타임
+    # 직행). 정의는 바이트 단위로 그대로 둔다 — 앉은 자세 홈을 다시 들일 때 쓴다.
     "SIT_TO_STAND": MotionSpec(
         motion_id="SIT_TO_STAND", motion_class=CLASS_TRANSITION,
         description="From its current relaxed neutral pose, the pet smoothly "
@@ -280,7 +290,7 @@ MOTIONS: dict[str, MotionSpec] = {
         description="From lying on its belly, the pet pushes up with its front "
         "legs and rises smoothly back to the standing pose shown in the second "
         "frame, ending calm and balanced",
-        start_keyframe_role="LIE", target_keyframe_role="NEUTRAL_IDLE",
+        start_keyframe_role="LIE", target_keyframe_role="STAND_READY",
         requires_target_keyframe=True, preferred_video_strategy=STRATEGY_START_END,
         duration_range_sec=(2.0, 4.0),
         video_compat={"returns_to_start_pose": False, "motion_scale": "body"},
@@ -370,7 +380,7 @@ MOTIONS: dict[str, MotionSpec] = {
         "fully visible inside the frame throughout the motion, with clear safe space above "
         "the head. Do not raise the head far enough to leave the frame or crop any part of "
         "the face. The pet then returns naturally to the starting pose.",
-        start_keyframe_role="NEUTRAL_IDLE",
+        start_keyframe_role="STAND_READY",
         preferred_video_strategy=STRATEGY_I2V,
         duration_range_sec=(3.0, 5.0),
         video_compat={"returns_to_start_pose": True, "motion_scale": "micro",
@@ -1135,6 +1145,9 @@ async def resolve_video_generation_spec(
     pinned_morphology = None
     morphology_pin_declared = False
     morphology_pin_version: Optional[int] = None
+    #: 이 키프레임 계보의 정본이 고른 배경 (pet_background) — 모션 단계가 플레이트를
+    #: 다시 만들어야 할 때 같은 색을 쓰도록 계약에 실어 보낸다. 다시 고르지 않는다.
+    lineage_background: Optional[dict[str, Any]] = None
     try:
         canonical = None
         if getattr(start, "canonical_version", None):
@@ -1142,6 +1155,12 @@ async def resolve_video_generation_spec(
                 user_id=user_id,
                 pet_id=pet_id,
                 version=int(getattr(start, "canonical_version")),
+            )
+        if canonical is not None:
+            from . import pet_background
+
+            lineage_background = pet_background.from_output_spec(
+                getattr(canonical, "output_spec", None)
             )
         if canonical and canonical.reference_set_version:
             refset = await pet_reference_set_service.get_set(
@@ -1252,5 +1271,6 @@ async def resolve_video_generation_spec(
             "allow_generated_hand": bool(spec.video_compat.get("allow_generated_hand")),
         },
         "canonical_version_id": start.canonical_version_id,
+        "background": lineage_background,
         "warnings": warnings,
     }

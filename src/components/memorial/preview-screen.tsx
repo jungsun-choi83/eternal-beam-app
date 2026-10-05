@@ -66,6 +66,7 @@ import {
 } from "@/lib/generation-run-api";
 import { deriveGenerationProgress, isRecoverableErrorCode } from "@/lib/generation-progress";
 import { GenerationProgressScreen } from "@/components/memorial/generation-progress-screen";
+import { MotionQAFeedback, type MotionQAComplaint } from "@/components/memorial/motion-qa-feedback";
 import { useProcessingClock } from "@/lib/use-processing-clock";
 import { getEternalBeamPetId } from "@/lib/pet-identity";
 import {
@@ -1150,7 +1151,7 @@ function PreviewScreenInner({
     )?.enrolled
   );
   const handleUserTestFeedback = useCallback(
-    async (accepted: boolean, complaint?: "IDENTITY" | "ANATOMY" | "MOTION") => {
+    async (accepted: boolean, complaint?: MotionQAComplaint) => {
       if (!runState?.run_id || userTestFeedback === "submitting") return;
       setUserTestFeedback("submitting");
       try {
@@ -1571,58 +1572,14 @@ function PreviewScreenInner({
 
             <p className="preview-composer__hint">{p.beamHint}</p>
 
-            {!isLibraryFlow && userTestEnrolled ? (
-              <div
-                className="rounded-2xl border border-white/10 bg-white/5 p-3"
-                data-business-qa-feedback
-              >
-                <p className="mb-2 text-sm text-white/80">
-                  {language === "en"
-                    ? "Does this feel like your pet?"
-                    : "우리 아이답게 느껴지나요?"}
-                </p>
-                {userTestFeedback === "sent" ? (
-                  <p className="text-sm text-white/70" role="status">
-                    {language === "en" ? "Thank you for your feedback." : "의견을 남겨주셔서 감사합니다."}
-                  </p>
-                ) : (
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      className="mem-btn-secondary"
-                      disabled={userTestFeedback === "submitting"}
-                      onClick={() => void handleUserTestFeedback(true)}
-                    >
-                      {language === "en" ? "Yes" : "네"}
-                    </button>
-                    {(["IDENTITY", "ANATOMY", "MOTION"] as const).map((complaint) => (
-                      <button
-                        key={complaint}
-                        type="button"
-                        className="mem-btn-secondary"
-                        disabled={userTestFeedback === "submitting"}
-                        onClick={() => void handleUserTestFeedback(false, complaint)}
-                      >
-                        {language === "en"
-                          ? `Issue: ${complaint.toLowerCase()}`
-                          : complaint === "IDENTITY"
-                            ? "닮지 않음"
-                            : complaint === "ANATOMY"
-                              ? "신체 이상"
-                              : "움직임 이상"}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {userTestFeedback === "error" ? (
-                  <p className="mt-2 text-sm text-red-300" role="alert">
-                    {language === "en"
-                      ? "Feedback could not be saved. Please try again."
-                      : "의견을 저장하지 못했습니다. 다시 시도해 주세요."}
-                  </p>
-                ) : null}
-              </div>
-            ) : null}
+            {/* 내부 QA 컨트롤 — 고객 화면에는 나오지 않는다. 개발 빌드에서
+                VITE_INTERNAL_MOTION_QA=1 로 명시적으로 켠 경우에만 렌더된다. */}
+            <MotionQAFeedback
+              enrolled={!isLibraryFlow && userTestEnrolled}
+              language={language}
+              status={userTestFeedback}
+              onFeedback={(accepted, complaint) => void handleUserTestFeedback(accepted, complaint)}
+            />
 
             {onOpenMembership ? (
               <button

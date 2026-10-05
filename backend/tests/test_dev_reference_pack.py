@@ -197,10 +197,10 @@ def test_pack_keyframes_are_reusable_by_motion_runs_by_role(storage, monkeypatch
         assert latest.status == kf.STATUS_COMPLETE, role
 
     # (b) Phase 6 리졸버가 추가 생성 없이 시작(+목표) 키프레임을 해석한다 —
-    #     NEUTRAL_IDLE 시작(BREATHING), STAND_READY 시작(COME_CLOSER),
+    #     STAND_READY 시작(BREATHING = HOME, COME_CLOSER — 같은 키프레임),
     #     STAND_READY→LIE 전이(LIE_DOWN)까지 팩만으로 충분하다.
     breath = _run(ms.resolve_video_generation_spec(user_id=USER, pet_id=PET, motion_id="BREATHING"))
-    assert breath["start_keyframe"]["keyframe_id"] == report["keyframes"]["NEUTRAL_IDLE"]["id"]
+    assert breath["start_keyframe"]["keyframe_id"] == report["keyframes"]["STAND_READY"]["id"]
     closer = _run(ms.resolve_video_generation_spec(user_id=USER, pet_id=PET, motion_id="COME_CLOSER"))
     assert closer["start_keyframe"]["keyframe_id"] == report["keyframes"]["STAND_READY"]["id"]
     lie_down = _run(ms.resolve_video_generation_spec(user_id=USER, pet_id=PET, motion_id="LIE_DOWN"))

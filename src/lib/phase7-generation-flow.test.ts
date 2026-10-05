@@ -644,8 +644,18 @@ test("Phase 12 cohort preview exposes the existing feedback API without generati
     new URL("../components/memorial/preview-screen.tsx", import.meta.url),
     "utf8"
   );
-  assert.match(source, /data-business-qa-feedback/);
+  const qaSource = readFileSync(
+    new URL("../components/memorial/motion-qa-feedback.tsx", import.meta.url),
+    "utf8"
+  );
+  assert.match(source, /<MotionQAFeedback/);
+  assert.match(qaSource, /data-business-qa-feedback/);
   assert.match(source, /submitBusinessQAFeedback\(runState\.run_id/);
-  assert.match(source, /\["IDENTITY", "ANATOMY", "MOTION"\]/);
+  assert.match(qaSource, /\["IDENTITY", "ANATOMY", "MOTION"\]/);
+  // Internal QA controls never render in a production build, and only by
+  // explicit opt-in (VITE_INTERNAL_MOTION_QA=1) in a dev build.
+  assert.match(qaSource, /if \(!enrolled \|\| !isInternalMotionQAEnabled\(\)\) return null;/);
+  assert.match(qaSource, /if \(!import\.meta\.env\.DEV \|\| import\.meta\.env\.PROD\) return false;/);
+  assert.match(qaSource, /VITE_INTERNAL_MOTION_QA/);
   assert.doesNotMatch(source, /handleUserTestFeedback[\s\S]{0,800}startGenerationRun/);
 });

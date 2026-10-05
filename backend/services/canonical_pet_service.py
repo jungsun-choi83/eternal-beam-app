@@ -370,41 +370,25 @@ async def _update(table: str, mock_store: list[dict[str, Any]], row_id: str, fie
 # ══════════════════════════════════════════════════════════════════════════
 
 
+#: 중립 역할 이름 — 정의는 canonical_reference_selector 에 있다.
+ROLE_ONLY_AVAILABLE = "ONLY_AVAILABLE"
+ROLE_SUPPORT_1 = "SUPPORT_1"
+ROLE_SUPPORT_2 = "SUPPORT_2"
+ROLE_SUPPORT_3 = "SUPPORT_3"
+
+
 def select_input_references(refset: Any) -> list[dict[str, str]]:
     """
-    신뢰 세트 → 생성 입력 (최대 3, 상보적). [{reference_id, role}].
+    신뢰 세트 → 생성 입력 (1–3장, 신원 우선). [{reference_id, role}].
 
-    우선순위: PRIMARY_FACE → PRIMARY_FULL_BODY → PRIMARY_3Q → 최고 측면.
-    항목이 하나도 없으면(제한 세트) 첫 원본 하나 — 사진 1장도 허용된다.
+    선택 규칙과 결정 로그는 canonical_reference_selector.select 에 있다 — 여기는
+    그 결과의 선택 목록만 돌려주는 얇은 창구다. build_canonical 은 같은 선택기를
+    (살아 있는 원본·해석 가능성 확인과 함께) 직접 부르고, 그 **하나의** 목록으로
+    프로바이더 입력·output_spec·QA 를 전부 만든다.
     """
-    by_role = {i["role"]: i for i in (refset.items or [])}
-    picks: list[dict[str, str]] = []
-    seen: set[str] = set()
+    from . import canonical_reference_selector
 
-    def add(item: Optional[dict[str, Any]], role: str) -> None:
-        if not item or len(picks) >= 3:
-            return
-        rid = str(item["reference_id"])
-        if rid in seen:
-            return
-        seen.add(rid)
-        picks.append({"reference_id": rid, "role": role})
-
-    add(by_role.get("PRIMARY_FACE"), "PRIMARY_FACE")
-    add(by_role.get("PRIMARY_FULL_BODY"), "PRIMARY_FULL_BODY")
-    side = by_role.get("PRIMARY_3Q")
-    side_role = "PRIMARY_3Q"
-    if not side:
-        left, right = by_role.get("PRIMARY_LEFT"), by_role.get("PRIMARY_RIGHT")
-        candidates = [(i, r) for i, r in ((left, "PRIMARY_LEFT"), (right, "PRIMARY_RIGHT")) if i]
-        if candidates:
-            candidates.sort(key=lambda t: -float(t[0].get("selection_score") or 0))
-            side, side_role = candidates[0]
-    add(side, side_role)
-
-    if not picks and refset.source_reference_ids:
-        picks.append({"reference_id": str(refset.source_reference_ids[0]), "role": "ONLY_AVAILABLE"})
-    return picks
+    return canonical_reference_selector.select(refset)["selected"]
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -459,6 +443,7 @@ async def build_canonical(
         canonical_image_providers,
         canonical_prompt,
         canonical_qa,
+        canonical_reference_selector,
         clean_plate_service,
         pet_identity_service,
         pet_reference_service,
@@ -549,58 +534,15 @@ async def build_canonical(
     # needed and the configured VLM is unavailable, the preserved legacy
     # result remains REVIEW and Business QA decides the customer action.
 
-    # ── 입력 레퍼런스 조립 ────────────────────────────────────────────────
-    picks = select_input_references(refset)
-    if not picks:
-        raise CanonicalPetError(
-            "NO_INPUT_REFERENCES", "생성에 쓸 신뢰 레퍼런스가 없습니다.", status=409
-        )
-
     refs = await pet_reference_service.list_references(user_id=uid, pet_id=pid)
     refs_by_id = {str(r.id): r for r in refs}
     fetch = fetch_bytes or pet_identity_service._default_fetch_bytes
     sign = sign_url_fn or _default_sign_url
     cutout = cutout_fn or _default_cutout_fn
 
-    provider_refs: list[CanonicalReference] = []
-    ref_signatures: list[dict[str, Any]] = []
-    vlm_ref_images: list[tuple[bytes, str]] = []
-    for pick in picks:
-        ref = refs_by_id.get(pick["reference_id"])
-        if not ref:
-            continue
-        data = fetch(ref)
-        provider_refs.append(
-            CanonicalReference(
-                reference_id=pick["reference_id"],
-                role=pick["role"],
-                url=sign(ref),
-                data=data,
-                mime_type=ref.mime_type or "image/jpeg",
-            )
-        )
-        sig = ((refset.reference_analysis.get(pick["reference_id"]) or {}).get("eligibility") or {}).get("signature")
-        if sig:
-            ref_signatures.append(sig)
-        if data:
-            vlm_ref_images.append((data, ref.mime_type or "image/jpeg"))
-
-    if not provider_refs:
-        raise CanonicalPetError(
-            "NO_INPUT_REFERENCES", "입력 레퍼런스를 불러오지 못했습니다.", status=409
-        )
-
-    input_ids = [p["reference_id"] for p in picks]
-    prompt = canonical_prompt.build_canonical_prompt(
-        visual_identity=(profile.visual_identity if profile else {}),
-        structural_identity=(profile.structural_identity if profile else {}),
-        reference_roles=[p["role"] for p in picks],
-    )
-
-    cid = pid[4:] if pid.startswith("pet_") else pid
-    policy = candidate_policy()
-
-    # ── 버전 행 — 프로바이더 호출 **전** ─────────────────────────────────
+    # ── 재개할 building 버전이 있는가 — 선택보다 **먼저** 본다 ─────────────────
+    # 재개하는 버전은 처음 확정한 입력 목록을 그대로 쓴다. 다시 고르면 저장된
+    # output_spec 과 실제 프로바이더 입력이 어긋날 수 있다.
     rows = await _version_rows(pid)
     durable_execution = any(getattr(provider, "durable_execution", False) for provider in resolved_providers)
     resumable = rows[-1] if rows else None
@@ -616,6 +558,112 @@ async def build_canonical(
     ):
         resumable = None
 
+    # ── 입력 레퍼런스: **하나의** 확정 목록 ──────────────────────────────────
+    # 해석 가능성(대장에 있고 바이트를 읽을 수 있는가)은 선택을 확정하는 과정의
+    # 일부다 — 쓸 수 없는 레퍼런스는 dropped_unresolvable 로 기록되고 다음 후보가
+    # 검토된다. 목록이 확정된 뒤에는 프로바이더 입력·output_spec·QA 시그니처·VLM QA
+    # 이미지가 전부 이 목록에서 나온다. 확정된 레퍼런스를 나중에 읽지 못하면
+    # 조용히 빼지 않고 실패한다.
+    loaded: dict[str, bytes] = {}
+
+    def _resolve_reference(rid: str) -> Optional[str]:
+        ref = refs_by_id.get(rid)
+        if not ref:
+            return "missing_from_ledger"
+        data = fetch(ref)
+        if not data:
+            return "bytes_unavailable"
+        loaded[rid] = data
+        return None
+
+    stored_spec = (resumable.get("output_spec") or {}) if resumable else {}
+    stored_picks = stored_spec.get("input_references") or []
+    selection: Optional[dict[str, Any]] = None
+    if stored_picks:
+        picks = [
+            {"reference_id": str(p.get("reference_id")), "role": str(p.get("role"))}
+            for p in stored_picks
+        ]
+        selection = stored_spec.get("selection") or None
+    else:
+        selection = canonical_reference_selector.select(
+            refset,
+            active_ids={str(r.id) for r in pet_reference_service.active_originals(refs) if r.id},
+            resolve=_resolve_reference,
+        )
+        picks = selection["selected"]
+        logger.info(
+            "정본 입력 선택 (pet=%s set=v%s): mode=%s selected=%s identity_confidence=%s",
+            pid,
+            refset.version,
+            selection["mode"],
+            [(p["reference_id"], p["role"]) for p in picks],
+            selection["identity_confidence"],
+        )
+    if not picks:
+        raise CanonicalPetError(
+            "NO_INPUT_REFERENCES", "생성에 쓸 신뢰 레퍼런스가 없습니다.", status=409
+        )
+
+    provider_refs: list[CanonicalReference] = []
+    ref_signatures: list[dict[str, Any]] = []
+    vlm_ref_images: list[tuple[bytes, str]] = []
+    for pick in picks:
+        rid = pick["reference_id"]
+        ref = refs_by_id.get(rid)
+        data = loaded.get(rid) or (fetch(ref) if ref else None)
+        if not ref or not data:
+            raise CanonicalPetError(
+                "INPUT_REFERENCE_UNRESOLVABLE",
+                "확정된 입력 레퍼런스를 불러오지 못했습니다.",
+                status=409,
+            )
+        provider_refs.append(
+            CanonicalReference(
+                reference_id=rid,
+                role=pick["role"],
+                url=sign(ref),
+                data=data,
+                mime_type=ref.mime_type or "image/jpeg",
+            )
+        )
+        # 시그니처는 누끼가 있는 레퍼런스에만 있다(저하 폴백 한 장에는 없을 수 있다).
+        sig = ((refset.reference_analysis.get(rid) or {}).get("eligibility") or {}).get("signature")
+        if sig:
+            ref_signatures.append(sig)
+        vlm_ref_images.append((data, ref.mime_type or "image/jpeg"))
+
+    input_ids = [p["reference_id"] for p in picks]
+
+    # ── 펫 적응형 중립 배경 — 이 정본 계보의 **유일한** 배경 결정 ──────────
+    # 신원 프로필의 코트 팔레트에서 한 번 고르고 output_spec 에 박제한다. 재개
+    # 중인 버전은 저장된 결정을 그대로 쓴다(다시 고르지 않는다). 키프레임·모션은
+    # 이 값을 읽기만 한다 (pet_background.from_output_spec).
+    from . import pet_background
+
+    background = (
+        pet_background.from_output_spec(stored_spec)
+        if resumable
+        else pet_background.select_background(profile.visual_identity if profile else {})
+    )
+    background_tone = pet_background.prompt_tone(background.get("background_label"))
+    plate_background = pet_background.background_rgb(background)
+    provider_output_spec = {
+        **canonical_prompt.CANONICAL_OUTPUT_SPEC,
+        "background": canonical_prompt.background_spec_text(background_tone),
+    }
+
+    prompt = canonical_prompt.build_canonical_prompt(
+        visual_identity=(profile.visual_identity if profile else {}),
+        structural_identity=(profile.structural_identity if profile else {}),
+        reference_roles=[p["role"] for p in picks],
+        background_tone=background_tone,
+    )
+
+    cid = pid[4:] if pid.startswith("pet_") else pid
+    policy = candidate_policy()
+
+    # ── 버전 행 — 프로바이더 호출 **전** ─────────────────────────────────
     if resumable:
         version_row = resumable
     else:
@@ -631,8 +679,15 @@ async def build_canonical(
             "input_reference_ids": input_ids,
             "prompt": prompt,
             "prompt_version": canonical_prompt.CANONICAL_PROMPT_VERSION,
-            # input_references: 어떤 역할의 레퍼런스가 들어갔는지 (검토 페이로드용).
-            "output_spec": {**canonical_prompt.CANONICAL_OUTPUT_SPEC, "input_references": picks},
+            # input_references: 확정된 입력 목록(역할 포함) — 프로바이더·QA 와 같은 목록.
+            # selection: 선택기의 버전과 모든 레퍼런스에 대한 결정 로그.
+            "output_spec": {
+                **provider_output_spec,
+                # 선택된 배경(RGB/label/선택기 버전/근거) — 하류가 재사용하는 정본.
+                "background_selection": background,
+                "input_references": picks,
+                **({"selection": selection} if selection else {}),
+            },
             "selected_candidate_id": None,
             "selection_reason": None,
             "qa_summary": {},
@@ -667,7 +722,9 @@ async def build_canonical(
             return prompt, "full"
         try:
             compact = canonical_prompt.build_compact_canonical_prompt(
-                visual_identity=(profile.visual_identity if profile else {}), max_chars=limit
+                visual_identity=(profile.visual_identity if profile else {}),
+                max_chars=limit,
+                background_tone=background_tone,
             )
         except ValueError as exc:
             # compact 베이스 자체가 provider 상한보다 클 수 있다(max_chars=100 같은
@@ -788,7 +845,7 @@ async def build_canonical(
                     pid, version_row["version"], provider.name, attempt,
                 )
                 result = provider.generate(
-                    provider_refs, provider_prompt, dict(canonical_prompt.CANONICAL_OUTPUT_SPEC),
+                    provider_refs, provider_prompt, dict(provider_output_spec),
                     {"pet_id": pid, "canonical_version_id": version_id, "attempt": attempt},
                 )
             except CanonicalProviderError as e:
@@ -895,7 +952,7 @@ async def build_canonical(
                     return
                 try:
                     plate_bytes, plate_meta = await asyncio.to_thread(
-                        clean_plate_service.build_clean_plate, cut_bytes
+                        clean_plate_service.build_clean_plate, cut_bytes, plate_background
                     )
                     plate_path = clean_plate_service.plate_object_path(raw_path)
                     await supabase_assets.upload_asset_to_storage(plate_path, plate_bytes, "image/png")
@@ -1078,7 +1135,14 @@ async def build_canonical(
     qa_summary = {
         "candidate_count": len(candidates),
         "decisions": {d: sum(1 for c in candidates if c["decision"] == d) for d in ("PASS", "REVIEW", "FAIL", "ERROR")},
-        "canonical_confidence": ("low" if len({p['reference_id'] for p in picks}) < 2 else "normal"),
+        # 선택기가 말한 신원 신뢰도를 따른다: 한 장뿐/서로 어긋남/저하 폴백은 low,
+        # 2–3장이지만 같은 개체라는 확인이 없으면 unverified. normal 은 믿을 만한
+        # 동일-개체 확인이 있을 때만 나온다. 선택 로그가 없는 예전 버전은 기존
+        # 규칙 그대로다.
+        "canonical_confidence": (
+            (selection or {}).get("identity_confidence")
+            or ("low" if len({p['reference_id'] for p in picks}) < 2 else "normal")
+        ),
         "policy": policy,
         "business_qa": {
             "version": business_qa.BUSINESS_QA_VERSION,
@@ -1218,14 +1282,23 @@ async def reevaluate_canonical_candidate(
 
     refs = await pet_reference_service.list_references(user_id=uid, pet_id=pid)
     refs_by_id = {str(r.id): r for r in refs}
+    # 새 선택기로 확정된 버전(output_spec.selection 이 있다)은 생성에 쓴 것과 **같은**
+    # 레퍼런스로만 재평가한다 — 하나라도 읽지 못하면 조용히 줄이지 않고 실패한다.
+    # 선택 로그가 없는 예전 버전은 기존 동작(읽히는 것만으로 진행) 그대로다.
+    strict_inputs = bool((version_row.get("output_spec") or {}).get("selection"))
     vlm_ref_images: list[tuple[bytes, str]] = []
     for pick in picks:
         ref = refs_by_id.get(str(pick.get("reference_id")))
-        if not ref:
+        data = fetch(ref) if ref else None
+        if not ref or not data:
+            if strict_inputs:
+                raise CanonicalPetError(
+                    "INPUT_REFERENCE_UNRESOLVABLE",
+                    "확정된 입력 레퍼런스를 불러오지 못했습니다.",
+                    status=409,
+                )
             continue
-        data = fetch(ref)
-        if data:
-            vlm_ref_images.append((data, ref.mime_type or "image/jpeg"))
+        vlm_ref_images.append((data, ref.mime_type or "image/jpeg"))
 
     qa_started = time.perf_counter()
     deterministic_qa = canonical_qa.evaluate_candidate(

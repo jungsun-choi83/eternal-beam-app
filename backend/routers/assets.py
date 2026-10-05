@@ -34,7 +34,7 @@ class PersistCutoutBody(BaseModel):
 
 async def _strict_multi_reference_pet(user_id: str, content_id: str) -> bool:
     """
-    이 펫이 이미 **엄격한 멀티 레퍼런스 인테이크**를 탔는가.
+    이 펫이 이미 **엄격한 멀티 레퍼런스 인테이크**를 탔거나 **잠겼는가**.
 
     원본이 2장 이상이거나, parent 로 묶인 cutout_reference 가 하나라도 있으면
     참이다. 그런 펫에는 부모 없는 누끼를 더 이상 붙이지 않는다 (아래 참조).
@@ -51,7 +51,15 @@ async def _strict_multi_reference_pet(user_id: str, content_id: str) -> bool:
     parented = any(
         r.role == pet_reference_service.ROLE_DERIVED and r.parent_reference_id for r in ledger
     )
-    return originals > 1 or parented
+    if originals > 1 or parented:
+        return True
+    # 잠긴 펫(생성이 시작됨)에도 새 누끼 행을 남기지 않는다. 판정 불가는 잠김으로 본다.
+    try:
+        return await pet_reference_service.pet_inputs_locked(
+            pet_reference_service.pet_id_for_content(content_id), ledger
+        )
+    except pet_reference_service.PetReferenceError:
+        return True
 
 
 @router.post("/assets/cutout")
@@ -151,10 +159,42 @@ async def post_persist_original(
     diagnostics_json: str | None = Form(None),
     phase1_intake: str = Form("false"),
     authorization: str = Header(default=""),
+    cutout_file: UploadFile | None = File(None),
+):
+    """
+    원본(+누끼) 인테이크. 본문은 _persist_original 이다.
+
+    요청 전체를 펫 입력 문의 **공유** 구간에서 처리한다: 잠금 확인과 대장 쓰기
+    사이에 생성 실행이 만들어질 수 없다(pet_reference_service._PetInputGate).
+    같은 펫의 여러 사진은 여전히 동시에 처리된다.
+    """
+    pet_id = pet_reference_service.pet_id_for_content((content_id or "").strip())
+    async with pet_reference_service.pet_input_gate(pet_id).shared():
+        return await _persist_original(
+            background_tasks=background_tasks,
+            file=file,
+            user_id=user_id,
+            content_id=content_id,
+            diagnostics_json=diagnostics_json,
+            phase1_intake=phase1_intake,
+            authorization=authorization,
+            cutout_file=cutout_file,
+        )
+
+
+async def _persist_original(
+    *,
+    background_tasks: BackgroundTasks,
+    file: UploadFile,
+    user_id: str,
+    content_id: str,
+    diagnostics_json: str | None,
+    phase1_intake: str,
+    authorization: str,
     # (Phase 3, 옵션) 이 원본에 짝지어진 누끼 RGBA PNG. 멀티 레퍼런스에서
     # 원본별 세그멘테이션을 붙이는 최소 메커니즘이다 — 파생 레퍼런스로 저장되고
     # parent_reference_id 로 원본에 연결된다. 없으면 기존 동작과 완전히 같다.
-    cutout_file: UploadFile | None = File(None),
+    cutout_file: UploadFile | None,
 ):
     """
     **사용자 제공 원본**을 영구 보존한다 (Durable Pet Identity Intake, Phase 1).
@@ -198,28 +238,38 @@ async def post_persist_original(
     if len(raw) > ORIGINAL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="original image exceeds the size limit")
 
+    # 생성이 시작된 펫은 잠겨 있다 — 원본도 누끼도 더 받지 않는다 (409
+    # PHASE1_LOCKED). 소유권 확인(list_references)이 먼저다: 남의 펫의 잠금
+    # 상태를 알려 주지 않는다. 잠금을 판정할 수 없으면 503 으로 닫는다.
+    try:
+        existing_refs = await pet_reference_service.list_references(
+            user_id=uid,
+            pet_id=pet_reference_service.pet_id_for_content(cid),
+        )
+        await pet_reference_service.assert_pet_inputs_unlocked(
+            pet_reference_service.pet_id_for_content(cid), existing_refs
+        )
+    except pet_reference_service.PetReferenceError as e:
+        raise HTTPException(
+            status_code=e.status, detail={"code": e.code, "message": e.message}
+        ) from e
+
     # A stable content_id represents one pet, not one photo. Intake accepts
-    # 1..MAX_ORIGINALS_PER_PET distinct originals for that pet; a retry repeating
-    # the same bytes still dedupes to the existing row and does not spend a slot.
+    # 1..MAX_ORIGINALS_PER_PET distinct *active* originals for that pet; a retry
+    # repeating the same bytes still dedupes to the existing row and does not
+    # spend a slot.
     if strict_intake:
-        try:
-            existing_refs = await pet_reference_service.list_references(
-                user_id=uid,
-                pet_id=pet_reference_service.pet_id_for_content(cid),
-            )
-        except pet_reference_service.PetReferenceError as e:
-            raise HTTPException(
-                status_code=e.status, detail={"code": e.code, "message": e.message}
-            ) from e
         incoming_hash = hashlib.sha256(raw).hexdigest()
-        existing_hashes = {
+        # 살아 있는(accepted) 원본만 자리를 차지한다. 사용자가 뺀 사진은 세지
+        # 않고, 뺐던 바이트가 다시 오면 자리가 남아 있는 한 되살아난다.
+        active_hashes = {
             r.content_hash
-            for r in existing_refs
-            if r.role == pet_reference_service.ROLE_ORIGINAL and r.content_hash
+            for r in pet_reference_service.active_originals(existing_refs)
+            if r.content_hash
         }
         if (
-            incoming_hash not in existing_hashes
-            and len(existing_hashes) >= pet_reference_service.MAX_ORIGINALS_PER_PET
+            incoming_hash not in active_hashes
+            and len(active_hashes) >= pet_reference_service.MAX_ORIGINALS_PER_PET
         ):
             raise HTTPException(
                 status_code=409,
@@ -290,33 +340,69 @@ async def post_persist_original(
         try:
             cut_raw = await cutout_read_task
             if cut_raw and ref.recorded and ref.content_hash:
-                cut_path = f"{uid}/{cid}/references/cutout_{ref.content_hash[:16]}.png"
                 cut_hash = hashlib.sha256(cut_raw).hexdigest()
                 ledger = await pet_reference_service.list_references(
                     user_id=uid, pet_id=ref.pet_id
                 )
-                existing_cutout = next(
-                    (
-                        r
-                        for r in ledger
-                        if r.role == pet_reference_service.ROLE_DERIVED
-                        and r.object_path == cut_path
-                    ),
+                accepted = pet_reference_service.STATE_ACCEPTED
+                linked = [
+                    r
+                    for r in ledger
+                    if r.role == pet_reference_service.ROLE_DERIVED
+                    and (r.derived_kind or "").startswith("cutout")
+                    and r.parent_reference_id == ref.id
+                ]
+
+                def _cut_hash(r) -> str:
+                    return str((r.diagnostics or {}).get("content_hash") or "")
+
+                # 이 바이트의 누끼 행이 이미 있는가 (상태 무관). 해시를 남기지 않은
+                # 옛 행은 살아 있을 때만 "같은 누끼"로 본다 — 기존 계약 그대로.
+                match = next((r for r in linked if _cut_hash(r) == cut_hash), None) or next(
+                    (r for r in linked if r.acceptance_state == accepted and not _cut_hash(r)),
                     None,
                 )
-                if existing_cutout:
-                    prior_hash = str((existing_cutout.diagnostics or {}).get("content_hash") or "")
-                    if existing_cutout.parent_reference_id != ref.id or (
-                        prior_hash and prior_hash != cut_hash
-                    ):
-                        raise pet_reference_service.PetReferenceError(
-                            "PHASE1_CUTOUT_CONFLICT",
-                            "같은 원본에 다른 누끼를 연결할 수 없습니다.",
-                            status=409,
-                        )
-                    derived = existing_cutout
+                others_active = [
+                    r for r in linked if r.acceptance_state == accepted and r is not match
+                ]
+                if others_active:
+                    # 같은 원본에 **다른 바이트의** 누끼가 왔다. 여기까지 왔다면 이
+                    # 펫은 잠겨 있지 않다(요청 첫머리에서 확인했고, 이 요청이 도는
+                    # 동안에는 실행이 만들어질 수 없다) — 새 누끼가 예전 것을
+                    # 대신한다. 예전 행은 CUTOUT_REPLACED_BY_USER 로 물러나고 객체는
+                    # 그대로 남는다. 살아 있는 누끼는 언제나 하나다. 물리기를
+                    # 업로드보다 먼저 하므로, 그 뒤에 실패해도 재시도가 새 누끼를
+                    # 붙인다. 잠긴 뒤의 교체는 PHASE1_LOCKED 로 이미 걸러졌다.
+                    await pet_reference_service.supersede_cutouts(
+                        user_id=uid,
+                        pet_id=ref.pet_id,
+                        reference_ids=[str(r.id) for r in others_active],
+                    )
+
+                if match and match.acceptance_state == accepted:
+                    derived = match
                 else:
-                    await supabase_assets.upload_asset_to_storage(cut_path, cut_raw, "image/png")
+                    if match:
+                        # 물러나 있던 같은 바이트의 누끼 — 객체는 이미 있다. 다시
+                        # 올리지 않고 record_derived 가 행을 되살린다.
+                        cut_path = match.object_path
+                    else:
+                        cut_path = f"{uid}/{cid}/references/cutout_{ref.content_hash[:16]}.png"
+                        if any(
+                            r.role == pet_reference_service.ROLE_DERIVED
+                            and r.object_path == cut_path
+                            for r in ledger
+                        ):
+                            # 기본 경로는 물러난 예전 누끼의 것이다. 그 객체를
+                            # 덮어쓰면 과거 계보가 가리키는 바이트가 바뀌므로 새
+                            # 경로에 올린다.
+                            cut_path = (
+                                f"{uid}/{cid}/references/"
+                                f"cutout_{ref.content_hash[:16]}_{cut_hash[:16]}.png"
+                            )
+                        await supabase_assets.upload_asset_to_storage(
+                            cut_path, cut_raw, "image/png"
+                        )
                     derived = await pet_reference_service.record_derived(
                         user_id=uid,
                         content_id=cid,
@@ -384,6 +470,7 @@ async def post_persist_original(
         "bytes": len(raw),
         "reference_recorded": ref.recorded,
         "deduplicated": ref.deduplicated,
+        "reactivated": ref.reactivated,
         "intake_ready": intake_ready,
         "cutout_reference_id": cutout_reference_id,
         "cutout_object_path": cutout_object_path,

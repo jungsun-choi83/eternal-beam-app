@@ -143,7 +143,7 @@ class PipelineHarness:
             id="00000000-0000-0000-0000-000000000501",
             pet_id=PET,
             user_id=USER,
-            keyframe_role="NEUTRAL_IDLE",
+            keyframe_role="STAND_READY",
             version=1,
             status=keyframe_status,
             canonical_version_id=self.canonical.id,
@@ -323,7 +323,7 @@ def test_happy_path_persists_full_lineage_and_reaches_mocked_phase7a(storage, mo
     assert result.identity_profile_id == harness.profile.id
     assert result.reference_set_id == harness.refset.id
     assert result.canonical_version_id == harness.canonical.id
-    assert result.keyframes["NEUTRAL_IDLE"]["id"] == harness.keyframe.id
+    assert result.keyframes["STAND_READY"]["id"] == harness.keyframe.id
     assert result.motion_spec_version == motion_spec.MOTION_SPEC_VERSION
     assert result.motion_version_id == harness.motion.id
     assert result.motion_version == 1
@@ -506,13 +506,12 @@ def test_inconsistent_persisted_stage_falls_back_to_safe_recovery(storage, monke
     assert result.canonical_version_id == h.canonical.id
 
 
-def test_breathing_start_keyframe_requests_canonical_reuse(storage, monkeypatch):
-    """BREATHING 의 NEUTRAL_IDLE 시작 키프레임 호출만 Canonical 재사용을 켠다.
+def test_breathing_start_keyframe_is_stand_ready_without_canonical_reuse(storage, monkeypatch):
+    """HOME = STAND_READY (motion-spec-v16): BREATHING 의 시작 키프레임 호출은
+    STAND_READY 이고 Canonical 재사용을 **켜지 않는다**.
 
-    build_keyframe() 자체는 스텁이라 여기서는 재사용 판정 로직을 증명하지
-    않는다 — _execute() 가 BREATHING 의 start_keyframe_role 호출에 정확히
-    allow_canonical_reuse=True 를 실어 보내는 배선만 증명한다(요구 6의 짝:
-    non-BREATHING 은 test_unsellable... / 아래 BLINKING 테스트에서 False).
+    build_keyframe() 자체는 스텁이라 여기서는 _execute() 의 배선만 증명한다 —
+    정본이 어떤 자세든 홈은 항상 생성된 서기 스틸이지 정본의 별칭이 아니다.
     """
     seed_intake()
     harness = PipelineHarness(monkeypatch)
@@ -522,8 +521,8 @@ def test_breathing_start_keyframe_requests_canonical_reuse(storage, monkeypatch)
 
     assert result.status == runs.STATUS_PUBLISHED
     assert len(harness.keyframe_build_calls) == 1
-    assert harness.keyframe_build_calls[0]["keyframe_role"] == "NEUTRAL_IDLE"
-    assert harness.keyframe_build_calls[0]["allow_canonical_reuse"] is True
+    assert harness.keyframe_build_calls[0]["keyframe_role"] == "STAND_READY"
+    assert harness.keyframe_build_calls[0]["allow_canonical_reuse"] is False
 
 
 def test_same_idempotency_key_returns_same_run_without_duplicate_work(storage, monkeypatch):
@@ -830,7 +829,7 @@ def test_replacement_worker_refuses_to_reuse_review_source(monkeypatch):
         status=runs.STATUS_RUNNING,
         current_stage=runs.STAGE_MOTION_GENERATION,
         canonical_version_id=source.canonical_version_id,
-        keyframes={"NEUTRAL_IDLE": {"id": source.start_keyframe_id, "version": 1}},
+        keyframes={"STAND_READY": {"id": source.start_keyframe_id, "version": 1}},
         motion_spec_version=motion_spec.MOTION_SPEC_VERSION,
         provider_state={"_operator": {"replacement_request": {"source_motion_version_id": source.id}}},
     )

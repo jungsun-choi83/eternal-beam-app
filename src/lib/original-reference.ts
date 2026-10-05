@@ -16,6 +16,13 @@
 /** 병리적 업로드 가드. 서버(assets.py ORIGINAL_MAX_BYTES)와 같은 값. */
 export const ORIGINAL_REFERENCE_MAX_BYTES = 40 * 1024 * 1024;
 
+/**
+ * Phase 7B 업로드 한 건의 상한. 멈춘 연결이 처리 패스를 영원히 붙잡지 못하게 한다 —
+ * 같은 펫의 다음 패스는 이 패스가 닫혀야 시작한다 (reference-sync.ts).
+ */
+export const PHASE1_INTAKE_TIMEOUT_MS = 120_000;
+export const PHASE1_UPLOAD_TIMEOUT_CODE = "PHASE1_UPLOAD_TIMEOUT";
+
 function apiBase(): string {
   try {
     const raw = (import.meta as { env?: Record<string, string> }).env?.VITE_API_BASE_URL;
@@ -150,6 +157,8 @@ export async function persistPhase1Intake(params: {
   accessToken: string;
   diagnostics?: unknown;
   cutoutFile?: File;
+  /** 기본 PHASE1_INTAKE_TIMEOUT_MS. 테스트가 줄여 쓴다. */
+  timeoutMs?: number;
 }): Promise<Phase1IntakeResult> {
   const form = originalForm(params);
   if (!form) throw new Phase1IntakeError("Phase 1 intake input is invalid.");
@@ -157,21 +166,50 @@ export async function persistPhase1Intake(params: {
   if (!token) throw new Phase1IntakeError("로그인이 필요합니다.", 401, "UNAUTHENTICATED");
   form.append("phase1_intake", "true");
 
-  let res: Response;
-  try {
-    res = await fetch(`${apiBase()}/api/assets/original`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-      body: form,
-    });
-  } catch (error) {
-    throw new Phase1IntakeError(
-      error instanceof Error ? error.message : "Phase 1 intake network failure.",
+  // 요청과 응답 본문 읽기 **전체**에 상한을 건다. 넘기면 throw 한다 — 호출자의
+  // 장별 catch 가 그 사진을 실패로 표시하고, 패스는 평소처럼 닫힌다.
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, params.timeoutMs ?? PHASE1_INTAKE_TIMEOUT_MS);
+  const timeoutError = () =>
+    new Phase1IntakeError(
+      "사진 업로드가 너무 오래 걸려 중단했습니다. 연결을 확인하고 다시 시도해 주세요.",
+      undefined,
+      PHASE1_UPLOAD_TIMEOUT_CODE,
     );
-  }
-  if (!res.ok) throw await errorFromResponse(res);
 
-  const body = (await res.json()) as Record<string, unknown>;
+  let body: Record<string, unknown>;
+  try {
+    let res: Response;
+    try {
+      res = await fetch(`${apiBase()}/api/assets/original`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (timedOut) throw timeoutError();
+      throw new Phase1IntakeError(
+        error instanceof Error ? error.message : "Phase 1 intake network failure.",
+      );
+    }
+    if (!res.ok) throw await errorFromResponse(res);
+    try {
+      body = (await res.json()) as Record<string, unknown>;
+    } catch (error) {
+      if (timedOut) throw timeoutError();
+      throw new Phase1IntakeError(
+        error instanceof Error ? error.message : "Phase 1 intake response was unreadable.",
+      );
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+
   return {
     userId: String(body.user_id || ""),
     contentId: String(body.content_id || ""),

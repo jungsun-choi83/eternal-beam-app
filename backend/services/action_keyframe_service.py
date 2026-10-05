@@ -58,6 +58,9 @@ CANONICAL_REUSE_PROVIDER = "canonical_reuse"
 #: Canonical → 키프레임 재사용을 허용하는 역할. BREATHING 전용 요구사항이라
 #: NEUTRAL_IDLE 하나뿐이다 — 다른 역할(포즈가 바뀌는 LIE/SLEEP 포함)은 Canonical
 #: 자체가 그 포즈를 절대 보여줄 수 없으므로 대상이 아니다.
+#: motion-spec-v16 부터 홈(BREATHING)은 STAND_READY 에서 시작하고 generation-run 은
+#: allow_canonical_reuse 를 더 이상 켜지 않는다 — STAND_READY 는 의도적으로 여기
+#: 없다: 홈은 항상 생성된 서기 스틸이지 정본의 별칭이 아니다.
 _CANONICAL_REUSABLE_ROLES = ("NEUTRAL_IDLE",)
 
 
@@ -823,6 +826,15 @@ async def build_keyframe(
     cutout = cutout_fn or canonical_pet_service._default_cutout_fn
     cid = pid[4:] if pid.startswith("pet_") else pid
 
+    # ── 배경: 이 정본 계보가 고른 **그** 배경을 그대로 쓴다 ────────────────
+    # 키프레임은 배경을 다시 고르지 않는다 — 정본 output_spec 의 결정을 읽어
+    # 플레이트 색과 프롬프트 톤 양쪽에 적용한다 (결정이 없는 옛 정본은 기본 회색).
+    from . import pet_background
+
+    background = pet_background.from_output_spec(getattr(canonical, "output_spec", None))
+    background_tone = pet_background.prompt_tone(background.get("background_label"))
+    plate_background = pet_background.background_rgb(background)
+
     def _obj(bucket: Optional[str], path: Optional[str]):
         return SimpleNamespace(bucket=bucket or "", object_path=path or "", mime_type="image/png")
 
@@ -889,6 +901,7 @@ async def build_keyframe(
                     "canonical_version_id": canonical.id,
                     "canonical_candidate_id": anchor.id,
                 },
+                background=plate_background,
             )
         except clean_plate_service.CleanPlateError as e:
             plate_error = f"{e.code}: {e.message}"
@@ -987,7 +1000,7 @@ async def build_keyframe(
     ]
 
     prompt = action_keyframe_spec.build_keyframe_prompt(
-        spec, (profile.visual_identity if profile else {})
+        spec, (profile.visual_identity if profile else {}), background_tone=background_tone
     )
 
     versions_stamp = {
@@ -1178,7 +1191,10 @@ async def build_keyframe(
         if not limit or len(prompt) <= limit:
             return prompt, "full"
         compact = action_keyframe_spec.build_compact_keyframe_prompt(
-            spec, (profile.visual_identity if profile else {}), max_chars=limit
+            spec,
+            (profile.visual_identity if profile else {}),
+            max_chars=limit,
+            background_tone=background_tone,
         )
         if len(compact) <= limit:
             return compact, "compact"
@@ -1388,7 +1404,9 @@ async def build_keyframe(
                 # 남고, Phase 6 에는 그림자/배경이 빠진 이 파생물만 간다.
                 if clean_plate_service.plate_enabled():
                     try:
-                        plate_bytes, plate_meta = clean_plate_service.build_clean_plate(cut_bytes)
+                        plate_bytes, plate_meta = clean_plate_service.build_clean_plate(
+                            cut_bytes, plate_background
+                        )
                         plate_path = clean_plate_service.plate_object_path(raw_path)
                         await supabase_assets.upload_asset_to_storage(
                             plate_path, plate_bytes, "image/png"

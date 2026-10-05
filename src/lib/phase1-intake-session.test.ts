@@ -4,6 +4,7 @@ import { afterEach, beforeEach, test } from "node:test";
 import {
   beginPhase1Intake,
   clearPhase1Intake,
+  identityForAddedPhotos,
   readPhase1Intake,
   requirePhase1Intake,
 } from "./phase1-intake-session.ts";
@@ -104,4 +105,39 @@ test("clearing one slot leaves the other pet intact; clearing all wipes both", (
 
   clearPhase1Intake();
   assert.equal(readPhase1Intake(PET_1), null);
+});
+
+// ── 빈 자리 복구 (Stage 1c 후속) ─────────────────────────────────────────────
+
+test("an empty slot always gets a NEW pet identity, even when a locked pet's identity is left on it", () => {
+  // 새로고침 뒤의 모습: 사진은 복원되지 않아 자리가 비었고, 생성이 시작된(잠긴)
+  // 아이의 신원만 화면 상태와 저장소에 남아 있다.
+  const lockedPet = beginPhase1Intake(PET_1, () => "locked-content");
+  assert.deepEqual(readPhase1Intake(PET_1), lockedPet);
+
+  const fresh = identityForAddedPhotos(PET_1, 0, lockedPet, () => "fresh-content");
+
+  assert.notEqual(fresh.petId, lockedPet.petId);
+  assert.notEqual(fresh.contentId, lockedPet.contentId);
+  assert.deepEqual(fresh, { contentId: "fresh-content", petId: "pet_fresh-content" });
+  // 저장소의 신원도 새 것으로 바뀐다 — 처리 화면(requirePhase1Intake)은 저장된
+  // 값을 따르므로, 업로드는 잠긴 아이가 아니라 새 아이 앞으로 간다.
+  assert.deepEqual(readPhase1Intake(PET_1), fresh);
+  assert.deepEqual(requirePhase1Intake(PET_1, lockedPet), fresh);
+});
+
+test("an empty slot gets a new identity with the default generator too", () => {
+  const lockedPet = beginPhase1Intake(PET_1);
+  const fresh = identityForAddedPhotos(PET_1, 0, lockedPet);
+  assert.notEqual(fresh.petId, lockedPet.petId);
+  assert.equal(fresh.petId, `pet_${fresh.contentId}`);
+});
+
+test("adding to a slot that already has photos keeps the same pet", () => {
+  const pet = beginPhase1Intake(PET_1, () => "same-content");
+  assert.deepEqual(identityForAddedPhotos(PET_1, 2, pet, () => "never-used"), pet);
+  // 화면 상태에 신원이 없으면 저장된 값을 쓴다.
+  assert.deepEqual(identityForAddedPhotos(PET_1, 1, null, () => "never-used"), pet);
+  // 다른 자리는 건드리지 않는다.
+  assert.equal(readPhase1Intake(PET_2), null);
 });

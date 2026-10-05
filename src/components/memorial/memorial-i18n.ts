@@ -37,8 +37,12 @@ const STRINGS = {
       addPet: "펫 추가",
       addPetLimitReached: "최대 3마리까지 추가할 수 있어요",
       replaceImageAria: (n: number) => `${n}번 사진 교체`,
+      addPhoto: "사진 추가",
+      addPhotoAria: (n: number, max: number) => `이 아이의 사진 더 올리기 (현재 ${n}/${max}장)`,
       photoCountLabel: (n: number, max: number) => `사진 ${n}/${max}`,
       readinessHint: "시작하려면 사진을 1장 이상 올려 주세요",
+      photosLockedNotice:
+        "영상 만들기가 시작되어 이 아이의 사진은 더 이상 추가·삭제·교체할 수 없어요.",
       errors: {
         unsupportedType: "지원하지 않는 파일이 있어요. JPG, PNG, HEIC 사진만 올릴 수 있어요.",
         oversizedImage: "사진 용량이 너무 큰 파일이 있어요. 20MB 이하로 올려 주세요.",
@@ -91,6 +95,16 @@ const STRINGS = {
       allUploadsFailed: "선택한 사진을 처리하지 못했습니다. 실패한 사진을 바꿔 다시 시도해 주세요.",
       someUploadsFailed: (failed: number, total: number) =>
         `${total}장 중 ${failed}장의 업로드/처리에 실패했습니다. 실패한 사진을 확인해 다시 시도해 주세요.`,
+      syncSkippedNotice:
+        "사진 목록을 확인하지 못해 이전에 뺀 사진 정리를 건너뛰었어요. 처리는 계속됩니다.",
+      syncFailedNotice:
+        "이전에 뺀 사진을 정리하지 못했어요. 처리는 계속되지만, 새 사진이 추가되지 않으면 사진 화면으로 돌아가 다시 시작해 주세요.",
+      originalLimitReached:
+        "한 아이당 사진은 최대 3장이에요. 사진 화면에서 한 장을 빼고 다시 시작해 주세요.",
+      originalLimitAfterSyncFailure:
+        "이전에 뺀 사진이 아직 정리되지 않아 이 사진을 추가하지 못했어요. 사진 화면으로 돌아가 다시 시작하면 정리 후 올라갑니다.",
+      photosLocked:
+        "이 아이는 이미 영상 만들기가 시작되어 사진을 바꿀 수 없어요. 보관함에서 만들던 영상을 이어서 확인해 주세요.",
       waitHint: "보통 30초~2분, 서버가 잠들어 있으면 최대 3~4분입니다. 화면을 유지해 주세요.",
       waitHintFast: "보통 20~60초입니다. Wi‑Fi를 권장합니다.",
       serverCutoutFast: "배경을 지우는 중… (빠른 모드)",
@@ -798,8 +812,12 @@ const STRINGS = {
       addPet: "Add pet",
       addPetLimitReached: "You can add up to 3 pets",
       replaceImageAria: (n: number) => `Replace photo ${n}`,
+      addPhoto: "Add photo",
+      addPhotoAria: (n: number, max: number) => `Add another photo of this pet (${n}/${max} so far)`,
       photoCountLabel: (n: number, max: number) => `Photo ${n}/${max}`,
       readinessHint: "Add at least 1 photo to continue",
+      photosLockedNotice:
+        "Video creation has started, so this pet's photos can no longer be added, removed or replaced.",
       errors: {
         unsupportedType: "Some files aren't supported. Only JPG, PNG, or HEIC photos can be uploaded.",
         oversizedImage: "A photo is too large. Please keep each photo under 20MB.",
@@ -852,6 +870,16 @@ const STRINGS = {
       allUploadsFailed: "None of the selected photos were processed. Replace failed photos and try again.",
       someUploadsFailed: (failed: number, total: number) =>
         `${failed} of ${total} photos failed to upload/process. Review failed photos and retry.`,
+      syncSkippedNotice:
+        "We couldn't verify your photo list, so removed photos weren't cleaned up. Processing continues.",
+      syncFailedNotice:
+        "We couldn't clean up photos you removed earlier. Processing continues, but if a new photo isn't added, go back to the photo screen and start again.",
+      originalLimitReached:
+        "Each pet can have up to 3 photos. Remove one on the photo screen and start again.",
+      originalLimitAfterSyncFailure:
+        "A photo you removed earlier hasn't been cleaned up yet, so this one couldn't be added. Go back to the photo screen and start again — it will upload after cleanup.",
+      photosLocked:
+        "Video creation has already started for this pet, so its photos can't be changed. Open your library to continue with that video.",
       waitHint: "The first run can take 1-3 minutes. Please keep this screen open.",
       waitHintFast: "Usually 20–60 seconds. Wi‑Fi recommended.",
       serverCutoutFast: "Removing background… (fast mode)",

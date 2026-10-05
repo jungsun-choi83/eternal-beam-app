@@ -725,6 +725,7 @@ async def build_motion_video(
         motion_spec,
         motion_video_prompts,
         motion_video_qa,
+        pet_background,
         pet_identity_service,
         pet_reference_service,
         supabase_assets,
@@ -931,6 +932,9 @@ async def build_motion_video(
                     "keyframe_version": (payload or {}).get("version"),
                     "candidate_id": (payload or {}).get("candidate_id"),
                 },
+                # 플레이트를 다시 만들어야 하면 이 계보의 정본이 고른 배경으로 —
+                # 모션 단계가 다른 회색을 고르지 않는다.
+                background=pet_background.background_rgb(contract.get("background")),
             )
         except clean_plate_service.CleanPlateError as e:
             plate_error = f"{e.code}: {e.message}"

@@ -16,6 +16,8 @@ from backend.services import asset_url_refresh
 from backend.services import motion_delivery_service as delivery
 from backend.services import motion_publication_service as publication
 from backend.services import motion_video_service as motions
+from backend.services import matte_hole_qa
+from backend.services import pet_identity_service
 from backend.services import pet_registry
 
 from .conftest import ASGITestClient
@@ -61,11 +63,13 @@ def _isolated(monkeypatch: pytest.MonkeyPatch):
     publication.__reset_for_tests()
     pet_registry.__reset_for_tests()
     delivery.__reset_for_tests()
+    pet_identity_service.__reset_for_tests()
     yield
     motions.__reset_for_tests()
     publication.__reset_for_tests()
     pet_registry.__reset_for_tests()
     delivery.__reset_for_tests()
+    pet_identity_service.__reset_for_tests()
 
 
 def _seed(*, decision: str = "PASS", raw_path: str = RAW_PATH):
@@ -594,3 +598,274 @@ def _run_real_package(src_bytes: bytes):
         )
     )
     return result, _UPLOADED
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# bgmodel → 내부 구멍 QA → ViTMatte 폴백
+# ══════════════════════════════════════════════════════════════════════════
+
+DARK_BG = np.array([89, 89, 89], dtype=np.uint8)
+WHITE_COAT = np.array([235, 235, 235], dtype=np.uint8)
+DARK_MARK = np.array([55, 55, 55], dtype=np.uint8)  # 무채색·배경보다 어두움 → bgmodel 이 그림자로 본다
+SPECKLES = [(36, 20), (36, 30), (36, 40), (48, 22), (48, 34), (60, 26), (68, 38)]
+
+#: 테스트가 쓰는 임계 — 운영 기본값과 같다 (env 로 덮지 않는다).
+QA_CFG = matte_hole_qa.HoleQaConfig()
+
+
+def _white_pet_frame(*, speckles: bool = True, gap: bool = False) -> np.ndarray:
+    """어두운 중립 배경 위 흰 펫 + (옵션) 어두운 반점 / 다리 사이 같은 큰 빈틈."""
+    f = np.tile(DARK_BG, (H, W, 1)).astype(np.uint8)
+    f[30:80, 16:48] = WHITE_COAT
+    if speckles:
+        for y, x in SPECKLES:
+            f[y : y + 4, x : x + 4] = DARK_MARK
+    if gap:
+        f[45:57, 26:36] = DARK_BG  # 실루엣에 둘러싸인 큰 빈틈 (꼬리 고리/다리 사이)
+    return f
+
+
+def _clean_alpha() -> np.ndarray:
+    a = np.zeros((H, W), dtype=np.float32)
+    a[30:80, 16:48] = 1.0
+    return a
+
+
+def _holey_alpha() -> np.ndarray:
+    a = _clean_alpha()
+    for y, x in SPECKLES:
+        a[y : y + 4, x : x + 4] = 0.0
+    return a
+
+
+def _seed_coat(palette: list[tuple[str, float]]) -> None:
+    pet_identity_service._MOCK_PROFILES.append(
+        {
+            "id": "idp-1",
+            "pet_id": PET,
+            "user_id": USER,
+            "version": 1,
+            "visual_identity": {
+                "coat": {
+                    "status": "measured",
+                    "palette": [{"name": n, "fraction": f} for n, f in palette],
+                }
+            },
+        }
+    )
+
+
+class _FakeVitmatte:
+    def __init__(self, *, fail: bool = False):
+        self.calls = 0
+        self.fail = fail
+
+    def __call__(self, frames):
+        self.calls += 1
+        if self.fail:
+            raise delivery.MotionDeliveryError("MATTE_BACKEND_FAILED", "boom", status=503)
+        return [_clean_alpha() for _ in frames], {"backend": "vitmatte"}
+
+
+def _package_counting(monkeypatch, frames, *, vitmatte=None):
+    vit = vitmatte or _FakeVitmatte()
+    monkeypatch.setattr(delivery, "matte_vitmatte", vit)
+    uploads: list[str] = []
+
+    def upload(path, data):
+        uploads.append(path)
+        delivery._MOCK_DELIVERY_OBJECTS.add(path)
+
+    result, captured = _package(frames=frames, upload_fn=upload)
+    return result, captured, vit, uploads
+
+
+# --- QA 단위 ------------------------------------------------------------------
+
+
+def test_hole_qa_clean_matte_passes():
+    qa = matte_hole_qa.evaluate([_clean_alpha() for _ in range(8)], QA_CFG)
+    assert qa["passed"] is True
+    assert qa["failed_frames"] == [] and qa["max_hole_count"] == 0
+    assert qa["sampled_frames"] == [0, 2, 4, 5, 7]  # 균등 5장 (양 끝 포함)
+
+
+def test_hole_qa_many_small_enclosed_holes_fails():
+    qa = matte_hole_qa.evaluate([_holey_alpha() for _ in range(8)], QA_CFG)
+    assert qa["passed"] is False
+    assert len(qa["failed_frames"]) == 5
+    assert qa["max_hole_count"] == len(SPECKLES)
+    assert qa["max_hole_fraction"] >= QA_CFG.frame_min_fraction
+
+
+def test_hole_qa_ignores_one_large_legitimate_gap():
+    a = _clean_alpha()
+    a[45:57, 26:36] = 0.0  # 실루엣의 7.5% — max_region_fraction(2%) 초과 → 정당한 빈틈
+    m = matte_hole_qa.measure_frame(a, QA_CFG)
+    assert m["ignored_large_gaps"] == 1 and m["hole_count"] == 0 and m["failed"] is False
+    assert matte_hole_qa.evaluate([a] * 6, QA_CFG)["passed"] is True
+
+
+def test_hole_qa_border_touching_gap_is_not_a_hole():
+    a = _clean_alpha()
+    a[60:80, 28:36] = 0.0  # 아래로 열린 다리 사이 — 바깥 배경과 이어진다
+    assert matte_hole_qa.measure_frame(a, QA_CFG)["hole_count"] == 0
+
+
+def test_hole_qa_single_bad_frame_does_not_fail_clip():
+    alphas = [_clean_alpha() for _ in range(8)]
+    alphas[4] = _holey_alpha()  # 표본 프레임 하나만 불량
+    qa = matte_hole_qa.evaluate(alphas, QA_CFG)
+    assert qa["failed_frames"] == [4]
+    assert qa["passed"] is True
+
+
+# --- 포장 통합 (실제 bgmodel) -------------------------------------------------
+
+
+def test_clean_bgmodel_matte_keeps_bgmodel(monkeypatch):
+    _seed()
+    _seed_coat([("brown", 1.0)])
+    result, _, vit, uploads = _package_counting(monkeypatch, _frames())
+
+    assert result.matte_backend == "bgmodel"
+    assert vit.calls == 0 and len(uploads) == 1
+    fb = motions._MOCK_CANDIDATES[0]["generation_metadata"]["delivery"]["matte_fallback"]
+    assert fb["requested_backend"] == "bgmodel" and fb["final_backend"] == "bgmodel"
+    assert fb["fallback_used"] is False and fb["fallback_reason"] is None
+    assert fb["coat_risk"] == "not_light"
+    assert fb["failed_frames"] == []
+
+
+def test_light_coat_alone_does_not_trigger_vitmatte(monkeypatch):
+    _seed()
+    _seed_coat([("white", 0.85), ("black", 0.15)])
+    frames = [_white_pet_frame(speckles=False) for _ in range(8)]
+    result, _, vit, _ = _package_counting(monkeypatch, frames)
+
+    assert result.matte_backend == "bgmodel" and vit.calls == 0
+    fb = motions._MOCK_CANDIDATES[0]["generation_metadata"]["delivery"]["matte_fallback"]
+    assert fb["coat_risk"] == "light_or_white" and fb["fallback_used"] is False
+
+
+def test_white_pet_with_dark_markings_falls_back_to_vitmatte_once(monkeypatch):
+    _seed()
+    _seed_coat([("white", 0.85), ("black", 0.15)])
+    frames = [_white_pet_frame() for _ in range(8)]
+    result, captured, vit, uploads = _package_counting(monkeypatch, frames)
+
+    assert vit.calls == 1  # 반복 실패여도 정확히 한 번
+    assert result.matte_backend == "vitmatte"
+    # 업로드는 최종(ViTMatte) 포장 한 번뿐 — 임시 bgmodel 포장은 어디에도 남지 않는다.
+    assert uploads == [PACKED_PATH]
+    assert delivery._MOCK_DELIVERY_OBJECTS == {PACKED_PATH}
+    # 최종 매트는 반점 자리까지 불투명이다.
+    y, x = SPECKLES[0]
+    assert captured["packed"][4][H + y + 1, x + 1, 0] > 250
+
+    delivery_meta = motions._MOCK_CANDIDATES[0]["generation_metadata"]["delivery"]
+    fb = delivery_meta["matte_fallback"]
+    assert delivery_meta["matte_backend"] == "vitmatte"
+    assert fb["requested_backend"] == "bgmodel"
+    assert fb["final_backend"] == "vitmatte"
+    assert fb["fallback_used"] is True
+    assert fb["fallback_reason"] == "enclosed_internal_holes"
+    assert fb["coat_risk"] == "light_or_white"
+    assert fb["sampled_frames"] == [0, 2, 4, 5, 7]
+    assert len(fb["failed_frames"]) >= 2
+    assert fb["max_hole_count"] >= QA_CFG.frame_min_count
+    assert fb["max_hole_fraction"] >= QA_CFG.frame_min_fraction
+
+
+def test_fallback_does_not_duplicate_candidates_or_versions(monkeypatch):
+    _seed()
+    frames = [_white_pet_frame() for _ in range(8)]
+    _package_counting(monkeypatch, frames)
+
+    assert len(motions._MOCK_CANDIDATES) == 1
+    assert len(motions._MOCK_VERSIONS) == 1
+    cand = motions._MOCK_CANDIDATES[0]
+    assert cand["derived_video_path"] == PACKED_PATH and cand["raw_video_path"] == RAW_PATH
+    assert cand["decision"] == "PASS" and cand["selected"] is True
+    # 재호출은 멱등 — ViTMatte 를 다시 돌리지 않는다.
+    vit = _FakeVitmatte()
+    monkeypatch.setattr(delivery, "matte_vitmatte", vit)
+    again, _ = _package(frames=frames)
+    assert again.deduplicated is True and vit.calls == 0
+
+
+def test_large_legitimate_gap_does_not_fall_back(monkeypatch):
+    _seed()
+    frames = [_white_pet_frame(speckles=False, gap=True) for _ in range(8)]
+    result, _, vit, _ = _package_counting(monkeypatch, frames)
+    assert result.matte_backend == "bgmodel" and vit.calls == 0
+
+
+def test_vitmatte_fallback_failure_does_not_return_to_bgmodel(monkeypatch):
+    _seed()
+    frames = [_white_pet_frame() for _ in range(8)]
+    vit = _FakeVitmatte(fail=True)
+    with pytest.raises(delivery.MotionDeliveryError) as exc:
+        _package_counting(monkeypatch, frames, vitmatte=vit)
+
+    assert exc.value.code == "MATTE_BACKEND_FAILED"
+    assert "폴백" in exc.value.message
+    assert vit.calls == 1
+    assert delivery._MOCK_DELIVERY_OBJECTS == set()  # 구멍 난 bgmodel 포장도 올리지 않는다
+    cand = motions._MOCK_CANDIDATES[0]
+    assert "delivery" not in cand["generation_metadata"]
+    assert not cand.get("derived_video_path")
+
+
+def test_hole_qa_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("MOTION_DELIVERY_HOLE_QA", "0")
+    _seed()
+    frames = [_white_pet_frame() for _ in range(8)]
+    result, _, vit, _ = _package_counting(monkeypatch, frames)
+    assert result.matte_backend == "bgmodel" and vit.calls == 0
+    fb = motions._MOCK_CANDIDATES[0]["generation_metadata"]["delivery"]["matte_fallback"]
+    assert fb["hole_qa"] is None and fb["coat_risk"] is None
+
+
+def test_injected_or_vitmatte_backends_skip_hole_qa(monkeypatch):
+    _seed()
+    vit = _FakeVitmatte()
+    frames = [_white_pet_frame() for _ in range(8)]
+    result, _ = _package(frames=frames, matte_fn=delivery.matte_bgmodel)
+    assert result.matte_backend == "bgmodel"  # 주입 백엔드는 QA/폴백 대상이 아니다
+    fb = motions._MOCK_CANDIDATES[0]["generation_metadata"]["delivery"]["matte_fallback"]
+    assert fb["requested_backend"] == "injected" and fb["fallback_used"] is False
+    assert vit.calls == 0
+
+
+def test_streamed_production_fallback_uploads_once(monkeypatch):
+    """운영 경로(코덱 주입 없음): 실패 판정 후 raw 를 ViTMatte 로 스트리밍, 업로드 1회."""
+    _seed()
+    calls = {"frames": 0}
+
+    def fake_frame(frame):
+        calls["frames"] += 1
+        return _clean_alpha()
+
+    monkeypatch.setattr(delivery, "_matte_vitmatte_frame", fake_frame)
+    uploads: list[str] = []
+
+    def upload(path, data):
+        uploads.append(path)
+        delivery._MOCK_DELIVERY_OBJECTS.add(path)
+
+    source = delivery.encode_video([_white_pet_frame() for _ in range(6)], FPS)
+    result = _run(
+        delivery.package_breathing_for_delivery(
+            user_id=USER,
+            pet_id=PET,
+            motion_version_id=VERSION_ID,
+            video_bytes=source,
+            upload_fn=upload,
+        )
+    )
+    assert result.matte_backend == "vitmatte"
+    assert calls["frames"] == 6  # 클립을 정확히 한 번 매팅
+    assert uploads == [PACKED_PATH]
+    fb = motions._MOCK_CANDIDATES[0]["generation_metadata"]["delivery"]["matte_fallback"]
+    assert fb["fallback_used"] is True and fb["coat_risk"] == "unknown"

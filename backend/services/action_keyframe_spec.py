@@ -37,7 +37,13 @@ from .luma_idle_templates import IDLE_TEMPLATE_ORDER
 # v3 (2026-09-17): preferred_canonical_source 가 "raw" → "clean_plate". 정본
 # raw 에는 모델이 그린 접지/투영 그림자가 들어 있고, 그걸 앵커로 먹이면
 # 키프레임이 같은 얼룩을 물려받는다 (clean_plate_service 참고).
-KEYFRAME_SPEC_VERSION = "keyframe-spec-v3"
+# v4 (2026-10-05): STAND_READY 가 **권위 있는 HOME 키프레임**이 된다. 홈
+# (BREATHING)과 서 있는 홈 아이들 계열 전부가 NEUTRAL_IDLE 대신 STAND_READY
+# 에서 시작한다 — 정본이 앉아/누워 있어도 홈은 항상 네 발로 선 차분한 자세다.
+# STAND_READY 서술을 "alert / ready to move" 에서 차분한 중립 홈 자세로 완화,
+# supported_action_ids 를 NEUTRAL_IDLE → STAND_READY 로 이관. 버전을 올리는
+# 이유는 v2 와 같다: 재사용 게이트가 이 값을 비교한다.
+KEYFRAME_SPEC_VERSION = "keyframe-spec-v4"
 # v2 (2026-09-17): 그림자 금지 절 추가 — canonical-prompt-v2 와 같은 이유.
 KEYFRAME_PROMPT_VERSION = "keyframe-prompt-v2"
 
@@ -61,35 +67,40 @@ class KeyframeRole:
     video_compat: dict[str, Any]
     #: 이 키프레임을 시작 포즈로 쓸 수 있는 **기존** 액션 id 들.
     supported_action_ids: tuple[str, ...] = field(default_factory=tuple)
+    #: 컴팩트 프롬프트(≤1000자) 전용 포즈 절. 요구 포즈는 required_pose 와 같고
+    #: 문장만 짧다 — 신원/형태 특성 줄이 길이 상한 때문에 잘리지 않게 한다.
+    #: None 이면 컴팩트 프롬프트도 required_pose 를 그대로 쓴다.
+    compact_pose: Optional[str] = None
 
 
 #: 시작 포즈가 LIE 인 액션 — NEUTRAL_IDLE 이 아니라 LIE 역할이 담당한다.
 _LIE_START_ACTIONS: tuple[str, ...] = ("LIE_IDLE", "STAND_UP")
 
-#: 시작 포즈가 **명시적 서기**인 액션 — STAND_READY 역할이 담당한다 (Phase 4).
-#: NEUTRAL_IDLE 은 keyframe-spec-v2 부터 정본 자세를 물려받아 앉아 있을 수
-#: 있으므로, 이동(COME_CLOSER)과 기립→눕기 전이(LIE_DOWN)의 시작점으로 쓸 수
-#: 없다 — 걷기 시작은 네 발로 서 있어야 한다. (RUN/WALK 는 motion_spec 에만
-#: 있는 미래 모션 id 라 여기 액션 레지스트리 매핑에는 등장하지 않는다.)
-_STAND_READY_ACTIONS: tuple[str, ...] = ("COME_CLOSER", "LIE_DOWN")
-
-_NEUTRAL_ACTIONS: tuple[str, ...] = (
+#: STAND_READY = **HOME 키프레임** (spec-v4). LIE 에서 시작하지 않는 모든 액션이
+#: 이 하나의 서기 스틸을 공유한다: 홈(BREATHING), 홈 아이들 계열, 터치/보이스
+#: 반응, 이동(COME_CLOSER), 기립→눕기 전이(LIE_DOWN). 모션마다 서기 키프레임을
+#: 따로 만들지 않는다 — 같은 포즈에서 시작해야 아이들 사이에 자세 점프가 없다.
+#: (RUN/WALK 는 motion_spec 에만 있는 미래 모션 id 라 여기 액션 레지스트리
+#: 매핑에는 등장하지 않는다.)
+_STAND_READY_ACTIONS: tuple[str, ...] = (
     tuple(ACTION_ORDER)          # IDLE, TOUCH(=PET_HEAD_START), VOICE, NFC
-    # PET_ACTIONS 중 중립 시작만 — LIE 시작은 LIE 역할로, 서기 시작은
-    # STAND_READY 역할로 (아래).
-    + tuple(
-        a for a in PET_ACTIONS
-        if a not in _LIE_START_ACTIONS and a not in _STAND_READY_ACTIONS
-    )
+    # PET_ACTIONS 중 LIE 시작이 아닌 전부 — COME_CLOSER, PET_HEAD, LOOK_UP, LIE_DOWN.
+    + tuple(a for a in PET_ACTIONS if a not in _LIE_START_ACTIONS)
     + (BREATHING_HOME_STATE,)    # 웹 홈 상태
     + tuple(IDLE_EVENTS)         # BLINKING, EAR_TWITCHING, HEAD_TILTING, TAIL_WAGGING
     + tuple(IDLE_TEMPLATE_ORDER) # IDLE_BREATH … IDLE_LOOK_AROUND
 )
 
+#: NEUTRAL_IDLE 은 spec-v4 부터 런타임 액션의 시작 포즈가 아니다 — 정본 자세를
+#: 물려받는 역할이라 홈으로 쓰면 나쁜 정본 자세가 그대로 홈이 된다. 역할 자체는
+#: 남는다 (기존 키프레임 계보 + 미래의 앉은 자세 전이용).
+_NEUTRAL_ACTIONS: tuple[str, ...] = ()
+
 KEYFRAME_ROLES: dict[str, KeyframeRole] = {
     "NEUTRAL_IDLE": KeyframeRole(
         role="NEUTRAL_IDLE",
-        # 홈/기준 포즈다 — 포즈를 **새로 고르는 단계가 아니다** (spec-v2).
+        # 정본 자세를 그대로 물려받는 포즈다 — 포즈를 **새로 고르는 단계가
+        # 아니다** (spec-v2). spec-v4 부터 홈은 STAND_READY 가 담당한다.
         # 이전 문구 "sitting or standing" 은 이미지 모델에게 선택권을 줬고
         # 앉기로 강하게 쏠렸다. 이제 정본의 기존 자세를 그대로 물려받는다:
         # 정본이 서 있으면 서 있고, 앉아 있으면 앉아 있다.
@@ -109,20 +120,32 @@ KEYFRAME_ROLES: dict[str, KeyframeRole] = {
     ),
     "STAND_READY": KeyframeRole(
         role="STAND_READY",
-        # 이동/기립 전이의 시작점 (Phase 4). NEUTRAL_IDLE 과 달리 자세를
-        # 물려받지 않는다 — 정본이 앉아 있어도 이 역할은 반드시 서 있다.
-        # 걷기·달리기·눕기 전이는 네 발로 선 자세에서만 자연스럽게 시작한다.
         required_pose=(
-            "standing upright and alert on all four legs, weight evenly "
-            "balanced over all four paws, ready to move, tail in a natural "
-            "position, head level and facing slightly toward the camera, "
-            "eyes open"
+            "a calm neutral standing home pose: standing naturally on all four legs, "
+            "all paws planted, with weight naturally balanced for this pet's own body "
+            "structure. The whole body is oriented toward the camera in a front or "
+            "slight front three-quarter view, with the chest and both front legs clearly "
+            "visible. Do not keep the torso in side profile with only the head turned. "
+            "Preserve the pet's exact natural morphology and proportions; do not change "
+            "leg length, body length, chest shape, stance width, head proportions, tail "
+            "or ear structure, or force a stance unnatural for this pet. Head level and "
+            "naturally aligned with the body, relaxed mouth, ears and tail, full body visible."
         ),
-        required_visibility=("face", "full_body", "front_paws"),
+        required_visibility=("face", "full_body", "ears", "front_paws"),
         body_motion_complexity="medium",
         preferred_canonical_source="clean_plate",
-        video_compat={"loopable_base": False, "motion_class": "locomotion"},
+        video_compat={"loopable_base": True, "motion_class": "home"},
         supported_action_ids=_STAND_READY_ACTIONS,
+        # 포즈 요구는 required_pose 와 동일하다 — 배경/그림자 금지는 컴팩트
+        # 베이스가 이미 말하므로 반복하지 않는다. 장황한 포즈 문장보다 펫의
+        # 신원 특성 줄(코트 색/종/귀)이 우선이다.
+        compact_pose=(
+            "calm neutral standing home pose: on all four legs, all paws planted, "
+            "balanced and level, no crouch, lean or mid-step, whole body facing "
+            "front or slight front 3/4, chest and both front legs visible, not a "
+            "side-profile torso with only the head turned, head level, relaxed "
+            "mouth, ears and tail, natural morphology, full body visible"
+        ),
     ),
     "LIE": KeyframeRole(
         role="LIE",
@@ -217,6 +240,8 @@ def role_spec_snapshot(spec: KeyframeRole) -> dict[str, Any]:
 # 키프레임 프롬프트 (버전드)
 # ══════════════════════════════════════════════════════════════════════════
 
+# 두 베이스 모두 배경 톤 자리({background_tone})가 있는 템플릿이다 — 빌더가
+# 이 계보의 정본이 고른 톤(pet_background)으로 채운다.
 _PROMPT_BASE = (
     "The first supplied image is the canonical reference of a specific pet; any "
     "additional images are real photos of the same pet. Create a photorealistic "
@@ -227,7 +252,7 @@ _PROMPT_BASE = (
     "appearance, exactly as in the supplied images.\n"
     "Change only: the pose, head direction and limb placement required by the "
     "requested pose, and expression only where the pose requires it.\n"
-    "Plain solid neutral light-gray background: a single flat tone with no gradient, "
+    "Plain solid neutral {background_tone} background: a single flat tone with no gradient, "
     "no floor plane and no horizon line. Even neutral lighting. "
     "No contact shadow under the pet, no cast shadow on the background, no reflection "
     "and no darkening around the paws, even where the pose puts weight on the ground. "
@@ -238,11 +263,20 @@ _PROMPT_BASE = (
 )
 
 
-def build_keyframe_prompt(spec: KeyframeRole, visual_identity: dict[str, Any]) -> str:
-    """정본 이미지 + 확인된 특성 제약 + 역할 포즈 절 → 키프레임 프롬프트."""
-    from .canonical_prompt import confident_trait_lines
+def build_keyframe_prompt(
+    spec: KeyframeRole,
+    visual_identity: dict[str, Any],
+    *,
+    background_tone: Optional[str] = None,
+) -> str:
+    """정본 이미지 + 확인된 특성 제약 + 역할 포즈 절 → 키프레임 프롬프트.
 
-    parts = [_PROMPT_BASE, f"Requested pose: {spec.required_pose}."]
+    background_tone: 이 계보의 정본이 고른 배경 톤 (pet_background.prompt_tone).
+    None 이면 기본 "light-gray" — 플레이트 색과 프롬프트 말이 어긋나지 않게 한다.
+    """
+    from .canonical_prompt import _with_tone, confident_trait_lines
+
+    parts = [_with_tone(_PROMPT_BASE, background_tone), f"Requested pose: {spec.required_pose}."]
     if spec.required_visibility:
         parts.append(
             "The following must be clearly visible: "
@@ -262,19 +296,25 @@ _COMPACT_PROMPT_BASE = (
     "still of the EXACT SAME pet — a pose change only, not a new interpretation. "
     "Preserve face, coat colors, markings, ear shape, body proportions, paws and "
     "tail exactly as supplied; invent nothing. Natural anatomy. Plain solid "
-    "neutral light-gray background (one flat tone, no floor plane), even "
+    "neutral {background_tone} background (one flat tone, no floor plane), even "
     "lighting. No contact shadow, no cast shadow. No objects, no scenery, no "
     "other animals, no human, no text, no stylization."
 )
 
 
 def build_compact_keyframe_prompt(
-    spec: KeyframeRole, visual_identity: dict[str, Any], *, max_chars: int = 1000
+    spec: KeyframeRole,
+    visual_identity: dict[str, Any],
+    *,
+    max_chars: int = 1000,
+    background_tone: Optional[str] = None,
 ) -> str:
     """짧은 전용 변형 — 신원은 이미지가 정본이고, 포즈 절만 필수다."""
-    from .canonical_prompt import _compact_trait_lines
+    from .canonical_prompt import _compact_trait_lines, _with_tone
 
-    pose = f"Requested pose: {spec.required_pose}."
+    base = _with_tone(_COMPACT_PROMPT_BASE, background_tone)
+
+    pose = f"Requested pose: {getattr(spec, 'compact_pose', None) or spec.required_pose}."
     vis = (
         "Clearly visible: " + ", ".join(v.replace("_", " ") for v in spec.required_visibility) + "."
         if spec.required_visibility
@@ -282,7 +322,7 @@ def build_compact_keyframe_prompt(
     )
     lines = [x for x in (vis,) if x] + _compact_trait_lines(visual_identity or {})
     while True:
-        prompt = " ".join([_COMPACT_PROMPT_BASE, pose] + lines)
+        prompt = " ".join([base, pose] + lines)
         if len(prompt) <= max_chars or not lines:
             return prompt
         lines.pop()

@@ -126,16 +126,34 @@ class FakeProvider(CanonicalImageProvider):
         )
 
 
+def distinct_view_cutout(how: str) -> bytes:
+    """
+    같은 코트의 **다른 사진**을 흉내 낸 누끼 (좌우/상하 반전). 색 분포는 같고
+    (같은 펫) pHash 는 멀다(다른 이미지) — 서로 다른 각도의 사진 세 장이라는
+    픽스처의 뜻에 맞는다. 바이트가 같은 누끼 세 장은 "같은 사진 세 번"이라, 신원
+    우선 선택기(Phase 2)가 중복으로 보고 한 장만 쓴다.
+    """
+    import io
+
+    from PIL import Image
+
+    op = {"mirror": Image.FLIP_LEFT_RIGHT, "flip": Image.FLIP_TOP_BOTTOM}[how]
+    im = Image.open(io.BytesIO(make_pet_cutout_png())).convert("RGBA").transpose(op)
+    buf = io.BytesIO()
+    im.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def _seed_three_ref_pet(monkeypatch) -> Harness:
     """FACE + FULL_BODY + 3Q 커버리지의 펫 (Phase 3 하네스 재사용)."""
     h = Harness()
     h.seed(cutout=make_pet_cutout_png(), classification=cls(view="FRONT", face_visible="yes"))
     h.seed(
-        cutout=make_pet_cutout_png(),
+        cutout=distinct_view_cutout("mirror"),
         classification=cls(view="LEFT", full_body_visible="yes", tail_visible="yes"),
     )
     h.seed(
-        cutout=make_pet_cutout_png(),
+        cutout=distinct_view_cutout("flip"),
         classification=cls(view="FRONT_RIGHT_3Q", full_body_visible="yes"),
     )
     h.install_vlm(monkeypatch)
@@ -377,10 +395,10 @@ def test_postprocessing_branches_overlap_and_still_completes(uploads, monkeypatc
 
     real_build_plate = clean_plate_service.build_clean_plate
 
-    def slow_build_plate(cutout_png):
+    def slow_build_plate(cutout_png, background=None):
         _start("plate_build")
         time.sleep(DELAY)
-        out = real_build_plate(cutout_png)
+        out = real_build_plate(cutout_png, background)
         _end("plate_build")
         return out
 
@@ -645,7 +663,8 @@ def test_primary_success_with_three_complementary_references(uploads, monkeypatc
     assert sel.qa_result["business_qa"]["delivery_action"] == "DELIVER"
     assert sel.qa_result["vlm_escalation"]["decision"] == "SKIP"
     assert sel.qa_result["identity_similarity"] is not None
-    assert v.qa_summary["canonical_confidence"] == "normal"
+    # 3장이 들어갔지만 같은 개체라는 확인 신호는 없다 — "normal" 이 아니다 (Phase 2).
+    assert v.qa_summary["canonical_confidence"] == "unverified"
 
 
 def test_enhanced_first_candidate_is_selected_without_candidate_two(uploads, monkeypatch):
