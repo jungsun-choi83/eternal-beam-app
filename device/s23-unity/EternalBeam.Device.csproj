@@ -55,9 +55,11 @@
     <Compile Include="Assets\Scripts\MotionPlaybackController.cs" />
     <Compile Include="Assets\Scripts\DeviceDebugOverlay.cs" />
     <Compile Include="Assets\Scripts\SpawnSequenceReceiver.cs" />
+    <Compile Include="Assets\Scripts\AudioMessageHandler.cs" />
     <Compile Include="Assets\Scripts\VideoCrossfadeTest.cs" />
     <Compile Include="Assets\Scripts\Testing\LocalMotionClipReferenceTester.cs" />
     <Compile Include="Assets\Scripts\PetVideoScreen.cs" />
+    <Compile Include="Assets\Scripts\SO\BackgroundMusicData.cs" />
     <Compile Include="Assets\Scripts\UdpJsonReceiver.cs" />
     <Compile Include="Assets\Scripts\Testing\MotionTestScript.cs" />
     <Compile Include="Assets\Scripts\UdpJsonListener.cs" />

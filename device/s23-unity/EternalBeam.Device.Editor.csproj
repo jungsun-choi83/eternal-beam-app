@@ -50,6 +50,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Assets\Editor\Milestone1Proof.cs" />
+    <Compile Include="Assets\Editor\VFXPositionMapGenerator.cs" />
     <Compile Include="Assets\Editor\UrpAutoSetup.cs" />
     <Compile Include="Assets\Editor\RenderTextureEditorCleaner.cs" />
     <Compile Include="Assets\Editor\KeepVFXSelection.cs" />

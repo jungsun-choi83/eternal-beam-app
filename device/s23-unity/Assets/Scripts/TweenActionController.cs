@@ -29,9 +29,22 @@ namespace EternalBeam.Device
         public float rotationBackStart = 5f;
         public float rotationBackDuration = 1.5f;
 
+        public bool IsComeCloserPlaying => currentTween != null && currentTween.IsActive() && currentTween.IsPlaying();
+
+        [Header("Testing")]
+        [SerializeField] private Transform testTarget = null;
+
         private void Awake()
         {
             actionCamera = Camera.main;
+        }
+
+        private void Update()
+        {
+            if (Input.GetKeyDown(KeyCode.Space))
+            {
+                PlayComeCloserAction(testTarget);
+            }
         }
 
         public void PlayComeCloserAction(Transform target)

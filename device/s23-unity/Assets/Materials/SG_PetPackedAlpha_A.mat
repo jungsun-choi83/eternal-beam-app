@@ -45,7 +45,7 @@ Material:
     - _AlphaClip: 1
     - _Brightness: 1
     - _Contrast: 1
-    - _Fade: 0
+    - _Fade: 1
     - _Gamma: 1
     - _QueueControl: 0
     - _QueueOffset: 0

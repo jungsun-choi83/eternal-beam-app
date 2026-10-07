@@ -328,12 +328,13 @@ public class PreparedVideoCrossfadeController : MonoBehaviour
     }
 
     #region Testing
-    private IEnumerator SwitchRoutine(VideoClip targetClip, bool loop)
+    public IEnumerator SwitchRoutine(VideoClip targetClip, bool loop)
     {
         isSwitching = true;
         debugOverlay?.SetPlayerStatus("PREPARING");
         debugOverlay?.SetError("-");
         nextPlayer.Stop();
+        nextPlayer.url = "";
         nextPlayer.source = VideoSource.VideoClip;
         nextPlayer.clip = targetClip;
         nextPlayer.isLooping = loop;

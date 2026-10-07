@@ -1,3 +1,4 @@
+using System.Collections;
 using UnityEngine;
 using UnityEngine.Video;
 using EternalBeam.Device;
@@ -42,7 +43,7 @@ public class PetVideoMessageHandler : MonoBehaviour
         string eventName = msg.Event?.ToLowerInvariant();
         if (eventName == "demo_init")
         {
-            HandleDemoInit();
+            StartCoroutine(HandleDemoInit());
             return;
         }
         if (eventName == "video_tuning")
@@ -54,9 +55,9 @@ public class PetVideoMessageHandler : MonoBehaviour
         {
             case "idle":
             case "touch":
-            case "approach":
+            //case "approach":
             case "voice":
-            case "nfc_match":
+                //case "nfc_match":
                 break;
             default:
                 return;
@@ -129,6 +130,22 @@ public class PetVideoMessageHandler : MonoBehaviour
 
     private void HandleActionFinished()
     {
+        StartCoroutine(WaitForComeCloserThenFinishAction());
+    }
+
+    private IEnumerator WaitForComeCloserThenFinishAction()
+    {
+        if (currentActionEvent == "touch")
+        {
+            Debug.Log("[Pet] Touch video finished → waiting for ComeCloser tween");
+            while (tweenActionController.IsComeCloserPlaying) yield return null;
+            Debug.Log("[Pet] ComeCloser tween finished → continue");
+        }
+        FinishAction();
+    }
+
+    private void FinishAction()
+    {
         isActionPlaying = false;
         currentActionEvent = null;
         if (!string.IsNullOrEmpty(pendingActionUrl))
@@ -141,6 +158,12 @@ public class PetVideoMessageHandler : MonoBehaviour
             currentActionEvent = nextEvent;
             Debug.Log($"[Pet] Action finished → playing queued Event={nextEvent}");
             RequestMotion(nextEvent, nextUrl, false);
+            return;
+        }
+        if (demoModeEnabled)
+        {
+            Debug.Log("[Pet] Action finished → returning to Local Idle");
+            RequestMotion("idle", null, true);
             return;
         }
         if (string.IsNullOrEmpty(idleVideoUrl))
@@ -167,7 +190,7 @@ public class PetVideoMessageHandler : MonoBehaviour
         Debug.LogError("[Pet] Idle playback failed. Waiting for a new valid Idle message.");
     }
 
-    private void HandleDemoInit()
+    private IEnumerator HandleDemoInit()
     {
         Debug.Log("[Pet] Demo Init received");
         isReady = false;
@@ -179,10 +202,11 @@ public class PetVideoMessageHandler : MonoBehaviour
         startingEvent = null;
         if (demoModeEnabled)
         {
+            yield return new WaitForSeconds(4f);
             VideoClip idleClip = localMotionReference.GetMotion(PetMotion.Idle);
             crossfadeController.RequestSwitch(idleClip, true);
             Debug.Log("[Pet] Demo Init → Local Idle requested");
-            return;
+            yield return null;
         }
         Debug.LogWarning("[Pet] Demo Init received while Demo Mode is disabled");
     }

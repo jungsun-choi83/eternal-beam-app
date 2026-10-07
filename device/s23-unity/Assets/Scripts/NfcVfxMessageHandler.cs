@@ -4,14 +4,15 @@ using EternalBeam.Device;
 
 public class NfcVfxMessageHandler : MonoBehaviour
 {
+    private string currentThemeId;
+    private VisualEffect currentVisualEffect;
+
     [Header("Network")]
     [SerializeField] private UdpJsonReceiver receiver;
 
     [Header("Theme VFX")]
     [SerializeField] private GameObject forestVfx;
     [SerializeField] private GameObject snowVfx;
-
-    private VisualEffect currentVisualEffect;
 
     private void Start()
     {
@@ -38,6 +39,8 @@ public class NfcVfxMessageHandler : MonoBehaviour
         }
         if (msg.Event != "nfc_match") return;
         Debug.Log($"[NFC VFX] Received theme={msg.ThemeId}");
+        if (currentThemeId == msg.ThemeId) return;
+        currentThemeId = msg.ThemeId;
         PlayThemeVfx(msg.ThemeId);
     }
 
