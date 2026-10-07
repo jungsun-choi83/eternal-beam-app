@@ -7,6 +7,9 @@ import { OpsDashboardScreen } from '@/components/memorial/ops/ops-dashboard-scre
 import { OpsOrdersScreen } from '@/components/memorial/ops/ops-orders-screen'
 import { OpsPartnersScreen } from '@/components/memorial/ops/ops-partners-screen'
 import { OpsShakerScreen } from '@/components/memorial/ops/ops-shaker-screen'
+import { ExhibitionStaffScreen } from '@/components/memorial/ops/exhibition-staff-screen'
+import { ExhibitionQueueScreen } from '@/components/exhibition/exhibition-queue-screen'
+import { isExhibitionQueueEntry } from '@/lib/exhibition-queue'
 import { currentOpsRoute } from '@/lib/ops-nav'
 import { creditsReturnEntry, orderReturnEntry, themeReturnEntry } from '@/lib/app-entry'
 import { isSoulTraceImportEntry, peekSoulTraceHandoffState } from '@/lib/soul-trace-handoff'
@@ -50,7 +53,10 @@ export default function App() {
   if (opsRoute === 'orders') return <OpsOrdersScreen />
   if (opsRoute === 'partners') return <OpsPartnersScreen />
   if (opsRoute === 'shaker') return <OpsShakerScreen />
+  if (opsRoute === 'exhibition') return <ExhibitionStaffScreen />
   if (isShakerEntry()) return <ShakerScreen />
+  // 공개 전시 대기열 — Shaker 처럼 고객 앱 바깥에서 끊는다 (관리 기능 없음).
+  if (isExhibitionQueueEntry()) return <ExhibitionQueueScreen />
 
   // ── 이메일 확인 탭에서 돌아온 경우 ────────────────────────────────────────
   // 가입 확인 링크는 **새 탭**에서 열리고, 그 탭이 어디에 떨어질지는 Supabase 의

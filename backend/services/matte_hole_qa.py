@@ -20,6 +20,31 @@ ceil(min_failed_ratio·표본 수)) 이상이면 실패 — 한 프레임만으�
 
 임계는 전부 환경 변수로 바꿀 수 있고 기본값은 보수적이다(명백한 다수 구멍만).
 단일 사례에 맞춘 값이 아니다 — 실제 클립 분포를 모아 조정할 것.
+
+── 자연 빈틈 필터 (natural_gap_filter, 기본 꺼짐 — 전시 실행만 켠다) ─────────
+다리 사이·배 밑의 빈틈은 바깥 배경과 이어져 있어 구멍이 아니다. 그런데 뒷발이
+앞다리에 겹치거나 발끼리 닿으면 그 빈틈이 **얇은 다리(발)로 닫혀** 둘러싸인 구멍이
+된다. 면적이 실루엣의 1–2% 라 max_region_fraction(2%) 로도 걸러지지 않는다.
+켜면, 아래 셋을 **모두** 만족하는 구멍은 자연 빈틈으로 보고 세지 않는다:
+  · 하체: 구멍 위끝이 실루엣 높이의 natural_gap_min_rel_top 아래
+  · 길쭉함: 긴 변/짧은 변 ≥ natural_gap_min_elongation (다리 사이 세로 틈, 배 밑 가로 틈)
+  · 얇은 바닥: 구멍 바로 아래 몸 두께(열마다, 아래로 빈 공간을 만날 때까지)의 중앙값
+          ≤ natural_gap_max_floor × 실루엣 높이 — 겹친 발·뻗은 뒷발처럼 얇은 띠 하나로만
+          닫혀 있고 그 아래는 바닥(빈 공간)이다. 몸통을 가로지른 틈은 아래에 몸통·다리가
+          통째로 있어 두껍다. (빈틈 폭과 무관하다 — 넓은 다리 사이 빈틈도 된다)
+머리·가슴·몸통 속 투명 구멍은 위치나 바닥 두께에서 걸러지지 않으므로 그대로 실패한다.
+
+── 보호 부위 큰 구멍 즉시 실패 (protected_hole_rule, 기본 꺼짐 — 전시 실행만 켠다) ──
+위 집계 규칙은 "작은 구멍 여러 개" 용이다. 큰 구멍 **하나**는 개수 조건(≥5)에 못 미쳐
+통과하고, 2% 를 넘으면 '큰 빈틈' 으로 아예 빠진다 — 가슴에 뚫린 큰 구멍이 보이지 않는다.
+켜면, 자연 빈틈이 아닌 둘러싸인 구멍 중 아래를 만족하는 것이 하나라도 있으면 즉시 실패:
+  · 크다: 면적 ≥ hard_min_fraction × 실루엣
+  · 보호 부위: (머리·목·가슴 — 위끝이 natural_gap_min_rel_top 위 **그리고**
+                깊이 ≥ hard_upper_min_depth)
+               **또는** (몸통 덩어리 속 — 깊이 ≥ hard_deep_min_depth, 위치 무관)
+깊이 = 구멍 안 최대 "바깥까지 거리" ÷ 실루엣 최대값. 이때 바깥 = 바깥 배경 ∪ 자연 빈틈
+(다리 사이 빈틈을 몸으로 채워 깊이를 부풀리지 않는다). 자연 빈틈은 이 규칙 전에 빠진다 —
+다리 사이 빈틈은 폭과 무관하게 '얇은 바닥' 으로 가려지므로 깊이 임계가 그것을 지킬 필요가 없다.
 """
 
 from __future__ import annotations
@@ -54,6 +79,16 @@ class HoleQaConfig:
     frame_min_count: int = 5
     min_failed_frames: int = 2
     min_failed_ratio: float = 0.5
+    # 자연 빈틈 필터 — 기본 꺼짐 (from_env 는 켜지 않는다: 일반 파이프라인 QA 는 그대로).
+    natural_gap_filter: bool = False
+    natural_gap_min_rel_top: float = 0.45
+    natural_gap_max_floor: float = 0.06
+    natural_gap_min_elongation: float = 1.5
+    # 보호 부위 큰 구멍 즉시 실패 — 기본 꺼짐 (from_env 는 켜지 않는다).
+    protected_hole_rule: bool = False
+    hard_min_fraction: float = 0.0025
+    hard_upper_min_depth: float = 0.25
+    hard_deep_min_depth: float = 0.45
 
     @classmethod
     def from_env(cls) -> "HoleQaConfig":
@@ -87,34 +122,142 @@ def sample_indices(count: int, samples: int) -> list[int]:
     return sorted({round(i * (count - 1) / (samples - 1)) for i in range(samples)})
 
 
+def _natural_gap_labels(
+    fg: np.ndarray,
+    labels: np.ndarray,
+    stats: np.ndarray,
+    exterior_ids: list[int],
+    hole_ids: list[int],
+    cfg: HoleQaConfig,
+) -> set[int]:
+    """둘러싸인 구멍 중 다리 사이·배 밑 같은 자연 빈틈의 라벨 (모듈 독스트링 참고).
+
+    바닥 두께는 열마다 구멍의 가장 아래 픽셀 바로 밑에서부터 전경이 이어지는 길이다.
+    그 아래가 빈 공간(바깥 배경 또는 다른 후보 빈틈)이어야 바닥으로 친다 — 다른 둘러싸인
+    구멍(결함일 수 있다)에서 끊기면 바닥이 아니다.
+    """
+    rows = np.flatnonzero(fg.any(axis=1))
+    if not rows.size:
+        return set()
+    top, height = int(rows[0]), int(rows[-1] - rows[0] + 1)
+
+    candidates = []
+    for i in hole_ids:
+        _x, y, bw, bh, _area = (int(v) for v in stats[i])
+        if (y - top) / height < cfg.natural_gap_min_rel_top:
+            continue
+        if max(bw, bh) / max(1, min(bw, bh)) < cfg.natural_gap_min_elongation:
+            continue
+        candidates.append(i)
+    if not candidates:
+        return set()
+
+    open_space = (np.isin(labels, exterior_ids) & ~fg) | np.isin(labels, candidates)
+    max_floor = cfg.natural_gap_max_floor * height
+    h = fg.shape[0]
+    natural: set[int] = set()
+    for i in candidates:
+        x, y, bw, bh, _area = (int(v) for v in stats[i])
+        sub = labels[y : y + bh, x : x + bw] == i
+        floors = []
+        for c in range(bw):
+            ys = np.flatnonzero(sub[:, c])
+            if not ys.size:
+                continue
+            col = x + c
+            start_y = y + int(ys[-1]) + 1
+            below = fg[start_y:, col]
+            run = int(np.argmin(below)) if (below.size and not below.all()) else below.size
+            end_y = start_y + run
+            floors.append(run if end_y < h and open_space[end_y, col] else np.inf)
+        if floors and float(np.median(floors)) <= max_floor:
+            natural.add(i)
+    return natural
+
+
+def _protected_hard_defects(
+    fg: np.ndarray,
+    labels: np.ndarray,
+    stats: np.ndarray,
+    exterior_ids: list[int],
+    natural: set[int],
+    hole_ids: list[int],
+    silhouette: int,
+    cfg: HoleQaConfig,
+) -> list[dict[str, Any]]:
+    """보호 부위(머리·목·가슴·몸통)의 크고 깊은 구멍 (모듈 독스트링 참고)."""
+    import cv2
+
+    big = [i for i in hole_ids if i not in natural and int(stats[i][4]) >= cfg.hard_min_fraction * silhouette]
+    if not big:
+        return []
+    rows = np.flatnonzero(fg.any(axis=1))
+    top, height = int(rows[0]), int(rows[-1] - rows[0] + 1)
+    open_space = (np.isin(labels, exterior_ids) & ~fg) | np.isin(labels, list(natural))
+    depth = cv2.distanceTransform((~open_space).astype(np.uint8), cv2.DIST_L2, 5)
+    depth_ref = float(depth.max()) or 1.0
+
+    defects = []
+    for i in big:
+        x, y, bw, bh, area = (int(v) for v in stats[i])
+        d = float(depth[labels == i].max()) / depth_ref
+        rel_top = (y - top) / height
+        upper = rel_top < cfg.natural_gap_min_rel_top and d >= cfg.hard_upper_min_depth
+        deep = d >= cfg.hard_deep_min_depth
+        if upper or deep:
+            defects.append({
+                "bbox": [x, y, bw, bh],
+                "area_px": area,
+                "fraction": round(area / silhouette, 5),
+                "rel_top": round(rel_top, 4),
+                "depth": round(d, 4),
+                "zone": "upper_body" if upper else "deep_torso",
+            })
+    return defects
+
+
 def measure_frame(alpha: np.ndarray, cfg: HoleQaConfig) -> dict[str, Any]:
     """알파 한 장 → 둘러싸인 구멍 지표."""
     import cv2
 
     fg = np.asarray(alpha, dtype=np.float32) >= cfg.fg_alpha
     h, w = fg.shape[:2]
-    n, _labels, stats, _ = cv2.connectedComponentsWithStats(
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(
         (~fg).astype(np.uint8), connectivity=4
     )
-    counted: list[int] = []
+    counted: list[tuple[int, int]] = []  # (label, area)
+    exterior_ids: list[int] = []
     enclosed_total = 0
     ignored_large = 0
     for i in range(1, n):
         x, y, bw, bh, area = (int(v) for v in stats[i])
         if x == 0 or y == 0 or x + bw >= w or y + bh >= h:
+            exterior_ids.append(i)
             continue  # 테두리에 닿음 → 바깥 배경
         enclosed_total += area
-        counted.append(area)
+        counted.append((i, area))
 
     silhouette = int(fg.sum()) + enclosed_total
-    kept: list[int] = []
-    for area in counted:
+    sized: list[tuple[int, int]] = []
+    for label, area in counted:
         if area < cfg.min_hole_px:
             continue
         if silhouette > 0 and area / silhouette > cfg.max_region_fraction:
             ignored_large += 1
             continue
-        kept.append(area)
+        sized.append((label, area))
+
+    # 큰(>2%) 구멍도 자연 빈틈 여부를 가린다 — 보호 부위 규칙이 큰 다리 사이 빈틈을 잡지 않게.
+    candidates = [lb for lb, area in counted if area >= cfg.min_hole_px]
+    natural: set[int] = set()
+    if cfg.natural_gap_filter and candidates:
+        pool = candidates if cfg.protected_hole_rule else [lb for lb, _a in sized]
+        natural = _natural_gap_labels(fg, labels, stats, exterior_ids, pool, cfg)
+    kept = [area for label, area in sized if label not in natural]
+    ignored_natural = sum(1 for label, _a in sized if label in natural)
+    hard: list[dict[str, Any]] = []
+    if cfg.protected_hole_rule and candidates and silhouette > 0:
+        hard = _protected_hard_defects(fg, labels, stats, exterior_ids, natural, candidates, silhouette, cfg)
 
     hole_area = int(sum(kept))
     fraction = (hole_area / silhouette) if silhouette > 0 else 0.0
@@ -122,8 +265,8 @@ def measure_frame(alpha: np.ndarray, cfg: HoleQaConfig) -> dict[str, Any]:
         silhouette > 0
         and fraction >= cfg.frame_min_fraction
         and len(kept) >= cfg.frame_min_count
-    )
-    return {
+    ) or bool(hard)
+    out = {
         "silhouette_px": silhouette,
         "hole_count": len(kept),
         "hole_px": hole_area,
@@ -131,6 +274,11 @@ def measure_frame(alpha: np.ndarray, cfg: HoleQaConfig) -> dict[str, Any]:
         "ignored_large_gaps": ignored_large,
         "failed": bool(failed),
     }
+    if cfg.natural_gap_filter:
+        out["ignored_natural_gaps"] = ignored_natural
+    if cfg.protected_hole_rule:
+        out["protected_hard_defects"] = hard
+    return out
 
 
 def evaluate(
