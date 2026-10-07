@@ -250,6 +250,13 @@ from .routers import pet_references_v1  # noqa: E402
 
 app.include_router(pet_references_v1.router, prefix="/api", tags=["pet-references"])
 
+from .routers import archive_intake_v1  # noqa: E402
+
+app.include_router(
+    archive_intake_v1.router,
+    prefix="/api",
+    tags=["archive-intake"],
+)
 # 펫 신원 프로필 (Phase 2). 레퍼런스에서 파생된 버전드 시각/구조 신원 —
 # 생성 파이프라인은 건드리지 않는다. 빌드/조회 모두 인증 필수.
 from .routers import pet_identity_v1  # noqa: E402

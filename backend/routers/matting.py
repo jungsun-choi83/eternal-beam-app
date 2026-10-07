@@ -16,14 +16,11 @@ import uuid
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from ..services import supabase_assets
+from ..services import pet_cutout_service, supabase_assets
 from ..services.cutout_errors import CutoutError
 from ..services.cutout_quality import analyze_alpha_fur_edge
 from ..services.debug_artifacts import store_debug_artifacts
-from ..services.vitmatte_service import (
-    DEBUG_ARTIFACTS_ENABLED,
-    matte_foreground_with_meta,
-)
+from ..services.vitmatte_service import DEBUG_ARTIFACTS_ENABLED, matte_foreground_with_meta
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +59,15 @@ async def post_matting_cutout(
     artifacts: dict[str, bytes] | None = {} if want_debug else None
 
     try:
-        png, vitmatte_meta = matte_foreground_with_meta(
+        generated = pet_cutout_service.generate_vitmatte_cutout_sync(
             raw,
             model_name=model,
             segmenter=segmenter,
             debug_artifacts=artifacts,
+            matte_function=matte_foreground_with_meta,
+            quality_function=analyze_alpha_fur_edge,
         )
+        png = generated.png
     except CutoutError as e:
         # 진단은 서버 로그로. 클라이언트에는 code/message 만 (트레이스백 노출 금지).
         logger.warning(
@@ -96,13 +96,7 @@ async def post_matting_cutout(
 
     # ViTMatte 는 트라이맵 unknown 영역을 단일 패스로 매팅한다 — rembg 처럼
     # "1차 후 재처리"하는 2패스가 아니므로 second_pass=False 로 정직하게 적는다.
-    quality_meta = {
-        **analyze_alpha_fur_edge(png),
-        **vitmatte_meta,
-        "refined": True,
-        "refinement_type": "vitmatte",
-        "second_pass": False,
-    }
+    quality_meta = generated.diagnostics
 
     cutout_url: str | None = None
     cutout_b64: str | None = None
