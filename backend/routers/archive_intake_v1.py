@@ -2,26 +2,39 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from ..services import archive_intake_service, pet_reference_service
+from ..services import (
+    archive_intake_preparation_service,
+    archive_intake_service,
+    pet_reference_service,
+)
 
 
 router = APIRouter(
     prefix="/internal/archive-intake",
     tags=["archive-intake"],
 )
+logger = logging.getLogger(__name__)
 
 MAX_PHOTOS = 3
 MAX_PHOTO_BYTES = 40 * 1024 * 1024
 MAX_EMAIL_LENGTH = 254
 MAX_PET_NAME_LENGTH = 200
 MAX_OPTIONAL_METADATA_LENGTH = 200
+WORKFLOW_RETRY_MESSAGE = (
+    "Archive intake was stored, but generation was not durably queued. "
+    "Retry the transfer."
+)
+SUCCESSFUL_WORKFLOW_STATUSES = frozenset(
+    {"GENERATION_QUEUED", "GENERATING", "COMPLETED"}
+)
 
 ALLOWED_MIME_TYPES = {
     "image/jpeg",
@@ -63,6 +76,8 @@ class ArchiveIntakeResponse(BaseModel):
     pet_id: str
     reference_count: int
     references: list[ArchiveReferenceOut]
+    status: str
+    generation_run_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -246,6 +261,22 @@ def _reference_error(exc: pet_reference_service.PetReferenceError) -> HTTPExcept
     return _error(exc.status, exc.code, exc.message)
 
 
+def _workflow_succeeded(intake: dict[str, object]) -> bool:
+    return bool(intake.get("generation_run_id")) or str(
+        intake.get("status") or ""
+    ) in SUCCESSFUL_WORKFLOW_STATUSES
+
+
+def _workflow_error_code(
+    intake: dict[str, object], fallback: str = "ARCHIVE_GENERATION_NOT_QUEUED"
+) -> str:
+    if intake.get("status") == archive_intake_service.STATUS_PREPARING:
+        fallback = "ARCHIVE_GENERATION_PREPARING"
+    return archive_intake_service.safe_error_code(
+        str(intake.get("last_error") or fallback)
+    )
+
+
 @router.post("", response_model=ArchiveIntakeResponse, status_code=201)
 async def create_archive_intake(
     application_id: str = Form(...),
@@ -298,6 +329,8 @@ async def create_archive_intake(
     results: list[ArchiveReferenceOut] = []
 
     async with pet_reference_service.pet_input_gate(pet_id).shared():
+        locked_duplicate_retry = False
+        refs: list[pet_reference_service.PetReference] = []
         try:
             refs = await pet_reference_service.list_references(
                 user_id=owner_id,
@@ -305,7 +338,21 @@ async def create_archive_intake(
             )
             await pet_reference_service.assert_pet_inputs_unlocked(pet_id, refs)
         except pet_reference_service.PetReferenceError as exc:
-            raise _reference_error(exc) from exc
+            accepted_by_hash = {
+                ref.content_hash: ref
+                for ref in refs
+                if ref.role == pet_reference_service.ROLE_ORIGINAL
+                and ref.acceptance_state == pet_reference_service.STATE_ACCEPTED
+                and ref.content_hash
+            }
+            if exc.code == "PHASE1_LOCKED" and all(
+                photo.content_hash in accepted_by_hash for photo in prepared
+            ):
+                # A resend after generation was queued is read-only. Reuse the
+                # exact originals without attempting a locked input mutation.
+                locked_duplicate_retry = True
+            else:
+                raise _reference_error(exc) from exc
 
         if _would_exceed_reference_limit(refs, prepared):
             raise _error(
@@ -315,17 +362,20 @@ async def create_archive_intake(
             )
 
         for photo in prepared:
-            try:
-                ref = await pet_reference_service.record_original(
-                    user_id=owner_id,
-                    content_id=content_id,
-                    data=photo.data,
-                    mime_type=photo.mime_type,
-                    original_filename=photo.filename,
-                    source=pet_reference_service.SOURCE_OPS,
-                )
-            except pet_reference_service.PetReferenceError as exc:
-                raise _reference_error(exc) from exc
+            if locked_duplicate_retry:
+                ref = replace(accepted_by_hash[photo.content_hash], deduplicated=True)
+            else:
+                try:
+                    ref = await pet_reference_service.record_original(
+                        user_id=owner_id,
+                        content_id=content_id,
+                        data=photo.data,
+                        mime_type=photo.mime_type,
+                        original_filename=photo.filename,
+                        source=pet_reference_service.SOURCE_OPS,
+                    )
+                except pet_reference_service.PetReferenceError as exc:
+                    raise _reference_error(exc) from exc
 
             if not ref.recorded or not ref.id:
                 raise _error(
@@ -354,7 +404,7 @@ async def create_archive_intake(
     reference_count = _accepted_original_count(refs)
 
     try:
-        await archive_intake_service.save_intake(
+        intake = await archive_intake_service.save_intake(
             archive_application_id=app_id,
             owner_id=owner_id,
             content_id=content_id,
@@ -372,6 +422,55 @@ async def create_archive_intake(
             "The Archive intake metadata could not be stored.",
         ) from exc
 
+    # Cutout preparation is awaited because this repository has no durable
+    # cutout-preparation queue. The generation call itself only creates the
+    # existing durable run; its worker performs the expensive video stages.
+    try:
+        prepared_intake = await archive_intake_preparation_service.prepare_and_queue(
+            app_id
+        )
+        intake = prepared_intake.intake
+    except archive_intake_preparation_service.ArchivePreparationError as exc:
+        logger.warning(
+            "Archive intake preparation failed (application=%s code=%s)",
+            app_id,
+            exc.code,
+        )
+        try:
+            intake = await archive_intake_service.get_intake(app_id) or intake
+        except Exception:
+            logger.error(
+                "Could not reload failed Archive intake (application=%s)",
+                app_id,
+            )
+        raise _error(
+            503,
+            _workflow_error_code(intake, exc.code),
+            WORKFLOW_RETRY_MESSAGE,
+        ) from exc
+    except Exception as exc:
+        # Preserve the stored intake and expose no exception/provider details.
+        logger.error(
+            "Archive intake preparation failed unexpectedly (application=%s)",
+            app_id,
+        )
+        try:
+            intake = await archive_intake_service.get_intake(app_id) or intake
+        except Exception:
+            pass
+        raise _error(
+            503,
+            _workflow_error_code(intake),
+            WORKFLOW_RETRY_MESSAGE,
+        ) from exc
+
+    if not _workflow_succeeded(intake):
+        raise _error(
+            503,
+            _workflow_error_code(intake),
+            WORKFLOW_RETRY_MESSAGE,
+        )
+
     return ArchiveIntakeResponse(
         application_id=app_id,
         owner_id=owner_id,
@@ -379,4 +478,12 @@ async def create_archive_intake(
         pet_id=pet_id,
         reference_count=reference_count,
         references=results,
+        status=str(
+            intake.get("status") or archive_intake_service.STATUS_REFERENCES_READY
+        ),
+        generation_run_id=(
+            str(intake["generation_run_id"])
+            if intake.get("generation_run_id")
+            else None
+        ),
     )

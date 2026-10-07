@@ -9,7 +9,7 @@ import os
 from fastapi import APIRouter, BackgroundTasks, File, Form, Header, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 
-from ..services import pet_reference_service, supabase_assets
+from ..services import pet_cutout_service, pet_reference_service, supabase_assets
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -340,82 +340,13 @@ async def _persist_original(
         try:
             cut_raw = await cutout_read_task
             if cut_raw and ref.recorded and ref.content_hash:
-                cut_hash = hashlib.sha256(cut_raw).hexdigest()
-                ledger = await pet_reference_service.list_references(
-                    user_id=uid, pet_id=ref.pet_id
+                derived = await pet_cutout_service.record_strict_cutout(
+                    user_id=uid,
+                    content_id=cid,
+                    original=ref,
+                    cutout_png=cut_raw,
+                    diagnostics=diagnostics,
                 )
-                accepted = pet_reference_service.STATE_ACCEPTED
-                linked = [
-                    r
-                    for r in ledger
-                    if r.role == pet_reference_service.ROLE_DERIVED
-                    and (r.derived_kind or "").startswith("cutout")
-                    and r.parent_reference_id == ref.id
-                ]
-
-                def _cut_hash(r) -> str:
-                    return str((r.diagnostics or {}).get("content_hash") or "")
-
-                # 이 바이트의 누끼 행이 이미 있는가 (상태 무관). 해시를 남기지 않은
-                # 옛 행은 살아 있을 때만 "같은 누끼"로 본다 — 기존 계약 그대로.
-                match = next((r for r in linked if _cut_hash(r) == cut_hash), None) or next(
-                    (r for r in linked if r.acceptance_state == accepted and not _cut_hash(r)),
-                    None,
-                )
-                others_active = [
-                    r for r in linked if r.acceptance_state == accepted and r is not match
-                ]
-                if others_active:
-                    # 같은 원본에 **다른 바이트의** 누끼가 왔다. 여기까지 왔다면 이
-                    # 펫은 잠겨 있지 않다(요청 첫머리에서 확인했고, 이 요청이 도는
-                    # 동안에는 실행이 만들어질 수 없다) — 새 누끼가 예전 것을
-                    # 대신한다. 예전 행은 CUTOUT_REPLACED_BY_USER 로 물러나고 객체는
-                    # 그대로 남는다. 살아 있는 누끼는 언제나 하나다. 물리기를
-                    # 업로드보다 먼저 하므로, 그 뒤에 실패해도 재시도가 새 누끼를
-                    # 붙인다. 잠긴 뒤의 교체는 PHASE1_LOCKED 로 이미 걸러졌다.
-                    await pet_reference_service.supersede_cutouts(
-                        user_id=uid,
-                        pet_id=ref.pet_id,
-                        reference_ids=[str(r.id) for r in others_active],
-                    )
-
-                if match and match.acceptance_state == accepted:
-                    derived = match
-                else:
-                    if match:
-                        # 물러나 있던 같은 바이트의 누끼 — 객체는 이미 있다. 다시
-                        # 올리지 않고 record_derived 가 행을 되살린다.
-                        cut_path = match.object_path
-                    else:
-                        cut_path = f"{uid}/{cid}/references/cutout_{ref.content_hash[:16]}.png"
-                        if any(
-                            r.role == pet_reference_service.ROLE_DERIVED
-                            and r.object_path == cut_path
-                            for r in ledger
-                        ):
-                            # 기본 경로는 물러난 예전 누끼의 것이다. 그 객체를
-                            # 덮어쓰면 과거 계보가 가리키는 바이트가 바뀌므로 새
-                            # 경로에 올린다.
-                            cut_path = (
-                                f"{uid}/{cid}/references/"
-                                f"cutout_{ref.content_hash[:16]}_{cut_hash[:16]}.png"
-                            )
-                        await supabase_assets.upload_asset_to_storage(
-                            cut_path, cut_raw, "image/png"
-                        )
-                    derived = await pet_reference_service.record_derived(
-                        user_id=uid,
-                        content_id=cid,
-                        object_path=cut_path,
-                        derived_kind="cutout_reference",
-                        parent_reference_id=ref.id,
-                        mime_type="image/png",
-                        diagnostics={
-                            **(diagnostics or {}),
-                            "content_hash": cut_hash,
-                            "bytes_size": len(cut_raw),
-                        },
-                    )
                 cutout_recorded = derived.recorded
                 cutout_reference_id = derived.id
                 cutout_object_path = derived.object_path
