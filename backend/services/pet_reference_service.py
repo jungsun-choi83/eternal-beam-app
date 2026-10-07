@@ -70,6 +70,7 @@ REJECTION_CUTOUT_REPLACED = "CUTOUT_REPLACED_BY_USER"
 #: 인테이크는 1~3장을 같은 펫에 쌓는다 — 같은 바이트의 재시도는 여전히 멱등이라
 #: 이 상한을 소모하지 않는다.
 MAX_ORIGINALS_PER_PET = 3
+ORIGINAL_CAPACITY_ERROR_CODE = "PET_REFERENCE_ORIGINAL_LIMIT"
 
 _EXT_BY_MIME = {
     "image/jpeg": ".jpg",
@@ -486,6 +487,38 @@ def _find_existing_original(rows: list[dict[str, Any]], content_hash: str) -> Op
     return None
 
 
+def _original_capacity_error() -> PetReferenceError:
+    return PetReferenceError(
+        ORIGINAL_CAPACITY_ERROR_CODE,
+        f"A pet can have at most {MAX_ORIGINALS_PER_PET} active original references.",
+        status=409,
+    )
+
+
+def _is_original_capacity_db_error(exc: Optional[Exception]) -> bool:
+    if exc is None:
+        return False
+    if getattr(exc, "code", None) == ORIGINAL_CAPACITY_ERROR_CODE:
+        return True
+    if getattr(exc, "message", None) == ORIGINAL_CAPACITY_ERROR_CODE:
+        return True
+    return ORIGINAL_CAPACITY_ERROR_CODE in str(exc)
+
+
+def _assert_original_capacity(rows: list[dict[str, Any]], acceptance_state: str) -> None:
+    """Enforce the documented per-pet cap at the shared persistence boundary."""
+    if acceptance_state != STATE_ACCEPTED:
+        return
+    active_count = sum(
+        1
+        for row in rows
+        if row.get("role") == ROLE_ORIGINAL
+        and row.get("acceptance_state") == STATE_ACCEPTED
+    )
+    if active_count >= MAX_ORIGINALS_PER_PET:
+        raise _original_capacity_error()
+
+
 def _is_superseded(row: dict[str, Any]) -> bool:
     return (
         row.get("acceptance_state") == STATE_REJECTED
@@ -543,6 +576,8 @@ async def _set_acceptance(
     try:
         await _update_acceptance_rows(pet_id, wanted, patch)
     except Exception as e:
+        if _is_original_capacity_db_error(e):
+            raise _original_capacity_error() from e
         logger.exception("펫 레퍼런스 상태 변경 실패 (pet=%s state=%s)", pet_id, state)
         raise PetReferenceError(
             "PET_REFERENCES_UNAVAILABLE", "레퍼런스 상태를 바꾸지 못했습니다.", status=503
@@ -893,7 +928,11 @@ async def record_original(
     content_hash = hashlib.sha256(data).hexdigest()
     existing = _find_existing_original(rows, content_hash)
     if existing:
+        if _is_superseded(existing):
+            _assert_original_capacity(rows, STATE_ACCEPTED)
         return await _existing_original_ref(pid, rows, existing)
+
+    _assert_original_capacity(rows, acceptance_state)
 
     path = original_object_path(uid, cid, content_hash, mime_type)
 
@@ -901,6 +940,17 @@ async def record_original(
 
     # 업로드가 곧 durable 보장이다. 실패는 그대로 올린다.
     await supabase_assets.upload_asset_to_storage(path, data, mime_type or "application/octet-stream")
+
+    # Close the in-process/mock race where another call reactivates an original
+    # while this call is uploading. Production DB mutations are additionally
+    # serialized by the advisory-lock trigger.
+    rows = await _assert_pet_accessible(uid, pid)
+    existing = _find_existing_original(rows, content_hash)
+    if existing:
+        if _is_superseded(existing):
+            _assert_original_capacity(rows, STATE_ACCEPTED)
+        return await _existing_original_ref(pid, rows, existing)
+    _assert_original_capacity(rows, acceptance_state)
 
     width, height = _image_dimensions(data)
     row: dict[str, Any] = {
@@ -935,10 +985,15 @@ async def record_original(
         ok, err = await _insert_row(row)
         if ok:
             return _to_ref(row)
+        if _is_original_capacity_db_error(err):
+            raise _original_capacity_error() from err
         again = await _rows_for_pet(pid)
         dup = _find_existing_original(again, content_hash)
         if dup:
+            if _is_superseded(dup):
+                _assert_original_capacity(again, STATE_ACCEPTED)
             return await _existing_original_ref(pid, again, dup)
+        _assert_original_capacity(again, acceptance_state)
         row["version"] = _next_version(again, ROLE_ORIGINAL)
         last_err = err
 
