@@ -12,6 +12,8 @@ STATUS_REFERENCES_READY = "REFERENCES_READY"
 STATUS_PREPARING = "PREPARING"
 STATUS_GENERATION_QUEUED = "GENERATION_QUEUED"
 STATUS_GENERATION_FAILED = "GENERATION_FAILED"
+STATUS_GENERATING = "GENERATING"
+STATUS_COMPLETED = "COMPLETED"
 
 _MOCK_INTAKES: dict[str, dict[str, Any]] = {}
 _SAFE_ERROR_CODE_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,199}$")
@@ -182,6 +184,35 @@ async def get_intake(archive_application_id: str) -> dict[str, Any] | None:
 
     return _first_row(await asyncio.to_thread(_select))
 
+async def get_intake_by_generation_run_id(
+    generation_run_id: str,
+) -> dict[str, Any] | None:
+    run_id = (generation_run_id or "").strip()
+    if not run_id:
+        return None
+
+    if not _use_db():
+        for row in _MOCK_INTAKES.values():
+            if str(row.get("generation_run_id") or "") == run_id:
+                return dict(row)
+        return None
+
+    supabase = _supabase()
+    if not supabase:
+        raise RuntimeError(
+            "Supabase server credentials are not configured for Archive intake."
+        )
+
+    def _select():
+        return (
+            supabase.table(_table())
+            .select("*")
+            .eq("generation_run_id", run_id)
+            .limit(1)
+            .execute()
+        )
+
+    return _first_row(await asyncio.to_thread(_select))
 
 async def claim_preparation(
     archive_application_id: str,
@@ -273,6 +304,66 @@ async def mark_generation_queued(
             "last_error": None,
         },
     )
+
+
+async def mark_generation_completed(
+    generation_run_id: str, result_url: str
+) -> dict[str, Any] | None:
+    run_id = (generation_run_id or "").strip()
+    url = (result_url or "").strip()
+
+    if not run_id:
+        raise ValueError("generation_run_id must not be empty")
+    if not url:
+        raise ValueError("result_url must not be empty")
+
+    payload = {
+        "status": STATUS_COMPLETED,
+        "result_url": url,
+        "last_error": None,
+        "updated_at": _now_iso(),
+    }
+
+    if not _use_db():
+        for row in _MOCK_INTAKES.values():
+            if str(row.get("generation_run_id") or "") != run_id:
+                continue
+
+            if row.get("status") in (
+                STATUS_GENERATION_QUEUED,
+                STATUS_GENERATING,
+                STATUS_COMPLETED,
+            ):
+                row.update(payload)
+
+            return dict(row)
+
+        return None
+
+    supabase = _supabase()
+    if not supabase:
+        raise RuntimeError(
+            "Supabase server credentials are not configured for Archive intake."
+        )
+
+    def _update():
+        return (
+            supabase.table(_table())
+            .update(payload)
+            .eq("generation_run_id", run_id)
+            .in_(
+                "status",
+                [
+                    STATUS_GENERATION_QUEUED,
+                    STATUS_GENERATING,
+                    STATUS_COMPLETED,
+                ],
+            )
+            .execute()
+        )
+
+    updated = _first_row(await asyncio.to_thread(_update))
+    return updated
 
 
 async def mark_generation_failed(
