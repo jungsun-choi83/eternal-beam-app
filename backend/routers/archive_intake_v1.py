@@ -79,6 +79,11 @@ class ArchiveIntakeResponse(BaseModel):
     status: str
     generation_run_id: str | None = None
 
+class ArchiveIntakeStatusResponse(BaseModel):
+    application_id: str
+    status: str
+    generation_run_id: str | None = None
+    result_url: str | None = None
 
 @dataclass(frozen=True)
 class _PreparedPhoto:
@@ -276,6 +281,61 @@ def _workflow_error_code(
         str(intake.get("last_error") or fallback)
     )
 
+@router.get(
+    "/{application_id}/status",
+    response_model=ArchiveIntakeStatusResponse,
+)
+async def get_archive_intake_status(
+    application_id: str,
+    x_archive_service_token: str | None = Header(default=None),
+):
+    _require_archive_secret(x_archive_service_token)
+
+    app_id = (application_id or "").strip()
+    if not APPLICATION_ID_RE.fullmatch(app_id):
+        raise _error(
+            400,
+            "ARCHIVE_APPLICATION_ID_INVALID",
+            "application_id is invalid.",
+        )
+
+    try:
+        intake = await archive_intake_service.get_intake(app_id)
+    except Exception as exc:
+        logger.exception(
+            "Could not load Archive intake status (application=%s)",
+            app_id,
+        )
+        raise _error(
+            503,
+            "ARCHIVE_STATUS_UNAVAILABLE",
+            "Archive generation status is temporarily unavailable.",
+        ) from exc
+
+    if not intake:
+        raise _error(
+            404,
+            "ARCHIVE_INTAKE_NOT_FOUND",
+            "Archive intake was not found.",
+        )
+
+    return ArchiveIntakeStatusResponse(
+        application_id=app_id,
+        status=str(
+            intake.get("status")
+            or archive_intake_service.STATUS_REFERENCES_READY
+        ),
+        generation_run_id=(
+            str(intake["generation_run_id"])
+            if intake.get("generation_run_id")
+            else None
+        ),
+        result_url=(
+            str(intake["result_url"])
+            if intake.get("result_url")
+            else None
+        ),
+    )
 
 @router.post("", response_model=ArchiveIntakeResponse, status_code=201)
 async def create_archive_intake(
