@@ -12,22 +12,37 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
-CANONICAL_PROMPT_VERSION = "canonical-prompt-v1"
+# v2 (2026-09-17): 그림자 금지 절 추가. 모델이 그려 넣던 접지(contact)/투영
+# (cast) 그림자가 누끼 알파로 살아남아 키프레임·모션까지 얼룩으로 번졌다 —
+# 알파 쪽 억제(vitmatte_service)와 **짝을 이루는** 생성 측 제약이다.
+# 버전을 올리는 이유: 멱등 게이트가 prompt_version 을 비교한다 — 안 올리면
+# 그림자가 구워진 기존 정본이 새 문구 아래에서도 영원히 재사용된다.
+CANONICAL_PROMPT_VERSION = "canonical-prompt-v2"
 
 #: 정본 출력 사양 — 프롬프트와 프로바이더 파라미터 양쪽에 쓰인다.
 CANONICAL_OUTPUT_SPEC: dict[str, Any] = {
     "pose": "preserve reference-supported natural posture",
     "angle": "front three-quarter",
-    "background": "plain solid neutral light-gray",
+    "background": "plain solid neutral light-gray, no contact or cast shadow",
     "lighting": "even neutral",
     "style": "photorealistic, no stylization",
     "ratio": "1024:1024",
     "size": "1024x1024",
 }
 
-_BASE = (
+#: 배경 톤 기본 표현 — pet_background 가 다른 톤을 고르지 않은 경우.
+DEFAULT_BACKGROUND_TONE = "light-gray"
+
+
+def _with_tone(template: str, background_tone: Optional[str]) -> str:
+    """프롬프트 베이스의 배경 톤 자리를 채운다 — 플레이트 색과 말이 어긋나지 않게."""
+    return template.replace("{background_tone}", background_tone or DEFAULT_BACKGROUND_TONE)
+
+
+#: 배경 톤 자리({background_tone})가 있는 템플릿. _BASE 는 기본 톤으로 채운 값이다.
+_BASE_TEMPLATE = (
     "Create a photorealistic canonical reference image of the exact same pet shown "
     "in the supplied reference photos.\n"
     "Preserve the pet's exact recognizable identity: facial proportions, coat colors, "
@@ -42,10 +57,15 @@ _BASE = (
     "no extreme perspective. "
     "All visible legs and anatomy must be natural and consistent; paws, ears and tail "
     "visible where the pet's anatomy and the references support it. Neutral expression.\n"
-    "Plain solid neutral light-gray background. Even neutral lighting. "
+    "Plain solid neutral {background_tone} background: a single flat tone with no gradient, "
+    "no floor plane and no horizon line. Even neutral lighting. "
+    "No contact shadow under the pet, no cast shadow on the background, no reflection "
+    "and no darkening anywhere around the paws — the pet must be the only thing in the "
+    "frame that is not the flat background. "
     "No accessories unless they are clearly part of the pet's identity in the references. "
     "No additional animals. No human. No objects. No text. No stylization."
 )
+_BASE = _with_tone(_BASE_TEMPLATE, None)
 
 
 def _known(value: Any) -> bool:
@@ -102,14 +122,20 @@ def _confident_traits(visual_identity: dict[str, Any]) -> list[str]:
 confident_trait_lines = _confident_traits
 
 
+def background_spec_text(background_tone: Optional[str] = None) -> str:
+    """output_spec["background"] 값 — 선택된 톤으로."""
+    return _with_tone("plain solid neutral {background_tone}, no contact or cast shadow", background_tone)
+
+
 def build_canonical_prompt(
     *,
     visual_identity: dict[str, Any],
     structural_identity: dict[str, Any],  # noqa: ARG001 — v1 은 구조를 말로 옮기지 않는다 (레퍼런스가 담당)
     reference_roles: list[str],
+    background_tone: Optional[str] = None,
 ) -> str:
     """레퍼런스 역할 + 확인된 특성 → 정본 프롬프트 (버전 CANONICAL_PROMPT_VERSION)."""
-    parts = [_BASE]
+    parts = [_with_tone(_BASE_TEMPLATE, background_tone)]
     if reference_roles:
         parts.append(
             "The supplied references show, in order: "
@@ -129,19 +155,17 @@ def build_canonical_prompt(
 # 신원의 정본은 어차피 레퍼런스 이미지다 — 프롬프트에는 고신뢰 제약만 싣는다.
 # UNKNOWN 특성은 여기서도 문장이 되지 않는다.
 
-CANONICAL_COMPACT_PROMPT_VERSION = "canonical-prompt-compact-v1"
+CANONICAL_COMPACT_PROMPT_VERSION = "canonical-prompt-compact-v2"
 
-_COMPACT_BASE = (
-    "Photorealistic canonical reference image of the exact same pet shown in the "
-    "supplied reference photos. Preserve its exact identity: facial proportions, "
-    "coat colors, markings, ear shape, body proportions, paws and tail — do not "
-    "invent features the references do not show. Full body visible. Preserve the "
-    "natural posture supported by the references; do not change a clearly standing "
-    "pet to sitting or a clearly sitting pet to standing. Front three-quarter angle, "
-    "camera at the pet's eye level, natural anatomy, neutral expression. Plain solid "
-    "neutral light-gray background, even lighting. No accessories, no other animals, "
-    "no human, no objects, no text, no stylization."
+_COMPACT_BASE_TEMPLATE = (
+    "Photorealistic canonical reference of the exact same pet in the supplied photos. "
+    "Preserve identity: facial proportions, coat colors and markings, ear shape, body proportions, paws, and tail. "
+    "Do not invent unseen features. Show the full body in a natural reference-supported posture; do not switch standing and sitting. "
+    "Use a front three-quarter view at eye level, natural anatomy, neutral expression, even lighting, and a plain solid {background_tone} background (one flat tone, no floor plane). "
+    "No contact shadow, no cast shadow. "
+    "No accessories, other animals, humans, objects, text, or stylization."
 )
+_COMPACT_BASE = _with_tone(_COMPACT_BASE_TEMPLATE, None)
 
 
 def _compact_trait_lines(visual_identity: dict[str, Any]) -> list[str]:
@@ -167,15 +191,26 @@ def _compact_trait_lines(visual_identity: dict[str, Any]) -> list[str]:
 
 
 def build_compact_canonical_prompt(
-    *, visual_identity: dict[str, Any], max_chars: int = 1000
+    *,
+    visual_identity: dict[str, Any],
+    max_chars: int = 1000,
+    background_tone: Optional[str] = None,
 ) -> str:
-    """
-    프로바이더 문자 상한에 맞는 전용 프롬프트. 특성 줄은 상한에 맞을 때까지
-    뒤에서부터 통째로 떨어뜨린다 — 문장 중간 절단은 없다.
-    """
     lines = _compact_trait_lines(visual_identity or {})
-    while True:
-        prompt = " ".join([_COMPACT_BASE] + lines)
-        if len(prompt) <= max_chars or not lines:
+    base = _with_tone(_COMPACT_BASE_TEMPLATE, background_tone)
+
+    while lines:
+        prompt = " ".join([base] + lines)
+
+        if len(prompt) <= max_chars:
             return prompt
+
         lines.pop()
+
+    if len(base) <= max_chars:
+        return base
+
+    raise ValueError(
+        f"_COMPACT_BASE exceeds max_chars: "
+        f"{len(base)} > {max_chars}"
+    )

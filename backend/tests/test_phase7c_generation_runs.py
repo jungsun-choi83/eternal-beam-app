@@ -13,6 +13,7 @@ from backend.routers import generation_runs_v1
 from backend.services import (
     action_keyframe_service,
     canonical_pet_service,
+    durable_provider_jobs,
     motion_publication_service,
     motion_spec,
     motion_video_service,
@@ -21,6 +22,7 @@ from backend.services import (
     pet_reference_service,
     pet_reference_set_service,
     pet_registry,
+    qa_shadow_telemetry,
 )
 
 from .conftest import ASGITestClient, make_jpeg_bytes
@@ -85,9 +87,20 @@ def seed_intake(*, cutout=True):
 
 
 class PipelineHarness:
-    def __init__(self, monkeypatch, *, motion_status="complete", fail_reference_once=False):
+    def __init__(
+        self,
+        monkeypatch,
+        *,
+        motion_status="complete",
+        canonical_status="complete",
+        keyframe_status="complete",
+        fail_reference_once=False,
+    ):
         self.calls = []
         self.expose_latest = False
+        #: keyframe_build 로 넘어간 kwargs 전부 — allow_canonical_reuse 같은
+        #: 호출부 전용 플래그를 검증하려면 calls(문자열 목록)로는 부족하다.
+        self.keyframe_build_calls: list[dict] = []
         self.counts = {
             "identity_build": 0,
             "reference_build": 0,
@@ -114,30 +127,42 @@ class PipelineHarness:
             identity_profile_id=self.profile.id,
             identity_profile_version=1,
         )
+        canonical_candidate = SimpleNamespace(id="00000000-0000-0000-0000-000000000402", selected=(canonical_status == "complete"))
         self.canonical = SimpleNamespace(
             id="00000000-0000-0000-0000-000000000401",
             pet_id=PET,
             user_id=USER,
             version=1,
-            status=canonical_pet_service.STATUS_COMPLETE,
+            status=canonical_status,
             reference_set_id=self.refset.id,
             reference_set_version=1,
+            candidates=[canonical_candidate],
         )
+        keyframe_candidate = SimpleNamespace(id="00000000-0000-0000-0000-000000000502", selected=(keyframe_status == "complete"))
         self.keyframe = SimpleNamespace(
             id="00000000-0000-0000-0000-000000000501",
             pet_id=PET,
             user_id=USER,
-            keyframe_role="NEUTRAL_IDLE",
+            keyframe_role="STAND_READY",
             version=1,
-            status=action_keyframe_service.STATUS_COMPLETE,
+            status=keyframe_status,
             canonical_version_id=self.canonical.id,
             canonical_version=self.canonical.version,
-            selected_candidate_id="00000000-0000-0000-0000-000000000502",
+            selected_candidate_id=(keyframe_candidate.id if keyframe_status == "complete" else None),
+            candidates=[keyframe_candidate],
         )
         selected = SimpleNamespace(
             id="00000000-0000-0000-0000-000000000602",
             selected=True,
             decision="PASS",
+            generation_metadata={
+                "provider_identity": {
+                    "logical_model": "minimax_h3_max_turbo",
+                    "vendor": "fal",
+                    "vendor_model": "minimax/h3-max-turbo/image-to-video",
+                    "adapter": "FalMinimaxH3MaxTurboProvider",
+                }
+            },
         )
         self.motion = SimpleNamespace(
             id="00000000-0000-0000-0000-000000000601",
@@ -195,6 +220,7 @@ class PipelineHarness:
 
         async def keyframe_build(**kwargs):
             self._capture("keyframe", kwargs)
+            self.keyframe_build_calls.append(dict(kwargs))
             self.counts["keyframe_build"] += 1
             return self.keyframe
 
@@ -297,16 +323,206 @@ def test_happy_path_persists_full_lineage_and_reaches_mocked_phase7a(storage, mo
     assert result.identity_profile_id == harness.profile.id
     assert result.reference_set_id == harness.refset.id
     assert result.canonical_version_id == harness.canonical.id
-    assert result.keyframes["NEUTRAL_IDLE"]["id"] == harness.keyframe.id
+    assert result.keyframes["STAND_READY"]["id"] == harness.keyframe.id
     assert result.motion_spec_version == motion_spec.MOTION_SPEC_VERSION
     assert result.motion_version_id == harness.motion.id
     assert result.motion_version == 1
     assert result.selected_candidate_id == harness.motion.selected_candidate_id
     assert result.publication_id == harness.publication.publication_id
+    assert result.provider_state["_business_qa"]["version"] == "business-v1"
+    assert result.provider_state["_business_qa"]["terminal_state"] == "DELIVERED_GENERATED"
+    assert result.provider_state["_business_qa"]["provider_identity"] == {
+        "logical_model": "minimax_h3_max_turbo",
+        "vendor": "fal",
+        "vendor_model": "minimax/h3-max-turbo/image-to-video",
+        "adapter": "FalMinimaxH3MaxTurboProvider",
+    }
     assert harness.calls.index("identity") < harness.calls.index("reference_set")
     assert harness.calls.index("canonical") < harness.calls.index("keyframe")
     assert harness.calls.index("motion_spec") < harness.calls.index("motion")
     assert harness.calls.index("motion") < harness.calls.index("publication")
+
+
+def test_shadow_telemetry_observes_pipeline_without_extra_paid_work(storage, monkeypatch):
+    seed_intake()
+    harness = PipelineHarness(monkeypatch)
+
+    queued = start()
+    result = work()
+
+    assert result.status == runs.STATUS_PUBLISHED
+    assert harness.counts["canonical_build"] == 1
+    assert harness.counts["keyframe_build"] == 1
+    assert harness.counts["motion_build"] == 1
+    assert harness.counts["publication"] == 1
+
+    rows = qa_shadow_telemetry.rows_for_run(queued.id)
+    stages = {row["stage"] for row in rows}
+    assert {"RUN", "CANONICAL", "KEYFRAME", "MOTION"} <= stages
+    aggregate = next(row for row in rows if row["stage"] == "RUN")
+    assert aggregate["fallback_used"] is False
+    assert aggregate["metadata"]["terminal_state"] == "DELIVERED_GENERATED"
+    assert aggregate["timings"]["upload_to_cutout_ms"] is not None
+    assert aggregate["timings"]["queue_wait_ms"] is not None
+    assert aggregate["timings"]["worker_claim_ms"] >= 0
+    assert aggregate["timings"]["total_request_ms"] is not None
+    assert {
+        "CANONICAL", "KEYFRAMES", "MOTION_GENERATION", "QA", "PUBLICATION"
+    } <= set(aggregate["timings"]["stages"])
+    assert aggregate["vlm_call_count"] == 0
+
+
+def test_motion_build_reuses_stage_motion_spec_contract(storage, monkeypatch):
+    """
+    STAGE_MOTION_SPEC 에서 이미 해석/검증한 Phase 5.1 계약이 build_motion_video
+    에 그대로 전달된다 — 모션 준비 지연의 확인된 병목(같은 계약을 두 번 해석)을
+    없앤 회귀 가드. resolve_video_generation_spec("motion_spec" 단계)은 런당
+    정확히 한 번만 호출된다.
+    """
+    seed_intake()
+    h = PipelineHarness(monkeypatch)
+
+    captured: dict = {}
+
+    async def motion_build_capture(**kwargs):
+        h._capture("motion", kwargs)
+        captured.update(kwargs)
+        h.counts["motion_build"] += 1
+        return h.motion
+
+    monkeypatch.setattr(motion_video_service, "build_motion_video", motion_build_capture)
+
+    start()
+    result = work()
+
+    assert result.status == runs.STATUS_PUBLISHED
+    assert h.calls.count("motion_spec") == 1
+    assert captured.get("precomputed_contract") is not None
+    assert captured["precomputed_contract"]["start_keyframe"]["keyframe_id"] == h.keyframe.id
+    assert captured["precomputed_contract"]["motion_id"] == "BREATHING"
+
+
+def test_motion_wait_resume_skips_upstream_and_survives_lease_loss(storage, monkeypatch):
+    """
+    확인된 문제의 회귀 가드: MOTION_GENERATION 에서 WAITING_PROVIDER 로 멈춘
+    실행이 (다른 워커에게) 재개되면 _execute() 는 IDENTITY 부터 다시 돌지
+    않는다 — 이미 핀된 Identity/Reference Set/Canonical/Keyframe/Motion Spec
+    은 다시 읽지도 검증하지도 않고 곧장 Motion 단계에서 재개한다. 재개가
+    다른 worker_id 로 일어나도(리스 유실 복구) 동일하다.
+    """
+    monkeypatch.setenv("GENERATION_PROVIDER_POLL_SECONDS", "0")
+    seed_intake()
+    h = PipelineHarness(monkeypatch)
+
+    motion_attempts = {"n": 0}
+
+    async def motion_build_pending_once(**kwargs):
+        h._capture("motion", kwargs)
+        motion_attempts["n"] += 1
+        h.counts["motion_build"] += 1
+        if motion_attempts["n"] == 1:
+            raise durable_provider_jobs.ProviderWorkPending("motion-op-1", "PENDING")
+        return h.motion
+
+    monkeypatch.setattr(motion_video_service, "build_motion_video", motion_build_pending_once)
+
+    queued = start()
+    assert queued.status == runs.STATUS_QUEUED
+
+    waiting = _run(runs.process_next_generation_run(worker_id="worker-a"))
+    assert waiting.status == runs.STATUS_WAITING_PROVIDER
+    assert waiting.current_stage == runs.STAGE_MOTION_GENERATION
+    # 첫 틱은 파이프라인 전체를 정상 순서로 한 번씩 돈다 (fresh run 동작 불변).
+    for name in ("identity", "reference_set", "canonical", "keyframe", "motion_spec"):
+        assert h.calls.count(name) == 1
+    assert motion_attempts["n"] == 1
+    calls_after_wait = list(h.calls)
+
+    # 다른 워커가 재개한다 — 리스 유실/워커 교체 복구 경로와 동일한 모양.
+    resumed = _run(runs.process_next_generation_run(worker_id="worker-b"))
+    assert resumed.status == runs.STATUS_PUBLISHED
+    assert motion_attempts["n"] == 2  # motion 만 다시 시도된다 (재제출이 아니라 재시도)
+
+    new_calls = h.calls[len(calls_after_wait):]
+    # 재개 틱에서 상류 4단계는 전혀 다시 불리지 않는다 — 읽기(get)든 빌드든.
+    for name in (
+        "identity", "identity_get",
+        "reference_set", "reference_get",
+        "canonical", "canonical_get",
+        "keyframe", "keyframe_get",
+    ):
+        assert name not in new_calls, f"{name} should not re-run on resume, saw {new_calls}"
+    # MOTION_SPEC 계약은 build_motion_video 에 넘기려고 한 번 더 해석되지만
+    # (motion_spec_version 자체는 이미 핀돼 있어 재검증/재기록은 하지 않는다),
+    # 이는 전체 계보 재검증이 아니라 모션 재개에 필요한 값 하나를 다시
+    # 만드는 것뿐이다.
+    assert new_calls.count("motion_spec") == 1
+    assert h.counts["publication"] == 1
+    assert h.counts["delivery"] == 1
+
+
+def test_inconsistent_persisted_stage_falls_back_to_safe_recovery(storage, monkeypatch):
+    """
+    안전 요구사항: current_stage 가 상류 단계를 지났다고 말하는데 그 단계의
+    핀 필드가 실제로는 비어 있으면(비정상 상태), 그 값을 그대로 믿고 건너뛰지
+    않는다 — 처음부터 안전하게 다시 유도한다.
+    """
+    seed_intake()
+    h = PipelineHarness(monkeypatch)
+
+    queued = start()
+    assert queued.status == runs.STATUS_QUEUED
+
+    # current_stage 만 MOTION_GENERATION 으로 앞서가게 조작하고, 그 이전 단계
+    # 핀은 전부 비워 둔다 — 재현 불가능한/손상된 영속 상태를 흉내낸다.
+    _run(
+        runs._update(
+            queued.id,
+            {
+                "current_stage": runs.STAGE_MOTION_GENERATION,
+                "identity_profile_id": None,
+                "identity_profile_version": None,
+                "reference_set_id": None,
+                "reference_set_version": None,
+                "canonical_version_id": None,
+                "canonical_version": None,
+                "keyframes": {},
+                "motion_spec_version": None,
+            },
+        )
+    )
+
+    result = work()
+
+    # 손상된 current_stage 힌트에도 불구하고, 없는 핀은 안전하게 처음부터
+    # 다시 유도되어 정상 완주한다 — 조용히 빈 계보로 진행하지 않는다.
+    assert result.status == runs.STATUS_PUBLISHED
+    assert h.calls.index("identity") < h.calls.index("reference_set")
+    assert h.calls.index("reference_set") < h.calls.index("canonical")
+    assert h.calls.index("canonical") < h.calls.index("keyframe")
+    assert h.calls.index("keyframe") < h.calls.index("motion_spec")
+    assert h.calls.index("motion_spec") < h.calls.index("motion")
+    assert result.identity_profile_id == h.profile.id
+    assert result.canonical_version_id == h.canonical.id
+
+
+def test_breathing_start_keyframe_is_stand_ready_without_canonical_reuse(storage, monkeypatch):
+    """HOME = STAND_READY (motion-spec-v16): BREATHING 의 시작 키프레임 호출은
+    STAND_READY 이고 Canonical 재사용을 **켜지 않는다**.
+
+    build_keyframe() 자체는 스텁이라 여기서는 _execute() 의 배선만 증명한다 —
+    정본이 어떤 자세든 홈은 항상 생성된 서기 스틸이지 정본의 별칭이 아니다.
+    """
+    seed_intake()
+    harness = PipelineHarness(monkeypatch)
+
+    start()
+    result = work()
+
+    assert result.status == runs.STATUS_PUBLISHED
+    assert len(harness.keyframe_build_calls) == 1
+    assert harness.keyframe_build_calls[0]["keyframe_role"] == "STAND_READY"
+    assert harness.keyframe_build_calls[0]["allow_canonical_reuse"] is False
 
 
 def test_same_idempotency_key_returns_same_run_without_duplicate_work(storage, monkeypatch):
@@ -324,6 +540,168 @@ def test_same_idempotency_key_returns_same_run_without_duplicate_work(storage, m
     assert harness.counts["motion_build"] == 1
     assert harness.counts["publication"] == 1
     assert len(runs._MOCK_RUNS) == 1
+
+
+def test_different_idempotency_key_same_scope_joins_existing_active_run(storage, monkeypatch):
+    """Duplicate-paid-run protection: two *different* client idempotency_keys
+    for the same pet/motion/request_kind must not each create their own run —
+    the caller's key is not the locking key, (pet, motion, request_kind) is."""
+    seed_intake()
+    harness = PipelineHarness(monkeypatch)
+
+    first = start(key="device-a")
+    second = start(key="device-b")
+    completed = work()
+
+    assert second.id == first.id
+    assert second.idempotency_key == first.idempotency_key  # the first writer's key wins
+    assert completed.id == first.id
+    assert harness.counts["canonical_build"] == 1
+    assert harness.counts["keyframe_build"] == 1
+    assert harness.counts["motion_build"] == 1
+    assert harness.counts["publication"] == 1
+    assert len(runs._MOCK_RUNS) == 1
+
+
+def test_two_simultaneous_requests_produce_one_run_and_one_paid_submission(storage, monkeypatch):
+    """Genuine concurrency, not just sequential calls: the second request's
+    start_generation_run() call is forced to block on the per-scope lock
+    while the first is still mid-insert, proving the lock (not luck) is what
+    prevents two rows — and therefore two workers each paying for the same
+    canonical/keyframe/motion build — from ever existing."""
+    seed_intake()
+    harness = PipelineHarness(monkeypatch)
+
+    entered = anyio.Event()
+    hold = anyio.Event()
+    original_insert_or_get = runs._insert_or_get
+    attempts: list[str] = []
+
+    async def guarded_insert_or_get(row):
+        attempts.append(row["idempotency_key"])
+        if len(attempts) == 1:
+            entered.set()
+            await hold.wait()
+        return await original_insert_or_get(row)
+
+    monkeypatch.setattr(runs, "_insert_or_get", guarded_insert_or_get)
+
+    results: dict[str, runs.PetGenerationRun] = {}
+
+    async def go(key: str) -> None:
+        results[key] = await runs.start_generation_run(
+            user_id=USER, pet_id=PET, motion_id="BREATHING",
+            request_kind="FREE_HOME", idempotency_key=key,
+        )
+
+    async def scenario() -> None:
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(go, "device-a")
+            await entered.wait()
+            # device-a is now blocked *inside* the locked section — device-b
+            # must queue on the lock, not race ahead of it.
+            tg.start_soon(go, "device-b")
+            await anyio.sleep(0.01)
+            hold.set()
+
+    anyio.run(scenario)
+
+    assert attempts == ["device-a", "device-b"]  # device-b only ran after device-a released the lock
+    assert results["device-a"].id == results["device-b"].id
+    assert len(runs._MOCK_RUNS) == 1
+
+    completed = work()
+    assert completed.status == runs.STATUS_PUBLISHED
+    assert harness.counts["canonical_build"] == 1
+    assert harness.counts["keyframe_build"] == 1
+    assert harness.counts["motion_build"] == 1
+    assert harness.counts["publication"] == 1
+
+
+def test_different_pet_runs_independently(storage, monkeypatch):
+    seed_intake()
+    other_cid = f"{CID}-second-pet"
+    other_pet = f"pet_{other_cid}"
+    other_original = _run(
+        pet_reference_service.record_original(
+            user_id=USER, content_id=other_cid, data=make_jpeg_bytes(), mime_type="image/jpeg",
+        )
+    )
+    _run(
+        pet_reference_service.record_derived(
+            user_id=USER,
+            content_id=other_cid,
+            object_path=f"{USER}/{other_cid}/references/cutout.png",
+            derived_kind="cutout_reference",
+            parent_reference_id=other_original.id,
+            mime_type="image/png",
+        )
+    )
+    PipelineHarness(monkeypatch)
+
+    first = start(key="pet-one")
+    second = _run(
+        runs.start_generation_run(
+            user_id=USER, pet_id=other_pet, motion_id="BREATHING",
+            request_kind="FREE_HOME", idempotency_key="pet-two",
+        )
+    )
+
+    assert second.id != first.id
+    assert second.pet_id == other_pet
+    assert {row["pet_id"] for row in runs._MOCK_RUNS} == {PET, other_pet}
+    assert len(runs._MOCK_RUNS) == 2
+
+
+def test_failed_terminal_run_does_not_block_a_new_active_run(storage, monkeypatch):
+    seed_intake()
+    PipelineHarness(monkeypatch, motion_status=motion_video_service.STATUS_FAILED)
+
+    first = start(key="attempt-1")
+    failed = work()
+    assert failed.status == runs.STATUS_FAILED
+
+    second = start(key="attempt-2")
+    assert second.id != first.id
+    assert second.status == runs.STATUS_QUEUED
+    assert len(runs._MOCK_RUNS) == 2
+
+
+def test_retry_of_a_superseded_failed_run_joins_the_newer_active_run(storage, monkeypatch):
+    """A stale run_id (e.g. an old browser tab) must never resurrect a FAILED
+    run into QUEUED once a fresher run already owns this pet's active work —
+    that would put two active rows in the same scope back in play."""
+    seed_intake()
+    PipelineHarness(monkeypatch, motion_status=motion_video_service.STATUS_FAILED)
+
+    stale = start(key="attempt-1")
+    failed = work()
+    assert failed.status == runs.STATUS_FAILED
+
+    fresh = start(key="attempt-2")
+    assert fresh.status == runs.STATUS_QUEUED
+
+    retried = _run(runs.retry_generation_run(user_id=USER, run_id=stale.id))
+
+    assert retried.id == fresh.id
+    stale_row = next(r for r in runs._MOCK_RUNS if r["id"] == stale.id)
+    assert stale_row["status"] == runs.STATUS_FAILED  # never resurrected
+    assert len(runs._MOCK_RUNS) == 2
+
+
+def test_published_terminal_run_does_not_block_a_new_active_run(storage, monkeypatch):
+    seed_intake()
+    harness = PipelineHarness(monkeypatch)
+
+    first = start(key="attempt-1")
+    published = work()
+    assert published.status == runs.STATUS_PUBLISHED
+
+    harness.expose_latest = True
+    second = start(key="attempt-2")
+    assert second.id != first.id
+    assert second.status == runs.STATUS_QUEUED
+    assert len(runs._MOCK_RUNS) == 2
 
 
 def test_new_run_reuses_valid_existing_provider_outputs(storage, monkeypatch):
@@ -451,7 +829,7 @@ def test_replacement_worker_refuses_to_reuse_review_source(monkeypatch):
         status=runs.STATUS_RUNNING,
         current_stage=runs.STAGE_MOTION_GENERATION,
         canonical_version_id=source.canonical_version_id,
-        keyframes={"NEUTRAL_IDLE": {"id": source.start_keyframe_id, "version": 1}},
+        keyframes={"STAND_READY": {"id": source.start_keyframe_id, "version": 1}},
         motion_spec_version=motion_spec.MOTION_SPEC_VERSION,
         provider_state={"_operator": {"replacement_request": {"source_motion_version_id": source.id}}},
     )
@@ -575,4 +953,3 @@ def test_migration_persists_lineage_and_uses_an_atomic_claim():
     assert "create or replace function public.claim_pet_generation_run" in sql
     assert "for update" in sql
     assert "to service_role" in sql
-

@@ -1,0 +1,534 @@
+/* ==========================================================================
+   Eternal Beam — responsive foundation (Phase 1, restyled in Phase 10)
+   App shell + shared UI primitives. All colour / spacing / radius / motion
+   values come from brand.css tokens — nothing is hard-coded here.
+   Breakpoints: mobile 320–767, tablet 768–1023, desktop 1024+.
+   The min-width values used here must match src/lib/breakpoints.ts.
+   ========================================================================== */
+
+:root {
+  /* ── Layout ──────────────────────────────────────────────────────────── */
+  --eb-app-max-width: 520px;
+  --eb-desktop-nav-height: 4.5rem;
+
+  /* Notch allowance — pure hardware inset only, so screen headers never
+     stack a second safe-area on top of their own design padding. */
+  --eb-safe-top: env(safe-area-inset-top, 0px);
+  --eb-safe-bottom: env(safe-area-inset-bottom, 0px);
+
+  /* Standard header offsets: every screen header uses one of these two. */
+  --eb-header-top: max(2.75rem, var(--eb-safe-top));
+  --eb-footer-bottom: max(1.25rem, var(--eb-safe-bottom));
+}
+
+/* ==========================================================================
+   App shell
+   ========================================================================== */
+
+.app-shell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  /* A bounded height, not just a minimum: every screen is `h-full` with its
+     own flex-1/min-h-0 scroll region, so the shell must give it a real height.
+     With only min-height the page grew with content and the header/CTA were
+     pushed off-screen on short viewports (e.g. Theme Selection at 390×844). */
+  height: 100dvh;
+  min-height: 100dvh;
+  background: var(--eb-bg);
+  color: var(--eb-text);
+}
+
+.app-shell__stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+/* The surface every screen renders on. Mobile/tablet: the page itself. */
+.app-shell__surface {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--eb-bg);
+  color: var(--eb-text);
+}
+
+@media (min-width: 1024px) {
+  .app-shell {
+    align-items: center;
+    background:
+      radial-gradient(ellipse 70% 40% at 50% 0%, var(--eb-gold-wash) 0%, transparent 65%),
+      var(--eb-bg-deep);
+  }
+
+  .app-shell__stage {
+    width: 100%;
+    max-width: var(--eb-app-max-width);
+    margin-inline: auto;
+    margin-block: var(--eb-space-6);
+    border-radius: var(--eb-radius-xl);
+    overflow: hidden;
+    border: 1px solid var(--eb-hairline);
+    box-shadow: var(--eb-shadow-3);
+  }
+
+  /* Dashboard-type screens (Home, Upload, Theme, Preview, Beam) use the real
+     desktop app width instead of a phone-width column. */
+  .app-shell__stage--wide {
+    max-width: 1200px;
+  }
+
+  /* Home is a page-style dashboard. Its hero is the visual panel, so the
+     shell must not add a second large card around the whole page. */
+  .app-shell__stage--unframed {
+    max-width: none;
+    margin-block: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+}
+
+/* Short laptop viewports (e.g. 1024×768): trim the stage margin so the
+   footer CTA stays on screen without scrolling the whole shell. */
+@media (min-width: 1024px) and (max-height: 820px) {
+  .app-shell__stage {
+    margin-block: var(--eb-space-3);
+  }
+
+  .app-shell__stage--unframed {
+    margin-block: 0;
+  }
+}
+
+/* ==========================================================================
+   Desktop navigation — hidden below 1024px, mobile keeps its own headers
+   ========================================================================== */
+
+.eb-desktop-nav {
+  display: none;
+}
+
+@media (min-width: 1024px) {
+  .eb-desktop-nav {
+    display: block;
+    position: relative;
+    /* Static elements paint before positioned siblings regardless of any
+       z-index inside them — without this, the user menu (however high its
+       own z-index) always loses to the positioned .app-shell__stage below it. */
+    z-index: 30;
+    width: 100%;
+    flex-shrink: 0;
+    height: var(--eb-desktop-nav-height);
+    background: rgba(253, 251, 247, 0.88);
+    border-bottom: 1px solid var(--eb-hairline);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+  }
+
+  .eb-desktop-nav__inner {
+    height: 100%;
+    max-width: 1200px;
+    margin-inline: auto;
+    padding-inline: var(--eb-space-8);
+    display: flex;
+    align-items: center;
+    gap: var(--eb-space-8);
+  }
+
+  .eb-desktop-nav__brand {
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 0;
+    min-height: var(--eb-touch);
+    display: inline-flex;
+    align-items: center;
+    font-size: 1rem;
+    white-space: nowrap;
+    color: var(--eb-text);
+    text-shadow: none;
+  }
+
+  .eb-desktop-nav__links {
+    display: flex;
+    align-items: center;
+    gap: var(--eb-space-1);
+    margin-inline-start: var(--eb-space-4);
+  }
+
+  .eb-desktop-nav__link {
+    appearance: none;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--eb-text-2);
+    font-size: var(--eb-type-body-sm);
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    padding: var(--eb-space-2) var(--eb-space-4);
+    border-radius: var(--eb-radius-sm);
+    min-height: var(--eb-touch);
+    transition: color var(--eb-dur) var(--eb-ease), background var(--eb-dur) var(--eb-ease);
+  }
+
+  .eb-desktop-nav__link:hover {
+    color: var(--eb-text);
+    background: var(--eb-surface-2);
+  }
+
+  .eb-desktop-nav__link--active {
+    color: var(--eb-gold-text);
+    background: var(--eb-gold-wash);
+  }
+
+  .eb-desktop-nav__trailing {
+    margin-inline-start: auto;
+    display: flex;
+    align-items: center;
+    gap: var(--eb-space-3);
+  }
+
+  /* ── User avatar / menu (nav trailing slot) ──────────────────────────── */
+
+  .eb-user-menu {
+    position: relative;
+  }
+
+  .eb-user-menu__trigger {
+    appearance: none;
+    background: transparent;
+    border: 1px solid transparent;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--eb-space-2);
+    min-height: var(--eb-touch);
+    padding: var(--eb-space-1) var(--eb-space-2);
+    border-radius: var(--eb-radius-pill);
+    color: var(--eb-text);
+    transition: background var(--eb-dur) var(--eb-ease), border-color var(--eb-dur) var(--eb-ease);
+  }
+
+  .eb-user-menu__trigger:hover {
+    background: var(--eb-surface-2);
+    border-color: var(--eb-hairline);
+  }
+
+  .eb-user-menu__avatar {
+    width: 2rem;
+    height: 2rem;
+    flex-shrink: 0;
+    border-radius: var(--eb-radius-pill);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--eb-gold-wash);
+    color: var(--eb-gold-text);
+    font-size: var(--eb-type-eyebrow);
+    font-weight: 700;
+    letter-spacing: 0.01em;
+    border: 1px solid var(--eb-gold-line);
+  }
+
+  .eb-user-menu__name {
+    font-size: var(--eb-type-body-sm);
+    font-weight: 500;
+    color: var(--eb-text);
+    max-width: 10rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .eb-user-menu__trigger svg:last-child {
+    color: var(--eb-text-3);
+  }
+
+  .eb-user-menu__lang {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--eb-space-2) var(--eb-space-3) var(--eb-space-1);
+    margin-bottom: 2px;
+    border-bottom: 1px solid var(--eb-hairline);
+  }
+
+  .eb-user-menu__panel {
+    position: absolute;
+    top: calc(100% + var(--eb-space-2));
+    right: 0;
+    min-width: 12rem;
+    padding: var(--eb-space-2);
+    border-radius: var(--eb-radius-md);
+    background: var(--eb-surface);
+    border: 1px solid var(--eb-hairline);
+    box-shadow: var(--eb-shadow-2);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    /* Above any in-content z-index (e.g. MediaFileTrigger's file input uses
+       z-[200]) — nav sits in the same stacking context as page content since
+       .app-shell__stage is position:relative with z-index:auto. */
+    z-index: 1000;
+  }
+
+  .eb-user-menu__item {
+    appearance: none;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: var(--eb-space-2);
+    min-height: var(--eb-touch);
+    padding: 0 var(--eb-space-3);
+    border-radius: var(--eb-radius-sm);
+    font-size: var(--eb-type-body-sm);
+    font-weight: 500;
+    color: var(--eb-text);
+    text-align: left;
+    transition: background var(--eb-dur) var(--eb-ease);
+  }
+
+  .eb-user-menu__item:hover {
+    background: var(--eb-surface-2);
+  }
+
+  .eb-user-menu__item--danger {
+    color: var(--eb-terracotta-text);
+  }
+}
+
+/* ==========================================================================
+   Mobile/tablet bottom navigation — the compact counterpart to
+   .eb-desktop-nav above. Rendered as a flex sibling of .app-shell__stage
+   (not position:fixed), so it always occupies real layout space and the
+   stage shrinks to fit above it — content/CTAs can never end up underneath
+   it, on any screen, without per-screen padding. Hidden at the same
+   1024px breakpoint where .eb-desktop-nav turns on, so exactly one of the
+   two is ever visible.
+   ========================================================================== */
+
+:root {
+  --eb-mobile-nav-height: 4rem;
+}
+
+.eb-mobile-nav {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-around;
+  flex-shrink: 0;
+  position: relative;
+  z-index: 30;
+  width: 100%;
+  height: calc(var(--eb-mobile-nav-height) + var(--eb-safe-bottom));
+  padding-bottom: var(--eb-safe-bottom);
+  background: rgba(253, 251, 247, 0.92);
+  border-top: 1px solid var(--eb-hairline);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.eb-mobile-nav__link {
+  appearance: none;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  flex: 1 1 0;
+  min-width: var(--eb-touch);
+  min-height: 44px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  color: var(--eb-text-3);
+  font-size: var(--eb-type-eyebrow);
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  transition: color var(--eb-dur) var(--eb-ease);
+}
+
+.eb-mobile-nav__icon {
+  width: 1.375rem;
+  height: 1.375rem;
+}
+
+.eb-mobile-nav__link--active {
+  color: var(--eb-gold-text);
+}
+
+.eb-mobile-nav__label {
+  line-height: 1;
+}
+
+@media (min-width: 1024px) {
+  .eb-mobile-nav {
+    display: none;
+  }
+}
+
+/* ==========================================================================
+   Responsive content container
+   ========================================================================== */
+
+.eb-container {
+  width: 100%;
+  max-width: 100%;
+  margin-inline: auto;
+}
+
+@media (min-width: 1024px) {
+  .eb-container {
+    max-width: var(--eb-app-max-width);
+  }
+}
+
+/* ==========================================================================
+   Shared screen header / back button
+   ========================================================================== */
+
+.eb-screen-header {
+  display: flex;
+  align-items: center;
+  gap: var(--eb-space-2);
+  padding-inline: var(--eb-space-6);
+  padding-top: var(--eb-header-top);
+  padding-bottom: var(--eb-space-3);
+  flex-shrink: 0;
+  position: relative;
+  z-index: 10;
+}
+
+.eb-screen-header__leading {
+  min-width: var(--eb-touch);
+  display: flex;
+  align-items: center;
+}
+
+.eb-screen-header__title {
+  flex: 1;
+  text-align: center;
+  color: var(--eb-text);
+}
+
+.eb-screen-header__trailing {
+  margin-inline-start: auto;
+  min-width: var(--eb-touch);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--eb-space-2);
+}
+
+.eb-back-btn {
+  min-width: var(--eb-touch);
+  min-height: var(--eb-touch);
+}
+
+/* Screen footer — sticky CTA area with the one safe-area allowance. */
+.eb-screen-footer {
+  flex-shrink: 0;
+  position: relative;
+  z-index: 10;
+  padding-inline: var(--eb-space-6);
+  padding-top: var(--eb-space-3);
+  padding-bottom: var(--eb-footer-bottom);
+  background: linear-gradient(to top, var(--eb-bg) 0%, var(--eb-bg) 70%, rgba(247, 242, 233, 0) 100%);
+}
+
+/* ==========================================================================
+   Buttons — legacy secondary CTA sizing (visuals live in brand.css)
+   ========================================================================== */
+
+.mem-btn-secondary {
+  width: 100%;
+  min-height: var(--eb-touch);
+  padding: 0 var(--eb-space-6);
+  border-radius: var(--eb-radius-md);
+  font-size: var(--eb-type-button);
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--eb-space-2);
+  transition:
+    transform var(--eb-dur-fast) var(--eb-ease),
+    background var(--eb-dur) var(--eb-ease),
+    border-color var(--eb-dur) var(--eb-ease),
+    opacity var(--eb-dur) var(--eb-ease);
+}
+
+.mem-btn-secondary:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.mem-btn-secondary:disabled {
+  cursor: not-allowed;
+}
+
+/* ==========================================================================
+   Loading / error states
+   ========================================================================== */
+
+.eb-feedback-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--eb-space-3);
+  padding: var(--eb-space-8) var(--eb-space-6);
+  text-align: center;
+}
+
+.eb-feedback-state__label,
+.eb-feedback-state__description {
+  font-size: var(--eb-type-body-sm);
+  color: var(--eb-text-2);
+  line-height: var(--leading-relaxed);
+  margin: 0;
+}
+
+.eb-feedback-state__title {
+  font-size: var(--text-lg);
+  font-weight: 600;
+  color: var(--eb-text);
+  margin: 0;
+}
+
+.eb-feedback-state--error .eb-feedback-state__title {
+  color: var(--eb-terracotta-text);
+}
+
+.eb-feedback-state__retry {
+  width: auto;
+  min-width: 8rem;
+  margin-top: var(--eb-space-2);
+}
+
+.eb-spinner {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--eb-radius-pill);
+  border: 3px solid var(--eb-surface-3);
+  border-top-color: var(--eb-gold);
+  animation: eb-spin 0.8s linear infinite;
+}
+
+/* ==========================================================================
+   Screen-change feedback — a 150ms ivory wash on navigation (EternalBeamApp
+   toggles .eb-tap-flash). Previously unstyled.
+   ========================================================================== */
+
+.eb-tap-flash {
+  background: var(--eb-surface);
+  opacity: 0.35;
+  animation: eb-fade-in var(--eb-dur-fast) var(--eb-ease) reverse both;
+}

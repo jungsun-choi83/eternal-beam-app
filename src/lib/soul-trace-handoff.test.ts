@@ -231,7 +231,7 @@ describe("구조 고정 — 기존 진입 흐름 보존", () => {
     );
   });
 
-  it("재개 분기가 만료를 삼키지 않는다 — 조용한 qrConnection 낙하 금지", () => {
+  it("재개 분기가 만료를 삼키지 않는다 — 조용한 getStarted 낙하 금지", () => {
     // hasPendingSoulTraceHandoff() 는 만료를 false 로 뭉갠다. 그것으로 분기하면
     // 편지를 기다리던 사용자가 설명 없이 평소 온보딩으로 떨어진다.
     assert.ok(
@@ -266,13 +266,13 @@ describe("구조 고정 — 기존 진입 흐름 보존", () => {
   it("Upload Pet 우회는 1회성 표식을 소비할 때만 걸린다", () => {
     assert.ok(
       /if \(consumeSoulTracePendingUpload\(\)\) return 'photoUpload'/.test(eb),
-      "조건 없이 사진 업로드로 보내고 있다 — 기존 진입(qrConnection)이 깨진다",
+      "조건 없이 사진 업로드로 보내고 있다 — 기존 진입(getStarted)이 깨진다",
     );
   });
 
-  it("기본 진입 화면은 그대로 qrConnection 이다", () => {
+  it("기본 진입 화면은 Get Started(getStarted) 다", () => {
     const fn = eb.slice(eb.indexOf("function resolveInitialScreen"));
-    assert.ok(fn.slice(0, 900).includes("return 'qrConnection'"), "기본 진입이 바뀌었다");
+    assert.ok(fn.slice(0, 900).includes("return 'getStarted'"), "기본 진입이 바뀌었다");
   });
 
   it("Upload Pet 흐름을 새로 만들지 않는다 — 기존 화면 이름을 그대로 쓴다", () => {
@@ -285,7 +285,7 @@ describe("구조 고정 — 기존 진입 흐름 보존", () => {
 // 회귀 배경: 진입 분기는 hasPendingSoulTraceHandoff() 만 봤다. 그 함수는 만료된
 // 값을 읽으면서 지우고 false 를 돌려주므로, 만료와 "처음부터 없음"이 같은 답이
 // 됐다. 그래서 편지를 기다리던 신규 사용자가 아무 설명 없이 평소 온보딩
-// (qrConnection)으로 떨어졌고, 편지가 어디로 갔는지 화면 어디에도 없었다.
+// (getStarted)으로 떨어졌고, 편지가 어디로 갔는지 화면 어디에도 없었다.
 describe("핸드오프 상태 peek — 만료를 삼키지 않는다", () => {
   beforeEach(() => installDom());
 

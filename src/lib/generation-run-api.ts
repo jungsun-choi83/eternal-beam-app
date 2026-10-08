@@ -14,15 +14,28 @@
 
 import { getPremiumAccessToken } from "./premium-auth-token.ts";
 
+/** durable_provider_jobs.summary_for_run() 이 돌려주는 job 요약 하나. */
+export interface GenerationRunProviderJob {
+  provider_operation?: string | null;
+  provider_status?: string | null;
+  submitted_at?: string | null;
+  last_polled_at?: string | null;
+  [key: string]: unknown;
+}
+
 export interface GenerationRun {
   run_id: string;
   status: string;
+  /** Business QA terminal outcome; legacy orchestration status remains compatible. */
+  terminal_state?: "DELIVERED_GENERATED" | "DELIVERED_FALLBACK" | "TRUE_INFRASTRUCTURE_FAILURE" | null;
   current_stage: string;
   pet_id: string;
   motion_version_id?: string | null;
   selected_candidate_id?: string | null;
   publication_id?: string | null;
   last_error?: { code?: string; message?: string } | null;
+  /** job id → 요약. UI 진행 화면은 lib/generation-progress.ts 로 이 값을 해석한다. */
+  provider_state?: Record<string, GenerationRunProviderJob> | null;
   [key: string]: unknown;
 }
 
@@ -31,19 +44,29 @@ export interface RunPlayback {
   status: string;
   /** true = Phase 7A 발행 재생. false = 발행 없는 개발/현재-실행 재생(REVIEW). */
   published: boolean;
-  /** 데이터베이스의 실제 QA 결정 (PASS | REVIEW). 가공되지 않는다. */
+  /** 데이터베이스 QA 결정, 또는 명시적 고객 fallback 표시. */
   qa_decision: string;
   url: string;
   delivery_format?: string | null;
   background_baked: boolean;
   motion_version_id?: string | null;
   candidate_id?: string | null;
+  terminal_state?: string | null;
+  fallback_tier?: string | null;
+  asset_kind?: string | null;
 }
 
 export interface RunApiDeps {
   fetchFn?: typeof globalThis.fetch;
   getToken?: typeof getPremiumAccessToken;
   apiBase?: string;
+}
+
+export interface BusinessQAFeedback {
+  run_id: string;
+  accepted: boolean;
+  complaints: string[];
+  recorded: boolean;
 }
 
 export class GenerationRunError extends Error {
@@ -140,6 +163,67 @@ export async function getRunPlayback(
   return authedRequest<RunPlayback>(
     `/api/v1/pet/generation-runs/${encodeURIComponent(runId)}/playback`,
     { method: "GET" },
+    deps
+  );
+}
+
+/** Phase 12 user-test feedback. This endpoint never changes QA or retries. */
+export async function submitBusinessQAFeedback(
+  runId: string,
+  feedback: {
+    accepted: boolean;
+    complaints?: Array<"IDENTITY" | "ANATOMY" | "MOTION" | "OTHER">;
+    comment?: string;
+  },
+  deps: RunApiDeps = {}
+): Promise<BusinessQAFeedback> {
+  return authedRequest<BusinessQAFeedback>(
+    `/api/v1/pet/generation-runs/${encodeURIComponent(runId)}/feedback`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        accepted: feedback.accepted,
+        complaints: feedback.complaints ?? [],
+        comment: feedback.comment,
+      }),
+    },
+    deps
+  );
+}
+
+/**
+ * 명시적 재시도 — 서버가 FAILED / CANCELLED / RECOVERY_REQUIRED 실행을 같은
+ * 실행 id 그대로 QUEUED 로 되돌린다(복구 예산 초기화, 계보 재사용). 이미
+ * 진행 중이거나 PUBLISHED 면 그 상태를 그대로 돌려준다.
+ */
+export async function retryGenerationRun(
+  runId: string,
+  deps: RunApiDeps = {}
+): Promise<GenerationRun> {
+  return authedRequest<GenerationRun>(
+    `/api/v1/pet/generation-runs/${encodeURIComponent(runId)}/retry`,
+    { method: "POST" },
+    deps
+  );
+}
+
+/**
+ * 명시적 정지 — 활성 실행을 CANCELLED 로 옮기고 워커 lease 를 비운다. 이후
+ * 워커는 이 실행을 자동으로 다시 집지 않는다. 이미 끝난 실행은 그대로다.
+ */
+export async function cancelGenerationRun(
+  runId: string,
+  reason: string = "user_cancelled",
+  deps: RunApiDeps = {}
+): Promise<GenerationRun> {
+  return authedRequest<GenerationRun>(
+    `/api/v1/pet/generation-runs/${encodeURIComponent(runId)}/cancel`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason }),
+    },
     deps
   );
 }

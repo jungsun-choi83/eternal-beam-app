@@ -42,6 +42,9 @@ SPECIES = ("DOG", "CAT", "RABBIT", "OTHER")
 SIZE_ORDER = ("SMALL", "MEDIUM", "LARGE")
 LEG_ORDER = ("SHORT", "STANDARD", "LONG")
 BODY_ORDER = ("COMPACT", "STANDARD", "LONG")
+BUILD_ORDER = ("SLENDER", "BALANCED", "STOCKY")
+HEAD_ORDER = ("SMALL", "STANDARD", "LARGE")
+MUZZLE_ORDER = ("SHORT", "STANDARD", "LONG")
 VIEWS = ("FRONT", "FRONT_3Q", "SIDE", "BACK", "UNKNOWN")
 DIRECTIONS = ("TOWARD_CAMERA", "AWAY_FROM_CAMERA", "LEFT_TO_RIGHT", "RIGHT_TO_LEFT", "STATIONARY", "UNKNOWN")
 SPEEDS = ("SLOW", "NORMAL", "FAST", "UNKNOWN")
@@ -103,6 +106,11 @@ class MotionReference:
     body_size_class: str = UNKNOWN
     leg_length_class: str = UNKNOWN
     body_length_class: str = UNKNOWN
+    body_build_class: str = UNKNOWN
+    head_proportion_class: str = UNKNOWN
+    muzzle_proportion_class: str = UNKNOWN
+    ear_form: str = UNKNOWN
+    tail_form: str = UNKNOWN
     motion_class: Optional[str] = None
     camera_view: str = UNKNOWN
     travel_direction: str = UNKNOWN
@@ -137,6 +145,11 @@ def _to_ref(row: dict[str, Any]) -> MotionReference:
         body_size_class=str(row.get("body_size_class") or UNKNOWN),
         leg_length_class=str(row.get("leg_length_class") or UNKNOWN),
         body_length_class=str(row.get("body_length_class") or UNKNOWN),
+        body_build_class=str(row.get("body_build_class") or UNKNOWN),
+        head_proportion_class=str(row.get("head_proportion_class") or UNKNOWN),
+        muzzle_proportion_class=str(row.get("muzzle_proportion_class") or UNKNOWN),
+        ear_form=str(row.get("ear_form") or UNKNOWN),
+        tail_form=str(row.get("tail_form") or UNKNOWN),
         motion_id=str(row.get("motion_id") or ""),
         motion_class=(row.get("motion_class") or None),
         camera_view=str(row.get("camera_view") or UNKNOWN),
@@ -252,6 +265,11 @@ async def register_reference(
         "body_size_class": (body_size_class or UNKNOWN).upper(),
         "leg_length_class": (leg_length_class or UNKNOWN).upper(),
         "body_length_class": (body_length_class or UNKNOWN).upper(),
+        "body_build_class": str(extra.get("body_build_class") or UNKNOWN).upper(),
+        "head_proportion_class": str(extra.get("head_proportion_class") or UNKNOWN).upper(),
+        "muzzle_proportion_class": str(extra.get("muzzle_proportion_class") or UNKNOWN).upper(),
+        "ear_form": str(extra.get("ear_form") or UNKNOWN).upper(),
+        "tail_form": str(extra.get("tail_form") or UNKNOWN).upper(),
         "motion_id": mid,
         "motion_class": spec.motion_class,
         "camera_view": (camera_view or UNKNOWN).upper(),
@@ -372,8 +390,40 @@ async def list_references(
 # ══════════════════════════════════════════════════════════════════════════
 
 
+def _confidence_ok(confidence: str, floor: str) -> bool:
+    rank = {"low": 0, "medium": 1, "high": 2}
+    return rank.get(str(confidence or "low").lower(), 0) >= rank.get(str(floor or "medium").lower(), 1)
+
+
+def _class_from_morphology_trait(
+    traits: dict[str, Any],
+    key: str,
+    *,
+    floor: str,
+) -> tuple[str, str]:
+    t = traits.get(key) if isinstance(traits, dict) else None
+    if not isinstance(t, dict):
+        return UNKNOWN, "unavailable"
+    if str(t.get("status") or "").lower() != "fused":
+        return UNKNOWN, "unknown"
+    if not _confidence_ok(str(t.get("confidence") or "low"), floor):
+        return UNKNOWN, "low_confidence"
+    raw = str(t.get("class") or t.get("value") or "").strip()
+    if not raw:
+        return UNKNOWN, "empty"
+    return raw.upper(), str(t.get("confidence") or "low").lower()
+
+
+#: 프레임 점유율 기반 형태 트레이트 — 실제 체급 근거가 아니다.
+_FRAME_OCCUPANCY_TRAITS = ("body_size",)
+
+
 def derive_motion_profile(
-    identity_profile: Any, overrides: Optional[dict[str, str]] = None
+    identity_profile: Any,
+    overrides: Optional[dict[str, str]] = None,
+    *,
+    morphology_profile: Any = None,
+    confidence_floor: str = "medium",
 ) -> dict[str, Any]:
     """
     Phase 2 프로필 → 경량 모션/형태 프로필. 정직하게 잴 수 있는 것만:
@@ -384,8 +434,60 @@ def derive_motion_profile(
     overrides 로 벤치마크/운영이 명시 지정할 수 있다 (품종 분류는 하지 않는다).
     """
     species = UNKNOWN
+    body_size = UNKNOWN
+    leg_length = UNKNOWN
     body_length = UNKNOWN
+    body_build = UNKNOWN
+    head_proportion = UNKNOWN
+    muzzle_proportion = UNKNOWN
+    ear_form = UNKNOWN
+    tail_form = UNKNOWN
     sources: dict[str, str] = {}
+
+    if morphology_profile is not None:
+        mp = getattr(morphology_profile, "profile", None)
+        if not isinstance(mp, dict):
+            mp = morphology_profile if isinstance(morphology_profile, dict) else {}
+        traits = (mp.get("traits") or {}) if isinstance(mp, dict) else {}
+
+        m_species, c = _class_from_morphology_trait(traits, "species", floor=confidence_floor)
+        if m_species in SPECIES:
+            species = m_species
+            sources["species"] = f"morphology_profile:{c}"
+
+        # body_size_class 는 형태 프로필에서 파생하지 않는다. 유일한 후보였던
+        # morphology.body_size 는 프레임 점유율(small/medium/large_in_frame)이고
+        # 카메라 거리의 함수라 실제 체급이 아니다 — 실측 소스가 생기기 전까지
+        # UNKNOWN 을 유지하고, 운영 override 로만 채운다.
+        body_size = UNKNOWN
+
+        body_length, c = _class_from_morphology_trait(traits, "torso_proportion", floor=confidence_floor)
+        if body_length != UNKNOWN:
+            sources["body_length"] = f"morphology_profile:{c}"
+
+        leg_length, c = _class_from_morphology_trait(traits, "leg_proportion", floor=confidence_floor)
+        if leg_length != UNKNOWN:
+            sources["leg_length"] = f"morphology_profile:{c}"
+
+        body_build, c = _class_from_morphology_trait(traits, "body_build", floor=confidence_floor)
+        if body_build != UNKNOWN:
+            sources["body_build"] = f"morphology_profile:{c}"
+
+        head_proportion, c = _class_from_morphology_trait(traits, "head_proportion", floor=confidence_floor)
+        if head_proportion != UNKNOWN:
+            sources["head_proportion"] = f"morphology_profile:{c}"
+
+        muzzle_proportion, c = _class_from_morphology_trait(traits, "muzzle_proportion", floor=confidence_floor)
+        if muzzle_proportion != UNKNOWN:
+            sources["muzzle_proportion"] = f"morphology_profile:{c}"
+
+        ear_form, c = _class_from_morphology_trait(traits, "ear_form", floor=confidence_floor)
+        if ear_form != UNKNOWN:
+            sources["ear_form"] = f"morphology_profile:{c}"
+
+        tail_form, c = _class_from_morphology_trait(traits, "tail_form", floor=confidence_floor)
+        if tail_form != UNKNOWN:
+            sources["tail_form"] = f"morphology_profile:{c}"
 
     if identity_profile is not None:
         elig = getattr(identity_profile, "reference_eligibility", None) or {}
@@ -407,23 +509,39 @@ def derive_motion_profile(
                 species = vlm_species
                 sources["species"] = "vlm"
 
-        sil = (getattr(identity_profile, "structural_identity", None) or {}).get("silhouette") or {}
-        ar = sil.get("bbox_aspect_ratio")
-        if isinstance(ar, (int, float)):
-            if ar <= _BODY_COMPACT_MAX:
-                body_length = "COMPACT"
-            elif ar >= _BODY_LONG_MIN:
-                body_length = "LONG"
-            else:
-                body_length = "STANDARD"
-            sources["body_length"] = "measured"
+        # 신원 프로필의 bbox 비율은 **단일 레퍼런스** 측정이다. 여러 레퍼런스를
+        # 융합한 형태 프로필이 이미 몸통 비율을 줬다면 그쪽이 정본이고, 여기는
+        # 형태 프로필이 쓸 만한 값을 못 준 경우의 폴백으로만 쓴다.
+        if body_length == UNKNOWN:
+            sil = (getattr(identity_profile, "structural_identity", None) or {}).get("silhouette") or {}
+            ar = sil.get("bbox_aspect_ratio")
+            if isinstance(ar, (int, float)):
+                if ar <= _BODY_COMPACT_MAX:
+                    body_length = "COMPACT"
+                elif ar >= _BODY_LONG_MIN:
+                    body_length = "LONG"
+                else:
+                    body_length = "STANDARD"
+                # 라벨은 기존 계약 그대로 "measured" 다 (QA 신뢰도 해석 불변).
+                sources["body_length"] = "measured"
 
     profile = {
         "profile_version": MORPHOLOGY_PROFILE_VERSION,
         "species": species,
-        "body_size_class": UNKNOWN,   # 사진에 절대 스케일 없음 — 추측하지 않는다
-        "leg_length_class": UNKNOWN,  # 실루엣 근/원위 모호성 — 추측하지 않는다
+        "body_size_class": body_size,
+        "leg_length_class": leg_length,
         "body_length_class": body_length,
+        "body_build_class": body_build,
+        "head_proportion_class": head_proportion,
+        "muzzle_proportion_class": muzzle_proportion,
+        "ear_form": ear_form,
+        "tail_form": tail_form,
+        "morphology_profile_id": (
+            str(getattr(morphology_profile, "id")) if morphology_profile is not None and getattr(morphology_profile, "id", None) else None
+        ),
+        "morphology_profile_version": (
+            int(getattr(morphology_profile, "version")) if morphology_profile is not None and getattr(morphology_profile, "version", None) is not None else None
+        ),
         "sources": sources,
     }
     for key, target in (
@@ -431,6 +549,11 @@ def derive_motion_profile(
         ("body_size_class", "body_size_class"),
         ("leg_length_class", "leg_length_class"),
         ("body_length_class", "body_length_class"),
+        ("body_build_class", "body_build_class"),
+        ("head_proportion_class", "head_proportion_class"),
+        ("muzzle_proportion_class", "muzzle_proportion_class"),
+        ("ear_form", "ear_form"),
+        ("tail_form", "tail_form"),
     ):
         v = (overrides or {}).get(key)
         if v:
@@ -484,6 +607,15 @@ def _plain_compat(requested: Optional[str], ref: str) -> str:
     return EXACT if requested.upper() == ref else MISMATCH
 
 
+def _profile_plain_compat(pet: Optional[str], ref: str) -> str:
+    p = str(pet or "").strip().upper()
+    if not p or p == UNKNOWN:
+        return UNVERIFIED
+    if ref == UNKNOWN:
+        return UNVERIFIED
+    return EXACT if p == ref else MISMATCH
+
+
 def _assess(
     profile: dict[str, Any],
     ref: MotionReference,
@@ -492,6 +624,7 @@ def _assess(
     desired_view: Optional[str],
     direction: Optional[str],
     speed: Optional[str],
+    motion_requirements: Optional[dict[str, Any]] = None,
 ) -> Optional[dict[str, Any]]:
     """레퍼런스 1건의 호환성 — 컴포넌트별 이유를 전부 노출한다. 배제는 None."""
     if ref.species != profile.get("species"):
@@ -503,30 +636,96 @@ def _assess(
         "body_size": _ordered_compat(profile.get("body_size_class", UNKNOWN), ref.body_size_class, SIZE_ORDER),
         "leg_class": _ordered_compat(profile.get("leg_length_class", UNKNOWN), ref.leg_length_class, LEG_ORDER),
         "body_class": _ordered_compat(profile.get("body_length_class", UNKNOWN), ref.body_length_class, BODY_ORDER),
+        "body_build": _ordered_compat(profile.get("body_build_class", UNKNOWN), ref.body_build_class, BUILD_ORDER),
+        "head_proportion": _ordered_compat(profile.get("head_proportion_class", UNKNOWN), ref.head_proportion_class, HEAD_ORDER),
+        "muzzle_proportion": _ordered_compat(profile.get("muzzle_proportion_class", UNKNOWN), ref.muzzle_proportion_class, MUZZLE_ORDER),
+        "ear_form": _profile_plain_compat(profile.get("ear_form"), ref.ear_form),
+        "tail_form": _profile_plain_compat(profile.get("tail_form"), ref.tail_form),
         "view": _view_compat(desired_view, ref.camera_view),
         "direction": _plain_compat(direction, ref.travel_direction),
         "speed": _plain_compat(speed, ref.speed_class),
     }
-    morph = [compat["body_size"], compat["leg_class"], compat["body_class"]]
+    req = motion_requirements or {}
+    mreq = (req.get("morphology") or {}) if isinstance(req, dict) else {}
+    match_fields = set(
+        str(k)
+        for k in (
+            mreq.get("match_fields")
+            or ((req.get("reference") or {}).get("morphology_match_fields"))
+            or ["body_size_class", "leg_length_class", "body_length_class"]
+        )
+    )
+    compat_by_field = {
+        "body_size_class": compat["body_size"],
+        "leg_length_class": compat["leg_class"],
+        "body_length_class": compat["body_class"],
+        "body_build_class": compat["body_build"],
+        "head_proportion_class": compat["head_proportion"],
+        "muzzle_proportion_class": compat["muzzle_proportion"],
+        "ear_form": compat["ear_form"],
+        "tail_form": compat["tail_form"],
+    }
+    relevant_morph_fields = [f for f in match_fields if f in compat_by_field]
+    if not relevant_morph_fields:
+        relevant_morph_fields = ["body_size_class", "leg_length_class", "body_length_class"]
+    morph = [compat_by_field[f] for f in relevant_morph_fields]
     if MISMATCH in morph:
         return None  # 명백히 다른 체형 — 사용하지 않는다 (generic 은 UNVERIFIED 로 남는다)
+
+    # 펫 쪽 축이 UNKNOWN 인 경우(측정 불가 또는 신뢰도 하한 미달)는 **무시**한다.
+    # 예전에는 UNVERIFIED 로 남아 나머지 축이 정확히 맞아도 후보 전체를 LEVEL_3
+    # 으로 끌어내렸다 — 모르는 축은 판단 근거가 아니지 감점 사유가 아니다.
+    # 레퍼런스 쪽 UNKNOWN(= generic 자산)은 그대로 UNVERIFIED 로 남아 저하된다.
+    comparable_fields = [
+        f
+        for f in relevant_morph_fields
+        if str(profile.get(f) or UNKNOWN).strip().upper() != UNKNOWN
+    ]
+    ignored_fields = [f for f in relevant_morph_fields if f not in comparable_fields]
+    comparable = [compat_by_field[f] for f in comparable_fields]
 
     vd = [compat["view"], compat["direction"], compat["speed"]]
     if ref.source_type == "PET_OWN_MOTION" and ref.pet_id and ref.pet_id == pet_id:
         level = LEVEL_OWN  # 펫 자신의 모션 — 항상 최우선 (생애 아카이브 계약)
-    elif all(c == EXACT for c in morph) and all(c in (EXACT, UNSPECIFIED) for c in vd):
+    elif comparable and all(c == EXACT for c in comparable) and all(c in (EXACT, UNSPECIFIED) for c in vd):
         level = LEVEL_1  # 정확한 형태 + 정확한 뷰/방향
-    elif UNVERIFIED not in morph and MISMATCH not in vd:
+    elif comparable and UNVERIFIED not in comparable and MISMATCH not in vd:
         level = LEVEL_2  # 인접(NEAR) 형태 — 알고 맞춘 근접 매칭
     else:
+        # 비교 가능한 축이 하나도 없으면 구조 검증이 없는 것이다 — 조용히
+        # LEVEL_1 로 승격하지 않고 generic 과 같은 LEVEL_3 로 둔다.
         level = LEVEL_3  # generic 형태(UNVERIFIED) 또는 뷰/방향 어긋남 — 명시적 저하
 
-    exact_count = sum(1 for c in compat.values() if c == EXACT)
-    unverified = sum(1 for c in compat.values() if c == UNVERIFIED)
+    compat_keys_for_rank = {
+        "species",
+        "motion",
+        "view",
+        "direction",
+        "speed",
+    }
+    compat_keys_for_rank.update(
+        {
+            "body_size" if f == "body_size_class" else
+            "leg_class" if f == "leg_length_class" else
+            "body_class" if f == "body_length_class" else
+            "body_build" if f == "body_build_class" else
+            "head_proportion" if f == "head_proportion_class" else
+            "muzzle_proportion" if f == "muzzle_proportion_class" else
+            f
+            for f in comparable_fields
+        }
+    )
+    exact_count = sum(1 for k, c in compat.items() if k in compat_keys_for_rank and c == EXACT)
+    unverified = sum(1 for k, c in compat.items() if k in compat_keys_for_rank and c == UNVERIFIED)
     return {
         "reference": ref,
         "compatibility": compat,
         "selection_level": level,
+        "morphology_axes": {
+            "match_fields": relevant_morph_fields,
+            "compared": comparable_fields,
+            "ignored_unknown_profile_fields": ignored_fields,
+        },
         "_rank": (
             {LEVEL_OWN: 0, LEVEL_1: 1, LEVEL_2: 2, LEVEL_3: 3}[level],
             -exact_count,
@@ -545,6 +744,7 @@ async def resolve_motion_reference(
     desired_view: Optional[str] = None,
     direction: Optional[str] = None,
     speed: Optional[str] = None,
+    motion_requirements: Optional[dict[str, Any]] = None,
     include_candidates: bool = False,
 ) -> Optional[dict[str, Any]]:
     """
@@ -567,7 +767,7 @@ async def resolve_motion_reference(
         if (
             a := _assess(
                 profile, r, pet_id=pet_id, desired_view=desired_view,
-                direction=direction, speed=speed,
+                direction=direction, speed=speed, motion_requirements=motion_requirements,
             )
         )
     ]
@@ -593,6 +793,14 @@ async def resolve_motion_reference(
             "loopable": ref.loopable,
             "duration_sec": ref.duration_sec,
             "quality": ref.quality_status,
+            "body_size_class": ref.body_size_class,
+            "leg_length_class": ref.leg_length_class,
+            "body_length_class": ref.body_length_class,
+            "body_build_class": ref.body_build_class,
+            "head_proportion_class": ref.head_proportion_class,
+            "muzzle_proportion_class": ref.muzzle_proportion_class,
+            "ear_form": ref.ear_form,
+            "tail_form": ref.tail_form,
             "provenance": {
                 "source_type": ref.source_type,
                 "license": ref.license,
@@ -601,6 +809,7 @@ async def resolve_motion_reference(
             },
             "compatibility": a["compatibility"],
             "selection_level": a["selection_level"],
+            "morphology_axes": a["morphology_axes"],
         }
 
     out = {

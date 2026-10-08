@@ -1,7 +1,24 @@
+/* Pin Tailwind's cascade layers before anything loads: base < components < utilities.
+   brand.css component classes live in `components`, so a Tailwind utility on the
+   same element (e.g. pl-12 on .eb-input) still wins. Screen stylesheets stay
+   unlayered, as before Phase 10. */
+@layer theme, base, components, utilities;
+
 @import './fonts.css';
+@import './brand.css';
 @import './theme.css';
 @import './memorial-premium.css';
+@import './pet-photo.css';
 @import './hologram-effects.css';
 @import './onboarding-effects.css';
 @import './tailwind.css';
 @import './ui-improvements.css';
+@import './auth-entry.css';
+@import './foundation.css';
+@import './home-dashboard.css';
+@import './pet-intake.css';
+@import './generation-progress.css';
+@import './theme-selection.css';
+@import './preview-composer.css';
+@import './my-library.css';
+@import './beam-device.css';

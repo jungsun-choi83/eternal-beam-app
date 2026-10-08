@@ -24,7 +24,9 @@ ultralytics>=8.1.0
 # torch는 ultralytics가 이미 끌어오지만 transformers가 명시적으로 요구하므로 직접 명시.
 # transformers에 SAM2(Sam2Model/Sam2Processor)가 들어간 게 2025-08-14부터라 4.57+ 필요.
 torch>=2.1.0
-transformers>=4.57.0
+# 청크 어텐션 패치(vitdet_chunked_attention.py)가 이 버전의 VitDet 내부 구조에서
+# 검증됐다. 올릴 때는 test_vitdet_chunked_attention.py 를 다시 돌려 확인한다.
+transformers==5.14.1
 
 # Supabase
 supabase>=2.3.0

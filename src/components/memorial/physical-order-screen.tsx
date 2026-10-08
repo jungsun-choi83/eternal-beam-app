@@ -187,12 +187,15 @@ export function PhysicalOrderScreen({ petId, onBack }: PhysicalOrderScreenProps)
     }
   }, [token, review, shipping]);
 
-  const shell = "flex h-full min-h-0 flex-col overflow-hidden bg-[#0a0a0a] text-[#EDE3CE]";
+  // Phase 10 — 아이보리 페이지 · 차콜 텍스트. 셸이 더는 검정을 주지 않으므로
+  // 화면이 자기 바탕을 명시한다.
+  const shell =
+    "physical-order-screen flex h-full min-h-0 flex-col overflow-hidden bg-[var(--eb-bg)] text-[var(--eb-text)]";
 
   if (!tokenLoaded) {
     return (
       <div className={`${shell} items-center justify-center`}>
-        <p className="text-sm text-white/40">불러오는 중…</p>
+        <p className="eb-caption">불러오는 중…</p>
       </div>
     );
   }
@@ -212,29 +215,33 @@ export function PhysicalOrderScreen({ petId, onBack }: PhysicalOrderScreenProps)
 
   return (
     <div className={shell}>
-      <header className="shrink-0 px-5 pt-[max(2.75rem,env(safe-area-inset-top,0px))] pb-3 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => {
-            const prev = previousStep(step);
-            if (prev) setStep(prev);
-            else onBack();
-          }}
-          className="p-1"
-          aria-label="뒤로"
-        >
-          <ArrowLeft className="h-5 w-5 text-white/70" />
-        </button>
-        <p className="text-sm font-medium">
+      <header className="eb-screen-header">
+        <div className="eb-screen-header__leading">
+          <button
+            type="button"
+            onClick={() => {
+              const prev = previousStep(step);
+              if (prev) setStep(prev);
+              else onBack();
+            }}
+            className="mem-icon-btn eb-back-btn p-1"
+            aria-label="뒤로"
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </button>
+        </div>
+        <p className="eb-screen-header__title screen-title text-sm font-medium">
           {step === STEP_REVIEW ? "주문 확인" : "기념품"}
         </p>
+        <div className="eb-screen-header__trailing" aria-hidden />
       </header>
 
-      <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar px-5 pb-8">
+      <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar px-6 pb-8">
+        <div className="eb-container mx-auto w-full max-w-[520px]">
         {/* ── 제품 선택 ─────────────────────────────────────────────────── */}
         {step === STEP_PRODUCT && (
           <>
-            <p className="mb-4 text-xs leading-relaxed text-white/45">
+            <p className="eb-body-sm mb-4 leading-relaxed">
               Soul Trace 편지와 QR 을 담아 실물로 보내 드립니다.
               <br />
               숨쉬기(BREATHING)는 언제나 무료이며, 이 주문과 무관합니다.
@@ -248,56 +255,54 @@ export function PhysicalOrderScreen({ petId, onBack }: PhysicalOrderScreenProps)
                     key={p.productType}
                     type="button"
                     onClick={() => setProductType(p.productType)}
-                    className={`rounded-2xl border px-4 py-3.5 text-left ${
-                      selected ? "border-[#c9a227] bg-white/[0.06]" : "border-white/12 bg-white/[0.03]"
+                    aria-pressed={selected}
+                    className={`eb-selector rounded-2xl border px-4 py-3.5 text-left ${
+                      selected ? "eb-selector--selected" : ""
                     }`}
                   >
-                    <div className="flex items-center gap-2">
-                      <Package className="h-4 w-4 shrink-0 text-[#d8c9a8]" />
-                      <span className="text-sm font-medium">
-                        {PRODUCT_LABEL[p.productType] ?? p.productType}
-                      </span>
-                      <span className="ml-auto text-sm text-[#f5d77a]">
-                        {formatKrw(p.priceKrw)}
-                      </span>
-                      {selected && <Check className="h-4 w-4 text-[#c9a227]" />}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        <Package className="h-4 w-4 shrink-0 text-[var(--eb-text-2)]" />
+                        <span className="text-sm font-medium">
+                          {PRODUCT_LABEL[p.productType] ?? p.productType}
+                        </span>
+                        <span className="eb-price ml-auto text-sm">
+                          {formatKrw(p.priceKrw)}
+                        </span>
+                        {selected && (
+                          <span className="eb-check-mark" aria-hidden>
+                            <Check className="h-3 w-3" strokeWidth={2.5} />
+                          </span>
+                        )}
+                      </div>
+                      <p className="eb-caption mt-1.5 leading-relaxed">
+                        {p.contents.map((c) => CONTENT_LABEL[c] ?? c).join(" · ")}
+                      </p>
                     </div>
-                    <p className="mt-1.5 text-[11px] leading-relaxed text-white/45">
-                      {p.contents.map((c) => CONTENT_LABEL[c] ?? c).join(" · ")}
-                    </p>
                   </button>
                 );
               })}
             </div>
 
             {blockers.filter((b) => b !== "no-product" && b !== "incomplete-shipping").map((b) => (
-              <p key={b} className="mt-3 text-[11px] text-[#d99]">
+              <p key={b} className="eb-field-error mt-3">
                 {BLOCKER_TEXT[b]}
               </p>
             ))}
 
-            <button
-              type="button"
-              disabled={!productType}
-              onClick={() => setStep(nextStep(STEP_PRODUCT))}
-              className="mt-5 w-full rounded-full bg-[#d8c9a8]/20 py-3 text-sm text-[#EDE3CE] disabled:opacity-40"
-            >
-              배송지 입력
-            </button>
-
             {/* 내 주문 — 재조정이 끝난 상태를 보여 준다. */}
             {orders.length > 0 && (
               <section className="mt-8">
-                <p className="mb-2 text-xs text-white/50">내 주문</p>
+                <p className="eb-section-title mb-2">내 주문</p>
                 <ul className="flex flex-col gap-1.5">
                   {orders.map((o) => (
                     <li
                       key={o.orderId}
-                      className="rounded-xl bg-white/[0.04] px-3 py-2 text-[11px] text-white/60"
+                      className="eb-card eb-card--muted eb-caption rounded-xl px-3 py-2"
                     >
-                      <span className="font-mono text-white/70">{o.orderId.slice(0, 18)}</span>
-                      <span className="ml-2">{PRODUCT_LABEL[o.productType] ?? o.productType}</span>
-                      <span className="ml-2 text-white/45">{describeOrderStatus(o)}</span>
+                      <span className="font-mono text-[var(--eb-text-2)]">{o.orderId.slice(0, 18)}</span>
+                      <span className="ml-2 text-[var(--eb-text)]">{PRODUCT_LABEL[o.productType] ?? o.productType}</span>
+                      <span className="ml-2">{describeOrderStatus(o)}</span>
                     </li>
                   ))}
                 </ul>
@@ -309,7 +314,7 @@ export function PhysicalOrderScreen({ petId, onBack }: PhysicalOrderScreenProps)
         {/* ── 주문 확인 (결제 직전) ─────────────────────────────────────── */}
         {step === STEP_REVIEW && review && (
           <>
-            <dl className="flex flex-col gap-2.5 rounded-2xl border border-white/12 bg-white/[0.03] px-4 py-4 text-[12px]">
+            <dl className="eb-card flex flex-col gap-2.5 rounded-2xl border px-4 py-4 text-[13px]">
               <Row label="제품" value={PRODUCT_LABEL[review.productType] ?? review.productType} />
               <Row label="금액" value={formatKrw(review.priceKrw)} accent />
               <Row label="아이" value={review.petId} mono />
@@ -319,33 +324,58 @@ export function PhysicalOrderScreen({ petId, onBack }: PhysicalOrderScreenProps)
               <Row label="주소" value={review.address} />
             </dl>
 
-            <p className="mt-3 text-[11px] leading-relaxed text-white/40">
+            <p className="eb-caption mt-3 leading-relaxed">
               결제하면 주문이 접수됩니다. 제작·배송은 결제 확인 후 시작됩니다.
             </p>
 
-            {error && <p className="mt-3 text-[11px] text-[#d99]">{error}</p>}
-
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => void pay()}
-              className="mt-5 w-full rounded-full bg-[#d8c9a8]/25 py-3 text-sm text-[#EDE3CE] disabled:opacity-40"
-            >
-              {busy ? "결제창을 여는 중…" : `${formatKrw(review.priceKrw)} 결제하기`}
-            </button>
+            {error && <p className="eb-field-error mt-3">{error}</p>}
           </>
         )}
 
         {step === STEP_REVIEW && !review && (
           <div className="flex flex-col gap-2">
             {blockers.map((b) => (
-              <p key={b} className="text-[12px] text-[#d99]">
+              <p key={b} className="eb-field-error text-[13px]">
                 {BLOCKER_TEXT[b]}
               </p>
             ))}
           </div>
         )}
+        </div>
       </div>
+
+      {/* 발판 CTA — 스크롤 영역 밖(shrink-0)이라 1024×768 에서도 항상 보인다. */}
+      {step === STEP_PRODUCT && (
+        <div className="eb-screen-footer">
+          <div className="eb-container mx-auto w-full max-w-[520px]">
+            <button
+              type="button"
+              disabled={!productType}
+              onClick={() => setStep(nextStep(STEP_PRODUCT))}
+              className="eb-btn eb-btn--primary eb-btn--block mem-btn-primary w-full"
+            >
+              배송지 입력
+            </button>
+          </div>
+        </div>
+      )}
+
+      {step === STEP_REVIEW && review && (
+        <div className="eb-screen-footer">
+          <div className="eb-container mx-auto w-full max-w-[520px]">
+            <button
+              type="button"
+              disabled={busy}
+              aria-busy={busy || undefined}
+              onClick={() => void pay()}
+              className="eb-btn eb-btn--primary eb-btn--block mem-btn-primary w-full"
+            >
+              {busy ? <span className="eb-btn__spinner" aria-hidden /> : null}
+              <span>{busy ? "결제창을 여는 중…" : `${formatKrw(review.priceKrw)} 결제하기`}</span>
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -363,10 +393,11 @@ function Row({
 }) {
   return (
     <div className="flex gap-3">
-      <dt className="w-16 shrink-0 text-white/40">{label}</dt>
+      <dt className="w-16 shrink-0 text-[var(--eb-text-2)]">{label}</dt>
       <dd
-        className={`flex-1 break-all ${mono ? "font-mono text-[11px]" : ""}`}
-        style={{ color: accent ? "#f5d77a" : "#D8D8D8" }}
+        className={`flex-1 break-all ${mono ? "font-mono text-[11px] text-[var(--eb-text-2)]" : ""} ${
+          accent ? "eb-price" : "text-[var(--eb-text)]"
+        }`}
       >
         {value}
       </dd>

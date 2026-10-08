@@ -17,6 +17,7 @@ from backend.services.video_motion_providers import (
     FalSeedanceProvider,
     MotionVideoRequest,
     RunwaySeedanceProvider,
+    RunwayWanStandardProvider,
     VideoProviderError,
 )
 
@@ -25,10 +26,12 @@ SPEC = {"aspect_ratio": "9:16", "resolution": "480p", "duration_sec": 4, "audio"
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    for var in ("RUNWAY_API_KEY", "RUNWAY_SEEDANCE_MODEL", "FAL_KEY", "FAL_API_KEY",
+    for var in ("RUNWAY_API_KEY", "RUNWAY_SEEDANCE_MODEL", "RUNWAY_WAN_MODEL",
+                "FAL_KEY", "FAL_API_KEY",
                 "SEEDANCE_API_KEY", "ARK_API_KEY", "KLING_ACCESS_KEY", "KLING_SECRET_KEY",
                 "SEEDANCE_TRANSPORT", "KLING_TRANSPORT", "PHASE6_VIDEO_TRANSPORT",
-                "VIDEO_GENERATION_MOCK"):
+                "VIDEO_GENERATION_MOCK", "MOTION_VENDOR_SEEDANCE",
+                "MOTION_VENDOR_KLING_3", "MOTION_VENDOR_WAN_3_STANDARD"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -63,6 +66,21 @@ def test_end_frame_uses_keyframe_positions():
         {"uri": "https://x/start.png", "position": "first"},
         {"uri": "https://x/end.png", "position": "last"},
     ]
+
+
+def test_wan_3_standard_registry_adapter_has_no_reference_payload(monkeypatch):
+    monkeypatch.setenv("RUNWAY_API_KEY", "rw-test-key")
+    provider = vp.get_provider("wan_3_standard")
+    assert isinstance(provider, RunwayWanStandardProvider)
+    assert provider.available() is True
+    assert provider.build_payload(_req()) == {
+        "model": "wan3",
+        "promptImage": "https://x/start.png",
+        "promptText": "p",
+        "ratio": "480:832",
+        "duration": 4,
+        "audio": False,
+    }
 
 
 @pytest.mark.parametrize(
@@ -197,19 +215,19 @@ def test_auto_falls_back_to_fal_then_direct_without_runway_key(monkeypatch):
     assert vp.transport_for("seedance") == "direct"
 
 
-def test_routing_table_unchanged_with_runway_transport(monkeypatch):
+def test_motion_spec_routing_uses_runway_adapters_when_selected(monkeypatch):
     monkeypatch.setenv("RUNWAY_API_KEY", "rw-test-key")
     monkeypatch.setenv("FAL_KEY", "fal-test-key")
     names = {c: [p.name for p in vp.routing_for_class(c)] for c in
              ("MICRO", "TRANSITION", "LOCOMOTION", "INTERACTION")}
     assert names == {
-        "MICRO": ["seedance", "kling"],
-        "TRANSITION": ["kling", "seedance"],
-        "LOCOMOTION": ["seedance", "kling"],
-        "INTERACTION": ["kling", "seedance"],
+        "MICRO": ["wan_3_standard", "seedance"],
+        "TRANSITION": ["kling_3", "wan_3_standard"],
+        "LOCOMOTION": ["kling_3", "wan_3_standard"],
+        "INTERACTION": ["seedance", "kling_3"],
     }
-    # MICRO primary 는 Runway 트랜스포트의 seedance2_5 다.
+    # MICRO primary 는 독립된 Runway Wan 3 standard adapter 다.
     micro = vp.routing_for_class("MICRO")
-    assert isinstance(micro[0], RunwaySeedanceProvider)
-    assert micro[0].model_name() == "seedance2_5"
-    assert micro[0].supports_end_frame is True
+    assert isinstance(micro[0], vp.RunwayWanStandardProvider)
+    assert micro[0].model_name() == "wan3"
+    assert micro[0].supports_end_frame is False

@@ -12,14 +12,22 @@ from __future__ import annotations
 
 from typing import Any
 
-MOTION_VIDEO_PROMPT_VERSION = "motion-video-prompt-v1"
+# v2 (2026-09-17): 그림자 금지 절 추가. I2V 는 정지 그림자를 **움직이는**
+# 그림자로 살려내고, packed-alpha 매트가 그것을 전경으로 삼킨다.
+MOTION_VIDEO_PROMPT_VERSION = "motion-video-prompt-v2"
 
 _IDENTITY_LOCK = (
     "The exact same pet as in the supplied reference image(s). Do not alter the "
     "face, fur colors, markings, ears, body proportions, paws or tail at any point "
-    "in the video. No new objects, no other animals, no scenery. The plain neutral "
-    "background stays exactly as in the reference. Camera and framing remain "
-    "completely fixed. No text, no stylization."
+    "in the video. No new objects, no other animals, no scenery. "
+    "The background must remain a single flat matte neutral tone with no texture, "
+    "no gradient, no vignette, no floor plane and no horizon line. "
+    "There must be no contact shadow under the pet, no cast shadow, no reflection, "
+    "no glossy surface and no ambient grounding darkening of any kind. "
+    "The pet silhouette must remain clean and clearly separated from the background, "
+    "including around the ears, fur edges, paws, legs and tail. "
+    "All paws must remain fully visible and cleanly separated. "
+    "Camera and framing remain completely fixed. No text, no stylization."
 )
 
 
@@ -28,6 +36,9 @@ def _micro(spec_contract: dict[str, Any], description: str) -> str:
         _IDENTITY_LOCK,
         f"The pet stays in the same pose and position. Only this subtle natural "
         f"motion occurs: {description}.",
+        "No other intentional or expressive behavior occurs. The pet remains silent: "
+        "no barking, vocalizing, panting, licking, chewing, or unnecessary mouth, jaw "
+        "or tongue movement. If audio is generated, it must be absolute silence.",
         "No body translation, no walking, no large movement of any kind.",
     ]
     if (spec_contract.get("video_compat") or {}).get("returns_to_start_pose"):
@@ -58,7 +69,9 @@ def _locomotion(spec_contract: dict[str, Any], description: str) -> str:
             _IDENTITY_LOCK,
             f"The pet performs this whole-body motion: {description}.",
             "Leg movement is anatomically correct with natural gait timing; paws "
-            "contact the ground plausibly. The body may move within the frame, but "
+            "contact the ground plausibly, but the ground itself stays the flat "
+            "neutral background — no contact shadow, cast shadow or ground plane "
+            "appears under the paws. The body may move within the frame, but "
             "the camera itself does not move.",
         ]
     )

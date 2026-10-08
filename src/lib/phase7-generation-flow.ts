@@ -15,19 +15,26 @@
  * PASS  → Phase 7A 발행 → pets 포인터 → 발행 재생 (published: true)
  * REVIEW→ 발행 없음. 데이터베이스 상태는 REVIEW 그대로. 포장된 후보를
  *         실행 재생 리졸버로만 본다 (published: false, qa_decision: "REVIEW").
- * FAIL  → 재생 없음. 레거시 생성기로 **절대 폴백하지 않는다.**
+ * hard FAIL budget exhausted → server-resolved safe fallback playback.
+ * No safe asset / infrastructure failure → explicit error; the legacy
+ * generator is **never** invoked.
  */
 
 import {
+  cancelGenerationRun,
   GenerationRunError,
+  getGenerationRun,
   getRunPlayback,
+  isTerminalRunStatus,
   pollGenerationRun,
+  retryGenerationRun,
   startGenerationRun,
   type GenerationRun,
   type PollOptions,
   type RunApiDeps,
   type RunPlayback,
 } from "./generation-run-api.ts";
+import { markGenerationStarted } from "./generation-resume.ts";
 
 /** 명시적 레거시 회귀 스위치 — 조용한 폴백이 아니라 개발자가 켜는 값이다. */
 export function phase7GenerationEnabled(): boolean {
@@ -63,19 +70,159 @@ export async function runPhase7Generation(
     { petId: params.petId, idempotencyKey: freeHomeIdempotencyKey(params.contentId) },
     deps
   );
-  const run = await pollGenerationRun(started.run_id, params.poll ?? {}, deps);
+  // durable 마커 — 새로고침 재개(resumePhase7Generation)가 "확인이 실제로
+  // 눌렸다"를 알 수 있는 유일한 근거다. 여기서부터는 새로고침해도 온보딩으로
+  // 되돌아가지 않고 이 실행을 다시 찾는다.
+  markGenerationStarted({
+    contentId: params.contentId,
+    petId: params.petId,
+    runId: started.run_id,
+  });
+  // 첫 폴링 tick(최대 intervalMs)을 기다리지 않고 방금 만든/찾은 실행 상태를
+  // 곧바로 보여준다 — 진행 화면이 잠깐이라도 빈 채로 있지 않게 한다.
+  params.poll?.onProgress?.(started);
+  const run = await pollUntilStopped(started.run_id, params.poll, deps);
+  return finalizeRunOutcome(run, deps);
+}
 
-  if (run.status === "PUBLISHED") {
+/**
+ * 종료 상태까지 폴링하되, **이 화면이 포기하면 서버 쪽 실행도 멈춘다.**
+ *
+ * 폴링 타임아웃은 사용자에게 "다시 시도" 를 보여주는 순간이다. 그때 서버의
+ * 실행을 RUNNING 으로 남겨 두면 (1) Retry 가 같은 실행에 다시 합류해 또
+ * 30분을 기다리고, (2) 워커가 lease 만료마다 그 실행을 되살려 새 펫보다
+ * 먼저 돌린다. 그래서 여기서 명시적으로 취소한다 — 취소는 best-effort 이고
+ * (실패해도 원래 오류를 던진다), 이후 Retry 는 retryPhase7Generation 으로
+ * 같은 실행을 QUEUED 로 되돌린다(유료 provider 작업은 fingerprint 로 재사용).
+ *
+ * 탭을 닫거나 로그아웃하는 것은 여기 오지 않는다 — 그 경우 실행은 계속된다.
+ */
+async function pollUntilStopped(
+  runId: string,
+  poll: PollOptions | undefined,
+  deps: RunApiDeps
+): Promise<GenerationRun> {
+  try {
+    return await pollGenerationRun(runId, poll ?? {}, deps);
+  } catch (e) {
+    if (e instanceof GenerationRunError && e.code === "RUN_POLL_TIMEOUT") {
+      try {
+        await cancelGenerationRun(runId, "poll_timeout", deps);
+      } catch {
+        // 취소 실패는 원래 오류를 가리지 않는다 — 서버의 복구 상한이 뒷받침한다.
+      }
+    }
+    throw e;
+  }
+}
+
+/**
+ * Retry 버튼 — **같은 실행을 명시적으로 되살린다.** 서버가 FAILED / CANCELLED /
+ * RECOVERY_REQUIRED 를 QUEUED 로 옮기고(복구 예산 0, 이미 만든 상류 계보는
+ * 재사용), 그 뒤는 처음 실행과 같이 폴링 → 재생 해석이다. 예전 Retry 는
+ * 확인(startGenerationRun)을 다시 불렀는데, 같은 idempotency_key 는 같은
+ * 실행을 그대로 돌려주므로 FAILED 실행은 곧바로 다시 실패로 끝났다.
+ */
+export async function retryPhase7Generation(
+  params: { runId: string; petId: string; contentId: string; poll?: PollOptions },
+  deps: RunApiDeps = {}
+): Promise<Phase7Outcome> {
+  const retried = await retryGenerationRun(params.runId, deps);
+  markGenerationStarted({
+    contentId: params.contentId,
+    petId: params.petId,
+    runId: retried.run_id,
+  });
+  params.poll?.onProgress?.(retried);
+  const run = isTerminalRunStatus(retried.status)
+    ? retried
+    : await pollUntilStopped(retried.run_id, params.poll, deps);
+  return finalizeRunOutcome(run, deps);
+}
+
+/**
+ * 이미 시작된 실행을 **새로 만들지 않고** 재발견한다 — 앱 새로고침/재방문
+ * 재개 전용. run_id 를 알면 곧장 GET 하나로 끝나고, 모르거나 그 조회가
+ * 실패하면(예: 오래된/손상된 로컬 기록) 결정론적 idempotency_key 조인으로
+ * 안전하게 떨어진다 — 이 경로도 새 실행을 만들지 않는다(같은 키는 같은
+ * 실행을 돌려준다, generation-run-api.ts 참고).
+ */
+async function resolveExistingGenerationRun(
+  params: { petId: string; contentId: string; runId?: string },
+  deps: RunApiDeps = {}
+): Promise<GenerationRun> {
+  if (params.runId) {
+    try {
+      return await getGenerationRun(params.runId, deps);
+    } catch {
+      // run_id 조회 실패 — 아래 조인 경로로 안전하게 폴백한다.
+    }
+  }
+  return startGenerationRun(
+    { petId: params.petId, idempotencyKey: freeHomeIdempotencyKey(params.contentId) },
+    deps
+  );
+}
+
+/**
+ * 새로고침/재방문 재개: 이미 시작된 실행을 재발견해, 끝나지 않았으면 종료
+ * 상태까지 이어서 폴링하고, 끝나 있으면(PUBLISHED/REVIEW/FAILED/RECOVERY_
+ * REQUIRED) 그 상태를 그대로 해석한다. runPhase7Generation 과 달리 **새
+ * 실행을 제출하지 않는다** — 호출자가 마커(readActiveGeneration)로 "확인이
+ * 눌힌 적 있음"을 먼저 확인한 뒤에만 불러야 한다.
+ */
+export async function resumePhase7Generation(
+  params: { petId: string; contentId: string; runId?: string; poll?: PollOptions },
+  deps: RunApiDeps = {}
+): Promise<Phase7Outcome> {
+  const current = await resolveExistingGenerationRun(
+    { petId: params.petId, contentId: params.contentId, runId: params.runId },
+    deps
+  );
+  markGenerationStarted({
+    contentId: params.contentId,
+    petId: params.petId,
+    runId: current.run_id,
+  });
+  params.poll?.onProgress?.(current);
+  const run = isTerminalRunStatus(current.status)
+    ? current
+    : await pollUntilStopped(current.run_id, params.poll, deps);
+  return finalizeRunOutcome(run, deps);
+}
+
+/** Generated/fallback delivery and legacy REVIEW are playback; other terminals are errors. */
+async function finalizeRunOutcome(
+  run: GenerationRun,
+  deps: RunApiDeps
+): Promise<Phase7Outcome> {
+  if (
+    run.status === "PUBLISHED" ||
+    run.terminal_state === "DELIVERED_GENERATED" ||
+    run.terminal_state === "DELIVERED_FALLBACK"
+  ) {
     const playback = await getRunPlayback(run.run_id, deps);
     return { run, playback };
   }
 
+  if (run.terminal_state === "TRUE_INFRASTRUCTURE_FAILURE") {
+    throw new GenerationRunError(
+      run.last_error?.message || "Fallback delivery infrastructure failed.",
+      "TRUE_INFRASTRUCTURE_FAILURE",
+      503
+    );
+  }
+
   const errorCode = (run.last_error?.code || "").toUpperCase();
   if (run.status === "FAILED" && errorCode === "MOTION_QA_REVIEW") {
-    // QA 는 REVIEW 를 REVIEW 로 남겼다. 발행 없이, 포장된 후보만 본다.
+    // Legacy-authority runs only: with BREATHING_QA_AUTHORITY=business the
+    // server never ends a BREATHING run in MOTION_QA_REVIEW (it delivers, or
+    // resolves the fallback). 발행 없이, 포장된 후보만 본다.
     const playback = await getRunPlayback(run.run_id, deps);
-    if (playback.published || playback.qa_decision !== "REVIEW") {
-      // 리졸버 계약 위반 — 가짜 발행/가짜 PASS 를 재생으로 받지 않는다.
+    // The contract is "not published"; the legacy qa_decision label is
+    // display-only telemetry and is not read for control flow.
+    if (playback.published) {
+      // 리졸버 계약 위반 — 가짜 발행을 재생으로 받지 않는다.
       throw new GenerationRunError(
         "REVIEW 재생 해석이 계약과 다릅니다.",
         "REVIEW_PLAYBACK_INVALID",
@@ -95,6 +242,9 @@ export async function runPhase7Generation(
 /** 하이드레이션/파이프라인에 들어가는 최소 재생 필드 — 순수 함수. */
 export interface Phase7PipelinePatch {
   idle_video_url: string;
+  /** Canonical fallback tiers are images, not video URLs. */
+  cutout_display_url?: string;
+  dog_only_nobg_url?: string;
   background_baked: boolean;
   delivery_format: string | null;
   /** 새 시스템 산출물 표시 — 레거시 registry/register 쓰기를 우회하는 근거. */
@@ -106,7 +256,7 @@ export interface Phase7PipelinePatch {
 
 export function phase7PipelinePatch(outcome: Phase7Outcome): Phase7PipelinePatch {
   const { playback } = outcome;
-  return {
+  const base: Phase7PipelinePatch = {
     idle_video_url: playback.url,
     background_baked: playback.background_baked === true,
     delivery_format: playback.delivery_format ?? null,
@@ -114,4 +264,20 @@ export function phase7PipelinePatch(outcome: Phase7Outcome): Phase7PipelinePatch
     qa_decision: playback.qa_decision,
     published: playback.published === true,
   };
+  if (
+    playback.asset_kind === "canonical_image" ||
+    playback.delivery_format === "canonical_local_idle" ||
+    playback.delivery_format === "canonical_still"
+  ) {
+    return {
+      ...base,
+      // A signed PNG/JPEG must never reach IdleLoopVideo. Existing local
+      // cutout rendering supplies tier 3's idle motion; tier 4 is marked
+      // canonical_still and rendered without that motion by PetIdleDisplay.
+      idle_video_url: "",
+      cutout_display_url: playback.url,
+      dog_only_nobg_url: playback.url,
+    };
+  }
+  return base;
 }

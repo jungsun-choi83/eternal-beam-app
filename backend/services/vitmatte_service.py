@@ -53,6 +53,7 @@ from .cutout_errors import (
     RectangleLikeMaskError,
     SubjectNotDetectedError,
 )
+from . import rss_trace
 from .person_prompting import PersonAwareResult, apply_person_aware_prompting
 from .yolo_input import load_yolo, to_yolo_source
 
@@ -128,6 +129,43 @@ DEBUG_ARTIFACTS_ENABLED = os.getenv("CUTOUT_DEBUG_ENABLED", "0").strip().lower()
     "yes",
 )
 
+# --- 접지/투영 그림자 알파 억제 ------------------------------------------------
+# ViTMatte 는 트라이맵의 미확정 밴드 안에서 "반투명한 것"을 성실하게 살린다.
+# 발밑 접지 그림자와 바닥에 드리운 투영 그림자는 정확히 그 성질이라 **전경
+# 알파로 살아남았고**, 하류(키프레임·모션·packed-alpha)까지 얼룩으로 번졌다.
+#
+# 여기서 하는 일은 "그림자는 배경의 감광(減光) 버전"이라는 물리적 사실 하나를
+# 증거로 쓰는 것뿐이다: 색조(chromaticity)는 배경과 같고 휘도만 낮다. 털은
+# 자기 색을 가지므로 이 조건에 걸리지 않는다. 판정은 세그멘테이션 **코어 밖**
+# 에서만 이뤄지고, 지우려는 양이 임계를 넘으면 아무것도 하지 않는다 —
+# 피사체를 깎느니 그림자를 남긴다 (Phase 6.7: 측정 불가 ≠ 손상).
+SHADOW_SUPPRESSION_ENABLED = os.getenv(
+    "CUTOUT_SHADOW_SUPPRESSION", "1"
+).strip().lower() in ("1", "true", "yes")
+
+#: 세그멘테이션 마스크를 이만큼 침식한 영역 = 절대 건드리지 않는 펫 코어.
+SHADOW_CORE_ERODE_PX = int(os.getenv("CUTOUT_SHADOW_CORE_ERODE_PX", "6"))
+
+#: 이보다 불투명한 알파는 손대지 않는다 (확실한 전경).
+SHADOW_MAX_ALPHA = float(os.getenv("CUTOUT_SHADOW_MAX_ALPHA", "0.92"))
+
+#: 배경 대비 휘도비 하한 — 이보다 어두우면 그림자가 아니라 검은 털/코다.
+SHADOW_MIN_LUMA_RATIO = float(os.getenv("CUTOUT_SHADOW_MIN_LUMA_RATIO", "0.35"))
+
+#: 배경 대비 휘도비 상한 — 이보다 밝으면 그림자가 아니다(그림자는 어둡다).
+SHADOW_MAX_LUMA_RATIO = float(os.getenv("CUTOUT_SHADOW_MAX_LUMA_RATIO", "0.97"))
+
+#: 배경과의 정규화 색조 거리 상한. 그림자는 배경의 색조를 보존한다.
+SHADOW_MAX_CHROMA_DELTA = float(os.getenv("CUTOUT_SHADOW_MAX_CHROMA_DELTA", "0.055"))
+
+#: 전체 알파 질량의 이 비율을 넘게 지우려 하면 억제를 통째로 포기한다.
+SHADOW_MAX_REMOVED_FRACTION = float(
+    os.getenv("CUTOUT_SHADOW_MAX_REMOVED_FRACTION", "0.30")
+)
+
+#: 배경 행 모델을 만들 때 한 행에 필요한 최소 배경 픽셀 수.
+_SHADOW_MIN_ROW_BG_PX = 8
+
 # --- Phase 2A: SAM2 후보 선택 -------------------------------------------------
 # SAM2 는 박스 프롬프트 1개에 대해 서로 다른 해석 3개를 낸다(예: 개 전체 / 몸통만 /
 # 개+바닥). Phase 1 은 multimask_output=False 로 첫 번째만 받아썼다. 여기서는 셋을
@@ -155,6 +193,8 @@ SAM2_SHAPE_FILL_HIGH = float(os.getenv("SAM2_SHAPE_FILL_HIGH", "0.85"))
 
 _vitmatte_cache: dict[str, tuple] = {}
 _sam2_cache: dict[str, tuple] = {}
+#: 모델 키 → 청크 어텐션 설치 상태 (진단용, vitdet_chunked_attention.install_chunked_attention 결과)
+_vitmatte_attention_status: dict[str, dict] = {}
 
 
 @dataclass
@@ -304,6 +344,32 @@ def _load_yolo(model_name: str):
     return load_yolo(model_name)
 
 
+_torch_threads_configured = False
+
+
+def _configure_torch_threads() -> None:
+    """
+    OOM 최적화 3단계 (저위험): CPU 추론을 intra-op 스레드 1개로 고정한다.
+
+    2GB 워커에서 oneDNN/BLAS 는 스레드마다 스크래치 버퍼를 따로 잡고, 그 위에
+    glibc 가 스레드별 malloc 아레나를 늘린다 — 스레드 8개면 같은 forward 가
+    RSS 를 수백 MB 더 먹는다. 워커 env(OMP_NUM_THREADS/MKL_NUM_THREADS=1,
+    MALLOC_ARENA_MAX=2, render.yaml)와 짝을 이룬다: env 는 OpenMP 런타임 초기화
+    전에만 먹히고, 이 호출은 torch 가 이미 초기화된 뒤에도 확실히 적용된다.
+    결과 알파는 바뀌지 않는다(같은 연산, 스레드 분할만 다르다). 한 번만 적용.
+    """
+    global _torch_threads_configured
+    if _torch_threads_configured:
+        return
+    try:
+        import torch
+
+        torch.set_num_threads(1)
+        _torch_threads_configured = True
+    except Exception:  # noqa: BLE001 — 스레드 설정 실패가 로딩을 막으면 안 된다
+        logger.exception("torch.set_num_threads(1) failed; keeping default thread count")
+
+
 def _load_vitmatte(model_name: str, device: str):
     key = f"{model_name}::{device}"
     if key not in _vitmatte_cache:
@@ -313,10 +379,21 @@ def _load_vitmatte(model_name: str, device: str):
             raise RuntimeError(
                 "transformers/torch가 필요합니다: pip install transformers torch"
             ) from e
+        _configure_torch_threads()
         processor = VitMatteImageProcessor.from_pretrained(model_name)
         model = VitMatteForImageMatting.from_pretrained(model_name)
         model.to(device)
         model.eval()
+        # 전역 어텐션 쿼리 청크 분할 (메모리 최적화 2단계). 수학적으로 같은 결과를
+        # 훨씬 작은 순간 메모리로 낸다. 구조가 다르거나 자기 검증에 실패하면
+        # 원래 eager 구현을 그대로 둔다 — vitdet_chunked_attention 참고.
+        try:
+            from .vitdet_chunked_attention import install_chunked_attention
+
+            _vitmatte_attention_status[key] = install_chunked_attention(model)
+        except Exception:  # noqa: BLE001 — 최적화가 로딩을 막으면 안 된다
+            logger.exception("chunked attention setup failed; using eager attention")
+            _vitmatte_attention_status[key] = {"active": False, "reason": "setup_error"}
         _vitmatte_cache[key] = (processor, model)
     return _vitmatte_cache[key]
 
@@ -331,6 +408,7 @@ def _load_sam2(model_name: str, device: str):
                 "SAM2를 쓰려면 transformers>=4.57(SAM2 지원 버전)가 필요합니다: "
                 "pip install -U transformers"
             ) from e
+        _configure_torch_threads()
         model = Sam2Model.from_pretrained(model_name)
         model.to(device)
         model.eval()
@@ -665,7 +743,9 @@ def _sam2_candidates(
 
     inputs = processor(**proc_kwargs).to(device)
 
-    with torch.no_grad():
+    # inference_mode: no_grad 에 더해 version counter/뷰 추적까지 끈다 — 추론
+    # 전용 텐서라 autograd 메타데이터 할당이 사라진다(출력 알파는 동일).
+    with torch.inference_mode():
         outputs = model(**inputs, multimask_output=multimask)
 
     masks = processor.post_process_masks(outputs.pred_masks.cpu(), inputs["original_sizes"])[0]
@@ -950,12 +1030,215 @@ def _run_vitmatte(rgb: np.ndarray, trimap: np.ndarray, model_name: str, device: 
     )
     inputs = {k: v.to(device) for k, v in inputs.items()}
 
-    with torch.no_grad():
-        alphas = model(**inputs).alphas
+    # 임시 RSS 추적 (rss_trace 참고): 백본/디코더 경계에 측정점을 두되, 훅은 이
+    # 호출 동안만 붙였다 뗀다. 비활성이면 훅 자체를 달지 않는다.
+    trace = rss_trace.current()
+    handles = []
+    if trace is not None and trace.enabled:
+        backbone = getattr(model, "backbone", None)
+        decoder = getattr(model, "decoder", None)
+        if backbone is not None and decoder is not None:
+            handles.append(backbone.register_forward_hook(lambda m, i, o: trace.mark("after_vitmatte_backbone")))
+
+            def _before_decoder(m, i):
+                trace.mark("before_decoder")
+                trace.start_peak_window()
+
+            def _after_decoder(m, i, o):
+                peak = trace.end_peak_window()
+                trace.mark("after_decoder", decoder_peak_rss_mb=peak)
+
+            handles.append(decoder.register_forward_pre_hook(_before_decoder))
+            handles.append(decoder.register_forward_hook(_after_decoder))
+    try:
+        with torch.inference_mode():
+            alphas = model(**inputs).alphas
+    finally:
+        for h in handles:
+            h.remove()
 
     alpha = alphas[0, 0].detach().cpu().numpy()
     alpha = alpha[:orig_h, :orig_w]
-    return np.clip(alpha, 0.0, 1.0)
+    alpha = np.clip(alpha, 0.0, 1.0)
+    if trace is not None:
+        # 첫 호출은 여기서야 모델이 로드되므로 어텐션 상태를 이 지점에도 남긴다.
+        attn = _vitmatte_attention_status.get(f"{model_name}::{device}") or {}
+        trace.mark(
+            "after_vitmatte",
+            alpha_shape=list(alpha.shape),
+            chunked_attention_active=attn.get("active"),
+            attention_chunk_size=attn.get("chunk_size"),
+        )
+    return alpha
+
+
+#: ViTMatte ROI 크롭 (메모리 최적화 1단계).
+#:
+#: ViTMatte 의 전역 어텐션/디코더 활성값은 입력 픽셀 수에 비례해 커진다. 펫이
+#: 프레임 일부만 차지할 때 프레임 전체를 매팅할 이유가 없다 — 트라이맵이 0 이
+#: 아닌 영역(= SAM2 마스크의 팽창 영역, 확실한 배경 밖)과 검출 크롭 박스의
+#: 합집합에 여백을 둔 ROI 만 ViTMatte 에 넣고, 알파를 원본 크기의 0 캔버스에
+#: 같은 좌표로 되돌려 붙인다. **출력 크기·해상도·하류 계약은 바뀌지 않는다.**
+#: 리사이즈는 하지 않는다. ROI 계산이 실패하면 기존 전체 프레임 경로로 폴백한다.
+#:
+#:   VITMATTE_ROI_ENABLED  "1"(기본) | "0" — 운영 킬스위치
+#:   VITMATTE_ROI_PAD_PX   ROI 여백(px). 32 미만으로는 내려가지 않는다.
+VITMATTE_ROI_ENABLED = os.getenv("VITMATTE_ROI_ENABLED", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+)
+VITMATTE_ROI_MIN_PAD_PX = 32
+try:
+    VITMATTE_ROI_PAD_PX = max(
+        VITMATTE_ROI_MIN_PAD_PX, int(os.getenv("VITMATTE_ROI_PAD_PX", "") or VITMATTE_ROI_MIN_PAD_PX)
+    )
+except ValueError:
+    VITMATTE_ROI_PAD_PX = VITMATTE_ROI_MIN_PAD_PX
+
+
+def compute_vitmatte_roi(
+    crop_bbox: Optional[BBox],
+    trimap: np.ndarray,
+    *,
+    pad_px: int = VITMATTE_ROI_PAD_PX,
+) -> Optional[BBox]:
+    """ViTMatte 에 넣을 안전 ROI (x1, y1, x2, y2) — 원본 픽셀 좌표, 끝은 배타.
+
+    ROI = union(crop_bbox, bbox(trimap != 0)) 에 pad_px 여백을 더하고 이미지
+    경계로 클램프한 것. 트라이맵의 0 은 "확실한 배경"이므로 그 밖은 ViTMatte 가
+    볼 필요가 없다. SAM2 마스크는 YOLO 박스 밖으로 나가기도 하므로(꼬리·귀)
+    crop_bbox 만 쓰지 않고 반드시 트라이맵 범위와 합친다.
+
+    ROI 를 만들 수 없으면 None — 호출자가 전체 프레임으로 폴백한다.
+    """
+    if trimap is None or getattr(trimap, "ndim", 0) != 2:
+        return None
+    h, w = int(trimap.shape[0]), int(trimap.shape[1])
+    if h <= 0 or w <= 0:
+        return None
+    pad = max(int(pad_px), VITMATTE_ROI_MIN_PAD_PX)
+
+    boxes: list[BBox] = []
+    if crop_bbox is not None:
+        x1, y1, x2, y2 = (int(round(float(v))) for v in crop_bbox)
+        if x2 > x1 and y2 > y1:
+            boxes.append((x1, y1, x2, y2))
+    cols = np.flatnonzero(trimap.any(axis=0))
+    rows = np.flatnonzero(trimap.any(axis=1))
+    if cols.size and rows.size:
+        boxes.append((int(cols[0]), int(rows[0]), int(cols[-1]) + 1, int(rows[-1]) + 1))
+    if not boxes:
+        return None
+
+    x1 = max(0, min(b[0] for b in boxes) - pad)
+    y1 = max(0, min(b[1] for b in boxes) - pad)
+    x2 = min(w, max(b[2] for b in boxes) + pad)
+    y2 = min(h, max(b[3] for b in boxes) + pad)
+    if x2 - x1 < 1 or y2 - y1 < 1:
+        return None
+    return (x1, y1, x2, y2)
+
+
+def _run_vitmatte_roi(
+    rgb: np.ndarray,
+    trimap: np.ndarray,
+    model_name: str,
+    device: str,
+    *,
+    crop_bbox: Optional[BBox],
+    pad_px: int = VITMATTE_ROI_PAD_PX,
+    enabled: Optional[bool] = None,
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """ROI 만 ViTMatte 에 넣고 원본 크기 알파로 되돌려 붙인다.
+
+    Returns: (float32 alpha (H, W) in [0, 1], ROI 진단 dict).
+    _run_vitmatte 의 계약(입력과 같은 (H, W) 알파)은 그대로이고, 여기서는 그
+    호출을 ROI 크롭으로 감쌀 뿐이다. ROI 를 만들 수 없거나 계산이 실패하면
+    기존과 동일하게 전체 프레임을 한 번 돌린다.
+    """
+    h, w = int(trimap.shape[0]), int(trimap.shape[1])
+    use_roi = VITMATTE_ROI_ENABLED if enabled is None else bool(enabled)
+    info: dict[str, Any] = {
+        "enabled": use_roi,
+        "original_size": [w, h],
+        "pad_px": int(pad_px),
+        "roi": None,
+        "roi_size": None,
+        "roi_area_ratio": None,
+        "fallback": False,
+        "fallback_reason": None,
+    }
+
+    roi: Optional[BBox] = None
+    if not use_roi:
+        info["fallback_reason"] = "disabled"
+    else:
+        try:
+            roi = compute_vitmatte_roi(crop_bbox, trimap, pad_px=pad_px)
+            if roi is None:
+                info["fallback_reason"] = "roi_unavailable"
+        except Exception as exc:  # noqa: BLE001 — ROI 는 최적화일 뿐, 실패해도 매팅은 계속된다
+            logger.exception("vitmatte roi computation failed; falling back to full frame")
+            roi = None
+            info["fallback_reason"] = f"roi_error:{type(exc).__name__}"
+
+    trace = rss_trace.current()
+    if trace is not None:
+        attn = _vitmatte_attention_status.get(f"{model_name}::{device}") or {}
+        trace.mark(
+            "before_vitmatte",
+            original_size=f"{w}x{h}",
+            roi=list(roi) if roi is not None else None,
+            roi_size=f"{roi[2] - roi[0]}x{roi[3] - roi[1]}" if roi is not None else f"{w}x{h}",
+            roi_area_ratio=(round(((roi[2] - roi[0]) * (roi[3] - roi[1])) / float(w * h), 4) if roi is not None else 1.0),
+            roi_fallback_reason=info["fallback_reason"],
+            chunked_attention_active=attn.get("active"),
+            attention_chunk_size=attn.get("chunk_size"),
+            attention_reason=attn.get("reason"),
+        )
+
+    if roi is not None:
+        x1, y1, x2, y2 = roi
+        crop_rgb = np.ascontiguousarray(rgb[y1:y2, x1:x2])
+        crop_trimap = np.ascontiguousarray(trimap[y1:y2, x1:x2])
+        alpha_crop = _run_vitmatte(crop_rgb, crop_trimap, model_name, device)
+        del crop_rgb, crop_trimap
+        if tuple(alpha_crop.shape[:2]) != (y2 - y1, x2 - x1):
+            # 계약 위반(입력과 다른 크기의 알파). 잘못 붙이느니 전체 프레임으로.
+            logger.error(
+                "vitmatte roi: alpha shape %s != roi %sx%s — falling back to full frame",
+                tuple(alpha_crop.shape[:2]),
+                x2 - x1,
+                y2 - y1,
+            )
+            info["fallback_reason"] = "alpha_shape_mismatch"
+            roi = None
+            alpha_crop = None
+        else:
+            alpha = np.zeros((h, w), dtype=np.float32)
+            alpha[y1:y2, x1:x2] = alpha_crop
+            del alpha_crop
+            info["roi"] = [x1, y1, x2, y2]
+            info["roi_size"] = [x2 - x1, y2 - y1]
+            info["roi_area_ratio"] = round(((x2 - x1) * (y2 - y1)) / float(w * h), 4)
+
+    if roi is None:
+        info["fallback"] = True
+        alpha = _run_vitmatte(rgb, trimap, model_name, device)
+
+    logger.info(
+        "vitmatte roi: original=%dx%d roi=%s roi_size=%s area_ratio=%s pad=%d fallback=%s reason=%s",
+        w,
+        h,
+        info["roi"],
+        info["roi_size"],
+        info["roi_area_ratio"],
+        info["pad_px"],
+        info["fallback"],
+        info["fallback_reason"],
+    )
+    return alpha, info
 
 
 def _png_bytes(arr: np.ndarray, mode: str) -> bytes:
@@ -1019,6 +1302,163 @@ def _draw_box(rgb: np.ndarray, bbox: BBox, color: tuple[int, int, int]) -> np.nd
     return out
 
 
+# ══════════════════════════════════════════════════════════════════════════
+# 접지/투영 그림자 알파 억제
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _erode_binary(mask: np.ndarray, iterations: int) -> np.ndarray:
+    """3×3 최소 필터 반복 침식 — 순수 numpy (cv2 없이도 동작한다).
+
+    테두리는 edge 복제로 패딩한다: 프레임에 닿은 몸통이 테두리에서만 깎여
+    코어가 뚫리는 일을 막는다.
+    """
+    out = mask > 0
+    for _ in range(max(0, int(iterations))):
+        p = np.pad(out, 1, mode="edge")
+        out = (
+            p[:-2, :-2] & p[:-2, 1:-1] & p[:-2, 2:]
+            & p[1:-1, :-2] & p[1:-1, 1:-1] & p[1:-1, 2:]
+            & p[2:, :-2] & p[2:, 1:-1] & p[2:, 2:]
+        )
+    return out
+
+
+def _dilate_binary(mask: np.ndarray, iterations: int) -> np.ndarray:
+    """3×3 최대 필터 반복 팽창 — 배경 샘플에서 피사체 후광을 빼기 위한 것."""
+    out = mask > 0
+    for _ in range(max(0, int(iterations))):
+        p = np.pad(out, 1, mode="edge")
+        out = (
+            p[:-2, :-2] | p[:-2, 1:-1] | p[:-2, 2:]
+            | p[1:-1, :-2] | p[1:-1, 1:-1] | p[1:-1, 2:]
+            | p[2:, :-2] | p[2:, 1:-1] | p[2:, 2:]
+        )
+    return out
+
+
+def _luma(rgb: np.ndarray) -> np.ndarray:
+    return (
+        rgb[..., 0] * 0.299 + rgb[..., 1] * 0.587 + rgb[..., 2] * 0.114
+    ).astype(np.float32)
+
+
+def rowwise_background_rgb(rgb: np.ndarray, bg_mask: np.ndarray) -> np.ndarray:
+    """
+    행별 배경색 (H,3). 배경이 한 색이 아니라 벽→바닥 세로 그라디언트인 실제
+    산출물에서도 "이 행의 배경"을 맞힌다 (motion_delivery_service 와 같은 모델).
+    """
+    f = rgb.astype(np.float32)
+    h = f.shape[0]
+    flat = f.reshape(-1, 3)
+    global_bg = (
+        np.median(flat[bg_mask.reshape(-1)], axis=0)
+        if bool(bg_mask.any())
+        else np.median(flat, axis=0)
+    )
+    rows = np.empty((h, 3), dtype=np.float32)
+    for y in range(h):
+        m = bg_mask[y]
+        rows[y] = np.median(f[y][m], axis=0) if int(m.sum()) >= _SHADOW_MIN_ROW_BG_PX else global_bg
+    k = 15
+    pad = np.pad(rows, ((k // 2, k // 2), (0, 0)), mode="edge")
+    kernel = np.ones(k, dtype=np.float32) / k
+    return np.stack(
+        [np.convolve(pad[:, c], kernel, mode="valid") for c in range(3)], axis=1
+    ).astype(np.float32)
+
+
+def suppress_cast_shadow_alpha(
+    rgb: np.ndarray, alpha: np.ndarray, fg_binary: np.ndarray
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """
+    ViTMatte 알파에서 **펫이 아닌 그림자**만 0 으로 만든다.
+
+    그림자로 판정하려면 다음을 **전부** 만족해야 한다:
+      1. 세그멘테이션 코어(침식된 전경) 밖 — 몸통은 정의상 제외된다.
+      2. 알파가 완전 불투명이 아니다 (α < SHADOW_MAX_ALPHA).
+      3. 같은 행의 배경보다 어둡다 — 그림자는 배경을 밝히지 않는다.
+      4. 지나치게 어둡지는 않다 — 검은 털/코/눈은 그림자가 아니다.
+      5. 색조가 배경과 같다 — 그림자는 배경의 감광 버전이다.
+
+    안전장치: 위 판정이 전체 알파 질량의 SHADOW_MAX_REMOVED_FRACTION 을 넘게
+    지우려 하면 **아무것도 하지 않는다**. 털/발을 깎느니 그림자를 남긴다.
+
+    Returns: (알파, 진단). 알파는 항상 float32 0..1 이다.
+    """
+    a = alpha.astype(np.float32)
+    diag: dict[str, Any] = {
+        "version": "shadow-suppression-v1",
+        "applied": False,
+        "reason": None,
+        "thresholds": {
+            "core_erode_px": SHADOW_CORE_ERODE_PX,
+            "max_alpha": SHADOW_MAX_ALPHA,
+            "min_luma_ratio": SHADOW_MIN_LUMA_RATIO,
+            "max_luma_ratio": SHADOW_MAX_LUMA_RATIO,
+            "max_chroma_delta": SHADOW_MAX_CHROMA_DELTA,
+            "max_removed_fraction": SHADOW_MAX_REMOVED_FRACTION,
+        },
+    }
+    if not SHADOW_SUPPRESSION_ENABLED:
+        diag["reason"] = "disabled"
+        return a, diag
+
+    total = float(a.sum())
+    if total <= 0.0:
+        diag["reason"] = "empty_alpha"
+        return a, diag
+
+    core = _erode_binary(fg_binary, SHADOW_CORE_ERODE_PX)
+    bg_mask = ~_dilate_binary(fg_binary, max(1, SHADOW_CORE_ERODE_PX))
+    if not bool(bg_mask.any()):
+        diag["reason"] = "no_background_sample"
+        return a, diag
+
+    f = rgb.astype(np.float32)
+    bg_rows = rowwise_background_rgb(rgb, bg_mask)          # (H,3)
+    bg = np.broadcast_to(bg_rows[:, None, :], f.shape)      # (H,W,3)
+
+    px_luma = np.maximum(_luma(f), 1.0)
+    bg_luma = np.maximum(_luma(bg), 1.0)
+    ratio = px_luma / bg_luma
+
+    chroma_px = f / px_luma[..., None]
+    chroma_bg = bg / bg_luma[..., None]
+    chroma_delta = np.abs(chroma_px - chroma_bg).max(axis=2)
+
+    shadow = (
+        (~core)
+        & (a < SHADOW_MAX_ALPHA)
+        & (a > 0.0)
+        & (ratio < SHADOW_MAX_LUMA_RATIO)
+        & (ratio > SHADOW_MIN_LUMA_RATIO)
+        & (chroma_delta < SHADOW_MAX_CHROMA_DELTA)
+    )
+
+    removed = float(a[shadow].sum())
+    fraction = removed / total
+    diag["candidate_pixels"] = int(shadow.sum())
+    diag["removed_alpha_fraction"] = round(fraction, 5)
+    diag["background_rgb_mean"] = [int(c) for c in bg_rows.mean(axis=0)]
+
+    if fraction > SHADOW_MAX_REMOVED_FRACTION:
+        # 그림자라기엔 너무 많다 — 회색 털 피사체를 깎고 있을 가능성이 크다.
+        diag["reason"] = "would_erode_subject"
+        logger.info(
+            "shadow suppression skipped: removal fraction %.3f > %.3f",
+            fraction,
+            SHADOW_MAX_REMOVED_FRACTION,
+        )
+        return a, diag
+
+    out = a.copy()
+    out[shadow] = 0.0
+    diag["applied"] = True
+    diag["reason"] = "shadow_pixels_zeroed"
+    return out, diag
+
+
 def matte_foreground_with_meta(
     image_bytes: bytes,
     *,
@@ -1070,6 +1510,43 @@ def matte_foreground_with_meta(
     rgb = np.array(img)
     h, w = rgb.shape[:2]
 
+    with rss_trace.Tracer(tag="cutout") as trace:
+        return _matte_foreground_traced(
+            trace,
+            rgb=rgb,
+            img=img,
+            w=w,
+            h=h,
+            resolved_model=resolved_model,
+            resolved_yolo=resolved_yolo,
+            resolved_device=resolved_device,
+            resolved_segmenter=resolved_segmenter,
+            resolved_sam2_model=resolved_sam2_model,
+            yolo_conf=yolo_conf,
+            bbox_pad_frac=bbox_pad_frac,
+            collect_debug=collect_debug,
+            debug_artifacts=debug_artifacts,
+        )
+
+
+def _matte_foreground_traced(
+    trace: rss_trace.Tracer,
+    *,
+    rgb: np.ndarray,
+    img: Image.Image,
+    w: int,
+    h: int,
+    resolved_model: str,
+    resolved_yolo: str,
+    resolved_device: str,
+    resolved_segmenter: str,
+    resolved_sam2_model: str,
+    yolo_conf: float,
+    bbox_pad_frac: float,
+    collect_debug: bool,
+    debug_artifacts: Optional[dict[str, bytes]],
+) -> tuple[bytes, dict]:
+    """matte_foreground_with_meta 의 본체 — 디코드 이후 전 과정. 측정점만 추가됐다."""
     diag = Diagnostics(
         detector_model=resolved_yolo,
         segmenter_requested=resolved_segmenter,
@@ -1080,7 +1557,9 @@ def matte_foreground_with_meta(
         processing_height=h,
     )
 
+    trace.mark("before_yolo", input_size=f"{w}x{h}")
     detection = _detect_subject(img, resolved_yolo, conf=yolo_conf)
+    trace.mark("after_yolo", detected=detection is not None)
     if detection is None:
         logger.warning(
             "cutout: no supported animal detected (yolo=%s, conf>=%.2f, size=%dx%d)",
@@ -1139,6 +1618,8 @@ def matte_foreground_with_meta(
         person_result = PersonAwareResult(skipped_reason="segmenter_not_sam2")
     else:
         person_result = PersonAwareResult(skipped_reason="disabled")
+
+    trace.mark("after_sam2", segmenter=seg.segmenter_used)
 
     diag.segmenter_used = seg.segmenter_used
     diag.segmenter_fallback = seg.fallback
@@ -1213,7 +1694,21 @@ def matte_foreground_with_meta(
             diagnostics=diag.to_dict(),
         )
 
-    alpha = _run_vitmatte(rgb, seg.trimap, resolved_model, resolved_device)
+    # ROI 크롭 매팅 — 알파는 원본 (H, W) 그대로 돌아온다 (_run_vitmatte_roi 참고).
+    alpha, roi_info = _run_vitmatte_roi(
+        rgb, seg.trimap, resolved_model, resolved_device, crop_bbox=crop_bbox
+    )
+    diag.extra["vitmatte_roi"] = roi_info
+    diag.extra["vitmatte_attention"] = dict(
+        _vitmatte_attention_status.get(f"{resolved_model}::{resolved_device}") or {"active": False, "reason": "unknown"}
+    )
+    if trace.enabled:
+        diag.extra["rss_trace"] = trace.to_dict()
+
+    # 접지/투영 그림자는 전경이 아니다 — 알파에서 증거 기반으로만 걷어낸다.
+    alpha_before_shadow = alpha
+    alpha, shadow_diag = suppress_cast_shadow_alpha(rgb, alpha, seg.fg_binary)
+    diag.extra["shadow_suppression"] = shadow_diag
 
     alpha_u8 = (alpha * 255.0).astype(np.uint8)
     alpha_stats = analyze_mask(alpha_u8, threshold=ALPHA_PRESENCE_THRESHOLD)
@@ -1222,6 +1717,9 @@ def matte_foreground_with_meta(
     rgba = np.dstack([rgb, alpha_u8])
 
     if collect_debug:
+        debug_artifacts["05a_alpha_before_shadow_suppression.png"] = _png_bytes(
+            (alpha_before_shadow * 255.0).astype(np.uint8), "L"
+        )
         debug_artifacts["05_alpha.png"] = _png_bytes(alpha_u8, "L")
         debug_artifacts["06_checkerboard.png"] = _png_bytes(
             _checkerboard_composite(rgba), "RGB"

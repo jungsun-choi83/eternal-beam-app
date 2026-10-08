@@ -15,8 +15,6 @@ import { ThemeBackgroundVideo } from "@/components/memorial/theme-background-vid
 import { getMemorialTheme, DEFAULT_THEME_ID } from "@/components/memorial/themes";
 import { usePetGrounding } from "@/components/memorial/use-pet-grounding";
 import { useIdleEventAssets } from "@/components/memorial/use-idle-event-assets";
-import { MembershipCard } from "@/components/memorial/membership-card";
-import { BehaviorLibrary } from "@/components/memorial/behavior-library";
 import { ShakerShareCard } from "@/components/memorial/shaker-share-card";
 import {
   PremiumAssetsProvider,
@@ -67,8 +65,6 @@ interface MemorialDevicePlayScreenProps {
   language?: string;
   onBack: () => void;
   onComplete: () => void;
-  /** 크레딧 충전 화면(설정 > 크레딧)으로 이동. */
-  onOpenMembership?: () => void;
   /** 실물 기념품(편지·메모리 박스) 구매 화면으로 이동. */
   onOpenKeepsakes?: () => void;
 }
@@ -114,7 +110,6 @@ function MemorialDevicePlayScreenInner({
   language = "ko",
   onBack,
   onComplete,
-  onOpenMembership,
   onOpenKeepsakes,
 }: MemorialDevicePlayScreenProps) {
   const d = memorialT(language).devicePlay;
@@ -481,29 +476,42 @@ function MemorialDevicePlayScreenInner({
   }, [petIdleSrc, cutoutDisplay, comeCloserSrc, idleEventUrls, hasIdle]);
 
   return (
-    <div className="hologram-bg-active memorial-screen-shell h-full flex flex-col relative overflow-hidden min-h-0">
+    // Phase 10 — 재생 무대는 **어둡게** 유지한다. 셸이 더는 검정을 상속해 주지
+    // 않으므로 바탕(inverse)과 글자색(on-inverse)을 화면 루트가 명시한다.
+    // 재생·패킹 알파·기기 명령·센서 로직은 그대로다.
+    <div
+      className="hologram-bg-active memorial-screen-shell memorial-device-play-screen h-full flex flex-col relative overflow-hidden min-h-0"
+      style={{ background: "var(--eb-surface-inverse)", color: "var(--eb-text-on-inverse)" }}
+    >
       <HolographicBackground />
       <HologramEffects />
 
-      <header className="px-6 pt-8 pb-4 relative z-10 shrink-0 flex items-center justify-between">
+      <header className="px-6 pt-[var(--eb-header-top)] pb-4 relative z-10 shrink-0 flex items-center justify-between">
         <button
           type="button"
           onClick={onBack}
-          className="mem-icon-btn relative shrink-0"
+          className="mem-icon-btn eb-back-btn relative shrink-0"
+          aria-label="뒤로"
           style={{
             background: "rgba(255, 255, 255, 0.08)",
-            borderColor: "rgba(255, 255, 255, 0.14)",
+            borderColor: "rgba(255, 255, 255, 0.2)",
+            color: "var(--eb-text-on-inverse)",
           }}
         >
-          <ArrowLeft className="w-5 h-5" style={{ color: "#E2E2E2" }} />
+          <ArrowLeft className="w-5 h-5" style={{ color: "var(--eb-text-on-inverse)" }} />
         </button>
         <div className="text-center flex-1 px-3">
-          <p className="logo-subtitle text-[11px] tracking-[0.28em] opacity-80">ETERNAL BEAM</p>
-          <p className="text-sm font-light mt-1" style={{ color: "#F5F5F7" }}>
+          <p
+            className="logo-subtitle text-[11px] tracking-[0.28em] opacity-80"
+            style={{ color: "var(--eb-text-on-inverse)" }}
+          >
+            ETERNAL BEAM
+          </p>
+          <p className="text-sm font-light mt-1" style={{ color: "var(--eb-text-on-inverse)" }}>
             {d.title}
           </p>
         </div>
-        <div className="w-10" aria-hidden />
+        <div className="w-11" aria-hidden />
       </header>
 
       <div className="flex-1 px-6 pb-4 relative z-10 flex flex-col items-center min-h-0">
@@ -596,6 +604,7 @@ function MemorialDevicePlayScreenInner({
                 // packed_alpha 는 명시로 선택한다 — 휴리스틱이 놓치면 회색
                 // 매트 절반이 그대로 보인다 (Phase 7F).
                 deliveryFormat={breathingDeliveryFormat}
+                staticCutout={pipeline?.delivery_format === "canonical_still"}
                 className={playbackFrameClass(bakedAsset)}
                 style={{
                   filter: `drop-shadow(0 16px 32px ${theme.accent}66)`,
@@ -610,26 +619,9 @@ function MemorialDevicePlayScreenInner({
             줄어드는 것은 이 영역이다. 예전에는 이 아래 형제들이 프레임을 눌러
             납작하게 만들었다. */}
         <div className="w-full flex-1 min-h-0 overflow-y-auto hide-scrollbar flex flex-col items-center">
-          {/* 멤버십 카드 — 재생 프레임 바로 아래, 상태 표시 위.
-              여기에 두는 이유: 멤버십이 바꾸는 것(자발적 움직임·더블탭)이 바로 위
-              프레임에서 일어나므로, 결과가 보이는 자리에서 사는 것이 가장 짧은 경로다.
-              새 화면을 만들지 않는다. */}
-          {/* 멤버십 카드·행동 라이브러리·런타임 적격성이 **같은 자산 응답**을
-              나눠 쓴다. Provider 는 화면 최상단에 한 번만 있다. */}
+          {/* 레거시 데모 화면은 런타임 재생과 공유 카드만 유지한다.
+              멤버십 관리와 새 모션 생성은 Settings / My Library 에 있다. */}
           <div className="mt-4 flex flex-col items-center gap-3 w-full shrink-0">
-              <MembershipCard
-                enabled={hasIdle}
-                language={language}
-                onOpenMembership={onOpenMembership}
-              />
-              {/* 행동 라이브러리 — 활성 멤버에게만 그려진다(컴포넌트가 스스로 판단).
-                  멤버십 카드 바로 아래에 두는 이유: 가입 → 무엇을 만들지 고르기가
-                  한 화면에서 이어져야 한다. */}
-              <BehaviorLibrary
-                petId={pipeline ? getEternalBeamPetId(pipeline.content_id) : null}
-                enabled={hasIdle}
-                language={language}
-            />
               {/* QR 공유 — 행동 라이브러리 아래. "이 아이를 만든다 → 남에게 보여 준다"가
                   같은 화면에서 이어진다. 새 화면을 만들지 않는다.
                   펫을 복제하지 않는다: 이미 있는 content_id 에서 파생된 pet_id 와
@@ -641,19 +633,18 @@ function MemorialDevicePlayScreenInner({
                 <button
                   type="button"
                   onClick={onOpenKeepsakes}
-                  className="w-full max-w-[320px] rounded-2xl border px-4 py-3.5 text-left backdrop-blur-sm"
-                  style={{
-                    background: "rgba(255,255,255,0.04)",
-                    borderColor: "rgba(255,255,255,0.12)",
-                  }}
+                  className="glass-dark w-full max-w-[320px] min-h-[var(--eb-touch)] rounded-2xl border px-4 py-3.5 text-left"
                 >
-                  <p className="text-sm font-medium" style={{ color: "#F2F2F2" }}>
+                  <p className="text-sm font-medium" style={{ color: "var(--eb-text-on-inverse)" }}>
                     기념품 만들기
                   </p>
-                  <p className="mt-1 text-[12px] leading-relaxed" style={{ color: "#B8B8B8" }}>
+                  <p
+                    className="eb-price mt-1 text-[12px] leading-relaxed"
+                    style={{ color: "rgba(247, 242, 233, 0.78)" }}
+                  >
                     편지 ₩14,900 · 메모리 박스 ₩49,000
                   </p>
-                  <p className="mt-1 text-[11px]" style={{ color: "#8a8a8a" }}>
+                  <p className="mt-1 text-[11px]" style={{ color: "rgba(247, 242, 233, 0.55)" }}>
                     Soul Trace 편지와 QR 을 실물로 보내 드립니다.
                   </p>
                 </button>
@@ -682,40 +673,40 @@ function MemorialDevicePlayScreenInner({
             aria-label={d.liveTitle(theme.nameKo || theme.name)}
           >
           {status === "live" ? (
-            <Radio className="w-7 h-7 text-emerald-300/90" strokeWidth={1.25} />
+            <Radio className="w-7 h-7" style={{ color: "var(--eb-sage)" }} strokeWidth={1.25} />
           ) : status === "offline" ? (
-            <WifiOff className="w-7 h-7 text-amber-200/80" strokeWidth={1.25} />
+            <WifiOff className="w-7 h-7" style={{ color: "var(--eb-warn)" }} strokeWidth={1.25} />
           ) : (
             <motion.div
-              className="w-7 h-7 rounded-full border-2 border-[#c9a227]/40 border-t-[#c9a227]"
+              className="w-7 h-7 rounded-full border-2"
+              style={{
+                borderColor: "rgba(255, 255, 255, 0.2)",
+                borderTopColor: "var(--eb-gold)",
+              }}
               animate={{ rotate: 360 }}
               transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
             />
           )}
-          <p className="text-base font-medium" style={{ color: "#F1E5D1" }}>
+          <p className="text-base font-medium" style={{ color: "var(--eb-text-on-inverse)" }}>
             {status === "starting"
               ? d.starting
               : status === "live"
                 ? d.liveTitle(theme.nameKo || theme.name)
                 : d.offlineTitle}
           </p>
-          <p className="text-sm memorial-body">{statusHint ?? d.startingHint}</p>
+          <p className="text-sm memorial-body" style={{ color: "rgba(247, 242, 233, 0.7)" }}>
+            {statusHint ?? d.startingHint}
+          </p>
           </button>
         </motion.div>
         </div>
       </div>
 
-      <div className="px-8 pb-10 shrink-0 relative z-10">
+      <div className="px-6 pt-3 pb-[var(--eb-footer-bottom)] shrink-0 relative z-10">
         <motion.button
           type="button"
           onClick={onComplete}
-          className="w-full py-4 rounded-2xl font-normal text-[15px] tracking-wider"
-          style={{
-            background: "linear-gradient(135deg, #b8860b 0%, #c9a227 30%, #d4af37 50%, #f5d77a 70%, #d4af37 100%)",
-            boxShadow: "0 10px 40px rgba(201, 162, 39, 0.25)",
-            color: "#0a0a0a",
-          }}
-          whileHover={{ scale: 1.02 }}
+          className="eb-btn eb-btn--primary eb-btn--block mem-btn-primary w-full rounded-2xl text-[15px] tracking-wider"
           whileTap={{ scale: 0.98 }}
         >
           {d.done}

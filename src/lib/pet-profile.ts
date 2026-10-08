@@ -1,5 +1,7 @@
 /** 반려 이름 — 기기 이름 호출 반응용 */
 
+import { isDeviceKickstarterDemo } from "@/lib/device-demo-config";
+
 const PET_NAME_KEY = "eternal_beam_pet_name";
 
 export function getPetName(): string {
@@ -49,8 +51,9 @@ export function getWakeNames(): string[] {
   return buildWakeNames(getPetName());
 }
 
-/** Pi 마이크 voice UDP에 반려 이름 전달 */
+/** Pi 마이크 voice UDP에 반려 이름 전달 — 명시적 기기 데모(?demo=device) 전용 */
 export async function syncPetProfileToDevice(): Promise<boolean> {
+  if (!isDeviceKickstarterDemo()) return false;
   const names = getWakeNames();
   if (!names.length) return false;
   const { syncPetWakeNamesToPi } = await import("@/lib/pi-sensor-bridge");

@@ -2,12 +2,13 @@
 
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, RotateCcw, Film } from "lucide-react";
+import { RotateCcw, PawPrint, ChevronDown, Palette, Play } from "lucide-react";
+import { BackButton } from "@/components/ui/screen-header";
+import { MemorialIconButton } from "@/components/memorial/memorial-chrome";
 import {
   ETERNAL_BEAM_PIPELINE_KEY,
   type StoredPipeline,
 } from "@/components/memorial/ai-processing-screen";
-import { generatePreview, getVideoApiBaseUrl, resolveIdleVideoUrl } from "@/app/services/videoProcessingApi";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import {
   getMemorialTheme,
@@ -15,7 +16,7 @@ import {
 } from "@/components/memorial/themes";
 import { ThemeBackgroundVideo } from "@/components/memorial/theme-background-video";
 import { PetIdleDisplay } from "@/components/memorial/pet-idle-display";
-import { IdleLoopVideo } from "@/components/memorial/idle-loop-video";
+import { PetPhoto } from "@/components/memorial/pet-photo";
 import { usePetGrounding } from "@/components/memorial/use-pet-grounding";
 import { subjectTransform } from "@/lib/pet-grounding";
 import {
@@ -53,9 +54,27 @@ import { ensurePetRegistered } from "@/lib/pet-registry-api";
 import {
   phase7GenerationEnabled,
   phase7PipelinePatch,
+  retryPhase7Generation,
   runPhase7Generation,
+  resumePhase7Generation,
+  type Phase7Outcome,
 } from "@/lib/phase7-generation-flow";
+import { clearActiveGeneration, readActiveGeneration } from "@/lib/generation-resume";
+import {
+  submitBusinessQAFeedback,
+  type GenerationRun,
+} from "@/lib/generation-run-api";
+import { deriveGenerationProgress, isRecoverableErrorCode } from "@/lib/generation-progress";
+import { GenerationProgressScreen } from "@/components/memorial/generation-progress-screen";
+import { MotionQAFeedback, type MotionQAComplaint } from "@/components/memorial/motion-qa-feedback";
+import { useProcessingClock } from "@/lib/use-processing-clock";
 import { getEternalBeamPetId } from "@/lib/pet-identity";
+import {
+  resolvePairedDeviceId,
+  classifyDeviceCommandFailure,
+  type DeviceCommandFailureCategory,
+} from "@/lib/device-command-api";
+import { getDeviceConnectionState } from "@/lib/device-connection-api";
 import { onAuthStateChange } from "@/lib/supabase-auth";
 import { mergeComeCloserIntoPipeline } from "@/lib/come-closer-asset";
 
@@ -69,11 +88,7 @@ import { mergeComeCloserIntoPipeline } from "@/lib/come-closer-asset";
 type ComeCloserDiscoveryState = "idle" | "generating" | "ready";
 import { recognizeTap, type TapPoint } from "@/lib/double-tap";
 import { getEffectiveBgVideo } from "@/lib/custom-background-store";
-import {
-  getThemeBackgroundApiId,
-  resolveSelectedThemeId,
-} from "@/lib/theme-selection-store";
-import { isLikelyVideoUrl } from "@/lib/video-url";
+import { resolveSelectedThemeId } from "@/lib/theme-selection-store";
 import {
   getPendingCutoutMeta,
   hasRealIdleVideo,
@@ -81,9 +96,19 @@ import {
 } from "@/lib/pending-generation";
 import { requestIdleGeneration } from "@/lib/idle-generation-request";
 import { schedulePetReadyToDevice } from "@/lib/device-pet-sync";
+import { applyLibraryOverride, type LibraryPublication } from "@/lib/library-publication";
+import { hydrateStoredPipeline } from "@/lib/breathing-hydration";
 
 interface PreviewScreenProps {
   cutoutImage: string | null;
+  /**
+   * My Library 경로인가 — 부모(MyLibraryScreen)가 동기적으로 내려주는 값.
+   * sessionStorage 를 읽는 effect 가 돌 때까지 기다리지 않고 **첫 렌더부터**
+   * 이 값으로 라이브러리 모드를 확정한다.
+   */
+  isLibraryFlow?: boolean;
+  /** isLibraryFlow 일 때만 의미 있다 — 발행된 모션의 정본 메타데이터. */
+  libraryPublication?: LibraryPublication | null;
   /**
    * 원본 갈래에 쓸 **해결된 한 장.** 테마 선택 화면과 같은 값을 부모가 내려 준다.
    * 없으면 저장된 값으로 떨어진다(구버전 호출부 호환).
@@ -93,15 +118,30 @@ interface PreviewScreenProps {
   language?: string;
   settings: { scale: number; posX: number; posY: number };
   onSettingsChange: (settings: { scale: number; posX: number; posY: number }) => void;
-  /** free = 기기 즉시 송출, premium = 배송지 입력으로 */
+  /**
+   * device = 발행 뒤 **이 화면에 머무르며** Play on Web / Play on Beam 을 연다.
+   * shipping(프리미엄 실물) = 발행 뒤 onComplete → 배송지 입력으로.
+   */
   deliveryMode?: "device" | "shipping";
   onComplete: () => void;
   onBack: () => void;
+  /**
+   * "Beam으로 보내기". 실제 명령 구성(theme_id/pet_id/motion_id 해석)은
+   * 부모(MyLibraryScreen 또는 EternalBeamApp)가 갖고 있고, 이 화면은 전송
+   * 상태(Sending/Sent/Error)만 소유한다. 두 명령이 모두 성공(sent 또는
+   * pending/accepted)했을 때만 ok:true 를 돌려줘야 한다 — 그래야 "Sent to
+   * Beam" 을 실제 결과에 따라서만 보여줄 수 있다. 발행이 이것을 자동으로
+   * 부르는 일은 없다 — 사용자의 명시적 누름만이 기기로 나간다.
+   */
+  onPlayOnBeam?: () => Promise<{ ok: boolean; reason?: string; status?: number; commandId?: string }>;
+  /** 발행 뒤 멤버십(설정 > 멤버십)으로. 넘기지 않으면 버튼이 그려지지 않는다. */
+  onOpenMembership?: () => void;
+  /**
+   * "모션 변경" — 제공될 때만(둘 이상의 발행 모션이 있을 때만) 버튼을 보여준다.
+   * 지금은 기기 계약이 BREATHING 만 지원해 사실상 항상 undefined 다.
+   */
+  onChangeMotion?: () => void;
 }
-
-/** 개발·QA 전용. 프로덕션에서는 조정 화면에 Luma/FFmpeg 패널 숨김 */
-const SHOW_PIPELINE_DEBUG =
-  import.meta.env.DEV || import.meta.env.VITE_SHOW_PIPELINE_DEBUG === "1";
 
 function assertPreviewTheme(selectedTheme: number | null, resolvedId: number) {
   if (import.meta.env.DEV && selectedTheme != null && selectedTheme !== resolvedId) {
@@ -135,13 +175,29 @@ function readPipelinePetId(): string | null {
   }
 }
 
+/** 저장된 파이프라인 전체를 읽는다. 실패하면 null — 레거시 그대로다. */
+function readStoredPipeline(): StoredPipeline | null {
+  try {
+    const raw = sessionStorage.getItem(ETERNAL_BEAM_PIPELINE_KEY);
+    return raw ? (JSON.parse(raw) as StoredPipeline) : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 조정 화면도 **같은 런타임**을 돌린다(같은 훅·스케줄러·플레이어). 그래서 적격성
  * 규칙도 같아야 한다 — 여기만 빠지면 만료된 사용자가 조정 화면에서는 프리미엄
  * 행동을 계속 보게 된다.
  */
 export function PreviewScreen(props: PreviewScreenProps) {
-  const [petId] = useState(() => readPipelinePetId());
+  // 라이브러리 경로에서는 발행 메타데이터의 pet_id 가 정본이다 — sessionStorage
+  // 파생값(getEternalBeamPetId)은 이전 업로드 세션의 결속을 그대로 쓸 수 있다.
+  const [petId] = useState(() =>
+    props.isLibraryFlow && props.libraryPublication
+      ? props.libraryPublication.petId
+      : readPipelinePetId()
+  );
   return (
     <PremiumAssetsProvider petId={petId} enabled={petId != null}>
       <PreviewScreenInner {...props} />
@@ -151,6 +207,8 @@ export function PreviewScreen(props: PreviewScreenProps) {
 
 function PreviewScreenInner({
   cutoutImage,
+  isLibraryFlow = false,
+  libraryPublication = null,
   originalPhoto: originalPhotoProp = null,
   selectedTheme,
   language = "ko",
@@ -159,16 +217,46 @@ function PreviewScreenInner({
   deliveryMode = "device",
   onComplete,
   onBack,
+  onPlayOnBeam,
+  onOpenMembership,
+  onChangeMotion,
 }: PreviewScreenProps) {
   const p = memorialT(language).preview;
   const [displaySettings, setDisplaySettings] = useState(settings);
   const [hasGestured, setHasGestured] = useState(false);
-  const [pipeline, setPipeline] = useState<StoredPipeline | null>(null);
-  const [ffPreviewUrl, setFfPreviewUrl] = useState<string | null>(null);
-  const [ffLoading, setFfLoading] = useState(false);
-  const [ffError, setFfError] = useState<string | null>(null);
-  const [generating, setGenerating] = useState(false);
+  // 지연 초기화 — 첫 렌더부터 정확한 값을 그린다. effect 로 마운트 뒤에 채우면
+  // 그 사이(첫 페인트) 라이브러리 자산이 없는 것처럼 그려졌다가 바뀐다.
+  const [pipeline, setPipeline] = useState<StoredPipeline | null>(() =>
+    applyLibraryOverride(readStoredPipeline(), isLibraryFlow, libraryPublication)
+  );
+  // 지연 초기화 — 재개 대상(진행 중인 실행)이 있으면 첫 페인트부터 진행 화면을
+  // 보여준다. 여기서 false 로 시작하면 재개 effect 가 돌기 전 한 프레임 동안
+  // 조정 화면이 잠깐 비쳤다 사라진다.
+  const [generating, setGenerating] = useState(() => {
+    if (isLibraryFlow || !phase7GenerationEnabled()) return false;
+    try {
+      const meta = getPendingCutoutMeta();
+      if (!meta || hasRealIdleVideo(readStoredPipeline())) return false;
+      return Boolean(readActiveGeneration(meta.contentId));
+    } catch {
+      return false;
+    }
+  });
   const [genError, setGenError] = useState<string | null>(null);
+  const [genErrorRecoverable, setGenErrorRecoverable] = useState(false);
+  const [runState, setRunState] = useState<GenerationRun | null>(null);
+  const [userTestFeedback, setUserTestFeedback] = useState<
+    "idle" | "submitting" | "sent" | "error"
+  >("idle");
+  useEffect(() => {
+    setUserTestFeedback("idle");
+  }, [runState?.run_id]);
+  /** 확인/재개가 실제로 generation-run 제출을 시도했는가 — 순수 클라이언트
+   *  검증 오류(사진 없음 등)는 여기 걸리지 않는다. 새 폴 진행 화면의 전면
+   *  오류 카드는 **제출이 실제로 일어난 뒤**에만 뜬다. */
+  const runAttemptedRef = useRef(false);
+  const { seconds: elapsedSec } = useProcessingClock(generating);
+
   const previewThemeId = resolveSelectedThemeId(selectedTheme);
   const currentTheme =
     (previewThemeId != null ? getMemorialTheme(previewThemeId) : undefined) ??
@@ -232,6 +320,9 @@ function PreviewScreenInner({
     pipeline?.cutout_display_url ||
     pipeline?.dog_only_nobg_url ||
     null;
+  /** My Library 경로 — 정적 누끼 없이 발행된 영상만으로 들어온다.
+   *  cutout-필요 가드는 이 경로에서만 건너뛴다. */
+  const isLibrarySource = pipeline?.generation_source === "library";
   // 접지 그림자는 피사체가 커질수록 살짝 진해지되 과하지 않게 상한을 둔다.
   const contactShadowOpacity = Math.min(0.5, 0.28 * displaySettings.scale);
 
@@ -261,18 +352,27 @@ function PreviewScreenInner({
     hasIdle && resolveDeliveryFormat(pipeline) === "packed_alpha"
       ? "packed_alpha"
       : null;
-  const idleVideoUrl = hasIdle
-    ? resolveIdleVideoUrl(pipeline?.idle_video_url, cutoutDisplay)
-    : "";
-
   useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem(ETERNAL_BEAM_PIPELINE_KEY);
-      if (raw) setPipeline(JSON.parse(raw) as StoredPipeline);
-    } catch {
-      setPipeline(null);
-    }
-  }, [cutoutImage]);
+    setPipeline(applyLibraryOverride(readStoredPipeline(), isLibraryFlow, libraryPublication));
+  }, [cutoutImage, isLibraryFlow, libraryPublication]);
+
+  // ── 발행 BREATHING 하이드레이션 (Phase 7F) ──────────────────────────────
+  // 이 화면이 발행 뒤의 재생 화면이다(결제 복귀·새로고침으로 다시 들어온다).
+  // 서버 발행 포인터(pets.breathing_*)가 있으면 새 서명 URL + 명시 포맷으로
+  // 갱신한다 — 저장된 서명이 만료됐어도 재생이 살아난다. 실패/미발행이면
+  // null 이고 저장값 그대로다. 조회(GET)만 한다 — 생성도, 기기 송출도 없다.
+  useEffect(() => {
+    if (isLibraryFlow || !hasIdle) return;
+    let cancelled = false;
+    void hydrateStoredPipeline().then((hydrated) => {
+      if (!cancelled && hydrated) setPipeline(hydrated as StoredPipeline);
+    });
+    return () => {
+      cancelled = true;
+    };
+    // 마운트 시 1회 — 발행 직후(finalizeOutcome)는 이미 새 URL 을 들고 있다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // BREATHING 생성과 레지스트리 등록은 별개다. READY 결과가 있으면 새 생성이든
   // 복원된 파이프라인이든 등록을 보장한다. 인증이 아직 복원되지 않았으면 안전하게
@@ -455,6 +555,125 @@ function PreviewScreenInner({
   // 전용이므로 생성 요청에 테마 정보를 싣지 않는다.
   const generatingRef = useRef(false);
 
+  // Phase 7 실행 결과(발행/REVIEW)를 파이프라인·기기 송출·다음 화면 전환에
+  // 반영한다 — 방금 끝난 확인(handleConfirm)과 새로고침 재개(아래 effect)
+  // 가 **같은 코드**로 마무리되게 한다. 갈라지면 재개 경로만 기기 송출을
+  // 빠뜨리는 식의 결함이 생긴다.
+  const finalizeOutcome = useCallback(
+    async (outcome: Phase7Outcome, resolvedPetId: string, contentId: string, displayUrl: string) => {
+      const next: StoredPipeline = {
+        content_id: contentId,
+        cutout_display_url: pipeline?.cutout_display_url || displayUrl,
+        dog_only_nobg_url: pipeline?.dog_only_nobg_url || displayUrl,
+        action_video_url: pipeline?.action_video_url || "",
+        come_closer_video_url: pipeline?.come_closer_video_url ?? null,
+        phase1_intake: pipeline?.phase1_intake,
+        scene_id: pipeline?.scene_id ?? null,
+        ...phase7PipelinePatch(outcome),
+      };
+      try {
+        sessionStorage.setItem(ETERNAL_BEAM_PIPELINE_KEY, JSON.stringify(next));
+        localStorage.setItem("eternal_beam_content_id", next.content_id);
+        localStorage.setItem("eternal_beam_current_content_id", next.content_id);
+        // hologram_video_id 는 기기(S23) 송출용 레거시 키다 — packed vstack 을
+        // 그대로 보내면 기기에서 이중 화면이 되므로 새 경로는 채우지 않는다.
+      } catch {
+        /* ignore quota */
+      }
+      setPipeline(next);
+      // outcome.run 이 정본 종료 상태(PUBLISHED)다 — 마지막 폴링 tick 의
+      // onProgress 경합에 기대지 않고 진행 화면에도 곧장 반영한다.
+      setRunState(outcome.run);
+      const devicePetId = getEternalBeamPetId(next.content_id) ?? resolvedPetId;
+      // P0 — publication finishing must never itself push to the Beam. Only
+      // an explicit "Play on Beam" press (My Library's onPlayOnBeam) may send
+      // theme_play/pet_asset; this path used to fire pet_asset unconditionally
+      // and fire-and-forget the instant the run published, with no consent,
+      // no failure surfaced, and no device_id resolution.
+      if (
+        devicePetId &&
+        outcome.run.status === "PUBLISHED" &&
+        // Fallback delivery has no published pointer to hydrate from — keep
+        // the marker so a refresh re-resolves the fallback playback URL.
+        outcome.run.terminal_state !== "DELIVERED_FALLBACK"
+      ) {
+        // Phase 9 — 발행(PUBLISHED)은 종착점이다. 재개 마커를 여기서 지우지
+        // 않으면 다시 열 이유가 없는 완료된 실행이 localStorage 에 영원히
+        // 남는다(REVIEW/FAILED/RECOVERY_REQUIRED 는 여전히 재개 대상이라
+        // 남긴다 — 새로고침이 그 복구 화면을 다시 보여줘야 한다).
+        clearActiveGeneration(next.content_id);
+      }
+      // 완료 체크 표시를 잠깐 보여준다 — ai-processing-screen 의 완료 지연
+      // (300~500ms)과 같은 패턴.
+      await new Promise((r) => setTimeout(r, 450));
+      // 기기 전달(device)은 **여기 머무른다** — 진행 화면이 내려가면 같은
+      // Composer 가 발행 결과를 재생하고 Play on Web / Play on Beam 을 연다.
+      // 예전에는 여기서 onComplete → 직접 Pi 송출 화면(devicePlay)으로 넘어가
+      // 마운트만으로 LAN 탐색과 직접 Pi POST 가 나갔다. 실물(shipping)만 다음
+      // 화면(배송지)이 있다.
+      if (deliveryMode === "shipping") onComplete();
+    },
+    [pipeline, onComplete, deliveryMode]
+  );
+
+  // ── 새로고침 안전 재개 (Phase 7) ────────────────────────────────────────
+  // 마운트 시 한 번, 확인이 실제로 눌린 적 있는 content_id 인지(durable
+  // 마커) 확인한다. 없으면(아직 확인을 안 누른 사용자) 아무 일도 하지
+  // 않는다 — 새 사용자/활성 실행 없음 동작은 그대로다. 있으면 새 실행을
+  // 만들지 않고 기존 실행 상태를 다시 조회해 이어서 폴링하거나, 이미 끝난
+  // 상태(PUBLISHED/REVIEW/FAILED/RECOVERY_REQUIRED)를 그대로 복원한다.
+  useEffect(() => {
+    if (!phase7GenerationEnabled() || isLibraryFlow) return;
+    if (generatingRef.current || hasIdle) return;
+    const meta = getPendingCutoutMeta();
+    if (!meta) return;
+    const record = readActiveGeneration(meta.contentId);
+    if (!record) return; // 확인이 눌린 적 없다 — 재개할 것이 없다.
+    const resolvedPetId = pipeline?.phase1_intake?.pet_id ?? getEternalBeamPetId(meta.contentId);
+    if (!resolvedPetId) return;
+
+    let cancelled = false;
+    generatingRef.current = true;
+    runAttemptedRef.current = true;
+    setGenError(null);
+    setGenErrorRecoverable(false);
+    setGenerating(true);
+    (async () => {
+      try {
+        const outcome = await resumePhase7Generation({
+          petId: resolvedPetId,
+          contentId: meta.contentId,
+          runId: record.runId,
+          poll: {
+            onProgress: (run) => {
+              if (!cancelled) setRunState(run);
+            },
+          },
+        });
+        if (cancelled) return;
+        await finalizeOutcome(outcome, resolvedPetId, meta.contentId, meta.displayUrl);
+      } catch (e) {
+        if (cancelled) return;
+        const message = e instanceof Error && e.message ? e.message : String(e);
+        console.warn("[preview] Phase 7 generation resume failed", e);
+        setGenError(message);
+        setGenErrorRecoverable(isRecoverableErrorCode((e as { code?: string } | undefined)?.code));
+      } finally {
+        if (!cancelled) {
+          generatingRef.current = false;
+          setGenerating(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // 마운트 시 1회만 — content_id/pipeline 은 이 재개 판단의 입력일 뿐,
+    // 매 렌더 재실행 대상이 아니다(재개 중 pipeline 이 갱신되며 자기 자신을
+    // 다시 트리거하는 루프를 막는다).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const handleConfirm = useCallback(async () => {
     if (hasIdle) {
       onComplete();
@@ -471,6 +690,7 @@ function PreviewScreenInner({
     if (generatingRef.current) return; // 더블탭으로 두 번 생성되는 것 방지
     generatingRef.current = true;
     setGenError(null);
+    setGenErrorRecoverable(false);
     setGenerating(true);
 
     // ═══ Phase 7G — 새 생성 시스템 (기본 경로) ═══════════════════════════
@@ -486,38 +706,19 @@ function PreviewScreenInner({
           pipeline?.phase1_intake?.pet_id ?? getEternalBeamPetId(meta.contentId);
         if (!petId) throw new Error(p.generateMissingCutout);
 
+        runAttemptedRef.current = true;
         const outcome = await runPhase7Generation({
           petId,
           contentId: meta.contentId,
+          poll: { onProgress: (run) => setRunState(run) },
         });
-        const next: StoredPipeline = {
-          content_id: meta.contentId,
-          cutout_display_url: pipeline?.cutout_display_url || meta.displayUrl,
-          dog_only_nobg_url: pipeline?.dog_only_nobg_url || meta.displayUrl,
-          action_video_url: pipeline?.action_video_url || "",
-          come_closer_video_url: pipeline?.come_closer_video_url ?? null,
-          phase1_intake: pipeline?.phase1_intake,
-          scene_id: pipeline?.scene_id ?? null,
-          ...phase7PipelinePatch(outcome),
-        };
-        try {
-          sessionStorage.setItem(ETERNAL_BEAM_PIPELINE_KEY, JSON.stringify(next));
-          localStorage.setItem("eternal_beam_content_id", next.content_id);
-          localStorage.setItem("eternal_beam_current_content_id", next.content_id);
-          // hologram_video_id 는 기기(S23) 송출용 레거시 키다 — packed vstack 을
-          // 그대로 보내면 기기에서 이중 화면이 되므로 새 경로는 채우지 않는다.
-        } catch {
-          /* ignore quota */
-        }
-        setPipeline(next);
-        // 기기 pet-ready push 도 같은 이유로 하지 않는다 — 기기의 packed 지원은
-        // Phase 7I(런타임/디바이스 확장)의 명시 작업이다.
-        onComplete();
+        await finalizeOutcome(outcome, petId, meta.contentId, meta.displayUrl);
       } catch (e) {
         const message =
           e instanceof Error && e.message ? e.message : String(e);
         console.warn("[preview] Phase 7 generation failed — 레거시 폴백 없음", e);
         setGenError(message);
+        setGenErrorRecoverable(isRecoverableErrorCode((e as { code?: string } | undefined)?.code));
       } finally {
         generatingRef.current = false;
         setGenerating(false);
@@ -675,6 +876,7 @@ function PreviewScreenInner({
   }, [
     hasIdle,
     onComplete,
+    finalizeOutcome,
     p.generateMissingCutout,
     pipeline?.cutout_display_url,
     originalMissing,
@@ -688,6 +890,80 @@ function PreviewScreenInner({
     applySubjectTransform(reset);
     onSettingsChange(reset);
   }, [applySubjectTransform, onSettingsChange]);
+
+  // ── "Play on Web" — local restart only, never a device command ──────────
+  // The playback component tree exposes no imperative restart API. Remounting
+  // via a bumped key is the only real way to replay from frame 0 — same
+  // technique already used for ThemeBackgroundVideo's `key` below.
+  const [replayKey, setReplayKey] = useState(0);
+  const handlePlayOnWeb = useCallback(() => {
+    setReplayKey((k) => k + 1);
+  }, []);
+
+  // ── Library 갈래 — "Beam으로 보내기" ─────────────────────────────────────
+  // 상태는 여기서만 소유한다. 예전에는 MyLibraryScreen 이 두 sendDeviceCommand
+  // 호출 결과를 확인하지 않고 무조건 "Sent to Beam" 을 띄웠다 — 하나 또는 둘
+  // 다 실패해도 성공 배지가 떴다. onPlayOnBeam 이 돌려주는 ok 를 반드시 확인한다.
+  const [beamStatus, setBeamStatus] = useState<"idle" | "sending" | "sent" | "acked" | "error">("idle");
+  const [beamErrorCategory, setBeamErrorCategory] = useState<DeviceCommandFailureCategory | null>(null);
+  const ackPollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (ackPollRef.current) clearTimeout(ackPollRef.current);
+    };
+  }, []);
+
+  // "Sent" 는 백엔드가 명령을 받았다는 뜻일 뿐이다 — 실제로 Beam이 받았는지는
+  // last_ack 을 짧게(최대 3회, 2.5s 간격) 확인해야 안다. 못 확인해도 실패로
+  // 바꾸지 않는다 — 명령은 이미 성공적으로 큐에 들어갔다.
+  const pollForAck = useCallback((commandId: string, attemptsLeft: number) => {
+    if (attemptsLeft <= 0) return;
+    const deviceId = resolvePairedDeviceId();
+    if (!deviceId) return;
+    ackPollRef.current = setTimeout(() => {
+      void getDeviceConnectionState(deviceId).then((result) => {
+        if (result.ok && result.state.last_ack === commandId) {
+          setBeamStatus("acked");
+          return;
+        }
+        pollForAck(commandId, attemptsLeft - 1);
+      });
+    }, 2500);
+  }, []);
+
+  const handlePlayOnBeam = useCallback(async () => {
+    if (!onPlayOnBeam || beamStatus === "sending") return;
+    setBeamStatus("sending");
+    setBeamErrorCategory(null);
+    if (ackPollRef.current) clearTimeout(ackPollRef.current);
+    try {
+      const result = await onPlayOnBeam();
+      if (result.ok) {
+        setBeamStatus("sent");
+        if (result.commandId) pollForAck(result.commandId, 3);
+      } else {
+        setBeamStatus("error");
+        setBeamErrorCategory(classifyDeviceCommandFailure({ reason: result.reason ?? "", status: result.status }));
+      }
+    } catch {
+      setBeamStatus("error");
+      setBeamErrorCategory("network");
+    }
+  }, [onPlayOnBeam, beamStatus, pollForAck]);
+  const beamErrorMessage =
+    beamErrorCategory === "auth"
+      ? p.beamErrorAuth
+      : beamErrorCategory === "device_unavailable"
+        ? p.beamErrorUnavailable
+        : beamErrorCategory === "rejected"
+          ? p.beamErrorRejected
+          : beamErrorCategory === "network"
+            ? p.beamErrorNetwork
+            : p.beamError;
+  // 별도 리셋 effect 는 필요 없다 — 이 화면은 step === "preview" 일 때만
+  // 존재한다(부모의 조건부 렌더). 테마를 바꾸러 나갔다 다시 들어오면
+  // 컴포넌트가 통째로 새로 마운트되어 beamStatus 는 이미 "idle" 이다.
 
   const clampScale = (value: number) =>
     Math.round(Math.min(2, Math.max(0.5, value)) * 100) / 100;
@@ -863,98 +1139,149 @@ function PreviewScreenInner({
     [commitSettings]
   );
 
-  const tryFfmpegPreview = useCallback(async () => {
-    if (!cutoutImage || previewThemeId == null) {
-      setFfError(p.cutoutMissing);
+  const themeLabel = language === "en" ? currentTheme.name : currentTheme.nameKo;
+  // 발행된 재생 레일 — Library 갈래는 언제나, Create 갈래는 기기 전달(device)로
+  // 발행이 끝난 뒤. 실물(shipping)은 배송지로 이어지는 확인 CTA 를 그대로 둔다.
+  const showPublishedRail = isLibraryFlow || (hasIdle && deliveryMode === "device");
+  const userTestEnrolled = Boolean(
+    (
+      runState?.provider_state?._business_qa_cutover as
+        | { enrolled?: boolean }
+        | undefined
+    )?.enrolled
+  );
+  const handleUserTestFeedback = useCallback(
+    async (accepted: boolean, complaint?: MotionQAComplaint) => {
+      if (!runState?.run_id || userTestFeedback === "submitting") return;
+      setUserTestFeedback("submitting");
+      try {
+        await submitBusinessQAFeedback(runState.run_id, {
+          accepted,
+          complaints: complaint ? [complaint] : [],
+        });
+        setUserTestFeedback("sent");
+      } catch {
+        setUserTestFeedback("error");
+      }
+    },
+    [runState?.run_id, userTestFeedback]
+  );
+  // Only BREATHING exists once a Create-flow pet is READY — the device contract
+  // supports nothing else yet, so this is real data, not a placeholder.
+  const motionLabel = isLibraryFlow ? libraryPublication?.motionId ?? null : hasIdle ? "BREATHING" : null;
+  // No pet name or breed field exists anywhere in the frontend-reachable data
+  // (StoredPipeline/LibraryPublication/my-library-api) — only a real thumbnail
+  // does (cutoutDisplay is already "" in Library flow, since it carries no
+  // static cutout). Do not fabricate a name/breed; show the avatar alone.
+  const petAvatarUrl = cutoutDisplay || null;
+
+  // ── Phase 4 — 진행 화면 ────────────────────────────────────────────────
+  // Phase 7 제출/재개가 도는 동안, 그리고 그것이 **실제로 제출을 시도한 뒤**
+  // ── Retry (Phase 7) ──────────────────────────────────────────────────────
+  // 실패 화면의 "다시 시도" 는 확인(handleConfirm)을 다시 누르는 것이 **아니다**.
+  // 확인은 같은 idempotency_key 로 같은 실행에 합류하므로, FAILED / CANCELLED
+  // 실행은 폴링 없이 곧바로 같은 오류로 끝났고 서버에서는 아무것도 바뀌지
+  // 않았다. 이제는 알고 있는 run_id 로 명시적 retry API 를 불러 그 실행을
+  // QUEUED 로 되돌린다. run_id 를 모르면(실행이 만들어지기 전의 네트워크
+  // 오류 등) 확인 경로로 떨어져 새로 시작한다.
+  const handleRetry = useCallback(async () => {
+    if (hasIdle || generatingRef.current) return;
+    const meta = getPendingCutoutMeta();
+    const record = meta ? readActiveGeneration(meta.contentId) : null;
+    const runId = runState?.run_id ?? record?.runId ?? null;
+    const petId = meta
+      ? (pipeline?.phase1_intake?.pet_id ?? getEternalBeamPetId(meta.contentId))
+      : null;
+    if (!meta || !runId || !petId) {
+      await handleConfirm();
       return;
     }
-    const bgId = getThemeBackgroundApiId(currentTheme);
-    if (!bgId) {
-      setFfError(p.themeUnknown);
-      return;
-    }
-    setFfLoading(true);
-    setFfError(null);
-    setFfPreviewUrl(null);
+    generatingRef.current = true;
+    runAttemptedRef.current = true;
+    setGenError(null);
+    setGenErrorRecoverable(false);
+    setGenerating(true);
     try {
-      const r = await fetch(cutoutImage);
-      const blob = await r.blob();
-      const file = new File([blob], "cutout.png", { type: blob.type || "image/png" });
-      const { preview_url } = await generatePreview({
-        background_id: bgId,
-        cutoutFile: file,
-        scale: displaySettings.scale,
-        position_x: displaySettings.posX,
-        position_y: displaySettings.posY,
+      const outcome = await retryPhase7Generation({
+        runId,
+        petId,
+        contentId: meta.contentId,
+        poll: { onProgress: (run) => setRunState(run) },
       });
-      const base = getVideoApiBaseUrl();
-      setFfPreviewUrl(
-        preview_url.startsWith("http") ? preview_url : `${base}${preview_url}`
-      );
+      await finalizeOutcome(outcome, petId, meta.contentId, meta.displayUrl);
     } catch (e) {
-      setFfError(e instanceof Error ? e.message : p.previewFailed);
+      const message = e instanceof Error && e.message ? e.message : String(e);
+      console.warn("[preview] Phase 7 generation retry failed", e);
+      setGenError(message);
+      setGenErrorRecoverable(isRecoverableErrorCode((e as { code?: string } | undefined)?.code));
     } finally {
-      setFfLoading(false);
+      generatingRef.current = false;
+      setGenerating(false);
     }
-  }, [cutoutImage, previewThemeId, currentTheme, displaySettings.posX, displaySettings.posY, displaySettings.scale, p.cutoutMissing, p.themeUnknown, p.previewFailed]);
+  }, [hasIdle, runState, pipeline, handleConfirm, finalizeOutcome]);
+
+  // 실패했을 때는 조정 UI 대신 이 화면을 보여준다. 순수 클라이언트 검증
+  // 오류(사진 없음 등, runAttemptedRef 가 아직 false)는 여기 해당하지 않고
+  // 기존 조정 화면의 인라인 오류 문구로 남는다.
+  const showGenerationProgress = generating && phase7GenerationEnabled();
+  const showGenerationError =
+    !generating &&
+    phase7GenerationEnabled() &&
+    runAttemptedRef.current &&
+    !hasIdle &&
+    Boolean(genError);
+
+  if (showGenerationProgress || showGenerationError) {
+    const view = showGenerationProgress
+      ? deriveGenerationProgress(runState)
+      : ({ kind: "error", recoverable: genErrorRecoverable, message: genError } as const);
+    return (
+      <GenerationProgressScreen
+        view={view}
+        elapsedSec={elapsedSec}
+        language={language}
+        previewImageUrl={cutoutDisplay}
+        onBack={onBack}
+        onRetry={showGenerationError ? handleRetry : undefined}
+      />
+    );
+  }
 
   return (
-    <div className="h-full flex flex-col min-h-0 overflow-hidden">
-      {/* Header */}
-      <header className="px-6 pt-8 pb-4 flex items-center justify-between relative shrink-0">
-        <motion.button
-          initial={{ opacity: 0, x: -10 }}
-          animate={{ opacity: 1, x: 0 }}
-          onClick={onBack}
-          className="w-10 h-10 rounded-full flex items-center justify-center"
-          style={{
-            background: "#1C1C1E",
-            border: "1px solid #333333",
-          }}
-          whileHover={{ scale: 1.05, borderColor: "#444444" }}
-          whileTap={{ scale: 0.95 }}
-        >
-          <ArrowLeft className="w-4 h-4" style={{ color: "#F5F5F7" }} strokeWidth={1.5} />
-        </motion.button>
-
-        <motion.h1
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-xl font-light absolute left-1/2 -translate-x-1/2"
-          style={{ color: "#F5F5F7" }}
-        >
-          {p.title}
-        </motion.h1>
-
-        <motion.button
-          initial={{ opacity: 0, x: 10 }}
-          animate={{ opacity: 1, x: 0 }}
-          onClick={handleReset}
-          className="w-10 h-10 rounded-full flex items-center justify-center"
-          style={{
-            background: "#1C1C1E",
-            border: "1px solid #333333",
-          }}
-          whileHover={{ scale: 1.05, borderColor: "#444444" }}
-          whileTap={{ scale: 0.95 }}
-        >
-          <RotateCcw className="w-4 h-4" style={{ color: "#F5F5F7" }} strokeWidth={1.5} />
-        </motion.button>
+    <div className="preview-composer h-full flex flex-col min-h-0 overflow-hidden">
+      {/* Header — Back (left) / title (+ subtitle) / Change Theme (right, desktop only).
+          "Change Theme" reuses the same onBack the screen already had — for both
+          flows, onBack already returns to Theme Selection with selectedPet/
+          selectedMotion (Library) or the pipeline (Create) preserved. Mobile hides
+          this trailing button and surfaces an equivalent theme row in the panel
+          instead (there isn't room for three header elements on a phone width). */}
+      <header className="eb-screen-header preview-composer__header">
+        <div className="eb-screen-header__leading">
+          <BackButton onClick={onBack} label={memorialT(language).common.back} />
+        </div>
+        <div className="preview-composer__heading">
+          <h1 className="eb-screen-header__title preview-composer__title">{p.title}</h1>
+          <p className="preview-composer__adjust-hint eb-caption">{p.adjustHint}</p>
+        </div>
+        <div className="eb-screen-header__trailing preview-composer__header-actions">
+          <button
+            type="button"
+            onClick={onBack}
+            className="mem-btn-secondary preview-composer__change-theme-btn"
+          >
+            <Palette className="w-4 h-4" strokeWidth={1.5} />
+            {p.changeTheme}
+          </button>
+        </div>
       </header>
 
-      <p
-        className="px-8 -mt-2 text-center text-xs font-light shrink-0"
-        style={{ color: "#888" }}
-      >
-        {p.adjustHint}
-      </p>
-
+      <div className="preview-composer__body flex-1 min-h-0 flex flex-col overflow-y-auto">
       {/* Preview Area — 드래그·핀치로 직접 조절 */}
-      <div className="px-6 py-2 flex-1 min-h-0 flex flex-col items-center justify-center">
+      <div className="preview-composer__stage flex-1 min-h-0 flex flex-col items-center justify-center">
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
           animate={{ opacity: 1, scale: 1 }}
-          className="preview-gesture-surface theme-preview-frame relative w-full aspect-[3/4] max-h-[min(52dvh,420px)]"
+          className="preview-gesture-surface theme-preview-frame relative w-full aspect-[4/3] max-h-[min(42dvh,320px)]"
           /* 자동 생성 상태를 DOM 에 노출한다 — 더블탭이 조용히 죽은 것처럼
              보이지 않게 하고, 런타임 점검도 이 값 하나로 끝난다. */
           data-come-closer={comeCloserState}
@@ -976,7 +1303,7 @@ function PreviewScreenInner({
                 // 사각형을 승인한 뒤 ORIGINAL_PHOTO_MISSING 을 받았다.
                 <div
                   role="alert"
-                  className="absolute inset-0 flex items-center justify-center px-6 text-center text-[13px] bg-amber-900/30 text-[#e8c97a]"
+                  className="preview-composer__stage-alert absolute inset-0 flex items-center justify-center px-6 text-center"
                 >
                   {sceneErrorMessage("ORIGINAL_PHOTO_MISSING", language === "en" ? "en" : "ko")}
                 </div>
@@ -1012,6 +1339,7 @@ function PreviewScreenInner({
           {!shouldApplySubjectTransform(bakedAsset) ? (
             <div className="absolute inset-0">
               <PetIdleDisplay
+                key={`preview-idle-baked-${replayKey}`}
                 idleVideoUrl={pipeline?.idle_video_url ?? null}
                 cutoutUrl={cutoutDisplay}
                 allowDemoFallback={false}
@@ -1033,7 +1361,7 @@ function PreviewScreenInner({
               {/* 접지 그림자 — 피사체 레이어의 형제(자식이 아님)라서 호흡 애니메이션을
                   따라 흔들리지 않는다. 항상 테마 접지선(floorY) 위에 머무른다.
                   가로 이동·크기 조절만 따라간다(세로 드래그는 따라가지 않음 — 땅은 고정). */}
-              {cutoutDisplay && !isOriginalPhotoTheme && (
+              {(cutoutDisplay || (hasIdle && isLibrarySource)) && !isOriginalPhotoTheme && (
                 <div
                   className="preview-contact-shadow"
                   aria-hidden
@@ -1046,8 +1374,10 @@ function PreviewScreenInner({
               )}
 
               {/* Subject with transformations — first composite with selected theme bg.
-                  원본 갈래에서는 그리지 않는다(사진에 아이가 이미 있다). */}
-              {cutoutDisplay && !isOriginalPhotoTheme && (
+                  원본 갈래에서는 그리지 않는다(사진에 아이가 이미 있다).
+                  My Library 경로는 정적 누끼가 없다 — hasIdle(발행된 영상)만으로도
+                  그려야 한다. cutoutDisplay 만 보면 라이브러리 재생이 빈 화면이 된다. */}
+              {(cutoutDisplay || (hasIdle && isLibrarySource)) && !isOriginalPhotoTheme && (
                 <div
                   ref={subjectLayerRef}
                   className="absolute inset-0 flex items-end justify-center preview-subject-layer"
@@ -1065,6 +1395,7 @@ function PreviewScreenInner({
                   }}
                 >
                   <PetIdleDisplay
+                    key={`preview-idle-subject-${replayKey}`}
                     idleVideoUrl={hasIdle ? pipeline?.idle_video_url : null}
                     cutoutUrl={cutoutDisplay}
                     // 생성 전에는 데모 mp4 폴백을 끈다 — 미리보기는 진짜 정적이어야 한다.
@@ -1085,6 +1416,7 @@ function PreviewScreenInner({
                     backgroundBaked={false}
                     // packed_alpha 는 명시로 선택한다 (Phase 7F).
                     deliveryFormat={breathingDeliveryFormat}
+                    staticCutout={pipeline?.delivery_format === "canonical_still"}
                     className={playbackFrameClass(bakedAsset)}
                     style={{
                       filter: `drop-shadow(0 16px 32px ${currentTheme.accent}66)`,
@@ -1094,6 +1426,28 @@ function PreviewScreenInner({
               )}
             </>
           )}
+
+          {/* Theme chip — bottom-left, over the imagery. Reuses the same
+              themeLabel already shown in the panel; this is just the on-stage
+              echo of it that the reference composition calls for. */}
+          <div className="preview-composer__theme-chip absolute bottom-3 left-3 z-20">
+            <Palette className="w-3.5 h-3.5" strokeWidth={1.75} />
+            <span>{themeLabel}</span>
+          </div>
+
+          {/* Reset (scale/position) — Create-flow gesture adjustment only. The
+              reference composition has no reset control; this keeps the real
+              drag/pinch-reset behavior reachable without occupying the header,
+              which now carries the title/subtitle/Change Theme instead. */}
+          {!isLibraryFlow && hasGestured ? (
+            <MemorialIconButton
+              onClick={handleReset}
+              aria-label={p.reset}
+              className="preview-composer__reset-btn absolute top-3 right-3 z-20"
+            >
+              <RotateCcw className="w-4 h-4" strokeWidth={1.5} />
+            </MemorialIconButton>
+          ) : null}
 
           {/* Corner Guides */}
           {["top-3 left-3", "top-3 right-3", "bottom-3 left-3", "bottom-3 right-3"].map((pos, i) => (
@@ -1111,155 +1465,164 @@ function PreviewScreenInner({
 
           {!hasGestured ? (
             <div className="preview-touch-hint absolute inset-x-0 bottom-4 flex justify-center px-4 z-20">
-              <span
-                className="rounded-full px-3 py-1.5 text-[10px] font-light tracking-wide text-center"
-                style={{
-                  color: "rgba(245,245,247,0.88)",
-                  background: "rgba(0,0,0,0.55)",
-                  border: "1px solid rgba(255,255,255,0.12)",
-                }}
-              >
+              <span className="preview-composer__touch-chip">
                 {p.touchAdjustHint}
               </span>
             </div>
           ) : null}
         </motion.div>
-
-        {SHOW_PIPELINE_DEBUG ? (
-        <motion.div
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mt-5 w-full max-w-[340px] space-y-3"
-        >
-          <div className="flex items-center gap-2 text-[11px] tracking-wider" style={{ color: "#888" }}>
-            <Film className="w-3.5 h-3.5" strokeWidth={1.5} />
-            <span>{p.pipelineTitle}</span>
-          </div>
-          <p className="text-[10px] leading-relaxed" style={{ color: "#666" }}>
-            {p.pipelineHint}
-          </p>
-          {idleVideoUrl || pipeline?.action_video_url ? (
-            <div className="grid grid-cols-2 gap-2">
-              {idleVideoUrl ? (
-                <div className="space-y-1">
-                  <span className="text-[9px] uppercase tracking-wider" style={{ color: "#888" }}>
-                    {p.idle}
-                  </span>
-                  <IdleLoopVideo
-                    src={idleVideoUrl}
-                    transparentComposite={false}
-                    className="w-full rounded-lg border border-white/10 max-h-[88px] object-cover bg-black"
-                  />
-                </div>
-              ) : null}
-              {pipeline.action_video_url ? (
-                <div className="space-y-1">
-                  <span className="text-[9px] uppercase tracking-wider" style={{ color: "#888" }}>
-                    {p.action}
-                  </span>
-                  {isLikelyVideoUrl(pipeline.action_video_url) ? (
-                    <video
-                      src={pipeline.action_video_url}
-                      className="w-full rounded-lg border border-white/10 max-h-[88px] object-cover bg-black"
-                      controls
-                      muted
-                      playsInline
-                      loop
-                    />
-                  ) : (
-                    <img
-                      src={pipeline.action_video_url}
-                      alt="Action fallback"
-                      className="w-full rounded-lg border border-white/10 max-h-[88px] object-cover bg-black"
-                    />
-                  )}
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <p className="text-[11px] py-2 px-3 rounded-lg" style={{ background: "#1C1C1E", color: "#888" }}>
-              {p.noLuma}
-            </p>
-          )}
-          <div
-            className="rounded-xl p-3 border border-dashed"
-            style={{ borderColor: `${currentTheme.accent}40`, background: "rgba(0,0,0,0.35)" }}
-          >
-            <p className="text-[11px] font-light mb-2" style={{ color: "#A1A1A6" }}>
-              {p.unityPlaceholder}
-            </p>
-            <button
-              type="button"
-              onClick={tryFfmpegPreview}
-              disabled={ffLoading || !cutoutImage}
-              className="w-full py-2 rounded-lg text-[12px] font-normal transition-opacity disabled:opacity-40"
-              style={{
-                background: "#2a2a2e",
-                color: "#E2E2E2",
-                border: "1px solid #333",
-              }}
-            >
-              {ffLoading ? p.ffmpegLoading : p.ffmpegTry}
-            </button>
-            {ffError ? (
-              <p className="text-[10px] mt-2" style={{ color: "#c97a7a" }}>
-                {ffError}
-              </p>
-            ) : null}
-            {ffPreviewUrl ? (
-              <video
-                src={ffPreviewUrl}
-                className="w-full mt-3 rounded-lg border border-white/10 max-h-[140px] object-contain bg-black"
-                controls
-                playsInline
-              />
-            ) : null}
-          </div>
-        </motion.div>
-        ) : null}
       </div>
 
-      {/* 하단 — 슬라이더 없이 완료 버튼만 */}
-      <div className="px-8 pb-10 pt-2 shrink-0 space-y-3">
-        <p className="text-[10px] text-center font-light" style={{ color: "#6b6b70" }}>
-          {p.touchAdjustHint}
-          <span className="hidden sm:inline"> · {p.scaleWheelHint}</span>
-        </p>
-        {genError ? (
-          <div
-            className="px-4 py-3 rounded-xl text-center text-[13px]"
-            style={{
-              background: "rgba(80, 20, 20, 0.4)",
-              color: "#f5c2c2",
-              border: "1px solid #553333",
-            }}
-          >
-            {genError}
+      {/* 컨트롤 레일 — 요약 + Change Theme/Motion + Play on Web/Beam.
+          발행 전(또는 실물 전달)에는 기존 확인/생성 CTA 를 그대로 보존한다
+          (Upload 갈래의 생성/확인 동작은 바꾸지 않는다). */}
+      <div className="preview-composer__panel shrink-0">
+        {/* Mobile-only theme summary/selector. Desktop already exposes "Change
+            Theme" via the header button + the on-stage chip, so this row is
+            hidden there (see preview-composer.css) rather than duplicated. */}
+        <button type="button" onClick={onBack} className="preview-composer__theme-row">
+          <span className="preview-composer__theme-row-label">
+            <Palette className="w-4 h-4" strokeWidth={1.5} />
+            {themeLabel}
+          </span>
+          <ChevronDown className="w-4 h-4" strokeWidth={1.5} />
+        </button>
+
+        {/* Pet identity — real cutout thumbnail only. Neither a pet name nor a
+            breed exists anywhere in the frontend-reachable data today
+            (StoredPipeline / LibraryPublication / my-library-api all lack
+            it) — showing either would mean inventing profile data, so both
+            are omitted rather than faked. */}
+        {petAvatarUrl ? (
+          <div className="preview-composer__identity">
+            <PetPhoto src={petAvatarUrl} variant="avatar" className="preview-composer__identity-avatar" />
           </div>
         ) : null}
-        <motion.button
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          onClick={handleConfirm}
-          disabled={generating || originalMissing}
-          className="w-full py-4 rounded-2xl font-normal text-[15px] tracking-wider disabled:opacity-70"
-          style={{
-            background: "linear-gradient(135deg, #b8860b 0%, #c9a227 30%, #d4af37 50%, #f5d77a 70%, #d4af37 100%)",
-            boxShadow: "0 10px 40px rgba(201, 162, 39, 0.25)",
-            color: "#0a0a0a",
-          }}
-          whileHover={generating ? undefined : { scale: 1.02 }}
-          whileTap={generating ? undefined : { scale: 0.98 }}
-        >
-          {generating
-            ? p.generating
-            : hasIdle
-              ? deliveryMode === "shipping"
-                ? p.completeShipping
-                : p.completeDevice
-              : p.confirmGenerate}
-        </motion.button>
+
+        {/* Motion — the real selected/published motion. The chevron (and the
+            click-through to reselect) appears only when onChangeMotion was
+            handed down, i.e. only when My Library found more than one real
+            published motion for this pet. There's no in-place swap today —
+            reselecting still returns to the library grid — so this stays a
+            truthful affordance rather than a fake inline dropdown. */}
+        {motionLabel ? (
+          <div className="preview-composer__motion">
+            <span className="preview-composer__motion-heading eb-caption">{p.motionHeading}</span>
+            {onChangeMotion ? (
+              <button type="button" onClick={onChangeMotion} className="preview-composer__motion-select">
+                <span className="preview-composer__motion-value">{motionLabel.toLowerCase()}</span>
+                <ChevronDown className="w-4 h-4" strokeWidth={1.5} />
+              </button>
+            ) : (
+              <span className="preview-composer__motion-value preview-composer__motion-value--static">
+                {motionLabel.toLowerCase()}
+              </span>
+            )}
+          </div>
+        ) : null}
+
+        {showPublishedRail ? (
+          <>
+            <div className="preview-composer__actions-row grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={handlePlayOnWeb}
+                disabled={!hasIdle}
+                className="mem-btn-secondary preview-composer__play-web"
+              >
+                <Play className="w-4 h-4" strokeWidth={1.5} />
+                {p.playOnWeb}
+              </button>
+              <motion.button
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.2 }}
+                onClick={handlePlayOnBeam}
+                disabled={!onPlayOnBeam || !hasIdle || beamStatus === "sending"}
+                className="preview-composer__cta cta-gold eb-btn-label"
+                whileHover={beamStatus === "sending" ? undefined : { scale: 1.02 }}
+                whileTap={beamStatus === "sending" ? undefined : { scale: 0.98 }}
+              >
+                {beamStatus === "sending" ? p.beamSending : p.playOnBeam}
+              </motion.button>
+            </div>
+
+            {beamStatus !== "idle" ? (
+              <div className="preview-composer__status-row flex items-center gap-2 flex-wrap">
+                <span
+                  className={`eb-status-badge eb-status-badge--${
+                    beamStatus === "sent" || beamStatus === "acked"
+                      ? "success"
+                      : beamStatus === "error"
+                        ? "error"
+                        : "warning"
+                  }`}
+                  role="status"
+                >
+                  {beamStatus === "sending"
+                    ? p.beamSending
+                    : beamStatus === "acked"
+                      ? p.beamAcked
+                      : beamStatus === "sent"
+                        ? p.beamSent
+                        : beamErrorMessage}
+                </span>
+              </div>
+            ) : null}
+
+            <p className="preview-composer__hint">{p.beamHint}</p>
+
+            {/* 내부 QA 컨트롤 — 고객 화면에는 나오지 않는다. 개발 빌드에서
+                VITE_INTERNAL_MOTION_QA=1 로 명시적으로 켠 경우에만 렌더된다. */}
+            <MotionQAFeedback
+              enrolled={!isLibraryFlow && userTestEnrolled}
+              language={language}
+              status={userTestFeedback}
+              onFeedback={(accepted, complaint) => void handleUserTestFeedback(accepted, complaint)}
+            />
+
+            {onOpenMembership ? (
+              <button
+                type="button"
+                onClick={onOpenMembership}
+                className="mem-btn-secondary preview-composer__membership"
+              >
+                {p.openMembership}
+              </button>
+            ) : null}
+          </>
+        ) : (
+          <>
+            <p className="preview-composer__hint">
+              {p.touchAdjustHint}
+              <span className="hidden sm:inline"> · {p.scaleWheelHint}</span>
+            </p>
+            {genError ? (
+              <div role="alert" className="preview-composer__error">
+                {genError}
+              </div>
+            ) : null}
+            <motion.button
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.2 }}
+              onClick={handleConfirm}
+              disabled={generating || originalMissing}
+              className="preview-composer__cta cta-gold eb-btn-label"
+              whileHover={generating ? undefined : { scale: 1.02 }}
+              whileTap={generating ? undefined : { scale: 0.98 }}
+            >
+              {generating
+                ? p.generating
+                : hasIdle
+                  ? deliveryMode === "shipping"
+                    ? p.completeShipping
+                    : p.completeDevice
+                  : p.confirmGenerate}
+            </motion.button>
+          </>
+        )}
+      </div>
       </div>
     </div>
   );

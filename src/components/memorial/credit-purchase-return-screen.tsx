@@ -17,6 +17,8 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { SecondaryButton } from "@/components/ui/buttons";
+import { StatusBadge } from "@/components/ui/status-badge";
 import { creditsReturnEntry, readCreditsReturnParams } from "@/lib/app-entry";
 import { CreditsError, confirmCreditPayment } from "@/lib/credits-api";
 import { getPremiumAccessToken } from "@/lib/premium-auth-token";
@@ -109,45 +111,55 @@ export function CreditPurchaseReturnScreen() {
     window.location.replace("/");
   }, []);
 
+  // Phase 10 — 앱 셸 바깥에서 그려지므로 아이보리 페이지를 스스로 깐다.
+  // 결과는 가운데 .eb-card 패널 하나. fixed 오버레이가 아니다.
   return (
-    <div className="fixed inset-0 flex flex-col items-center justify-center gap-4 bg-[#0a0a0a] px-8 text-center">
-      {phase.kind === "working" && (
-        <p className="text-sm text-white/50">결제를 확인하는 중…</p>
-      )}
+    <div className="credit-purchase-return-screen flex min-h-[100dvh] w-full flex-col items-center justify-center gap-4 bg-[var(--eb-bg)] px-6 py-12 text-center text-[var(--eb-text)]">
+      <section
+        className="eb-card eb-fade-up flex w-full max-w-[420px] flex-col items-center gap-4 px-6 py-8"
+        aria-live="polite"
+      >
+        {phase.kind === "working" && (
+          <>
+            <StatusBadge tone="loading">확인 중</StatusBadge>
+            <p className="eb-body-sm">결제를 확인하는 중…</p>
+          </>
+        )}
 
-      {phase.kind === "done" && (
-        <>
-          <p className="text-base font-medium text-[#EDE3CE]">
-            {phase.creditsAdded > 0
-              ? `${phase.creditsAdded} 크레딧이 충전되었습니다`
-              : "이미 충전된 결제입니다"}
-          </p>
-          <p className="text-xs text-white/45">잔액 {phase.balance}</p>
-          <button
-            type="button"
-            onClick={goBack}
-            className="cta-gold mt-2 rounded-2xl px-6 py-3 text-sm font-medium"
-          >
-            {pendingTheme ? "고르던 배경으로 돌아가기" : "계속하기"}
-          </button>
-        </>
-      )}
+        {phase.kind === "done" && (
+          <>
+            <StatusBadge tone="success">충전 완료</StatusBadge>
+            <p className="eb-title text-base font-medium">
+              {phase.creditsAdded > 0
+                ? `${phase.creditsAdded} 크레딧이 충전되었습니다`
+                : "이미 충전된 결제입니다"}
+            </p>
+            <p className="eb-balance-pill">
+              <span className="eb-balance-pill__label">잔액</span> {phase.balance}
+            </p>
+            <button
+              type="button"
+              onClick={goBack}
+              className="cta-gold eb-btn eb-btn--primary eb-btn--block mt-2 rounded-2xl px-6 py-3 text-sm font-medium"
+            >
+              {pendingTheme ? "고르던 배경으로 돌아가기" : "계속하기"}
+            </button>
+          </>
+        )}
 
-      {phase.kind === "failed" && (
-        <>
-          <p className="text-base font-medium text-white/90">
-            크레딧을 충전하지 못했습니다
-          </p>
-          <p className="max-w-xs text-sm leading-relaxed text-white/55">{phase.message}</p>
-          <button
-            type="button"
-            onClick={goBack}
-            className="mt-2 rounded-2xl border border-white/20 px-6 py-3 text-sm text-white/70"
-          >
-            돌아가기
-          </button>
-        </>
-      )}
+        {phase.kind === "failed" && (
+          <>
+            <StatusBadge tone="error">충전 실패</StatusBadge>
+            <p className="eb-title text-base font-medium">
+              크레딧을 충전하지 못했습니다
+            </p>
+            <p className="eb-body-sm max-w-xs leading-relaxed">{phase.message}</p>
+            <SecondaryButton block className="mt-2" onClick={goBack}>
+              돌아가기
+            </SecondaryButton>
+          </>
+        )}
+      </section>
     </div>
   );
 }

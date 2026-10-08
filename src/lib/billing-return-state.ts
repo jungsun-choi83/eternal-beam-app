@@ -22,8 +22,13 @@
  * 결제 왕복은 정확히 그 수명이다.
  */
 
-/** 결제 후 돌아갈 수 있는 화면 — 기존 펫이 이미 재생 중인 곳들. */
-export type BillingReturnScreen = "devicePlay" | "preview";
+/**
+ * 결제 후 돌아갈 수 있는 화면 — 현대 흐름의 재생/라이브러리 표면만.
+ *
+ * 'devicePlay'(직접 Pi 송출 화면)는 더 이상 복원 대상이 아니다. 예전 탭에 남은
+ * 그 스냅샷은 읽을 때 'preview' 로 승격된다 — 같은 펫의 현대 재생 화면이다.
+ */
+export type BillingReturnScreen = "preview" | "library";
 
 export interface BillingReturnSettings {
   scale: number;
@@ -48,18 +53,25 @@ export function saveBillingReturnState(state: BillingReturnState): void {
   }
 }
 
+function normalizeScreen(raw: unknown): BillingReturnScreen | null {
+  if (raw === "preview" || raw === "library") return raw;
+  if (raw === "devicePlay") return "preview";
+  return null;
+}
+
 export function readBillingReturnState(): BillingReturnState | null {
   try {
     const raw = sessionStorage.getItem(BILLING_RETURN_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<BillingReturnState>;
-    if (parsed.screen !== "devicePlay" && parsed.screen !== "preview") return null;
-    const s = parsed.settings;
+    const parsed = JSON.parse(raw) as Partial<Record<keyof BillingReturnState, unknown>>;
+    const screen = normalizeScreen(parsed.screen);
+    if (!screen) return null;
+    const s = parsed.settings as Partial<BillingReturnSettings> | undefined;
     if (!s || typeof s.scale !== "number") return null;
     return {
-      screen: parsed.screen,
+      screen,
       settings: { scale: s.scale, posX: Number(s.posX) || 0, posY: Number(s.posY) || 0 },
-      contentId: parsed.contentId ?? null,
+      contentId: typeof parsed.contentId === "string" ? parsed.contentId : null,
     };
   } catch {
     return null;
@@ -83,7 +95,11 @@ export interface PipelineLike {
 /**
  * 지금 이 스냅샷으로 복원해도 되는가 — **순수 판정**.
  *
- * 세 가지를 모두 만족해야 한다:
+ * 'library' 는 스냅샷만 있으면 복원한다 — My Library 는 서버 레지스트리와
+ * 자기 흐름 표식으로 스스로 상태를 되살리므로, 여기서 파이프라인을 볼 이유가
+ * 없다.
+ *
+ * 'preview' 는 세 가지를 모두 만족해야 한다:
  *   1) 스냅샷이 있다
  *   2) 파이프라인이 살아 있고 **BREATHING 영상이 실제로 있다**
  *      (없으면 재생기가 마운트되지 않아 빈 화면으로 복원된다)
@@ -97,9 +113,10 @@ export function resolveBillingReturn(
   pipeline: PipelineLike | null | undefined
 ): { screen: BillingReturnScreen; settings: BillingReturnSettings } | null {
   if (!saved) return null;
+  if (saved.screen === "library") return { screen: "library", settings: saved.settings };
   if (!pipeline) return null;
 
-  // BREATHING 이 없으면 devicePlay/preview 는 보여 줄 것이 없다.
+  // BREATHING 이 없으면 preview 는 보여 줄 것이 없다.
   const idle = (pipeline.idle_video_url || "").trim();
   if (!idle) return null;
 

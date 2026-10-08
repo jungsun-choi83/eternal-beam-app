@@ -34,6 +34,7 @@ function assets(over: Partial<PremiumAssets> = {}): PremiumAssets {
   return {
     petId: 'pet1',
     ready: {},
+    readyAssets: {},
     generating: [],
     missing: [...IDLE, CC],
     idleEvents: IDLE,
@@ -64,11 +65,12 @@ test('PM 이 지정한 5종이 두 그룹으로 나뉜다', () => {
   assert.equal(s.totalCount, 5)
 })
 
-test('그룹은 서버 레지스트리에서 온다 — 5번째 자발적 모션이 자동으로 나타난다', () => {
+test('서버 레지스트리의 내부 모션은 소비자 상품으로 자동 노출되지 않는다', () => {
   const five = [...IDLE, 'NOSE_WIGGLE']
   const s = derive(assets({ idleEvents: five, missing: [...five, CC] }))
-  assert.equal(s.groups.find((g) => g.id === 'spontaneous')!.items.length, 5)
-  assert.equal(s.totalCount, 6)
+  assert.equal(s.groups.find((g) => g.id === 'spontaneous')!.items.length, 4)
+  assert.equal(s.totalCount, 5)
+  assert.equal(itemOf(s, 'NOSE_WIGGLE'), undefined)
 })
 
 test('BREATHING 은 라이브러리에 없다 — 무료 기본 모션이다', () => {
@@ -201,18 +203,17 @@ test('생성 전에 재생성 여부를 다시 확인한다', () => {
   assert.match(body, /if \(!item \|\| !canGenerateBehavior\(item, current\)\) return;/)
 })
 
-test('READY 행에 재생성 경로가 없다 — 있는 버튼은 ON/OFF 뿐이다', () => {
+test('READY 는 제안 영역에서 빠진다 — 완성된 모션은 My Library 소유물이다', () => {
   const code = strip(UI)
-  const i = code.indexOf('item.status === "ready"')
-  assert.ok(i > 0, 'READY 분기를 찾지 못했다')
-  const readyBranch = code.slice(i, code.indexOf('item.status === "generating"'))
-  assert.doesNotMatch(readyBranch, /onGenerate/, 'READY 에서 생성을 부를 수 있다')
-  assert.doesNotMatch(readyBranch, /t\.generate/, 'READY 에 [생성] 라벨이 있다')
-  assert.match(readyBranch, /role="switch"/, 'READY 에 ON/OFF 가 없다')
+  assert.match(code, /items\.filter\(\(item\) => item\.status !== "ready"\)/)
+  assert.doesNotMatch(code, /item\.status === "ready"/, 'READY 를 제안 행으로 다시 그린다')
 })
 
-test('비멤버에게는 목록을 아예 그리지 않는다', () => {
-  assert.match(strip(UI), /if \(!enabled \|\| !state\.canGenerate\) return null;/)
+test('비멤버에게도 잠긴 제안과 멤버십 CTA 를 보여 준다', () => {
+  const code = strip(UI)
+  assert.doesNotMatch(code, /!state\.canGenerate\) return null/)
+  assert.match(code, /item\.offerAccess === "locked"/)
+  assert.match(code, /onOpenMembership/)
 })
 
 // ── ON/OFF 선호 (Phase 5) ────────────────────────────────────────────────────
@@ -289,42 +290,34 @@ test('재생·스케줄러에 손대지 않는다', () => {
   }
 })
 
-test('크레딧 개념이 없다 — 멤버십 모델이다', () => {
-  for (const [name, src] of [['ui', UI], ['hook', HOOK], ['model', MODEL]] as const) {
-    const code = strip(src)
-    for (const needle of ['credit', 'wallet', 'balance', '크레딧']) {
-      assert.doesNotMatch(code, new RegExp(needle, 'i'), `${name} 에 ${needle} 이 남아 있다`)
-    }
-  }
+test('서버 모드/가격에서 Included · Member · Credit · Locked 를 파생한다', () => {
+  assert.equal(itemOf(derive(assets({ prices: { 'ACTION:BLINKING': 0 } })), 'BLINKING').offerAccess, 'included')
+  assert.equal(itemOf(derive(assets()), 'BLINKING').offerAccess, 'member')
+  assert.equal(itemOf(derive(assets({ entitled: false }), false), 'BLINKING').offerAccess, 'locked')
+  const credit = derive(assets({ entitled: false, subscriptionRequired: false, prices: { 'ACTION:BLINKING': 2 } }), false)
+  assert.equal(itemOf(credit, 'BLINKING').offerAccess, 'credit')
+  assert.equal(itemOf(credit, 'BLINKING').priceCredits, 2)
+  assert.equal(canGenerateBehavior(itemOf(credit, 'BLINKING'), credit), true)
 })
 
 test('판정 로직을 복제하지 않고 premium-unlock 에서 가져온다', () => {
   assert.match(strip(MODEL), /from "\.\/premium-unlock\.ts"/, '판정을 새로 구현했다')
 })
 
-test('재생 화면에 라이브러리가 붙어 있다', () => {
+test('Available to Create 는 My Library 에 있고 레거시 기기 화면에는 없다', () => {
+  const library = strip(readFileSync('src/components/memorial/my-library-screen.tsx', 'utf8'))
   const play = strip(readFileSync('src/components/memorial/memorial-device-play-screen.tsx', 'utf8'))
-  assert.match(play, /<BehaviorLibrary/)
+  assert.match(library, /<BehaviorLibrary/)
+  assert.doesNotMatch(play, /<BehaviorLibrary/)
 })
 
-test('멤버십 카드와 라이브러리가 **같은** 공유 조회원 안에 있다', () => {
-  // Phase 6 에서 Provider 가 화면 최상단으로 올라갔다(런타임 적격성도 컨텍스트를
-  // 봐야 하므로). 이제 Provider 는 본체(Inner)를 통째로 감싸고, 카드·라이브러리는
-  // 그 본체 안에 있다 — 텍스트 위치가 아니라 **그 구조**를 검사한다.
-  const play = strip(readFileSync('src/components/memorial/memorial-device-play-screen.tsx', 'utf8'))
-  const open = play.indexOf('<PremiumAssetsProvider')
-  const close = play.indexOf('</PremiumAssetsProvider>')
+test('펫별 Available to Create 는 공유 PremiumAssetsProvider 안에 있다', () => {
+  const library = strip(readFileSync('src/components/memorial/my-library-screen.tsx', 'utf8'))
+  const open = library.indexOf('<PremiumAssetsProvider')
+  const close = library.indexOf('</PremiumAssetsProvider>')
   assert.ok(open > 0 && close > open, '공유 Provider 로 감싸지 않았다')
-
-  const inside = play.slice(open, close)
-  assert.match(inside, /<MemorialDevicePlayScreenInner/, 'Provider 가 본체를 감싸지 않는다')
-
-  // 본체는 하나뿐이고 카드·라이브러리는 그 안에 있다 → 컨텍스트가 도달한다.
-  assert.equal((play.match(/function MemorialDevicePlayScreenInner/g) ?? []).length, 1)
-  assert.match(play, /<MembershipCard/, '멤버십 카드가 없다')
-  assert.match(play, /<BehaviorLibrary/, '라이브러리가 없다')
-  // 본체가 따로 export 되면 Provider 없이 렌더될 수 있다.
-  assert.doesNotMatch(play, /export function MemorialDevicePlayScreenInner/, '본체가 노출됐다')
+  assert.match(library.slice(open, close), /<PetSectionInner/)
+  assert.match(library, /<BehaviorLibrary/)
 })
 
 test('훅들이 각자 조회하지 않는다 — 중복 폴링이 되살아나지 않았다', () => {

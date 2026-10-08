@@ -12,6 +12,7 @@ from backend.services import video_motion_providers as vp
 from backend.services.video_motion_providers import (
     FalKlingProvider,
     FalSeedanceProvider,
+    FalWan3StandardProvider,
     KlingProvider,
     MotionVideoRequest,
     SeedanceProvider,
@@ -25,7 +26,8 @@ def _clean_env(monkeypatch):
     for var in ("FAL_KEY", "FAL_API_KEY", "SEEDANCE_API_KEY", "ARK_API_KEY",
                 "KLING_ACCESS_KEY", "KLING_SECRET_KEY", "SEEDANCE_TRANSPORT",
                 "KLING_TRANSPORT", "PHASE6_VIDEO_TRANSPORT", "VIDEO_GENERATION_MOCK",
-                "RUNWAY_API_KEY", "FAL_INPUT_TRANSPORT"):
+                "RUNWAY_API_KEY", "FAL_INPUT_TRANSPORT", "MOTION_VENDOR_SEEDANCE",
+                "MOTION_VENDOR_KLING_3", "MOTION_VENDOR_WAN_3_STANDARD"):
         monkeypatch.delenv(var, raising=False)
 
 
@@ -54,15 +56,15 @@ def test_explicit_transport_overrides(monkeypatch):
     assert isinstance(vp.get_provider("kling"), KlingProvider)
 
 
-def test_routing_names_unchanged_regardless_of_transport(monkeypatch):
+def test_motion_spec_routing_names_are_transport_independent(monkeypatch):
     monkeypatch.setenv("FAL_KEY", "fal-test-key")
     names = {c: [p.name for p in vp.routing_for_class(c)] for c in
              ("MICRO", "TRANSITION", "LOCOMOTION", "INTERACTION")}
     assert names == {
-        "MICRO": ["seedance", "kling"],
-        "TRANSITION": ["kling", "seedance"],
-        "LOCOMOTION": ["seedance", "kling"],
-        "INTERACTION": ["kling", "seedance"],
+        "MICRO": ["wan_3_standard", "seedance"],
+        "TRANSITION": ["kling_3", "wan_3_standard"],
+        "LOCOMOTION": ["kling_3", "wan_3_standard"],
+        "INTERACTION": ["seedance", "kling_3"],
     }
 
 
@@ -103,6 +105,42 @@ def test_fal_payloads_match_documented_contracts():
 def test_fal_default_models_are_real_endpoints():
     assert FalSeedanceProvider().model_name() == "bytedance/seedance-2.5/image-to-video"
     assert FalKlingProvider().model_name() == "fal-ai/kling-video/v3/standard/image-to-video"
+    assert FalWan3StandardProvider().model_name() == "alibaba/wan-3.0/image-to-video"
+
+
+def test_fal_wan_3_standard_payload_matches_exact_documented_contract():
+    provider = FalWan3StandardProvider()
+    request = MotionVideoRequest(
+        prompt="subtle breathing",
+        start_image_url="https://x/start.png",
+        start_image_bytes=b"start",
+        end_image_url="https://x/end.png",
+        end_image_bytes=b"end",
+        output_spec=SPEC,
+    )
+
+    assert provider.build_payload(request) == {
+        "prompt": "subtle breathing",
+        "resolution": "720p",
+        "aspect_ratio": "9:16",
+        "duration": 5,
+        "audio": False,
+        "start_image_url": "https://x/start.png",
+        "end_image_url": "https://x/end.png",
+    }
+    assert provider.supports_end_frame is True
+    assert provider.supports_durable_jobs is True
+
+    start_only = MotionVideoRequest(
+        prompt="p",
+        start_image_url="https://x/start.png",
+        start_image_bytes=b"start",
+        output_spec={"resolution": "1080p", "duration_sec": 30, "audio": False},
+    )
+    payload = provider.build_payload(start_only)
+    assert payload["resolution"] == "1080p"
+    assert payload["duration"] == 30
+    assert "end_image_url" not in payload
 
 
 def test_seedance_duration_below_contract_minimum_raises_locally(monkeypatch):
@@ -376,12 +414,8 @@ def test_wan_flf_is_not_in_any_class_routing_table(monkeypatch):
     for cls in ("MICRO", "TRANSITION", "LOCOMOTION", "INTERACTION"):
         assert "wan_flf" not in [p.name for p in vp.routing_for_class(cls)]
     assert vp.get_provider("wan_flf") is not None
-    # 오버라이드는 **primary 만** 바꾼다 — 클래스 기본 폴백(seedance)은 남는다.
-    monkeypatch.setenv("PHASE6_PROVIDER_TRANSITION", "wan_flf")
-    assert [p.name for p in vp.routing_for_class("TRANSITION")] == ["wan_flf", "seedance"]
-    # 단독 통제 실행은 폴백을 명시적으로 비워야 성립한다 (라이브 러너가 그렇게 한다).
-    monkeypatch.setenv("PHASE6_FALLBACK_TRANSITION", "")
-    assert [p.name for p in vp.routing_for_class("TRANSITION")] == ["wan_flf"]
+    # 벤치 adapter 는 명시 registry 순서로만 해석한다.
+    assert [p.name for p in vp.resolve_provider_order(["wan_flf"])] == ["wan_flf"]
 
 
 def test_wan_flf_model_is_env_overridable(monkeypatch):

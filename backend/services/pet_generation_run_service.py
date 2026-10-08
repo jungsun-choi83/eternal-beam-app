@@ -11,18 +11,22 @@ submit once, persist their external job ID, then yield until a later worker tick
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import threading
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from . import (
     action_keyframe_service,
+    business_qa,
+    business_qa_user_test,
     canonical_image_providers,
     canonical_pet_service,
+    customer_fallback_service,
     durable_provider_jobs,
     motion_delivery_service,
     motion_publication_service,
@@ -32,8 +36,11 @@ from . import (
     pet_reference_service,
     pet_reference_set_service,
     premium_motion_finalization,
+    qa_shadow_telemetry,
     video_motion_providers,
 )
+
+logger = logging.getLogger(__name__)
 
 MOTION_BREATHING = "BREATHING"
 REQUEST_FREE_HOME = "FREE_HOME"
@@ -49,6 +56,13 @@ STATUS_PUBLISHED = "PUBLISHED"
 STATUS_FAILED = "FAILED"
 STATUS_CANCELLED = "CANCELLED"
 
+# Product-level terminal outcomes live beside the durable orchestration status
+# during the Phase 1 shadow period. Database status remains PUBLISHED/FAILED for
+# backward compatibility.
+BUSINESS_DELIVERED_GENERATED = business_qa.DELIVERED_GENERATED
+BUSINESS_DELIVERED_FALLBACK = business_qa.DELIVERED_FALLBACK
+BUSINESS_TRUE_INFRASTRUCTURE_FAILURE = business_qa.TRUE_INFRASTRUCTURE_FAILURE
+
 STAGE_QUEUED = "QUEUED"
 STAGE_IDENTITY = "IDENTITY"
 STAGE_REFERENCE_SET = "REFERENCE_SET"
@@ -62,12 +76,47 @@ STAGE_DELIVERY = "DELIVERY"
 STAGE_PUBLICATION = "PUBLICATION"
 STAGE_PUBLISHED = "PUBLISHED"
 
+#: 실행 파이프라인의 정본 순서 — WAITING_PROVIDER 깨어남에서 이미 지난 단계를
+#: 다시 읽지 않기 위한 기준. current_stage 가 어떤 단계보다 "뒤"라는 것 자체가
+#: 그 단계의 핀 필드가 유효하다는 보증이다: 그 핀을 지우는 모든 경로
+#: (request_canonical_replacement_generation / request_keyframe_replacement_
+#: generation 등)는 반드시 current_stage 를 그 단계로 되감고 나서만 핀을
+#: 지운다 — 되감김 없이 그 단계를 앞서가는 current_stage 는 존재할 수 없다.
+_STAGE_ORDER: tuple[str, ...] = (
+    STAGE_IDENTITY,
+    STAGE_REFERENCE_SET,
+    STAGE_CANONICAL,
+    STAGE_KEYFRAMES,
+    STAGE_MOTION_SPEC,
+    STAGE_MOTION_GENERATION,
+    STAGE_QA,
+    STAGE_DELIVERY,
+    STAGE_PUBLICATION,
+)
+
+
+def _stage_index(stage: Optional[str]) -> int:
+    """모르거나 QUEUED 인 단계는 -1 — 처음부터 실행하는 안전한 폴백이다."""
+    try:
+        return _STAGE_ORDER.index(stage)
+    except ValueError:
+        return -1
+
+
 class PetGenerationRunError(Exception):
-    def __init__(self, code: str, message: str, *, status: int = 400):
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        status: int = 400,
+        details: Optional[dict[str, Any]] = None,
+    ):
         super().__init__(message)
         self.code = code
         self.message = message
         self.status = status
+        self.details = details
 
 
 @dataclass(frozen=True)
@@ -107,16 +156,63 @@ class PetGenerationRun:
     product_key: Optional[str] = None
     reservation_ledger_id: Optional[str] = None
     credits_reserved: int = 0
+    #: lease 만료 후 워커가 이 실행을 다시 집어 간 횟수 (마지막 사용자 행동 이후).
+    lease_recoveries: int = 0
 
 
 _MOCK_RUNS: list[dict[str, Any]] = []
 _LOCKS: dict[str, asyncio.Lock] = {}
 
+#: 이 상태가 아니면(PUBLISHED/FAILED/CANCELLED) 실행은 종료된 것으로 본다 —
+#: 종료된 실행은 같은 pet/motion/request_kind 의 새 시도를 막지 않는다.
+ACTIVE_RUN_STATUSES = (
+    STATUS_QUEUED,
+    STATUS_RUNNING,
+    STATUS_WAITING_PROVIDER,
+    STATUS_RECOVERY_REQUIRED,
+)
+
+#: 워커가 스스로 다시 집어 갈 수 있는 상태. RECOVERY_REQUIRED 는 "활성"이지만
+#: 사용자/운영자 행동 없이는 절대 재개되지 않는다 — 여기 없다.
+CLAIMABLE_RUN_STATUSES = (STATUS_QUEUED, STATUS_WAITING_PROVIDER, STATUS_RUNNING)
+
+#: 더 이상 워커가 손대지 않는 상태. 여기서 나가는 유일한 길은
+#: retry_generation_run() (사용자 행동) 뿐이다.
+TERMINAL_RUN_STATUSES = (STATUS_PUBLISHED, STATUS_FAILED, STATUS_CANCELLED)
+
+#: 사용자 행동으로 다시 QUEUED 가 될 수 있는 상태.
+RETRYABLE_RUN_STATUSES = (STATUS_FAILED, STATUS_CANCELLED, STATUS_RECOVERY_REQUIRED)
+
+#: 워커 lease 만료 후 자동 재점유(복구) 횟수 상한. 이 횟수를 넘긴 실행은 다시
+#: 되살아나지 않고 FAILED(WORKER_RECOVERY_EXHAUSTED) 로 종료된다 — 사용자가
+#: Retry 를 눌러야만 다시 QUEUED 가 된다. 카운터는 retry 에서만 0 으로 돌아간다.
+ERROR_WORKER_RECOVERY_EXHAUSTED = "WORKER_RECOVERY_EXHAUSTED"
+ERROR_RUN_CANCELLED = "RUN_CANCELLED"
+
+#: start_generation_run() 의 확인-후-삽입 구간을 프로세스 내에서 직렬화한다 —
+#: (user_id, pet_id, motion_id, request_kind) 별로 하나씩. 이것만으로는
+#: 다중 프로세스/인스턴스를 못 막으므로 DB 쪽 부분 unique 인덱스
+#: (마이그레이션 20261029)가 최종 보증이고, 이 락은 빠른 경로 + 테스트가 쓰는
+#: in-memory 폴백(_MOCK_RUNS, DB 제약이 전혀 없음)의 정확성을 책임진다.
+_START_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _start_lock(user_id: str, pet_id: str, motion_id: str, request_kind: str) -> asyncio.Lock:
+    key = f"{user_id}:{pet_id}:{motion_id}:{request_kind}"
+    lock = _START_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _START_LOCKS[key] = lock
+    return lock
+
 
 def __reset_for_tests() -> None:
     _MOCK_RUNS.clear()
     _LOCKS.clear()
+    _START_LOCKS.clear()
     durable_provider_jobs.__reset_for_tests()
+    qa_shadow_telemetry.__reset_for_tests()
+    business_qa_user_test.__reset_for_tests()
 
 
 def _table() -> str:
@@ -177,6 +273,7 @@ def _to_run(row: dict[str, Any]) -> PetGenerationRun:
             str(row["reservation_ledger_id"]) if row.get("reservation_ledger_id") else None
         ),
         credits_reserved=int(row.get("credits_reserved") or 0),
+        lease_recoveries=int(row.get("lease_recoveries") or 0),
     )
 
 
@@ -231,6 +328,56 @@ async def _row_by_key(
     )
 
 
+async def _row_by_scope_active(
+    *, user_id: str, pet_id: str, motion_id: str, request_kind: str
+) -> Optional[dict[str, Any]]:
+    """
+    이 pet/motion/request_kind 의 유료 작업을 이미 맡고 있는 종료 전 실행 —
+    idempotency_key 와 무관하다. start_generation_run() 이 동등한 동시 요청을
+    합류시키는 대상이고, retry_generation_run()/replacement 계열이 옛 실행을
+    되살리기 전에도 같은 확인을 거친다(다른 실행이 이미 활성이면 되살리지
+    않고 그 실행에 합류한다).
+    """
+    client = _supabase() if _use_db() else None
+    if client:
+        try:
+            result = (
+                client.table(_table())
+                .select("*")
+                .eq("user_id", user_id)
+                .eq("pet_id", pet_id)
+                .eq("motion_id", motion_id)
+                .eq("request_kind", request_kind)
+                .in_("status", list(ACTIVE_RUN_STATUSES))
+                .order("created_at")
+                .limit(1)
+                .execute()
+            )
+            rows = getattr(result, "data", None) or []
+            return rows[0] if rows else None
+        except Exception as exc:
+            raise PetGenerationRunError(
+                "GENERATION_RUNS_UNAVAILABLE", "생성 실행을 확인하지 못했습니다.", status=503
+            ) from exc
+    candidates = [
+        r
+        for r in _MOCK_RUNS
+        if r.get("user_id") == user_id
+        and r.get("pet_id") == pet_id
+        and r.get("motion_id") == motion_id
+        and r.get("request_kind") == request_kind
+        and r.get("status") in ACTIVE_RUN_STATUSES
+    ]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda r: str(r.get("created_at") or ""))
+
+
+def _is_unique_violation(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return "duplicate" in msg or "unique" in msg or "23505" in msg
+
+
 async def _update(
     run_id: str, fields: dict[str, Any], *, execution_token: str | None = None
 ) -> PetGenerationRun:
@@ -246,6 +393,10 @@ async def _update(
                 raise PetGenerationRunError(
                     "WORKER_LEASE_LOST", "생성 실행 lease 소유권을 잃었습니다.", status=409
                 )
+        except PetGenerationRunError:
+            # lease 유실은 실제 신호다(취소/다른 워커의 인수) — 503 으로 뭉개면
+            # _execute 가 그 실행을 다시 FAILED 로 덮어쓰려 든다.
+            raise
         except Exception as exc:
             raise PetGenerationRunError(
                 "GENERATION_RUNS_UNAVAILABLE", "생성 실행 상태를 저장하지 못했습니다.", status=503
@@ -268,16 +419,72 @@ async def _update(
 async def _progress(run: PetGenerationRun, fields: dict[str, Any]) -> PetGenerationRun:
     if not run.execution_token:
         raise PetGenerationRunError("WORKER_LEASE_REQUIRED", "worker lease 가 필요합니다.", status=409)
-    return await _update(run.id, fields, execution_token=run.execution_token)
+    progressed = await _update(run.id, fields, execution_token=run.execution_token)
+    qa_shadow_telemetry.observe_progress(run, progressed, fields)
+    return progressed
+
+
+async def _transition(
+    run_id: str, fields: dict[str, Any], *, from_statuses: tuple[str, ...]
+) -> Optional[PetGenerationRun]:
+    """
+    사용자 행동(취소/재시도)의 상태 전이 — 워커 토큰 없이, 그러나 **현재 상태가
+    from_statuses 안일 때만** 쓴다. 읽기와 쓰기 사이에 워커가 발행을 끝냈다면
+    (PUBLISHED) 아무것도 덮어쓰지 않고 None 을 돌려준다.
+    """
+    payload = {**fields, "updated_at": _now_iso()}
+    client = _supabase() if _use_db() else None
+    if client:
+        try:
+            result = (
+                client.table(_table())
+                .update(payload)
+                .eq("id", run_id)
+                .in_("status", list(from_statuses))
+                .execute()
+            )
+            rows = getattr(result, "data", None) or []
+        except Exception as exc:
+            raise PetGenerationRunError(
+                "GENERATION_RUNS_UNAVAILABLE", "생성 실행 상태를 저장하지 못했습니다.", status=503
+            ) from exc
+        if not rows:
+            return None
+    else:
+        row = next((r for r in _MOCK_RUNS if r.get("id") == run_id), None)
+        if not row or row.get("status") not in from_statuses:
+            return None
+        row.update(payload)
+    refreshed = await _row_by_id(run_id)
+    if not refreshed:
+        raise PetGenerationRunError("GENERATION_RUN_NOT_FOUND", "생성 실행이 없습니다.", status=404)
+    return _to_run(refreshed)
 
 
 async def _insert_or_get(row: dict[str, Any]) -> tuple[PetGenerationRun, bool]:
+    """
+    실행을 새로 만들거나, 이미 같은 유료 작업을 맡고 있는 실행에 합류한다.
+
+    두 단계로 찾는다: (1) 정확히 같은 idempotency_key — 기존 재시도 동작
+    그대로 유지, (2) 없으면 같은 (user_id, pet_id, motion_id, request_kind)
+    의 **활성** 실행 — 호출자의 idempotency_key 가 서로 달라도 같은 논리적
+    작업이면 새로 만들지 않고 합류한다. 두 확인 모두 통과해야 삽입하고,
+    그마저도 동시 요청과 경합해 질 수 있으므로 실패는 항상 재조회 후
+    판정한다 — 절대 맹목적으로 재제출하지 않는다.
+    """
     existing = await _row_by_key(
         user_id=row["user_id"], pet_id=row["pet_id"], motion_id=row["motion_id"],
         request_kind=row["request_kind"], idempotency_key=row["idempotency_key"],
     )
     if existing:
         return _to_run(existing), False
+
+    active = await _row_by_scope_active(
+        user_id=row["user_id"], pet_id=row["pet_id"],
+        motion_id=row["motion_id"], request_kind=row["request_kind"],
+    )
+    if active:
+        return _to_run(active), False
 
     client = _supabase() if _use_db() else None
     if client:
@@ -286,18 +493,30 @@ async def _insert_or_get(row: dict[str, Any]) -> tuple[PetGenerationRun, bool]:
             rows = getattr(result, "data", None) or []
             if rows:
                 return _to_run(rows[0]), True
-        except Exception:
-            # A concurrent request can win the unique key. Re-read before
-            # classifying it as persistence failure.
+        except Exception as exc:
+            # A concurrent request can win either the idempotency-key unique
+            # constraint or the active-scope partial unique index (migration
+            # 20261029). Re-read under both before classifying it as a real
+            # persistence failure.
+            if not _is_unique_violation(exc):
+                raise PetGenerationRunError(
+                    "GENERATION_RUNS_UNAVAILABLE", "생성 실행을 저장하지 못했습니다.", status=503
+                ) from exc
             existing = await _row_by_key(
                 user_id=row["user_id"], pet_id=row["pet_id"], motion_id=row["motion_id"],
                 request_kind=row["request_kind"], idempotency_key=row["idempotency_key"],
             )
             if existing:
                 return _to_run(existing), False
+            active = await _row_by_scope_active(
+                user_id=row["user_id"], pet_id=row["pet_id"],
+                motion_id=row["motion_id"], request_kind=row["request_kind"],
+            )
+            if active:
+                return _to_run(active), False
             raise PetGenerationRunError(
                 "GENERATION_RUNS_UNAVAILABLE", "생성 실행을 저장하지 못했습니다.", status=503
-            )
+            ) from exc
     else:
         _MOCK_RUNS.append(dict(row))
         return _to_run(row), True
@@ -314,17 +533,38 @@ def _lease_seconds() -> int:
     return max(60, int(os.getenv("GENERATION_RUN_LEASE_SECONDS", "300")))
 
 
+def _max_lease_recoveries() -> int:
+    """lease 만료 후 자동 재점유 상한. 0 이면 한 번 죽은 RUNNING 은 바로 FAILED."""
+    return max(0, int(os.getenv("GENERATION_RUN_MAX_LEASE_RECOVERIES", "2")))
+
+
+def _recovery_exhausted(run: PetGenerationRun) -> bool:
+    """claim 이 상한을 넘겨 건네준 실행 — 일을 시키지 않고 종료시켜야 한다."""
+    return run.lease_recoveries > _max_lease_recoveries()
+
+
 async def _claim_next(worker_id: str) -> Optional[PetGenerationRun]:
     client = _supabase() if _use_db() else None
     if client:
         try:
-            result = client.rpc(
-                "claim_next_pet_generation_run",
-                {
-                    "p_worker_id": worker_id,
-                    "p_lease_seconds": _lease_seconds(),
-                },
-            ).execute()
+            pet_allowlist = business_qa_user_test.claim_pet_allowlist()
+            params = {
+                "p_worker_id": worker_id,
+                "p_lease_seconds": _lease_seconds(),
+                "p_max_lease_recoveries": _max_lease_recoveries(),
+                "p_pet_allowlist": pet_allowlist,
+            }
+            try:
+                result = client.rpc("claim_next_pet_generation_run", params).execute()
+            except Exception:
+                # Deployment-order compatibility only while Phase 12 is OFF:
+                # the old 3-argument claim RPC remains safe because no cohort
+                # isolation was requested. Active allowlist mode never falls
+                # back to an unfiltered claim.
+                if pet_allowlist is not None:
+                    raise
+                params.pop("p_pet_allowlist")
+                result = client.rpc("claim_next_pet_generation_run", params).execute()
             data = getattr(result, "data", None) or {}
             if isinstance(data, list):
                 data = data[0] if data else {}
@@ -340,9 +580,15 @@ async def _claim_next(worker_id: str) -> Optional[PetGenerationRun]:
             ) from exc
         return None
 
+    # In-memory mirror of claim_next_pet_generation_run() (migration 20261032):
+    # same predicate, same cap, same ordering, same self-heal.
     now = datetime.now(timezone.utc)
+    max_recoveries = _max_lease_recoveries()
+    pet_allowlist = business_qa_user_test.claim_pet_allowlist()
     eligible = []
     for row in _MOCK_RUNS:
+        if pet_allowlist is not None and str(row.get("pet_id") or "") not in pet_allowlist:
+            continue
         status = row.get("status")
         lease = row.get("lease_expires_at")
         lease_expired = False
@@ -351,6 +597,28 @@ async def _claim_next(worker_id: str) -> Optional[PetGenerationRun]:
                 lease_expired = datetime.fromisoformat(str(lease).replace("Z", "+00:00")) <= now
             except ValueError:
                 lease_expired = True
+        recoveries = int(row.get("lease_recoveries") or 0)
+        if lease_expired and recoveries > max_recoveries:
+            # Self-heal: the exhausted hand-out itself died. Never claim again.
+            row.update(
+                {
+                    "status": STATUS_FAILED,
+                    "last_error": {
+                        "stage": row.get("current_stage"),
+                        "code": ERROR_WORKER_RECOVERY_EXHAUSTED,
+                        "message": "worker lease expired too many times; manual retry required",
+                        "lease_recoveries": recoveries,
+                        "at": _now_iso(),
+                    },
+                    "execution_token": None,
+                    "lease_expires_at": None,
+                    "worker_id": None,
+                    "next_attempt_at": None,
+                    "completed_at": _now_iso(),
+                    "updated_at": _now_iso(),
+                }
+            )
+            continue
         next_attempt = row.get("next_attempt_at")
         due = True
         if status == STATUS_WAITING_PROVIDER and next_attempt:
@@ -358,17 +626,31 @@ async def _claim_next(worker_id: str) -> Optional[PetGenerationRun]:
                 due = datetime.fromisoformat(str(next_attempt).replace("Z", "+00:00")) <= now
             except ValueError:
                 due = True
-        if status == STATUS_QUEUED or (status == STATUS_WAITING_PROVIDER and due) or lease_expired:
+        if (
+            status == STATUS_QUEUED
+            or (status == STATUS_WAITING_PROVIDER and due)
+            or (lease_expired and recoveries <= max_recoveries)
+        ):
             eligible.append(row)
     if not eligible:
         return None
+
+    def _rank(row: dict[str, Any]) -> int:
+        if row.get("status") == STATUS_WAITING_PROVIDER:
+            return 0
+        if row.get("status") == STATUS_QUEUED:
+            return 1
+        return 2  # stale-lease RUNNING recovery goes last — never ahead of fresh intent
+
     current = min(
         eligible,
         key=lambda row: (
-            0 if row.get("status") == STATUS_WAITING_PROVIDER else 1,
+            _rank(row),
             str(row.get("updated_at") or ""),
+            str(row.get("created_at") or ""),
         ),
     )
+    was_recovery = current.get("status") == STATUS_RUNNING
     token = str(uuid.uuid4())
     lease_until = datetime.fromtimestamp(now.timestamp() + _lease_seconds(), timezone.utc).isoformat()
     current.update(
@@ -377,6 +659,7 @@ async def _claim_next(worker_id: str) -> Optional[PetGenerationRun]:
             "worker_id": worker_id,
             "execution_token": token,
             "lease_expires_at": lease_until,
+            "lease_recoveries": int(current.get("lease_recoveries") or 0) + (1 if was_recovery else 0),
             "next_attempt_at": None,
             "updated_at": _now_iso(),
         }
@@ -475,7 +758,7 @@ class _LeaseHeartbeater:
             self.thread.join(timeout=2.0)
 
 
-async def _validate_intake(user_id: str, pet_id: str) -> str:
+async def _validate_intake_evidence(user_id: str, pet_id: str) -> tuple[str, Any, Any]:
     try:
         refs = await pet_reference_service.list_references(user_id=user_id, pet_id=pet_id)
     except pet_reference_service.PetReferenceError as exc:
@@ -501,17 +784,214 @@ async def _validate_intake(user_id: str, pet_id: str) -> str:
         raise PetGenerationRunError(
             "PHASE1_IDENTITY_MISMATCH", "Phase 1 원본과 누끼의 신원 연결이 일치하지 않습니다.", status=409
         )
-    return original.content_id
+    return original.content_id, original, cutout
+
+
+async def _validate_intake(user_id: str, pet_id: str) -> str:
+    content_id, _original, _cutout = await _validate_intake_evidence(user_id, pet_id)
+    return content_id
 
 
 def _phase_error(stage: str, exc: Exception) -> dict[str, Any]:
-    return {
+    error = {
         "stage": stage,
         "code": str(getattr(exc, "code", type(exc).__name__)),
         "message": str(getattr(exc, "message", str(exc)))[:1000],
         "provider_recovery_required": getattr(exc, "code", "") == "PROVIDER_RECOVERY_REQUIRED",
         "at": _now_iso(),
     }
+    details = getattr(exc, "details", None)
+    if isinstance(details, dict):
+        # e.g. {"keyframe_role": "LIE"} — which of two keyframe stages a
+        # KEYFRAME_QA_REVIEW failure came from, so the replacement request can
+        # target the right one.
+        error.update(details)
+    return error
+
+
+def _is_business_fallback(run: PetGenerationRun) -> bool:
+    decision = dict((run.provider_state.get("_business_qa") or {}))
+    return decision.get("fallback_resolution") in {"RESOLVED", "UNAVAILABLE", "ERROR"}
+
+
+def is_delivered_fallback(run: PetGenerationRun) -> bool:
+    """A terminal run whose customer outcome is a resolved safe fallback."""
+    receipt = dict(((run.provider_state or {}).get("_business_qa") or {}))
+    return (
+        run.status in (STATUS_PUBLISHED, STATUS_FAILED)
+        and receipt.get("terminal_state") == business_qa.DELIVERED_FALLBACK
+    )
+
+
+async def _finish_business_fallback(
+    run: PetGenerationRun,
+    *,
+    stage: str,
+    decision: dict[str, Any],
+    source_kind: str,
+    source_id: str,
+    current_candidates: Any = (),
+) -> PetGenerationRun:
+    """Resolve and persist the authoritative customer fallback outcome."""
+
+    provider_state = dict(_provider_state(run))
+    try:
+        fallback = await customer_fallback_service.resolve_best_safe_fallback(
+            user_id=run.user_id,
+            pet_id=run.pet_id,
+            motion_id=run.motion_id,
+            current_candidates=list(current_candidates or ()),
+        )
+    except customer_fallback_service.FallbackInfrastructureError as exc:
+        provider_state["_business_qa"] = {
+            "version": business_qa.BUSINESS_QA_VERSION,
+            "terminal_state": business_qa.TRUE_INFRASTRUCTURE_FAILURE,
+            "candidate_id": None,
+            "decision": dict(decision),
+            "fallback_resolution": "ERROR",
+            "source_kind": source_kind,
+            "source_id": source_id,
+            "infrastructure_error": {"code": exc.code, "message": exc.message},
+        }
+        failed = await _progress(
+            run,
+            {
+                "status": STATUS_FAILED,
+                "current_stage": stage,
+                "completed_at": _now_iso(),
+                "last_error": {
+                    "stage": stage,
+                    "code": "TRUE_INFRASTRUCTURE_FAILURE",
+                    "message": exc.message,
+                    "at": _now_iso(),
+                },
+                "provider_state": provider_state,
+                "execution_token": None,
+                "lease_expires_at": None,
+                "worker_id": None,
+                "next_attempt_at": None,
+            },
+        )
+        qa_shadow_telemetry.finalize_run(
+            failed,
+            fallback_used=False,
+            terminal_state=business_qa.TRUE_INFRASTRUCTURE_FAILURE,
+        )
+        await _reconcile_premium_after_stop(failed)
+        return failed
+    except Exception as exc:
+        provider_state["_business_qa"] = {
+            "version": business_qa.BUSINESS_QA_VERSION,
+            "terminal_state": business_qa.TRUE_INFRASTRUCTURE_FAILURE,
+            "candidate_id": None,
+            "decision": dict(decision),
+            "fallback_resolution": "ERROR",
+            "source_kind": source_kind,
+            "source_id": source_id,
+            "infrastructure_error": {
+                "code": type(exc).__name__,
+                "message": str(exc)[:1000],
+            },
+        }
+        failed = await _progress(
+            run,
+            {
+                "status": STATUS_FAILED,
+                "current_stage": stage,
+                "completed_at": _now_iso(),
+                "last_error": {
+                    "stage": stage,
+                    "code": "TRUE_INFRASTRUCTURE_FAILURE",
+                    "message": "Fallback resolution failed unexpectedly.",
+                    "at": _now_iso(),
+                },
+                "provider_state": provider_state,
+                "execution_token": None,
+                "lease_expires_at": None,
+                "worker_id": None,
+                "next_attempt_at": None,
+            },
+        )
+        qa_shadow_telemetry.finalize_run(
+            failed,
+            fallback_used=False,
+            terminal_state=business_qa.TRUE_INFRASTRUCTURE_FAILURE,
+        )
+        await _reconcile_premium_after_stop(failed)
+        return failed
+
+    if fallback is None:
+        provider_state["_business_qa"] = {
+            "version": business_qa.BUSINESS_QA_VERSION,
+            "terminal_state": None,
+            "candidate_id": None,
+            "decision": dict(decision),
+            "fallback_resolution": "UNAVAILABLE",
+            "source_kind": source_kind,
+            "source_id": source_id,
+        }
+        stopped = await _progress(
+            run,
+            {
+                "status": STATUS_FAILED,
+                "current_stage": stage,
+                "completed_at": _now_iso(),
+                "last_error": {
+                    "stage": stage,
+                    "code": "NO_SAFE_FALLBACK",
+                    "message": "No integrity-safe generated, owned, published, or Canonical asset is available.",
+                    "at": _now_iso(),
+                },
+                "provider_state": provider_state,
+                "execution_token": None,
+                "lease_expires_at": None,
+                "worker_id": None,
+                "next_attempt_at": None,
+            },
+        )
+        qa_shadow_telemetry.finalize_run(
+            stopped,
+            fallback_used=False,
+            terminal_state=business_qa.TRUE_INFRASTRUCTURE_FAILURE,
+        )
+        await _reconcile_premium_after_stop(stopped)
+        return stopped
+
+    provider_state["_business_qa"] = {
+        "version": business_qa.BUSINESS_QA_VERSION,
+        "terminal_state": business_qa.DELIVERED_FALLBACK,
+        "candidate_id": None,
+        "decision": dict(decision),
+        "fallback_resolution": "RESOLVED",
+        "fallback_asset": fallback.as_dict(),
+        "source_kind": source_kind,
+        "source_id": source_id,
+    }
+    delivered = await _progress(
+        run,
+        {
+            # A resolved fallback is a successful delivery, so the run ends in
+            # the normal completed status. It claims no new publication:
+            # publication_id stays unset and the stage stays DELIVERY.
+            "status": STATUS_PUBLISHED,
+            "current_stage": STAGE_DELIVERY,
+            "selected_candidate_id": None,
+            "completed_at": _now_iso(),
+            "last_error": None,
+            "provider_state": provider_state,
+            "execution_token": None,
+            "lease_expires_at": None,
+            "worker_id": None,
+            "next_attempt_at": None,
+        },
+    )
+    qa_shadow_telemetry.finalize_run(
+        delivered,
+        fallback_used=True,
+        terminal_state=business_qa.DELIVERED_FALLBACK,
+    )
+    await _reconcile_premium_after_stop(delivered)
+    return delivered
 
 
 def _next_poll_iso() -> str:
@@ -523,49 +1003,74 @@ def _next_poll_iso() -> str:
 def _provider_state(run: PetGenerationRun) -> dict[str, Any]:
     """Refresh receipt summaries without discarding durable operator intent."""
     state = durable_provider_jobs.summary_for_run(run.id)
-    operator = dict(run.provider_state.get("_operator") or {})
-    if operator:
-        state["_operator"] = operator
+    for key in ("_operator", "_business_qa_cutover"):
+        value = dict(run.provider_state.get(key) or {})
+        if value:
+            state[key] = value
     return state
 
 
-async def _fail(run: PetGenerationRun, stage: str, exc: Exception) -> PetGenerationRun:
-    failed = await _progress(
-        run,
-        {
-            "status": STATUS_FAILED,
-            "current_stage": stage,
-            "last_error": _phase_error(stage, exc),
-            "provider_state": _provider_state(run),
-            "execution_token": None,
-            "lease_expires_at": None,
-            "worker_id": None,
-            "next_attempt_at": None,
-        },
-    )
+async def _reconcile_premium_after_stop(stopped: PetGenerationRun) -> None:
     # ── Phase 7H — 상용 실행의 종료 되돌림 판정 ──────────────────────────────
     # 레거시 세션의 예약 분기와 같은 정책(READY 하나라도 있으면 유지, 진행 중이면
     # 유예, 예약은 환불이 아니라 **해제**)을 실행용으로 옮긴 함수 하나를 부른다.
     # 판정 실패는 실행 상태를 바꾸지 못한다 — 다음 종료/재시도가 다시 판정한다.
-    if failed.request_kind == REQUEST_PREMIUM_PRODUCT:
-        try:
-            from . import premium_run_fulfillment
+    if stopped.request_kind != REQUEST_PREMIUM_PRODUCT:
+        return
+    try:
+        from . import premium_run_fulfillment
 
-            await premium_run_fulfillment.reconcile_failed_run(
-                user_id=failed.user_id,
-                pet_id=failed.pet_id,
-                motion_id=failed.motion_id,
-                reservation_ledger_id=failed.reservation_ledger_id,
-            )
-        except Exception:
-            logger.exception(
-                "프리미엄 실행 종료 되돌림 판정 실패 — 다음 종료에서 재판정 (run=%s)", failed.id
-            )
+        await premium_run_fulfillment.reconcile_failed_run(
+            user_id=stopped.user_id,
+            pet_id=stopped.pet_id,
+            motion_id=stopped.motion_id,
+            reservation_ledger_id=stopped.reservation_ledger_id,
+        )
+    except Exception:
+        logger.exception(
+            "프리미엄 실행 종료 되돌림 판정 실패 — 다음 종료에서 재판정 (run=%s)", stopped.id
+        )
+
+
+async def _fail(run: PetGenerationRun, stage: str, exc: Exception) -> PetGenerationRun:
+    try:
+        failed = await _progress(
+            run,
+            {
+                "status": STATUS_FAILED,
+                "current_stage": stage,
+                "last_error": _phase_error(stage, exc),
+                "provider_state": _provider_state(run),
+                "execution_token": None,
+                "lease_expires_at": None,
+                "worker_id": None,
+                "next_attempt_at": None,
+                "completed_at": _now_iso(),
+            },
+        )
+    except PetGenerationRunError as lease_exc:
+        if lease_exc.code in ("WORKER_LEASE_LOST", "WORKER_LEASE_REQUIRED"):
+            # 우리 lease 는 이미 끝났다 — 사용자가 취소했거나 다른 워커가 인수했다.
+            # 그쪽의 상태(CANCELLED / RUNNING …)가 정본이므로 덮어쓰지 않는다.
+            current = await _row_by_id(run.id)
+            return _to_run(current) if current else run
+        raise
+    await _reconcile_premium_after_stop(failed)
+    qa_shadow_telemetry.finalize_run(
+        failed,
+        fallback_used=False,
+        terminal_state=business_qa.TRUE_INFRASTRUCTURE_FAILURE,
+    )
     return failed
 
 
 def _image_providers(run: PetGenerationRun, operation: str):
-    providers = canonical_image_providers.resolve_providers()
+    # 정본과 키프레임은 각자의 env 순서를 쓴다 — 여기서 갈린다.
+    providers = (
+        canonical_image_providers.resolve_keyframe_providers()
+        if operation == durable_provider_jobs.OP_KEYFRAME
+        else canonical_image_providers.resolve_providers()
+    )
     durable = durable_provider_jobs.durable_image_providers(
         providers,
         run_id=run.id,
@@ -576,14 +1081,19 @@ def _image_providers(run: PetGenerationRun, operation: str):
     if not durable:
         raise PetGenerationRunError(
             "DURABLE_PROVIDER_NOT_CONFIGURED",
-            "재개 가능한 이미지 provider 가 설정되지 않았습니다. Phase 7D 는 Runway task API 만 지원합니다.",
+            "재개 가능한 이미지 provider 가 설정되지 않았습니다.",
             status=503,
         )
     return durable
 
 
-def _video_providers(run: PetGenerationRun, motion_class: str):
-    providers = video_motion_providers.routing_for_class(motion_class)
+def _video_providers(run: PetGenerationRun, motion_id: str):
+    try:
+        providers = video_motion_providers.resolve_provider_order(
+            list(motion_spec.provider_order_for_motion(motion_id))
+        )
+    except video_motion_providers.VideoProviderError as exc:
+        raise PetGenerationRunError(exc.code, exc.message, status=503) from exc
     durable = durable_provider_jobs.durable_video_providers(
         providers, run_id=run.id, user_id=run.user_id, pet_id=run.pet_id
     )
@@ -633,22 +1143,55 @@ async def _canonical(run: PetGenerationRun):
         return canonical, run
 
     latest = await canonical_pet_service.get_canonical(user_id=run.user_id, pet_id=run.pet_id)
+    operator_state = dict(run.provider_state.get("_operator") or {})
+    replacement = dict(operator_state.get("canonical_replacement_request") or {})
+    replacement_source = str(replacement.get("source_canonical_version_id") or "")
     if latest and (
         str(latest.reference_set_id or "") == str(run.reference_set_id or "")
         and latest.reference_set_version == run.reference_set_version
     ):
-        if latest.status != canonical_pet_service.STATUS_BUILDING:
+        # An explicit REVIEW replacement request deliberately refuses to reuse
+        # its source version. Once the worker has built the next version,
+        # normal durable resume takes over via the pinned-version branch above.
+        if latest.id != replacement_source and latest.status != canonical_pet_service.STATUS_BUILDING:
             return latest, run
+    if not (run.reference_set_id and run.reference_set_version):
+        raise PetGenerationRunError(
+            "RUN_LINEAGE_INVALID", "실행에 고정된 레퍼런스 세트가 없습니다.", status=409
+        )
+    # 실행이 고정한 세트를 **그대로** 넘긴다 — build_canonical 이 세트를 다시
+    # 만들거나 최신을 고르면, 틱 사이에 env(PET_VLM_IDENTITY_ENABLED 등)가 달라진
+    # 워커가 다른 세트로 새 정본 버전을 만들어 계보가 갈라진다 (run 377b6c62).
     canonical = await canonical_pet_service.build_canonical(
         user_id=run.user_id,
         pet_id=run.pet_id,
         providers=_image_providers(run, durable_provider_jobs.OP_CANONICAL),
-        skip_if_unchanged=True,
+        skip_if_unchanged=not bool(latest and latest.id == replacement_source),
+        pinned_reference_set_id=run.reference_set_id,
+        pinned_reference_set_version=run.reference_set_version,
+        require_pass_capable_qa=True,
     )
     return canonical, run
 
 
-async def _keyframe(run: PetGenerationRun, role: str):
+def _assert_canonical_lineage(run: PetGenerationRun, canonical: Any) -> None:
+    """정본이 실행의 계보(펫/레퍼런스 세트/신원 프로필)에 속하는지 — 핀을 쓰기 **전에** 본다."""
+    if (
+        str(getattr(canonical, "pet_id", "") or "") != str(run.pet_id or "")
+        or str(getattr(canonical, "user_id", "") or "") != str(run.user_id or "")
+    ):
+        raise PetGenerationRunError("RUN_LINEAGE_INVALID", "canonical 의 펫이 실행과 다릅니다.", status=409)
+    if (
+        str(canonical.reference_set_id or "") != str(run.reference_set_id or "")
+        or canonical.reference_set_version != run.reference_set_version
+    ):
+        raise PetGenerationRunError("RUN_LINEAGE_INVALID", "canonical 의 레퍼런스 세트가 실행과 다릅니다.", status=409)
+    identity_version = getattr(canonical, "identity_profile_version", None)
+    if identity_version is not None and identity_version != run.identity_profile_version:
+        raise PetGenerationRunError("RUN_LINEAGE_INVALID", "canonical 의 신원 프로필이 실행과 다릅니다.", status=409)
+
+
+async def _keyframe(run: PetGenerationRun, role: str, *, allow_canonical_reuse: bool = False):
     saved = dict(run.keyframes.get(role) or {})
     if saved.get("id") and saved.get("version"):
         keyframe = await action_keyframe_service.get_keyframe(
@@ -661,17 +1204,51 @@ async def _keyframe(run: PetGenerationRun, role: str):
     latest = await action_keyframe_service.get_keyframe(
         user_id=run.user_id, pet_id=run.pet_id, keyframe_role=role
     )
+    operator_state = dict(run.provider_state.get("_operator") or {})
+    replacements = dict(operator_state.get("keyframe_replacement_requests") or {})
+    replacement = dict(replacements.get(role) or {})
+    replacement_source = str(replacement.get("source_keyframe_id") or "")
     if latest and str(latest.canonical_version_id or "") == str(run.canonical_version_id or ""):
-        if latest.status != action_keyframe_service.STATUS_BUILDING:
+        # See _canonical(): an explicit REVIEW replacement request refuses to
+        # reuse its source version until the worker builds the next one.
+        if latest.id != replacement_source and latest.status != action_keyframe_service.STATUS_BUILDING:
             return latest, run
+    # An explicit replacement request for this role must always bypass the
+    # Canonical-reuse shortcut and go through real keyframe generation — an
+    # operator asking for a fresh candidate should never get an alias of the
+    # very Canonical the replacement may be trying to move away from.
+    is_replacement_build = bool(latest and latest.id == replacement_source)
+    if not (run.canonical_version_id and run.canonical_version):
+        raise PetGenerationRunError(
+            "RUN_LINEAGE_INVALID", "실행에 고정된 canonical 이 없습니다.", status=409
+        )
+    # 실행이 고정한 정본을 **그대로** 넘긴다 — build_keyframe 이 최신 정본을
+    # 고르면, 틱 사이에 생긴 다른 정본 버전으로 키프레임 계보가 갈라진다.
     keyframe = await action_keyframe_service.build_keyframe(
         user_id=run.user_id,
         pet_id=run.pet_id,
         keyframe_role=role,
         providers=_image_providers(run, durable_provider_jobs.OP_KEYFRAME),
-        skip_if_unchanged=True,
+        skip_if_unchanged=not is_replacement_build,
+        allow_canonical_reuse=allow_canonical_reuse and not is_replacement_build,
+        pinned_canonical_version_id=run.canonical_version_id,
+        pinned_canonical_version=run.canonical_version,
     )
     return keyframe, run
+
+
+def _assert_keyframe_lineage(run: PetGenerationRun, keyframe: Any) -> None:
+    """키프레임이 실행의 계보(펫/정본)에 속하는지 — 핀을 쓰기 **전에** 본다."""
+    if (
+        str(getattr(keyframe, "pet_id", "") or "") != str(run.pet_id or "")
+        or str(getattr(keyframe, "user_id", "") or "") != str(run.user_id or "")
+    ):
+        raise PetGenerationRunError("RUN_LINEAGE_INVALID", "키프레임의 펫이 실행과 다릅니다.", status=409)
+    if (
+        str(keyframe.canonical_version_id or "") != str(run.canonical_version_id or "")
+        or keyframe.canonical_version != run.canonical_version
+    ):
+        raise PetGenerationRunError("RUN_LINEAGE_INVALID", "키프레임의 canonical 이 실행과 다릅니다.", status=409)
 
 
 def _motion_matches(run: PetGenerationRun, motion: Any) -> bool:
@@ -692,7 +1269,7 @@ def _motion_matches(run: PetGenerationRun, motion: Any) -> bool:
     )
 
 
-async def _motion(run: PetGenerationRun):
+async def _motion(run: PetGenerationRun, contract: Optional[dict[str, Any]] = None):
     if run.motion_version_id:
         motion = await motion_video_service.get_motion_version(
             user_id=run.user_id,
@@ -723,8 +1300,9 @@ async def _motion(run: PetGenerationRun):
         user_id=run.user_id,
         pet_id=run.pet_id,
         motion_id=run.motion_id,
-        providers=_video_providers(run, spec.motion_class),
+        providers=_video_providers(run, spec.motion_id),
         skip_if_unchanged=not bool(latest and latest.id == replacement_source),
+        precomputed_contract=contract,
     )
     return motion, run
 
@@ -734,61 +1312,192 @@ def _require_status(actual: str, expected: str, code: str, message: str) -> None
         raise PetGenerationRunError(code, message, status=409)
 
 
+async def _advance_keyframe_stage(
+    run: PetGenerationRun,
+    role: str,
+    keyframe: Any,
+    keyframes: dict[str, Any],
+) -> PetGenerationRun:
+    """
+    Verify lineage, then pin one keyframe role's version before judging its status (mirrors
+    _canonical()/_motion()) so a REVIEW keyframe is remembered across retries —
+    _keyframe() then takes the pinned-version branch and never calls
+    build_keyframe() again for the same version. Raises a distinct, recoverable
+    KEYFRAME_QA_REVIEW (never the generic NOT_COMPLETE) when the role is
+    REVIEW, since that state needs a human decision, not a repeated failure.
+    """
+    # Lineage is verified **before** the pin is written: a keyframe built on
+    # another canonical must never be remembered on the run.
+    _assert_keyframe_lineage(run, keyframe)
+    qa_shadow_telemetry.record_candidates(
+        run,
+        stage="KEYFRAME",
+        stage_role=role,
+        parent_id=keyframe.id,
+        candidates=keyframe.candidates,
+    )
+    provider_state = _provider_state(run)
+    operator_state = dict(provider_state.get("_operator") or {})
+    replacements = dict(operator_state.get("keyframe_replacement_requests") or {})
+    replacement = dict(replacements.get(role) or {})
+    if replacement and str(replacement.get("source_keyframe_id") or "") != keyframe.id:
+        replacement.update(
+            {
+                "status": "GENERATED",
+                "replacement_keyframe_id": keyframe.id,
+                "completed_at": _now_iso(),
+            }
+        )
+        replacements[role] = replacement
+        operator_state["keyframe_replacement_requests"] = replacements
+        provider_state["_operator"] = operator_state
+    keyframes[role] = {
+        "id": keyframe.id,
+        "version": keyframe.version,
+        "selected_candidate_id": keyframe.selected_candidate_id,
+        "canonical_version_id": keyframe.canonical_version_id,
+    }
+    run = await _progress(run, {"keyframes": keyframes, "provider_state": provider_state})
+    fallback_decision = business_qa.fallback_receipt(list(keyframe.candidates))
+    if fallback_decision is not None:
+        return await _finish_business_fallback(
+            run,
+            stage=STAGE_KEYFRAMES,
+            decision=fallback_decision,
+            source_kind=f"KEYFRAME:{role}",
+            source_id=keyframe.id,
+        )
+    if keyframe.status == action_keyframe_service.STATUS_REVIEW:
+        raise PetGenerationRunError(
+            "KEYFRAME_QA_REVIEW",
+            f"Phase 5 키프레임({role}) 후보가 사람 검토를 요구합니다 — "
+            "재구매 없이 QA 재실행 또는 명시적 교체 요청으로만 진행됩니다.",
+            status=409,
+            details={"keyframe_role": role},
+        )
+    _require_status(
+        keyframe.status, action_keyframe_service.STATUS_COMPLETE,
+        "KEYFRAME_NOT_COMPLETE", "Phase 5 키프레임 QA PASS 결과가 없습니다.",
+    )
+    return run
+
+
 async def _execute(run: PetGenerationRun) -> PetGenerationRun:
     stage = run.current_stage or STAGE_QUEUED
+    # 재개 지점: WAITING_PROVIDER 깨어남은 process_next_generation_run 을 통해
+    # 이 함수를 처음부터가 아니라 여기서 다시 부른다. current_stage 가 어떤
+    # 단계보다 뒤에 있으면 그 단계는 이미 끝나서 핀됐다는 뜻이다 — 그 핀을
+    # 지우는 모든 경로(교체 요청 등)는 반드시 current_stage 를 그 단계로
+    # 되감고 나서만 지운다. 그래서 이미 지난 단계는 다시 읽지도 검증하지도
+    # 않는다. 다만 핀 필드가 실제로는 비어 있으면(비정상/불일치 상태) 그
+    # 단계는 안전하게 처음부터 다시 돈다 — 검증되지 않은 상태를 믿지 않는다.
+    resume_from = _stage_index(stage)
     try:
-        stage = STAGE_IDENTITY
-        run = await _progress(run, {"current_stage": stage})
-        run = await _heartbeat(run)
-        profile = await _identity(run)
-        _require_status(
-            profile.status, pet_identity_service.STATUS_COMPLETE,
-            "IDENTITY_NOT_COMPLETE", "Phase 2 신원 프로필이 complete 상태가 아닙니다.",
-        )
-        run = await _progress(
-            run,
-            {"identity_profile_id": profile.id, "identity_profile_version": profile.version},
-        )
-
-        stage = STAGE_REFERENCE_SET
-        run = await _progress(run, {"current_stage": stage})
-        run = await _heartbeat(run)
-        refset = await _reference_set(run)
-        _require_status(
-            refset.status, pet_reference_set_service.STATUS_COMPLETE,
-            "REFERENCE_SET_NOT_COMPLETE", "Phase 3 신뢰 레퍼런스 세트가 complete 상태가 아닙니다.",
-        )
-        if (
-            str(refset.identity_profile_id or "") != str(run.identity_profile_id or "")
-            or refset.identity_profile_version != run.identity_profile_version
+        if resume_from <= _stage_index(STAGE_IDENTITY) or not (
+            run.identity_profile_id and run.identity_profile_version
         ):
-            raise PetGenerationRunError("RUN_LINEAGE_INVALID", "레퍼런스 세트의 신원 프로필이 실행과 다릅니다.", status=409)
-        run = await _progress(
-            run,
-            {"reference_set_id": refset.id, "reference_set_version": refset.version},
-        )
+            stage = STAGE_IDENTITY
+            run = await _progress(run, {"current_stage": stage})
+            run = await _heartbeat(run)
+            profile = await _identity(run)
+            _require_status(
+                profile.status, pet_identity_service.STATUS_COMPLETE,
+                "IDENTITY_NOT_COMPLETE", "Phase 2 신원 프로필이 complete 상태가 아닙니다.",
+            )
+            run = await _progress(
+                run,
+                {"identity_profile_id": profile.id, "identity_profile_version": profile.version},
+            )
 
-        stage = STAGE_CANONICAL
-        run = await _progress(run, {"current_stage": stage})
-        run = await _heartbeat(run)
-        canonical, run = await _canonical(run)
-        _require_status(
-            canonical.status, canonical_pet_service.STATUS_COMPLETE,
-            "CANONICAL_NOT_COMPLETE", "Phase 4 canonical QA PASS 결과가 없습니다.",
-        )
-        if (
-            str(canonical.reference_set_id or "") != str(run.reference_set_id or "")
-            or canonical.reference_set_version != run.reference_set_version
+        if resume_from <= _stage_index(STAGE_REFERENCE_SET) or not (
+            run.reference_set_id and run.reference_set_version
         ):
-            raise PetGenerationRunError("RUN_LINEAGE_INVALID", "canonical 의 레퍼런스 세트가 실행과 다릅니다.", status=409)
-        run = await _progress(
-            run,
-            {
-                "canonical_version_id": canonical.id,
-                "canonical_version": canonical.version,
-                "provider_state": _provider_state(run),
-            },
-        )
+            stage = STAGE_REFERENCE_SET
+            run = await _progress(run, {"current_stage": stage})
+            run = await _heartbeat(run)
+            refset = await _reference_set(run)
+            _require_status(
+                refset.status, pet_reference_set_service.STATUS_COMPLETE,
+                "REFERENCE_SET_NOT_COMPLETE", "Phase 3 신뢰 레퍼런스 세트가 complete 상태가 아닙니다.",
+            )
+            if (
+                str(refset.identity_profile_id or "") != str(run.identity_profile_id or "")
+                or refset.identity_profile_version != run.identity_profile_version
+            ):
+                raise PetGenerationRunError("RUN_LINEAGE_INVALID", "레퍼런스 세트의 신원 프로필이 실행과 다릅니다.", status=409)
+            run = await _progress(
+                run,
+                {"reference_set_id": refset.id, "reference_set_version": refset.version},
+            )
+
+        if resume_from <= _stage_index(STAGE_CANONICAL) or not (
+            run.canonical_version_id and run.canonical_version
+        ):
+            stage = STAGE_CANONICAL
+            run = await _progress(run, {"current_stage": stage})
+            run = await _heartbeat(run)
+            canonical, run = await _canonical(run)
+            # Lineage is verified **before** the pin is written: a canonical from
+            # another reference set must never be remembered on the run, or every
+            # Retry re-reads that pin and fails the same way forever.
+            _assert_canonical_lineage(run, canonical)
+            qa_shadow_telemetry.record_candidates(
+                run,
+                stage="CANONICAL",
+                parent_id=canonical.id,
+                candidates=canonical.candidates,
+            )
+            # Pin the version **before** judging its status (mirrors _motion()) so a
+            # REVIEW canonical is remembered across retries — _canonical() then takes
+            # the pinned-version branch and never calls build_canonical() again for
+            # the same version, and request_canonical_replacement_generation() has a
+            # concrete source version to replace.
+            provider_state = _provider_state(run)
+            operator_state = dict(provider_state.get("_operator") or {})
+            canonical_replacement = dict(operator_state.get("canonical_replacement_request") or {})
+            if canonical_replacement and str(canonical_replacement.get("source_canonical_version_id") or "") != canonical.id:
+                canonical_replacement.update(
+                    {
+                        "status": "GENERATED",
+                        "replacement_canonical_version_id": canonical.id,
+                        "completed_at": _now_iso(),
+                    }
+                )
+                operator_state["canonical_replacement_request"] = canonical_replacement
+                provider_state["_operator"] = operator_state
+            run = await _progress(
+                run,
+                {
+                    "canonical_version_id": canonical.id,
+                    "canonical_version": canonical.version,
+                    "provider_state": provider_state,
+                },
+            )
+            fallback_decision = business_qa.fallback_receipt(list(canonical.candidates))
+            if fallback_decision is not None:
+                return await _finish_business_fallback(
+                    run,
+                    stage=STAGE_CANONICAL,
+                    decision=fallback_decision,
+                    source_kind="CANONICAL",
+                    source_id=canonical.id,
+                )
+            if canonical.status == canonical_pet_service.STATUS_REVIEW:
+                # Distinct from CANONICAL_NOT_COMPLETE: this is a recoverable,
+                # non-terminal state. Reusing this REVIEW version is not a bug — it
+                # is the whole point of skip_if_unchanged — but the run cannot make
+                # forward progress without a human decision (QA rerun or an
+                # explicit replacement request), so it must not raise the same
+                # generic "not complete" error as an actual failure.
+                raise PetGenerationRunError(
+                    "CANONICAL_QA_REVIEW",
+                    "Phase 4 canonical 후보가 사람 검토를 요구합니다 — 재구매 없이 QA 재실행 또는 명시적 교체 요청으로만 진행됩니다.",
+                    status=409,
+                )
+            _require_status(
+                canonical.status, canonical_pet_service.STATUS_COMPLETE,
+                "CANONICAL_NOT_COMPLETE", "Phase 4 canonical QA PASS 결과가 없습니다.",
+            )
 
         spec = motion_spec.get_motion(run.motion_id)
         supported = (MOTION_BREATHING,) + premium_motion_finalization.PREMIUM_MOTIONS
@@ -799,80 +1508,84 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
                 status=422,
             )
 
-        stage = STAGE_KEYFRAMES
-        run = await _progress(run, {"current_stage": stage})
-        run = await _heartbeat(run)
-        keyframe, run = await _keyframe(run, spec.start_keyframe_role)
-        _require_status(
-            keyframe.status, action_keyframe_service.STATUS_COMPLETE,
-            "KEYFRAME_NOT_COMPLETE", "Phase 5 키프레임 QA PASS 결과가 없습니다.",
+        keyframes_pinned = bool((run.keyframes.get(spec.start_keyframe_role) or {}).get("id")) and (
+            not (spec.requires_target_keyframe and spec.target_keyframe_role)
+            or bool((run.keyframes.get(spec.target_keyframe_role) or {}).get("id"))
         )
-        if (
-            str(keyframe.canonical_version_id or "") != str(run.canonical_version_id or "")
-            or keyframe.canonical_version != run.canonical_version
-        ):
-            raise PetGenerationRunError("RUN_LINEAGE_INVALID", "키프레임의 canonical 이 실행과 다릅니다.", status=409)
-        keyframes = dict(run.keyframes)
-        keyframes[spec.start_keyframe_role] = {
-            "id": keyframe.id,
-            "version": keyframe.version,
-            "selected_candidate_id": keyframe.selected_candidate_id,
-            "canonical_version_id": keyframe.canonical_version_id,
-        }
-        # ── 전이(TRANSITION) 목표 키프레임 (2026-09-08) ─────────────────────
-        # resolve_video_generation_spec 은 requires_target_keyframe 모션에서
-        # **승인된** 목표 키프레임을 요구한다. 예전 파이프라인은 시작 역할만
-        # 만들었으므로 LIE_DOWN 류는 MOTION_SPEC 에서 TARGET_KEYFRAME_REQUIRED
-        # 로 영원히 죽었다. 시작과 같은 규칙(COMPLETE + canonical 일치)으로
-        # 목표 역할도 여기서 만든다.
-        if spec.requires_target_keyframe and spec.target_keyframe_role:
-            target_kf, run = await _keyframe(run, spec.target_keyframe_role)
-            _require_status(
-                target_kf.status, action_keyframe_service.STATUS_COMPLETE,
-                "KEYFRAME_NOT_COMPLETE", "Phase 5 목표 키프레임 QA PASS 결과가 없습니다.",
+        if resume_from <= _stage_index(STAGE_KEYFRAMES) or not keyframes_pinned:
+            stage = STAGE_KEYFRAMES
+            run = await _progress(run, {"current_stage": stage})
+            run = await _heartbeat(run)
+            # HOME = STAND_READY (motion-spec-v16): the home keyframe is always a
+            # generated standing still. The Canonical is never aliased as the
+            # BREATHING/home start pose and its posture is never inspected —
+            # a sitting or lying Canonical must not become the home pose.
+            # Every STAND_READY-starting motion shares the one keyframe that
+            # _keyframe() resolves for this run's pinned Canonical.
+            keyframe, run = await _keyframe(run, spec.start_keyframe_role)
+            keyframes = dict(run.keyframes)
+            run = await _advance_keyframe_stage(run, spec.start_keyframe_role, keyframe, keyframes)
+            if _is_business_fallback(run):
+                return run
+            # ── 전이(TRANSITION) 목표 키프레임 (2026-09-08) ─────────────────────
+            # resolve_video_generation_spec 은 requires_target_keyframe 모션에서
+            # **승인된** 목표 키프레임을 요구한다. 예전 파이프라인은 시작 역할만
+            # 만들었으므로 LIE_DOWN 류는 MOTION_SPEC 에서 TARGET_KEYFRAME_REQUIRED
+            # 로 영원히 죽었다. 시작과 같은 규칙(COMPLETE + canonical 일치)으로
+            # 목표 역할도 여기서 만든다.
+            if spec.requires_target_keyframe and spec.target_keyframe_role:
+                target_kf, run = await _keyframe(run, spec.target_keyframe_role)
+                keyframes = dict(run.keyframes)
+                run = await _advance_keyframe_stage(run, spec.target_keyframe_role, target_kf, keyframes)
+                if _is_business_fallback(run):
+                    return run
+
+        # MOTION_SPEC 계보 검증은 항상 run.keyframes 의 영속 핀을 본다 — 위
+        # 블록이 이번 틱에 스킵됐어도(재개) 이전 틱이 이미 같은 값을 박아
+        # 뒀으므로 동일하다.
+        start_kf_pin = dict(run.keyframes.get(spec.start_keyframe_role) or {})
+
+        if resume_from <= _stage_index(STAGE_MOTION_SPEC) or not run.motion_spec_version:
+            stage = STAGE_MOTION_SPEC
+            run = await _progress(run, {"current_stage": stage})
+            run = await _heartbeat(run)
+            contract = await motion_spec.resolve_video_generation_spec(
+                user_id=run.user_id, pet_id=run.pet_id, motion_id=run.motion_id
             )
             if (
-                str(target_kf.canonical_version_id or "") != str(run.canonical_version_id or "")
-                or target_kf.canonical_version != run.canonical_version
+                contract.get("motion_id") != run.motion_id
+                or str((contract.get("start_keyframe") or {}).get("keyframe_id") or "") != str(start_kf_pin.get("id") or "")
+                or (contract.get("start_keyframe") or {}).get("version") != start_kf_pin.get("version")
+                or str(contract.get("canonical_version_id") or "") != str(run.canonical_version_id or "")
             ):
-                raise PetGenerationRunError(
-                    "RUN_LINEAGE_INVALID", "목표 키프레임의 canonical 이 실행과 다릅니다.", status=409
-                )
-            keyframes[spec.target_keyframe_role] = {
-                "id": target_kf.id,
-                "version": target_kf.version,
-                "selected_candidate_id": target_kf.selected_candidate_id,
-                "canonical_version_id": target_kf.canonical_version_id,
-            }
-        run = await _progress(
-            run,
-            {
-                "keyframes": keyframes,
-                "provider_state": _provider_state(run),
-            },
-        )
-
-        stage = STAGE_MOTION_SPEC
-        run = await _progress(run, {"current_stage": stage})
-        run = await _heartbeat(run)
-        contract = await motion_spec.resolve_video_generation_spec(
-            user_id=run.user_id, pet_id=run.pet_id, motion_id=run.motion_id
-        )
-        if (
-            contract.get("motion_id") != run.motion_id
-            or str((contract.get("start_keyframe") or {}).get("keyframe_id") or "") != keyframe.id
-            or (contract.get("start_keyframe") or {}).get("version") != keyframe.version
-            or str(contract.get("canonical_version_id") or "") != str(run.canonical_version_id or "")
-        ):
-            raise PetGenerationRunError("RUN_LINEAGE_INVALID", "Phase 5.1 계약이 실행 lineage 와 다릅니다.", status=409)
-        run = await _progress(
-            run, {"motion_spec_version": str(contract.get("motion_spec_version") or "")}
-        )
+                raise PetGenerationRunError("RUN_LINEAGE_INVALID", "Phase 5.1 계약이 실행 lineage 와 다릅니다.", status=409)
+            run = await _progress(
+                run, {"motion_spec_version": str(contract.get("motion_spec_version") or "")}
+            )
+        elif not run.motion_version_id:
+            # 계약 검증/핀(motion_spec_version)은 이미 끝났다 — 하지만 모션
+            # 생성 자체는 아직 완료되지 않았다(재개 직후, provider 대기 중
+            # 멈췄던 지점). 계약 "값"은 실행 행에 영속화되지 않으므로
+            # build_motion_video 에 넘기려면 여기서 한 번은 다시 해석해야
+            # 한다 — 계보 재검증/motion_spec_version 재기록은 하지 않는다.
+            contract = await motion_spec.resolve_video_generation_spec(
+                user_id=run.user_id, pet_id=run.pet_id, motion_id=run.motion_id
+            )
+        else:
+            # 모션까지 이미 핀됐다(run.motion_version_id) — _motion() 의 핀
+            # 분기는 계약을 전혀 쓰지 않으므로 다시 해석할 이유가 없다.
+            contract = None
 
         stage = STAGE_MOTION_GENERATION
         run = await _progress(run, {"current_stage": stage})
         run = await _heartbeat(run)
-        motion, run = await _motion(run)
+        motion, run = await _motion(run, contract)
+        qa_shadow_telemetry.record_candidates(
+            run,
+            stage="MOTION",
+            parent_id=motion.id,
+            candidates=motion.candidates,
+        )
         provider_state = _provider_state(run)
         operator_state = dict(provider_state.get("_operator") or {})
         replacement = dict(operator_state.get("replacement_request") or {})
@@ -899,26 +1612,103 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
         stage = STAGE_QA
         run = await _progress(run, {"current_stage": stage})
         selected = None
-        if motion.status == motion_video_service.STATUS_COMPLETE:
+        # BREATHING with legacy authority retired: the selected candidate's
+        # receipt alone decides. Version status, the legacy decision and the
+        # severity gate are not consulted.
+        legacy_retired = business_qa.legacy_authority_retired(run.motion_id)
+        if legacy_retired:
             selected = next(
                 (
                     candidate
                     for candidate in motion.candidates
                     if candidate.id == motion.selected_candidate_id
                     and candidate.selected
-                    and candidate.decision == "PASS"
+                    and motion_video_service.candidate_is_publishable(
+                        candidate, motion_id=run.motion_id
+                    )
+                ),
+                None,
+            )
+        elif motion.status == motion_video_service.STATUS_COMPLETE:
+            selected = next(
+                (
+                    candidate
+                    for candidate in motion.candidates
+                    if candidate.id == motion.selected_candidate_id
+                    and candidate.selected
+                    and motion_video_service.candidate_is_publishable(candidate)
                 ),
                 None,
             )
             if not selected:
-                raise PetGenerationRunError("MOTION_QA_INVALID", "선택된 QA PASS 후보를 확인하지 못했습니다.", status=409)
+                raise PetGenerationRunError("MOTION_QA_INVALID", "선택된 전달 가능 후보를 확인하지 못했습니다.", status=409)
 
-        # ── Phase 7G: QA 결정은 절대 바꾸지 않는다 — REVIEW 는 REVIEW 로 남는다.
-        # 다만 PASS 든 REVIEW 든 재생 가능한 후보는 packed-alpha 파생물로 포장한다
-        # (Phase 7F, 멱등). PASS 는 이어서 발행되고, REVIEW 는 발행 없이 개발/
-        # 현재-실행 재생 리졸버(GET /generation-runs/{id}/playback)로만 보인다.
+        # ── 무결성 게이트 (MOTION_QA_SEVERITY_GATE=integrity_only) ─────────────
+        # PASS 가 없어도 빌더가 무결성 사유 없는 REVIEW/FAIL 후보를 selected 로 골라
+        # 뒀으면 그 후보를 PASS 와 똑같이 포장·발행한다. QA 결정/버전 status 는
+        # 그대로다 — 실행만 FAILED 대신 PUBLISHED 로 끝난다.
+        gated = None
+        if (
+            selected is None
+            and not legacy_retired
+            and motion.selected_candidate_id
+            and motion_video_service.severity_gate_mode() == motion_video_service.SEVERITY_GATE_INTEGRITY_ONLY
+        ):
+            gated = next(
+                (
+                    candidate
+                    for candidate in motion.candidates
+                    if candidate.id == motion.selected_candidate_id
+                    and getattr(candidate, "selected", False)
+                    and motion_video_service.candidate_is_publishable(candidate)
+                ),
+                None,
+            )
+        deliverable = selected or gated
+
+        # Phase 6: two paid candidates have both produced explicit business-v1
+        # integrity failures.  This is a normal bounded-budget product outcome,
+        # not the old "no strict PASS" runtime error.  The actual fallback asset
+        # ladder is intentionally deferred; persist its authoritative action so
+        # Phase 7 can resolve and publish it without buying Candidate 3.
+        fallback_decision = business_qa.fallback_receipt(list(motion.candidates))
+        if (
+            legacy_retired
+            and deliverable is None
+            and fallback_decision is None
+            and any(
+                str(getattr(candidate, "decision", "") or "").upper() in ("PASS", "REVIEW", "FAIL")
+                for candidate in motion.candidates
+            )
+        ):
+            # A QA-evaluated candidate exists but no receipt authorizes delivery,
+            # regeneration or fallback (missing receipt / exhausted). Safe
+            # default: block it and deliver the fallback still. The legacy
+            # decision is never consulted. Provider-only failures (no evaluated
+            # candidate) keep their normal retryable failure below.
+            fallback_decision = business_qa.safe_default_receipt(
+                reason=business_qa.SAFE_DEFAULT_REASON_MISSING,
+                request_kind=str(getattr(motion, "motion_class", "") or "MOTION"),
+            )
+        if deliverable is None and fallback_decision is not None:
+            return await _finish_business_fallback(
+                run,
+                stage=STAGE_QA,
+                decision=fallback_decision,
+                source_kind="MOTION",
+                source_id=motion.id,
+                current_candidates=motion.candidates,
+            )
+
+        # ── Phase 7G: legacy QA 결정은 절대 바꾸지 않는다. business-v1 영수증이
+        # 없는 역사적 REVIEW 만 아래 호환 경로에서 포장 후 검토 상태로 남는다.
+        # 새 business-deliverable REVIEW 는 위 deliverable 경로로 발행된다.
         review_candidate = None
-        if motion.status == motion_video_service.STATUS_REVIEW:
+        if (
+            deliverable is None
+            and not legacy_retired
+            and motion.status == motion_video_service.STATUS_REVIEW
+        ):
             review_candidates = [
                 c for c in motion.candidates if getattr(c, "decision", "") == "REVIEW"
             ]
@@ -929,7 +1719,7 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
                 ),
                 default=None,
             )
-        packageable = selected or review_candidate
+        packageable = deliverable or review_candidate
         if packageable is not None:
             stage = STAGE_DELIVERY
             try:
@@ -955,10 +1745,31 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
             except motion_delivery_service.MotionDeliveryError as exc:
                 raise PetGenerationRunError(exc.code, exc.message, status=exc.status) from exc
 
-        if motion.status == motion_video_service.STATUS_REVIEW:
+        if (
+            deliverable is None
+            and not legacy_retired
+            and motion.status == motion_video_service.STATUS_REVIEW
+        ):
+            # 위 포장 블록은 진행 상황 표시를 위해 stage 를 DELIVERY 로 올렸을 수
+            # 있다 — 하지만 REVIEW 는 QA 에서 비롯된 상태이므로, 실패로 남는
+            # current_stage 는 원래 단계(QA)를 보존해야 한다. 그러지 않으면
+            # request_replacement_generation 의 `current_stage == STAGE_QA` 가드가
+            # (REVIEW 후보가 존재하는 모든 실제 REVIEW 실행에서 포장이 항상
+            # 일어나므로) 영원히 도달 불가능해진다.
+            stage = STAGE_QA
             raise PetGenerationRunError("MOTION_QA_REVIEW", "Phase 6 후보가 사람 검토를 요구합니다.", status=409)
-        if motion.status != motion_video_service.STATUS_COMPLETE:
-            raise PetGenerationRunError("MOTION_QA_FAILED", "Phase 6 QA PASS 후보가 없습니다.", status=409)
+        if deliverable is None:
+            # 코드는 로그/last_error.code 에 남기고, 사용자에게는 단계 이름 없는 문장을 보낸다.
+            logger.warning(
+                "MOTION_QA_FAILED run=%s motion_version=%s status=%s — no deliverable candidate",
+                run.id, motion.id, motion.status,
+            )
+            raise PetGenerationRunError(
+                "MOTION_QA_FAILED",
+                "이번에 만든 영상이 품질 기준을 충족하지 못해 전달하지 못했습니다. 다시 시도해 주세요.",
+                status=409,
+            )
+        selected = deliverable
 
         stage = STAGE_PUBLICATION
         run = await _progress(run, {"current_stage": stage})
@@ -992,7 +1803,20 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
                 raise PetGenerationRunError(exc.code, exc.message, status=exc.status) from exc
             publication_id = finalization.publication_id
 
-        return await _progress(
+        final_provider_state = dict(_provider_state(run))
+        final_provider_state["_business_qa"] = {
+            "version": business_qa.BUSINESS_QA_VERSION,
+            "terminal_state": business_qa.DELIVERED_GENERATED,
+            "candidate_id": selected.id,
+            "candidate_decision": selected.decision,
+            "decision": dict(business_qa.receipt(getattr(selected, "qa_result", None)) or {}),
+            # logical_model / vendor / vendor_model / adapter of the delivered clip.
+            "provider_identity": dict(
+                (getattr(selected, "generation_metadata", None) or {}).get("provider_identity")
+                or {}
+            ),
+        }
+        completed_run = await _progress(
             run,
             {
                 "status": STATUS_PUBLISHED,
@@ -1004,8 +1828,15 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
                 "lease_expires_at": None,
                 "worker_id": None,
                 "next_attempt_at": None,
+                "provider_state": final_provider_state,
             },
         )
+        qa_shadow_telemetry.finalize_run(
+            completed_run,
+            fallback_used=False,
+            terminal_state=business_qa.DELIVERED_GENERATED,
+        )
+        return completed_run
     except durable_provider_jobs.ProviderWorkPending:
         latest_row = await _row_by_id(run.id)
         latest = _to_run(latest_row) if latest_row else run
@@ -1039,16 +1870,24 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
             },
         )
     except PetGenerationRunError as exc:
-        if exc.code == "WORKER_LEASE_LOST":
+        if exc.code in ("WORKER_LEASE_LOST", "WORKER_LEASE_REQUIRED"):
             current = await _row_by_id(run.id)
             return _to_run(current) if current else run
-        latest_row = await _row_by_id(run.id)
-        latest = _to_run(latest_row) if latest_row else run
-        return await _fail(latest, stage, exc)
+        return await _fail(await _latest_with_our_lease(run), stage, exc)
     except Exception as exc:  # Every stage failure must become durable run state.
-        latest_row = await _row_by_id(run.id)
-        latest = _to_run(latest_row) if latest_row else run
-        return await _fail(latest, stage, exc)
+        return await _fail(await _latest_with_our_lease(run), stage, exc)
+
+
+async def _latest_with_our_lease(run: PetGenerationRun) -> PetGenerationRun:
+    """
+    실패 기록 전에 행을 다시 읽되 **우리가 점유한 토큰**으로 쓴다. 다시 읽은
+    행의 토큰을 그대로 쓰면, 그 사이 다른 워커가 인수했을 때 그 워커의 실행을
+    FAILED 로 덮어쓰고, 사용자가 취소했을 때는(토큰 없음) 예외로 튄다.
+    """
+    latest_row = await _row_by_id(run.id)
+    if not latest_row:
+        return run
+    return replace(_to_run(latest_row), execution_token=run.execution_token)
 
 
 async def process_next_generation_run(*, worker_id: str) -> Optional[PetGenerationRun]:
@@ -1056,9 +1895,30 @@ async def process_next_generation_run(*, worker_id: str) -> Optional[PetGenerati
     wid = (worker_id or "").strip()
     if not wid:
         raise PetGenerationRunError("WORKER_ID_REQUIRED", "worker_id 가 필요합니다.", status=422)
+    claim_started = time.perf_counter()
     run = await _claim_next(wid)
+    claim_time_ms = (time.perf_counter() - claim_started) * 1000.0
     if not run:
         return None
+    qa_shadow_telemetry.mark_claimed(run, claim_time_ms=claim_time_ms)
+    if _recovery_exhausted(run):
+        # claim 이 상한을 넘겨 한 번 더 건네준 실행 — 워커가 이 실행 위에서
+        # 계속 죽고 있다는 뜻이다(OOM 등). 일을 시키지 않고 종료시킨다. 이후엔
+        # 사용자가 Retry 를 눌러야만 다시 QUEUED 가 된다.
+        logger.warning(
+            "run %s exhausted %s lease recoveries at stage %s — failing, not resurrecting",
+            run.id, run.lease_recoveries - 1, run.current_stage,
+        )
+        return await _fail(
+            run,
+            run.current_stage,
+            PetGenerationRunError(
+                ERROR_WORKER_RECOVERY_EXHAUSTED,
+                "워커가 이 실행 위에서 반복해서 중단됐습니다. 다시 시도해 주세요.",
+                status=503,
+                details={"lease_recoveries": run.lease_recoveries - 1},
+            ),
+        )
     lock = _LOCKS.setdefault(run.id, asyncio.Lock())
     async with lock:
         with _LeaseHeartbeater(run):
@@ -1073,7 +1933,10 @@ async def process_next_generation_run(*, worker_id: str) -> Optional[PetGenerati
                         status=409,
                     ),
                 )
-            return await _execute(run)
+            # The run keeps the QA authority mode stamped at its creation; an
+            # unstamped (older / in-flight) run stays on legacy authority.
+            with business_qa.qa_authority_scope(business_qa.run_qa_authority(run.provider_state)):
+                return await _execute(run)
 
 
 def _validate_request(motion_id: str, request_kind: str, idempotency_key: str) -> tuple[str, str, str]:
@@ -1123,13 +1986,16 @@ async def start_generation_run(
     if not uid or not pid:
         raise PetGenerationRunError("GENERATION_RUN_INVALID", "user_id 와 pet_id 가 필요합니다.")
     motion, kind, key = _validate_request(motion_id, request_kind, idempotency_key)
-    content_id = await _validate_intake(uid, pid)
+    try:
+        cutover = business_qa_user_test.cutover_receipt(user_id=uid, pet_id=pid)
+    except business_qa_user_test.UserTestError as exc:
+        raise PetGenerationRunError(exc.code, exc.message, status=exc.status) from exc
     now = _now_iso()
     row = {
         "id": str(uuid.uuid4()),
         "user_id": uid,
         "pet_id": pid,
-        "content_id": content_id,
+        "content_id": None,
         "motion_id": motion,
         "request_kind": kind,
         "idempotency_key": key,
@@ -1147,7 +2013,7 @@ async def start_generation_run(
         "motion_version": None,
         "selected_candidate_id": None,
         "publication_id": None,
-        "provider_state": {},
+        "provider_state": {"_business_qa_cutover": cutover},
         "last_error": None,
         "retry_count": 0,
         "created_at": now,
@@ -1164,7 +2030,19 @@ async def start_generation_run(
         row["product_key"] = (product_key or "").strip() or None
         row["reservation_ledger_id"] = (reservation_ledger_id or "").strip() or None
         row["credits_reserved"] = int(credits_reserved or 0)
-    run, _created = await _insert_or_get(row)
+    # 실행 행이 생기는 순간 이 펫의 사진·누끼가 잠긴다(pet_inputs_locked). 인테이크
+    # 검증과 삽입을 펫 입력 문의 **단독** 구간에서 한 번에 한다 — 업로드/동기화/
+    # 거절(공유 구간)이 "잠금 확인"과 "쓰기" 사이에 이 삽입을 끼워 넣을 수 없고,
+    # 이 검증이 본 증거가 삽입 전에 바뀔 수도 없다.
+    async with pet_reference_service.pet_input_gate(pid).exclusive():
+        content_id, original, cutout = await _validate_intake_evidence(uid, pid)
+        row["content_id"] = content_id
+        async with _start_lock(uid, pid, motion, kind):
+            run, _created = await _insert_or_get(row)
+    qa_shadow_telemetry.start_run(
+        run,
+        upload_cutout_ms=qa_shadow_telemetry.upload_to_cutout_ms(original, cutout),
+    )
     return run
 
 
@@ -1195,7 +2073,7 @@ async def _stale_motion_pin(run: PetGenerationRun) -> bool:
       * 스펙 버전이 현재와 같으면 스테일이 아니다 — 기존 재사용 경로가 맞다
       * 종료되지 않은 프로바이더 작업이 하나라도 있으면 손대지 않는다
     """
-    if run.status != STATUS_FAILED:
+    if run.status != STATUS_FAILED and not is_delivered_fallback(run):
         return False
     if not run.motion_version_id or run.publication_id:
         return False
@@ -1220,6 +2098,70 @@ async def _stale_motion_pin(run: PetGenerationRun) -> bool:
     return True
 
 
+async def _stale_canonical_pin(run: PetGenerationRun) -> bool:
+    """
+    FAILED 실행의 canonical 핀이 **실행의 계보와 다른 정본**을 가리키는가.
+
+    예전 _execute 는 계보 검사 전에 핀을 썼다 — 다른 레퍼런스 세트로 만들어진
+    정본이 한 번 핀되면 Retry 가 매번 그 핀을 다시 읽고 RUN_LINEAGE_INVALID 로
+    똑같이 죽었다. True 는 "핀만 풀면 CANONICAL 이 고정된 세트로 다시 돈다"가
+    증명될 때만이다. 하나라도 애매하면 False — 기존 하드 가드가 그대로 판정한다:
+
+      * FAILED 가 아니거나, 하류 핀(키프레임/모션/발행)이 있으면 손대지 않는다
+      * 운영자 정본 교체 요청이 걸려 있으면 그 흐름에 맡긴다
+      * 핀된 정본 행을 못 읽으면 (다른 종류의 손상) 손대지 않는다
+      * 계보가 맞으면 스테일이 아니다
+      * 핀된 정본에 종료되지 않은 프로바이더 작업이 있으면 손대지 않는다
+
+    행은 지우지 않는다 — 실행의 핀만 비운다.
+    """
+    if run.status != STATUS_FAILED and not is_delivered_fallback(run):
+        return False
+    if not (run.canonical_version_id and run.canonical_version):
+        return False
+    if run.keyframes or run.motion_version_id or run.publication_id:
+        return False
+    if dict((run.provider_state or {}).get("_operator") or {}).get("canonical_replacement_request"):
+        return False
+    try:
+        canonical = await canonical_pet_service.get_canonical(
+            user_id=run.user_id, pet_id=run.pet_id, version=run.canonical_version
+        )
+    except Exception:
+        return False
+    if not canonical or str(canonical.id) != str(run.canonical_version_id):
+        return False
+    try:
+        _assert_canonical_lineage(run, canonical)
+        return False
+    except PetGenerationRunError:
+        pass
+    for job in durable_provider_jobs.list_for_run(run.id):
+        if str(job.get("phase_version_id") or "") != str(run.canonical_version_id):
+            continue
+        if str(job.get("submission_status") or "") not in _TERMINAL_SUBMISSION_STATUSES:
+            return False
+    return True
+
+
+async def _join_other_active_run(run: PetGenerationRun) -> Optional[PetGenerationRun]:
+    """
+    `run` 을 QUEUED 로 되살리기 직전의 마지막 확인 — 같은 pet/motion/
+    request_kind 를 이미 다른 실행이 활성으로 맡고 있다면(예: 이 실행이
+    FAILED 로 끝난 사이 새 idempotency_key 로 새 실행이 이미 시작됨) `run`
+    자신을 되살리지 않고 그 실행을 대신 돌려준다 — 되살리기도 결국
+    start_generation_run() 과 같은 "이 pet 의 이 작업은 활성 실행이 하나뿐"
+    불변조건을 지켜야 하는 삽입/전이이기 때문이다.
+    """
+    other = await _row_by_scope_active(
+        user_id=run.user_id, pet_id=run.pet_id,
+        motion_id=run.motion_id, request_kind=run.request_kind,
+    )
+    if other and str(other.get("id") or "") != run.id:
+        return _to_run(other)
+    return None
+
+
 async def retry_generation_run(*, user_id: str, run_id: str) -> PetGenerationRun:
     run = await get_generation_run(user_id=user_id, run_id=run_id)
     content_id = await _validate_intake(run.user_id, run.pet_id)
@@ -1229,14 +2171,21 @@ async def retry_generation_run(*, user_id: str, run_id: str) -> PetGenerationRun
             "현재 Phase 1 intake 가 생성 실행의 content_id 와 일치하지 않습니다.",
             status=409,
         )
-    if run.status == STATUS_PUBLISHED:
+    # A delivered fallback stays retryable, as it was under its old FAILED status.
+    fallback_delivered = is_delivered_fallback(run)
+    if run.status == STATUS_PUBLISHED and not fallback_delivered:
         return run
     if run.status in (STATUS_QUEUED, STATUS_RUNNING, STATUS_WAITING_PROVIDER):
         return run
+    joined = await _join_other_active_run(run)
+    if joined:
+        return joined
     updates: dict[str, Any] = {
         "status": STATUS_QUEUED,
         "last_error": None,
         "retry_count": run.retry_count + 1,
+        # 사용자 행동이 복구 예산을 되돌린다 — 워커는 절대 이 값을 내리지 않는다.
+        "lease_recoveries": 0,
         "worker_id": None,
         "execution_token": None,
         "lease_expires_at": None,
@@ -1257,7 +2206,66 @@ async def retry_generation_run(*, user_id: str, run_id: str) -> PetGenerationRun
                 "current_stage": STAGE_MOTION_SPEC,
             }
         )
-    return await _update(run.id, updates)
+    if await _stale_canonical_pin(run):
+        # 계보가 다른 정본 핀만 비운다 — 정본 버전/후보 행은 역사로 남는다.
+        # 신원/레퍼런스 핀은 그대로라 CANONICAL 은 고정된 세트로 다시 돈다.
+        updates.update(
+            {
+                "canonical_version_id": None,
+                "canonical_version": None,
+                "current_stage": STAGE_CANONICAL,
+            }
+        )
+    # FAILED / CANCELLED / RECOVERY_REQUIRED 에서만 QUEUED 로 — 읽기와 쓰기 사이에
+    # 상태가 바뀌었으면(동시 재시도가 먼저 QUEUED 로 옮김 등) 그 결과를 돌려준다.
+    from_statuses = RETRYABLE_RUN_STATUSES + ((STATUS_PUBLISHED,) if fallback_delivered else ())
+    retried = await _transition(run.id, updates, from_statuses=from_statuses)
+    if retried:
+        return retried
+    return await get_generation_run(user_id=user_id, run_id=run_id)
+
+
+async def cancel_generation_run(
+    *, user_id: str, run_id: str, reason: str = "user_cancelled"
+) -> PetGenerationRun:
+    """
+    사용자/클라이언트의 명시적 정지. 종료되지 않은 실행(QUEUED / RUNNING /
+    WAITING_PROVIDER / RECOVERY_REQUIRED)을 CANCELLED 로 옮기고 lease 와
+    execution_token 을 비운다 — 지금 이 실행을 돌리고 있는 워커는 다음 fenced
+    쓰기(_progress / heartbeat)에서 WORKER_LEASE_LOST 를 받고 그 자리에서
+    멈추며, claim_next_pet_generation_run 은 CANCELLED 를 절대 집지 않는다.
+
+    이미 끝난 실행(PUBLISHED / FAILED / CANCELLED)은 그대로 돌려준다 — 취소는
+    멱등이고, 발행된 결과를 되돌리지 않는다. 다시 돌리려면 Retry 다.
+    """
+    run = await get_generation_run(user_id=user_id, run_id=run_id)
+    if run.status in TERMINAL_RUN_STATUSES:
+        return run
+    why = (reason or "").strip()[:200] or "user_cancelled"
+    cancelled = await _transition(
+        run.id,
+        {
+            "status": STATUS_CANCELLED,
+            "last_error": {
+                "stage": run.current_stage,
+                "code": ERROR_RUN_CANCELLED,
+                "message": "생성 실행이 중단됐습니다.",
+                "reason": why,
+                "at": _now_iso(),
+            },
+            "execution_token": None,
+            "lease_expires_at": None,
+            "worker_id": None,
+            "next_attempt_at": None,
+            "completed_at": _now_iso(),
+        },
+        from_statuses=ACTIVE_RUN_STATUSES,
+    )
+    if not cancelled:
+        # 그 사이 워커가 끝냈다(PUBLISHED 등) — 그 결과가 정본이다.
+        return await get_generation_run(user_id=user_id, run_id=run_id)
+    await _reconcile_premium_after_stop(cancelled)
+    return cancelled
 
 
 async def request_replacement_generation(
@@ -1306,6 +2314,9 @@ async def request_replacement_generation(
         raise PetGenerationRunError(
             "REPLACEMENT_NOT_JUSTIFIED", "현재 Phase 6 버전이 REVIEW 상태가 아닙니다.", status=409
         )
+    joined = await _join_other_active_run(run)
+    if joined:
+        return joined
 
     operator_state["replacement_request"] = {
         "idempotency_key": key,
@@ -1336,6 +2347,185 @@ async def request_replacement_generation(
     )
 
 
+async def request_canonical_replacement_generation(
+    *, user_id: str, run_id: str, idempotency_key: str, reason: str
+) -> PetGenerationRun:
+    """Queue exactly one durable replacement for a QA-REVIEW canonical version.
+
+    Mirrors request_replacement_generation (Phase 6) for Phase 4. The API
+    records intent only; the worker (_canonical(), driven by _execute()) builds
+    the next version and owns every provider submission/recovery step. Every
+    downstream pin (keyframes, motion spec/version, publication) is cleared
+    because they were all derived from the REVIEW source canonical and must be
+    re-derived once the replacement lands.
+    """
+    run = await get_generation_run(user_id=user_id, run_id=run_id)
+    key = (idempotency_key or "").strip()
+    why = (reason or "").strip()
+    if not key or len(key) > 200 or not why:
+        raise PetGenerationRunError(
+            "REPLACEMENT_REQUEST_INVALID", "idempotency_key 와 사유가 필요합니다.", status=422
+        )
+    provider_state = dict(run.provider_state)
+    operator_state = dict(provider_state.get("_operator") or {})
+    existing = dict(operator_state.get("canonical_replacement_request") or {})
+    if existing:
+        if str(existing.get("idempotency_key") or "") == key:
+            return run
+        raise PetGenerationRunError(
+            "REPLACEMENT_ALREADY_REQUESTED",
+            "이 실행에는 이미 한 번의 정본 교체 생성이 요청되었습니다.",
+            status=409,
+        )
+    if run.status == STATUS_PUBLISHED:
+        raise PetGenerationRunError("RUN_ALREADY_PUBLISHED", "발행된 실행은 교체할 수 없습니다.", status=409)
+    if (
+        run.current_stage != STAGE_CANONICAL
+        or not run.canonical_version_id
+        or str((run.last_error or {}).get("code") or "") != "CANONICAL_QA_REVIEW"
+    ):
+        raise PetGenerationRunError(
+            "REPLACEMENT_NOT_JUSTIFIED", "QA REVIEW 상태의 canonical 만 교체 요청할 수 있습니다.", status=409
+        )
+    canonical = await canonical_pet_service.get_canonical(
+        user_id=run.user_id, pet_id=run.pet_id, version=run.canonical_version
+    )
+    if (
+        not canonical
+        or canonical.id != run.canonical_version_id
+        or canonical.status != canonical_pet_service.STATUS_REVIEW
+    ):
+        raise PetGenerationRunError(
+            "REPLACEMENT_NOT_JUSTIFIED", "현재 Phase 4 버전이 REVIEW 상태가 아닙니다.", status=409
+        )
+    joined = await _join_other_active_run(run)
+    if joined:
+        return joined
+
+    operator_state["canonical_replacement_request"] = {
+        "idempotency_key": key,
+        "reason": why[:1000],
+        "source_canonical_version_id": canonical.id,
+        "source_candidate_ids": [candidate.id for candidate in canonical.candidates],
+        "status": "QUEUED",
+        "requested_at": _now_iso(),
+    }
+    provider_state["_operator"] = operator_state
+    return await _update(
+        run.id,
+        {
+            "status": STATUS_QUEUED,
+            "current_stage": STAGE_CANONICAL,
+            "canonical_version_id": None,
+            "canonical_version": None,
+            "keyframes": {},
+            "motion_spec_version": None,
+            "motion_version_id": None,
+            "motion_version": None,
+            "selected_candidate_id": None,
+            "publication_id": None,
+            "last_error": None,
+            "completed_at": None,
+            "worker_id": None,
+            "execution_token": None,
+            "lease_expires_at": None,
+            "next_attempt_at": None,
+            "provider_state": provider_state,
+        },
+    )
+
+
+async def request_keyframe_replacement_generation(
+    *, user_id: str, run_id: str, keyframe_role: str, idempotency_key: str, reason: str
+) -> PetGenerationRun:
+    """Queue exactly one durable replacement for a QA-REVIEW keyframe role.
+
+    Mirrors request_replacement_generation (Phase 6) for Phase 5. Only the
+    named role's pin is cleared — the other keyframe role (start vs. target),
+    if any, and the canonical pin are left untouched. Downstream motion pins
+    are cleared because they were derived from the REVIEW source keyframe.
+    """
+    run = await get_generation_run(user_id=user_id, run_id=run_id)
+    role = (keyframe_role or "").strip().upper()
+    key = (idempotency_key or "").strip()
+    why = (reason or "").strip()
+    if not role or not key or len(key) > 200 or not why:
+        raise PetGenerationRunError(
+            "REPLACEMENT_REQUEST_INVALID", "keyframe_role, idempotency_key, 사유가 필요합니다.", status=422
+        )
+    provider_state = dict(run.provider_state)
+    operator_state = dict(provider_state.get("_operator") or {})
+    replacements = dict(operator_state.get("keyframe_replacement_requests") or {})
+    existing = dict(replacements.get(role) or {})
+    if existing:
+        if str(existing.get("idempotency_key") or "") == key:
+            return run
+        raise PetGenerationRunError(
+            "REPLACEMENT_ALREADY_REQUESTED",
+            "이 키프레임 역할에는 이미 한 번의 교체 생성이 요청되었습니다.",
+            status=409,
+        )
+    if run.status == STATUS_PUBLISHED:
+        raise PetGenerationRunError("RUN_ALREADY_PUBLISHED", "발행된 실행은 교체할 수 없습니다.", status=409)
+    saved = dict(run.keyframes.get(role) or {})
+    if (
+        run.current_stage != STAGE_KEYFRAMES
+        or not saved.get("id")
+        or str((run.last_error or {}).get("code") or "") != "KEYFRAME_QA_REVIEW"
+        or str((run.last_error or {}).get("keyframe_role") or "") != role
+    ):
+        raise PetGenerationRunError(
+            "REPLACEMENT_NOT_JUSTIFIED", "QA REVIEW 상태의 키프레임만 교체 요청할 수 있습니다.", status=409
+        )
+    keyframe = await action_keyframe_service.get_keyframe(
+        user_id=run.user_id, pet_id=run.pet_id, keyframe_role=role, version=int(saved["version"])
+    )
+    if (
+        not keyframe
+        or keyframe.id != str(saved.get("id") or "")
+        or keyframe.status != action_keyframe_service.STATUS_REVIEW
+    ):
+        raise PetGenerationRunError(
+            "REPLACEMENT_NOT_JUSTIFIED", "현재 Phase 5 키프레임이 REVIEW 상태가 아닙니다.", status=409
+        )
+    joined = await _join_other_active_run(run)
+    if joined:
+        return joined
+
+    replacements[role] = {
+        "idempotency_key": key,
+        "reason": why[:1000],
+        "source_keyframe_id": keyframe.id,
+        "source_candidate_ids": [candidate.id for candidate in keyframe.candidates],
+        "status": "QUEUED",
+        "requested_at": _now_iso(),
+    }
+    operator_state["keyframe_replacement_requests"] = replacements
+    provider_state["_operator"] = operator_state
+    keyframes = dict(run.keyframes)
+    keyframes.pop(role, None)
+    return await _update(
+        run.id,
+        {
+            "status": STATUS_QUEUED,
+            "current_stage": STAGE_KEYFRAMES,
+            "keyframes": keyframes,
+            "motion_spec_version": None,
+            "motion_version_id": None,
+            "motion_version": None,
+            "selected_candidate_id": None,
+            "publication_id": None,
+            "last_error": None,
+            "completed_at": None,
+            "worker_id": None,
+            "execution_token": None,
+            "lease_expires_at": None,
+            "next_attempt_at": None,
+            "provider_state": provider_state,
+        },
+    )
+
+
 async def get_generation_run(*, user_id: str, run_id: str) -> PetGenerationRun:
     row = await _row_by_id((run_id or "").strip())
     if not row:
@@ -1344,6 +2534,44 @@ async def get_generation_run(*, user_id: str, run_id: str) -> PetGenerationRun:
     if run.user_id != (user_id or "").strip():
         raise PetGenerationRunError("PET_NOT_OWNED", "이 생성 실행에 접근할 권한이 없습니다.", status=403)
     return run
+
+
+#: 이 상태의 실행은 펫의 사진/누끼를 잠그지 않는다 — 사용자가 사진을 고쳐
+#: 다시 시도할 수 있어야 한다. 그 밖의 모든 상태(진행 중 + PUBLISHED)는 잠근다.
+UNLOCKING_RUN_STATUSES = (STATUS_FAILED, STATUS_CANCELLED)
+
+
+async def pet_has_locking_run(pet_id: str) -> bool:
+    """
+    이 펫에 FAILED/CANCELLED 가 **아닌** 생성 실행이 하나라도 있는가.
+
+    motion/request_kind/소유자를 가리지 않는다 — 어떤 실행이든 시작됐다면 그
+    실행은 당시의 원본·누끼에 계보를 핀으로 잡고 있다. 조회 실패는 예외로
+    올린다: "모른다"를 "잠기지 않았다"로 답하면 안 된다.
+    """
+    pid = (pet_id or "").strip()
+    if not pid:
+        return False
+    client = _supabase() if _use_db() else None
+    if client:
+        try:
+            result = await asyncio.to_thread(
+                lambda: client.table(_table())
+                .select("id")
+                .eq("pet_id", pid)
+                .not_.in_("status", list(UNLOCKING_RUN_STATUSES))
+                .limit(1)
+                .execute()
+            )
+            return bool(getattr(result, "data", None))
+        except Exception as exc:
+            raise PetGenerationRunError(
+                "GENERATION_RUNS_UNAVAILABLE", "생성 실행을 확인하지 못했습니다.", status=503
+            ) from exc
+    return any(
+        r.get("pet_id") == pid and r.get("status") not in UNLOCKING_RUN_STATUSES
+        for r in _MOCK_RUNS
+    )
 
 
 def run_dict(run: PetGenerationRun) -> dict[str, Any]:

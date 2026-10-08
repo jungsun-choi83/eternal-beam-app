@@ -101,7 +101,12 @@ export function OpsLayout({
   // 온보딩(사진 업로드)으로 떨어진다.
   if (phase === "signed-out") {
     return (
-      <div className="h-[100dvh] w-full overflow-hidden" style={{ background: "#0a0a0a" }}>
+      <div
+        className="h-[100dvh] w-full overflow-hidden"
+        // Phase 10: AuthScreen 은 아이보리 토큰으로 그려진다 — 검정 바탕에 얹으면
+        // 차콜 글자가 사라진다. 로그인 화면의 바탕만 페이지 토큰으로 맞춘다.
+        style={{ background: "var(--eb-bg)", color: "var(--eb-text)" }}
+      >
         <AuthScreen initialMode="login" onAuthComplete={readToken} />
       </div>
     );

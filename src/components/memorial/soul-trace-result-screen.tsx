@@ -29,11 +29,12 @@ const DEFAULT_PAYLOAD: SoulTraceResultPayload = {
   shareImpactLine: "엄마, 아빠를 향한 마음은 언제나 따뜻한 빛이 될 거예요.",
 };
 
-const CHAMPAGNE = "#e6d5b8";
-const CHAMPAGNE_SOFT = "rgba(230, 213, 184, 0.82)";
-const WARM_WHITE = "#f7f2e9";
-const MUTED = "rgba(247, 242, 233, 0.38)";
-const WHISPER = "rgba(247, 242, 233, 0.22)";
+// Phase 10 — 아이보리 페이지 위의 편집 지면. 이름은 그대로, 값만 토큰으로.
+const CHAMPAGNE = "var(--eb-gold-text)";
+const CHAMPAGNE_SOFT = "var(--eb-gold-text)";
+const WARM_WHITE = "var(--eb-text)";
+const MUTED = "var(--eb-text-2)";
+const WHISPER = "var(--eb-text-3)";
 
 interface SoulTraceResultScreenProps {
   payload?: Partial<SoulTraceResultPayload>;
@@ -88,13 +89,13 @@ export function SoulTraceResultScreen({
 
   return (
     <div
-      className="h-full w-full overflow-y-auto overflow-x-hidden"
+      className="soul-trace-result-screen h-full w-full overflow-y-auto overflow-x-hidden"
       style={{
         background: `
-          radial-gradient(120% 80% at 50% -10%, rgba(201, 168, 96, 0.07) 0%, transparent 55%),
-          radial-gradient(ellipse at 80% 100%, rgba(40, 36, 30, 0.9) 0%, transparent 50%),
-          linear-gradient(165deg, #141210 0%, #0c0b09 45%, #080706 100%)
+          radial-gradient(120% 80% at 50% -10%, var(--eb-gold-wash) 0%, transparent 55%),
+          var(--eb-bg)
         `,
+        color: "var(--eb-text)",
         fontFamily: '"Noto Serif KR", "Times New Roman", Georgia, serif',
       }}
     >
@@ -107,12 +108,11 @@ export function SoulTraceResultScreen({
         }}
       />
 
-      <header className="relative z-10 flex items-center justify-between px-6 pt-12 pb-6">
+      <header className="relative z-10 flex items-center justify-between px-6 pt-[var(--eb-header-top)] pb-6">
         <motion.button
           type="button"
           onClick={onHome}
-          className="flex h-10 w-10 items-center justify-center rounded-full transition-opacity hover:opacity-90"
-          style={{ color: MUTED }}
+          className="mem-icon-btn eb-back-btn flex h-10 w-10 items-center justify-center rounded-full"
           whileTap={{ scale: 0.96 }}
           aria-label="Back home"
         >
@@ -145,7 +145,6 @@ export function SoulTraceResultScreen({
           className="mb-10 text-center text-[1.85rem] font-semibold leading-snug tracking-tight sm:text-[2rem]"
           style={{
             color: CHAMPAGNE,
-            textShadow: "0 1px 40px rgba(201, 168, 96, 0.12)",
           }}
         >
           {p.archetypeTitle}
@@ -185,7 +184,7 @@ export function SoulTraceResultScreen({
                 <>
                   <span
                     className="float-left mr-2 mt-1 text-[2.75rem] font-semibold leading-none"
-                    style={{ color: "rgba(201, 168, 96, 0.45)" }}
+                    style={{ color: "var(--eb-gold-line)" }}
                     aria-hidden
                   >
                     {first}
@@ -199,31 +198,32 @@ export function SoulTraceResultScreen({
       </div>
 
       <div
-        className="fixed bottom-0 left-0 right-0 z-20 px-8 pb-10 pt-6"
+        className="fixed bottom-0 left-0 right-0 z-20 px-6 pb-[var(--eb-footer-bottom)] pt-6"
         style={{
           background:
-            "linear-gradient(180deg, transparent 0%, rgba(8,7,6,0.92) 35%, #080706 100%)",
+            "linear-gradient(180deg, transparent 0%, rgba(247, 242, 233, 0.92) 35%, var(--eb-bg) 100%)",
         }}
       >
-        <motion.button
-          type="button"
-          disabled={sharing}
-          onClick={handleShare}
-          className="mb-3 flex w-full items-center justify-center gap-2 py-4 text-[14px] font-medium tracking-wide transition-opacity disabled:opacity-50"
-          style={{ color: CHAMPAGNE }}
-          whileTap={{ scale: 0.99 }}
-        >
-          <Share2 className="h-4 w-4" strokeWidth={1.5} />
-          {sharing ? "이미지 생성 중…" : "스토리용 이미지 공유"}
-        </motion.button>
-        <button
-          type="button"
-          onClick={onHome}
-          className="w-full py-3 text-center text-[12px] tracking-[0.2em]"
-          style={{ color: WHISPER }}
-        >
-          홈으로
-        </button>
+        <div className="mx-auto w-full max-w-[520px]">
+          <motion.button
+            type="button"
+            disabled={sharing}
+            onClick={handleShare}
+            aria-busy={sharing || undefined}
+            className="eb-btn eb-btn--primary eb-btn--block mem-btn-primary mb-3 flex w-full items-center justify-center gap-2 text-[14px] font-medium tracking-wide"
+            whileTap={{ scale: 0.99 }}
+          >
+            <Share2 className="h-4 w-4" strokeWidth={1.5} />
+            {sharing ? "이미지 생성 중…" : "스토리용 이미지 공유"}
+          </motion.button>
+          <button
+            type="button"
+            onClick={onHome}
+            className="eb-btn eb-btn--ghost eb-btn--block w-full text-center text-[12px] tracking-[0.2em]"
+          >
+            홈으로
+          </button>
+        </div>
       </div>
     </div>
   );

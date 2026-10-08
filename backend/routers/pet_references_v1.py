@@ -1,13 +1,14 @@
 """
 /api/v1/pet/references — 펫 레퍼런스 대장 조회 (Durable Pet Identity Intake).
 
-    GET /{pet_id}       내 펫의 레퍼런스(원본 + 파생) 목록
+    GET  /{pet_id}       내 펫의 레퍼런스(원본 + 파생) 목록
+    POST /{pet_id}/sync  대장을 사용자의 현재 사진 집합에 맞춘다 (뺀 사진 퇴장)
 
-── 왜 조회만 있는가 ────────────────────────────────────────────────────────
-쓰기는 인테이크 시점의 무료 파이프라인(/api/assets/original, 누끼 훅)에서
+── 왜 행 추가는 여기 없는가 ────────────────────────────────────────────────
+행 추가는 인테이크 시점의 무료 파이프라인(/api/assets/original, 누끼 훅)에서
 일어난다 — 그 시점에는 Supabase 세션이 아직 없을 수 있어 인증을 요구할 수 없다
-(backend/auth.py 의 레거시 경로 원칙). 조회는 서명 대상이 아니라 대장 자체라
-검증된 신원으로만 연다. 멀티뷰 업로더가 생기면 인증된 쓰기 경로가 여기 추가된다.
+(backend/auth.py 의 레거시 경로 원칙). 조회와 동기화는 대장 자체를 다루므로
+검증된 신원으로만 연다.
 
 소유권은 pet_registry(등록된 펫) 또는 레퍼런스 행의 최초 신원(TOFU)이 정한다 —
 pet_reference_service._assert_pet_accessible 참고.
@@ -16,16 +17,19 @@ pet_reference_service._assert_pet_accessible 참고.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from ..auth import AuthedUser, require_user
-from ..services import pet_reference_service, pet_reference_set_service
+from ..services import asset_url_refresh, pet_reference_service, pet_reference_set_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1/pet/references", tags=["pet-references"])
+
+CUTOUT_SIGNED_URL_TTL_SECONDS = 60 * 60
 
 
 class ReferenceOut(BaseModel):
@@ -53,15 +57,22 @@ class ReferenceOut(BaseModel):
 
 class ReferencesResponse(BaseModel):
     pet_id: str
+    content_id: str | None = None
     intake_ready: bool = False
     original_reference_id: str | None = None
     cutout_reference_id: str | None = None
+    cutout_signed_url: str | None = None
+    cutout_signed_url_expires_at: str | None = None
+    #: 생성이 시작되어 사진·누끼를 더 바꿀 수 없는가 (pet_inputs_locked).
+    #: 판정할 수 없으면 null — 읽기 응답은 그 때문에 실패하지 않는다.
+    inputs_locked: bool | None = None
     references: list[ReferenceOut] = []
 
 
 @router.get("/{pet_id}", response_model=ReferencesResponse)
 async def list_pet_references(
     pet_id: str,
+    content_id: str | None = Query(default=None),
     user: AuthedUser = Depends(require_user),
 ):
     """내 펫의 레퍼런스만. 남의 펫은 403 이다."""
@@ -74,12 +85,49 @@ async def list_pet_references(
             status_code=e.status, detail={"code": e.code, "message": e.message}
         ) from e
 
-    ready, original, cutout = pet_reference_service.intake_readiness(refs)
+    requested_content_id = (content_id or "").strip()
+    scoped_refs = (
+        [ref for ref in refs if ref.content_id == requested_content_id]
+        if requested_content_id
+        else refs
+    )
+    ready, original, cutout = pet_reference_service.intake_readiness(scoped_refs)
+
+    cutout_signed_url = None
+    cutout_signed_url_expires_at = None
+    if ready and cutout:
+        cutout_signed_url = asset_url_refresh.sign_object(
+            asset_url_refresh.StorageObject(
+                bucket=cutout.bucket, path=cutout.object_path
+            ),
+            ttl=CUTOUT_SIGNED_URL_TTL_SECONDS,
+        )
+        if not cutout_signed_url:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "CUTOUT_SIGNING_FAILED",
+                    "message": "누끼 표시 주소를 준비하지 못했습니다.",
+                },
+            )
+        cutout_signed_url_expires_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=CUTOUT_SIGNED_URL_TTL_SECONDS)
+        ).isoformat()
+
+    try:
+        inputs_locked: bool | None = await pet_reference_service.pet_inputs_locked(pet_id, refs)
+    except pet_reference_service.PetReferenceError:
+        inputs_locked = None
+
     return ReferencesResponse(
         pet_id=pet_id,
+        content_id=(original.content_id if original else requested_content_id or None),
         intake_ready=ready,
+        inputs_locked=inputs_locked,
         original_reference_id=original.id if original else None,
         cutout_reference_id=cutout.id if cutout else None,
+        cutout_signed_url=cutout_signed_url,
+        cutout_signed_url_expires_at=cutout_signed_url_expires_at,
         references=[
             ReferenceOut(
                 id=r.id,
@@ -103,8 +151,69 @@ async def list_pet_references(
                 version=r.version,
                 created_at=r.created_at,
             )
-            for r in refs
+            for r in scoped_refs
         ],
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 현재 사진 집합 동기화 (사용자가 뺀/바꾼 사진의 퇴장)
+# ══════════════════════════════════════════════════════════════════════════
+
+
+class SyncReferencesRequest(BaseModel):
+    #: 지금 UI 에 있는 **모든** 사진 바이트의 sha256 hex. 이번 패스에서 업로드가
+    #: 실패한 사진도 포함한다 — 목록에 있는 해시의 원본은 거절되지 않는다.
+    content_hashes: list[str] = Field(min_length=1, max_length=16)
+
+
+class ActiveReferenceOut(BaseModel):
+    reference_id: str
+    content_hash: str | None = None
+
+
+class SyncReferencesResponse(BaseModel):
+    pet_id: str
+    active: list[ActiveReferenceOut] = []
+    rejected_reference_ids: list[str] = []
+    #: 보낸 해시 중 대장에 살아 있는 원본이 없는 것 (아직 업로드되지 않았다).
+    missing_hashes: list[str] = []
+
+
+@router.post("/{pet_id}/sync", response_model=SyncReferencesResponse)
+async def sync_pet_references(
+    pet_id: str,
+    body: SyncReferencesRequest,
+    user: AuthedUser = Depends(require_user),
+):
+    """목록에 없는 accepted 원본을 누끼와 함께 거절한다. 남의 펫은 403 이다."""
+    hashes = [str(h or "").strip().lower() for h in body.content_hashes]
+    if any(len(h) != 64 or any(c not in "0123456789abcdef" for c in h) for h in hashes):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "PET_REFERENCE_SYNC_INVALID_HASH",
+                "message": "content_hashes 는 sha256 hex 여야 합니다.",
+            },
+        )
+    try:
+        result = await pet_reference_service.sync_active_originals(
+            user_id=user.user_id, pet_id=pet_id, content_hashes=hashes
+        )
+    except pet_reference_service.PetReferenceError as e:
+        raise HTTPException(
+            status_code=e.status, detail={"code": e.code, "message": e.message}
+        ) from e
+
+    return SyncReferencesResponse(
+        pet_id=pet_id,
+        active=[
+            ActiveReferenceOut(reference_id=str(r.id), content_hash=r.content_hash)
+            for r in result.active
+            if r.id
+        ],
+        rejected_reference_ids=result.rejected_original_ids,
+        missing_hashes=result.missing_hashes,
     )
 
 
@@ -125,6 +234,8 @@ class ReferenceSetResponse(BaseModel):
     status: str
     identity_profile_id: str | None = None
     identity_profile_version: int | None = None
+    morphology_profile_id: str | None = None
+    morphology_profile_version: int | None = None
     source_reference_ids: list[str] = []
     items: list[dict[str, Any]] = []
     reference_analysis: dict[str, Any] = {}
@@ -160,6 +271,8 @@ def _set_response(s: pet_reference_set_service.PetReferenceSet) -> ReferenceSetR
         status=s.status,
         identity_profile_id=s.identity_profile_id,
         identity_profile_version=s.identity_profile_version,
+        morphology_profile_id=s.morphology_profile_id,
+        morphology_profile_version=s.morphology_profile_version,
         source_reference_ids=s.source_reference_ids,
         items=s.items,
         reference_analysis=s.reference_analysis,

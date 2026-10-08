@@ -16,6 +16,13 @@
 /** 병리적 업로드 가드. 서버(assets.py ORIGINAL_MAX_BYTES)와 같은 값. */
 export const ORIGINAL_REFERENCE_MAX_BYTES = 40 * 1024 * 1024;
 
+/**
+ * Phase 7B 업로드 한 건의 상한. 멈춘 연결이 처리 패스를 영원히 붙잡지 못하게 한다 —
+ * 같은 펫의 다음 패스는 이 패스가 닫혀야 시작한다 (reference-sync.ts).
+ */
+export const PHASE1_INTAKE_TIMEOUT_MS = 120_000;
+export const PHASE1_UPLOAD_TIMEOUT_CODE = "PHASE1_UPLOAD_TIMEOUT";
+
 function apiBase(): string {
   try {
     const raw = (import.meta as { env?: Record<string, string> }).env?.VITE_API_BASE_URL;
@@ -150,6 +157,8 @@ export async function persistPhase1Intake(params: {
   accessToken: string;
   diagnostics?: unknown;
   cutoutFile?: File;
+  /** 기본 PHASE1_INTAKE_TIMEOUT_MS. 테스트가 줄여 쓴다. */
+  timeoutMs?: number;
 }): Promise<Phase1IntakeResult> {
   const form = originalForm(params);
   if (!form) throw new Phase1IntakeError("Phase 1 intake input is invalid.");
@@ -157,21 +166,50 @@ export async function persistPhase1Intake(params: {
   if (!token) throw new Phase1IntakeError("로그인이 필요합니다.", 401, "UNAUTHENTICATED");
   form.append("phase1_intake", "true");
 
-  let res: Response;
-  try {
-    res = await fetch(`${apiBase()}/api/assets/original`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
-      body: form,
-    });
-  } catch (error) {
-    throw new Phase1IntakeError(
-      error instanceof Error ? error.message : "Phase 1 intake network failure.",
+  // 요청과 응답 본문 읽기 **전체**에 상한을 건다. 넘기면 throw 한다 — 호출자의
+  // 장별 catch 가 그 사진을 실패로 표시하고, 패스는 평소처럼 닫힌다.
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, params.timeoutMs ?? PHASE1_INTAKE_TIMEOUT_MS);
+  const timeoutError = () =>
+    new Phase1IntakeError(
+      "사진 업로드가 너무 오래 걸려 중단했습니다. 연결을 확인하고 다시 시도해 주세요.",
+      undefined,
+      PHASE1_UPLOAD_TIMEOUT_CODE,
     );
-  }
-  if (!res.ok) throw await errorFromResponse(res);
 
-  const body = (await res.json()) as Record<string, unknown>;
+  let body: Record<string, unknown>;
+  try {
+    let res: Response;
+    try {
+      res = await fetch(`${apiBase()}/api/assets/original`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      if (timedOut) throw timeoutError();
+      throw new Phase1IntakeError(
+        error instanceof Error ? error.message : "Phase 1 intake network failure.",
+      );
+    }
+    if (!res.ok) throw await errorFromResponse(res);
+    try {
+      body = (await res.json()) as Record<string, unknown>;
+    } catch (error) {
+      if (timedOut) throw timeoutError();
+      throw new Phase1IntakeError(
+        error instanceof Error ? error.message : "Phase 1 intake response was unreadable.",
+      );
+    }
+  } finally {
+    clearTimeout(timer);
+  }
+
   return {
     userId: String(body.user_id || ""),
     contentId: String(body.content_id || ""),
@@ -229,4 +267,64 @@ export async function persistOriginalReference(params: {
   } catch {
     return null;
   }
+}
+
+/** 한 장의 인테이크가 끝나 **원본과 누끼가 서버에서 짝지어진** 결과. */
+export type ReadyIntakePair = {
+  petId: string;
+  referenceId: string;
+  cutoutReferenceId: string;
+};
+
+/**
+ * 세션에 실리는 Phase 7B 영수증.
+ *
+ * 단수 필드는 기존 소비자를 위해 그대로 남는다(준비된 **첫** 쌍). 복수 필드가
+ * 실제 계약이다 — 활성 펫에서 준비 완료된 모든 원본/누끼 쌍(1–3장)이다.
+ */
+export type Phase1IntakeReceipt = {
+  status: "ready";
+  pet_id: string;
+  original_reference_id: string;
+  cutout_reference_id: string;
+  original_reference_ids: string[];
+  cutout_reference_ids: string[];
+};
+
+/**
+ * 준비 완료된 쌍들을 영수증 하나로 모은다. **순수 함수**.
+ *
+ * - 활성 pet_id 와 다른 쌍은 버린다 — 다른 펫 슬롯의 레퍼런스가 섞이면 안 된다.
+ * - 원본/누끼 한쪽만 있는 것은 쌍이 아니므로 싣지 않는다.
+ * - 같은 원본 id 재등장(서버 멱등 재업로드)은 한 번만 싣는다.
+ * - 실을 것이 하나도 없으면 null — 빈 영수증을 만들지 않는다.
+ */
+export function buildPhase1IntakeReceipt(
+  petId: string,
+  ready: readonly ReadyIntakePair[],
+): Phase1IntakeReceipt | null {
+  const activePetId = (petId || "").trim();
+  if (!activePetId) return null;
+
+  const originals: string[] = [];
+  const cutouts: string[] = [];
+  for (const pair of ready || []) {
+    if (!pair || (pair.petId || "").trim() !== activePetId) continue;
+    const original = (pair.referenceId || "").trim();
+    const cutout = (pair.cutoutReferenceId || "").trim();
+    if (!original || !cutout) continue;
+    if (originals.includes(original)) continue;
+    originals.push(original);
+    cutouts.push(cutout);
+  }
+  if (originals.length === 0) return null;
+
+  return {
+    status: "ready",
+    pet_id: activePetId,
+    original_reference_id: originals[0],
+    cutout_reference_id: cutouts[0],
+    original_reference_ids: originals,
+    cutout_reference_ids: cutouts,
+  };
 }

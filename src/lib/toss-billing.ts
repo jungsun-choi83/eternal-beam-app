@@ -175,6 +175,8 @@ export async function startMembershipCheckout(): Promise<void> {
     customerKey: session.customerKey,
     successUrl: `${origin}${session.successPath}${qs}`,
     failUrl: `${origin}${session.failPath}`,
+    // 기본값(데스크톱 iframe)은 COEP 헤더 때문에 Chrome 에서 막힌다 — 최상위 이동.
+    windowTarget: "self",
   });
 }
 

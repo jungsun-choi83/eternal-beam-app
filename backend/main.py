@@ -72,6 +72,7 @@ from .routers import (
   pet_v1,
   premium_v1,
   device_v1,
+  device_ws_v1,
   payment_v1,
   subscription_v1,
 )
@@ -184,6 +185,7 @@ app.include_router(pet_v1.router, prefix="/api", tags=["pet-v1"])
 # 없고, 대신 모든 요청이 검증된 토큰과 소유권 검사를 통과해야 한다.
 app.include_router(premium_v1.router, prefix="/api", tags=["pet-premium"])
 app.include_router(device_v1.router, prefix="/api", tags=["device-v1"])
+app.include_router(device_ws_v1.router, prefix="/api", tags=["external-device-v1"])
 app.include_router(payment_v1.router, prefix="/api", tags=["payment-v1"])
 app.include_router(subscription_v1.router, prefix="/api", tags=["subscription-v1"])
 
@@ -248,6 +250,13 @@ from .routers import pet_references_v1  # noqa: E402
 
 app.include_router(pet_references_v1.router, prefix="/api", tags=["pet-references"])
 
+from .routers import archive_intake_v1  # noqa: E402
+
+app.include_router(
+    archive_intake_v1.router,
+    prefix="/api",
+    tags=["archive-intake"],
+)
 # 펫 신원 프로필 (Phase 2). 레퍼런스에서 파생된 버전드 시각/구조 신원 —
 # 생성 파이프라인은 건드리지 않는다. 빌드/조회 모두 인증 필수.
 from .routers import pet_identity_v1  # noqa: E402
@@ -272,6 +281,12 @@ from .routers import motion_videos_v1  # noqa: E402
 
 app.include_router(motion_videos_v1.router, prefix="/api", tags=["pet-motions"])
 
+# My Library 데이터 기반 (Phase 11). BREATHING(무료) + 소유/멤버십 생성 모션을
+# 하나의 읽기 전용 목록으로 합친다. 생성·발행·과금을 하지 않는다.
+from .routers import library_v1  # noqa: E402
+
+app.include_router(library_v1.router, prefix="/api", tags=["library"])
+
 # 모션 레퍼런스 라이브러리 (Phase 6.6). 종/형태 기반 매칭 — 내부/디버그 용도.
 from .routers import motion_references_v1  # noqa: E402
 
@@ -280,8 +295,10 @@ app.include_router(motion_references_v1.router, prefix="/api", tags=["motion-ref
 # Phase 7C durable orchestration. The browser creates/queries one run; this
 # server-owned coordinator invokes Phase 2–7A without exposing phase fan-out.
 from .routers import generation_runs_v1  # noqa: E402
+from .routers import business_qa_ops_v1  # noqa: E402
 
 app.include_router(generation_runs_v1.router, prefix="/api", tags=["pet-generation-runs"])
+app.include_router(business_qa_ops_v1.router, prefix="/api", tags=["business-qa-ops"])
 
 # Optional heavy pipeline endpoints (Luma/generate). Disable by default on lightweight deployments.
 _enable_generate = os.getenv("ENABLE_GENERATE_API", "0").strip().lower() in ("1", "true", "yes")

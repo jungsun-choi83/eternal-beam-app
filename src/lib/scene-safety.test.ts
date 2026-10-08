@@ -182,9 +182,12 @@ test("원본 갈래는 미리보기에서 펫을 두 번 그리지 않는다", a
   const { readFileSync } = await import("node:fs");
   const src = readFileSync("src/components/memorial/preview-screen.tsx", "utf8");
   assert.match(src, /isOriginalPhotoTheme/, "원본 갈래를 구분하지 않는다");
+  // My Library 경로(cutoutDisplay 없이 hasIdle && isLibrarySource 로도 그린다)가
+  // 추가돼도 !isOriginalPhotoTheme 가드는 **전체 조건**에 걸려야 한다 — 그래야
+  // 원본 사진 갈래에서는 라이브러리 재생도 펫을 두 번 그리지 않는다.
   assert.match(
     src,
-    /cutoutDisplay && !isOriginalPhotoTheme/,
+    /\(cutoutDisplay \|\| \(hasIdle && isLibrarySource\)\) && !isOriginalPhotoTheme/,
     "원본 사진 위에 누끼를 또 얹는다 — 아이가 두 번 보인다"
   );
 });

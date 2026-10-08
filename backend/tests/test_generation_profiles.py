@@ -12,6 +12,7 @@ import pytest
 from backend.services import action_keyframe_service as kf
 from backend.services import canonical_pet_service as canon
 from backend.services import motion_spec as ms
+from backend.services import pet_morphology_service as morph
 from backend.services import motion_video_service as mv
 from backend.services import pet_identity_service as ids
 from backend.services import pet_reference_service as refs
@@ -30,10 +31,10 @@ def _mock_backend(monkeypatch):
     monkeypatch.setenv("PHASE6_LIVE_MODE", "all")
     monkeypatch.delenv("PHASE6_GENERATION_PROFILE", raising=False)
     monkeypatch.delenv("PHASE6_RESOLUTION", raising=False)
-    for m in (refs, pet_registry, ids, sets, canon, kf, mv):
+    for m in (refs, pet_registry, ids, morph, sets, canon, kf, mv):
         m.__reset_for_tests()
     yield
-    for m in (refs, pet_registry, ids, sets, canon, kf, mv):
+    for m in (refs, pet_registry, ids, morph, sets, canon, kf, mv):
         m.__reset_for_tests()
 
 

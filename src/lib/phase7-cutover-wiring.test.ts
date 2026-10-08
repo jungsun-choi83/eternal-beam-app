@@ -32,7 +32,16 @@ test("미리보기 확인: Phase 7 분기가 레거시 제출보다 먼저 온�
   const branch = src.slice(phase7, legacyLabel);
   assert.match(branch, /return;/);
   assert.match(branch, /runPhase7Generation\(/);
-  assert.match(branch, /phase7PipelinePatch\(/);
+  // 결과 반영(phase7PipelinePatch 호출)은 finalizeOutcome 으로 공유된다 —
+  // 방금 끝난 확인과 새로고침 재개(resumePhase7Generation)가 같은 코드로
+  // 마무리되게 하기 위해서다. 그래서 여기서는 그 호출과, finalizeOutcome
+  // 자신이 실제로 phase7PipelinePatch 를 쓰는지를 함께 본다.
+  assert.match(branch, /finalizeOutcome\(/);
+  const finalizeStart = src.indexOf("const finalizeOutcome");
+  assert.ok(finalizeStart > 0 && finalizeStart < phase7, "finalizeOutcome 정의가 없다");
+  const finalizeEnd = src.indexOf("\n  );", finalizeStart);
+  const finalizeBody = src.slice(finalizeStart, finalizeEnd > 0 ? finalizeEnd : phase7);
+  assert.match(finalizeBody, /phase7PipelinePatch\(/);
   // 새 분기에서 기기 push/장면 굽기를 하지 않는다.
   assert.doesNotMatch(branch, /schedulePetReadyToDevice/);
   assert.doesNotMatch(branch, /buildCanonicalScene/);
@@ -72,8 +81,10 @@ test("StoredPipeline: 새 실행 산출물 표시 필드가 계약에 있다", (
 
 test("REVIEW 는 REVIEW 로 흐른다 — 흐름 코드가 결정을 가공하지 않는다", () => {
   const src = read(FLOW);
-  // REVIEW 재생은 published=false + qa_decision=REVIEW 계약 위반 시 거절한다.
-  assert.match(src, /playback\.published \|\| playback\.qa_decision !== "REVIEW"/);
+  // REVIEW 재생은 published=false 계약 위반 시 거절한다. 레거시 qa_decision 은
+  // 표시용 텔레메트리일 뿐 — 흐름 제어가 그 값을 읽지 않는다.
+  assert.match(src, /if \(playback\.published\) \{/);
+  assert.doesNotMatch(src, /qa_decision\s*(===|!==)/);
   assert.match(src, /REVIEW_PLAYBACK_INVALID/);
   // "PASS 로 승격" 같은 가공이 코드에 없다.
   assert.doesNotMatch(src, /qa_decision\s*[:=]\s*"PASS"/);

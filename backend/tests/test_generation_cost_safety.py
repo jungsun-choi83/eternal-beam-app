@@ -325,3 +325,190 @@ def test_readiness_audit_never_raises(monkeypatch: pytest.MonkeyPatch):
         if k.startswith(("SUPABASE", "SUBSCRIPTION", "PAYMENT", "GENERATION", "HYBRID")):
             monkeypatch.delenv(k, raising=False)
     assert production_readiness.audit().production_ready is False
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 7) QA 버전이 유료 재생성을 부르지 않는다
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 멱등 판정은 analyzer_versions 스탬프를 비교한다. 예전에는 **스탬프 전체**를
+# 비교했기 때문에, QA 규칙 한 줄을 고쳐 QA 버전을 올리면 이미 만들어 둔 이미지와
+# 영상이 "다른 것"으로 보여 프로바이더에 다시 주문이 나갔다. 입력도 프롬프트도
+# 프로바이더도 그대로인데 돈만 두 번 나가는 길이다.
+
+
+def test_canonical_qa_version_is_not_part_of_the_generation_identity():
+    from backend.services import canonical_pet_service as cps
+
+    stamp = {
+        "canonical_builder": "b1",
+        "canonical_prompt": "p1",
+        "canonical_providers": ["fake:m1"],
+        "canonical_qa": "qa-v1",
+        "selection": "s1",
+    }
+    requalified = {**stamp, "canonical_qa": "qa-v2"}
+
+    assert cps.generation_versions(stamp) == cps.generation_versions(requalified)
+    # 생성에 영향을 주는 값은 하나도 빠지지 않는다.
+    assert cps.generation_versions(stamp) == {
+        "canonical_builder": "b1",
+        "canonical_prompt": "p1",
+        "canonical_providers": ["fake:m1"],
+        "selection": "s1",
+    }
+
+
+def test_canonical_generation_inputs_still_force_a_rebuild():
+    from backend.services import canonical_pet_service as cps
+
+    stamp = {"canonical_builder": "b1", "canonical_qa": "qa-v1"}
+    for changed in ("canonical_builder", "canonical_prompt", "canonical_providers", "selection"):
+        other = {**stamp, changed: "CHANGED"}
+        assert cps.generation_versions(stamp) != cps.generation_versions(other), changed
+
+
+def test_motion_qa_versions_are_not_part_of_the_generation_identity():
+    from backend.services import motion_video_service as mvs
+
+    stamp = {
+        "motion_builder": "b1",
+        "motion_spec": "s1",
+        "contract": "c1",
+        "prompt": "p1",
+        "providers": ["fake:m1"],
+        "qa": "qa-v1",
+        "sampling": "samp-v1",
+        "vlm_motion_qa": "vlm-v1",
+        "motion_qa_contract": "motion-qa-v1",
+    }
+    requalified = {
+        **stamp,
+        "qa": "qa-v2",
+        "sampling": "samp-v2",
+        "vlm_motion_qa": "vlm-v2",
+        "motion_qa_contract": "motion-qa-v2",
+    }
+
+    assert mvs.generation_versions(stamp) == mvs.generation_versions(requalified)
+    assert set(mvs.generation_versions(stamp)) == {
+        "motion_builder",
+        "motion_spec",
+        "contract",
+        "prompt",
+        "providers",
+    }
+
+
+def test_motion_generation_inputs_still_force_a_rebuild():
+    from backend.services import motion_video_service as mvs
+
+    stamp = {"motion_builder": "b1", "prompt": "p1", "providers": ["fake:m1"], "qa": "qa-v1"}
+    for changed in ("motion_builder", "motion_spec", "contract", "prompt", "providers"):
+        other = {**stamp, changed: "CHANGED"}
+        assert mvs.generation_versions(stamp) != mvs.generation_versions(other), changed
+
+
+def test_live_qa_version_constants_are_classified_as_qa_only():
+    """상수를 올렸을 때 실제로 재생성이 안 일어나는지 — 이름이 아니라 값으로 확인."""
+    from backend.services import (
+        canonical_pet_service as cps,
+        canonical_qa,
+        motion_spec,
+        motion_video_prompts,
+        motion_video_qa,
+        motion_video_service as mvs,
+        vlm_identity,
+    )
+
+    canonical_stamp = {"canonical_qa": canonical_qa.CANONICAL_QA_VERSION, "canonical_prompt": "p1"}
+    assert "canonical_qa" not in cps.generation_versions(canonical_stamp)
+
+    motion_stamp = {
+        "qa": motion_video_qa.MOTION_VIDEO_QA_VERSION,
+        "sampling": motion_video_qa.FRAME_SAMPLING_VERSION,
+        "vlm_motion_qa": vlm_identity.VLM_MOTION_QA_VERSION,
+        "motion_qa_contract": motion_spec.MOTION_QA_CONTRACT_VERSION,
+        "prompt": motion_video_prompts.MOTION_VIDEO_PROMPT_VERSION,
+    }
+    generation = mvs.generation_versions(motion_stamp)
+    assert set(generation) == {"prompt"}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 8) 능력 미달 프로바이더가 유료 생성을 받아 가지 않는다
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 예전에는 `required_all` 을 아무도 만족하지 못하면 **걸러지지 않은 원래 목록을
+# 그대로 되돌렸다**. 요구사항 미충족이 "요구사항 없음"과 같은 결과를 냈고, 능력
+# 없는 프로바이더가 그대로 생성을 받았다.
+
+
+class _Cap:
+    def __init__(self, name, **caps):
+        self.name = name
+        for k, v in caps.items():
+            setattr(self, k, v)
+
+
+def test_unmet_required_capability_yields_no_provider_instead_of_all_of_them():
+    from backend.services import motion_video_service as mvs
+
+    providers = [_Cap("a", supports_end_frame=False), _Cap("b", supports_end_frame=False)]
+    requirements = {
+        "required_all": ["supports_end_frame"],
+        "degrade_allowed": False,
+        "degrade_to_strategy": None,
+    }
+    assert mvs._apply_provider_capability_requirements(providers, requirements) == []
+
+
+def test_degrade_needs_both_the_flag_and_a_destination():
+    from backend.services import motion_video_service as mvs
+
+    providers = [_Cap("a", supports_motion_reference=False)]
+    base = {"required_all": ["supports_motion_reference"]}
+
+    # 플래그만 있고 목적지가 없다 → 허가가 아니라 미기재다.
+    assert mvs._apply_provider_capability_requirements(
+        providers, {**base, "degrade_allowed": True, "degrade_to_strategy": None}
+    ) == []
+    assert mvs._apply_provider_capability_requirements(
+        providers, {**base, "degrade_allowed": False, "degrade_to_strategy": "IMAGE_TO_VIDEO"}
+    ) == []
+
+    # 둘 다 명시됐을 때만 원래 목록으로 강등한다.
+    degraded = mvs._apply_provider_capability_requirements(
+        providers, {**base, "degrade_allowed": True, "degrade_to_strategy": "IMAGE_TO_VIDEO"}
+    )
+    assert [p.name for p in degraded] == ["a"]
+
+
+def test_capable_providers_are_still_preferred_and_ordered():
+    from backend.services import motion_video_service as mvs
+
+    providers = [
+        _Cap("no_end", supports_end_frame=False, supports_motion_reference=False),
+        _Cap("end_only", supports_end_frame=True, supports_motion_reference=False),
+        _Cap("end_and_ref", supports_end_frame=True, supports_motion_reference=True),
+    ]
+    ranked = mvs._apply_provider_capability_requirements(
+        providers,
+        {
+            "required_all": ["supports_end_frame"],
+            "preferred_any": ["supports_motion_reference"],
+            "degrade_allowed": False,
+        },
+    )
+    # 능력 없는 프로바이더는 아예 빠지고, 선호 능력이 앞선다.
+    assert [p.name for p in ranked] == ["end_and_ref", "end_only"]
+
+
+def test_registry_start_end_motion_cannot_degrade():
+    """레지스트리 계약 자체가 강등을 막고 있다 — 코드와 레지스트리가 같은 말을 한다."""
+    from backend.services import motion_spec as ms
+
+    caps = ms.MOTIONS["LIE_DOWN"].requirements["provider_capabilities"]
+    assert caps["required_all"] == ["supports_end_frame"]
+    assert caps["degrade_allowed"] is False
+    assert caps["degrade_to_strategy"] is None

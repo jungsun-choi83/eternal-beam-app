@@ -36,13 +36,14 @@ signature_version 이 시그니처 스키마를 봉인하므로, 이후 Modal �
 
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import os
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
@@ -50,16 +51,25 @@ logger = logging.getLogger(__name__)
 
 UNKNOWN = "unknown"
 
-ELIGIBILITY_ANALYZER_VERSION = "eligibility-v1"
-VISUAL_ANALYZER_VERSION = "visual-v1-deterministic"
+ELIGIBILITY_ANALYZER_VERSION = "eligibility-v2-lineage"
+VISUAL_ANALYZER_VERSION = "visual-v2-deterministic"
 STRUCTURAL_ANALYZER_VERSION = "structural-v1"
 SIGNATURE_VERSION = "sig-v1-hsv64-phash64"
+VISUAL_EMBEDDING_VERSION = "identity-embed-v1-rgb-grid"
+IDENTITY_FUSION_VERSION = "identity-fusion-v1"
+IDENTITY_PROFILE_CONTRACT_VERSION = "pet-identity-profile-v2"
 
 STATUS_COMPLETE = "complete"
 STATUS_PARTIAL = "partial"
 
 #: 마스크로 인정할 최소 픽셀 수 — 이보다 작으면 측정이 무의미하다.
 _MIN_MASK_PIXELS = 64
+
+_CONFIDENCE_WEIGHT = {
+    "high": 1.0,
+    "medium": 0.75,
+    "low": 0.5,
+}
 
 #: 코트 색 이름 팔레트 (개·고양이에서 실제로 나오는 색만; RGB 최근접 매칭).
 _NAMED_COAT_COLORS: tuple[tuple[str, tuple[int, int, int]], ...] = (
@@ -114,10 +124,13 @@ def analyzer_versions() -> dict[str, Any]:
     from . import vlm_identity
 
     return {
+        "contract": IDENTITY_PROFILE_CONTRACT_VERSION,
         "eligibility": ELIGIBILITY_ANALYZER_VERSION,
         "visual": VISUAL_ANALYZER_VERSION,
         "structural": STRUCTURAL_ANALYZER_VERSION,
         "signature": SIGNATURE_VERSION,
+        "embedding": VISUAL_EMBEDDING_VERSION,
+        "identity_fusion": IDENTITY_FUSION_VERSION,
         "pose_backend": "heuristic_mask_geometry",
         "vlm": (vlm_identity.VLM_ANALYZER_VERSION if vlm_identity.is_enabled() else None),
         "vlm_model": (vlm_identity.model_name() if vlm_identity.is_enabled() else None),
@@ -205,6 +218,47 @@ def _dominant_colors(pixels: np.ndarray, *, max_colors: int = 5) -> list[dict[st
 
 def _unknown_field(reason: str) -> dict[str, Any]:
     return {"status": UNKNOWN, "reason": reason}
+
+
+def _is_known_text(value: Any) -> bool:
+    return isinstance(value, str) and value.strip() and value.strip().lower() != UNKNOWN
+
+
+def _trait_confidence(*, supports: int, total: int) -> str:
+    if total <= 0 or supports <= 0:
+        return "low"
+    ratio = supports / float(total)
+    if supports >= 2 and ratio >= 0.67:
+        return "high"
+    if ratio >= 0.5:
+        return "medium"
+    return "low"
+
+
+def _stable_string_trait(observations: list[tuple[str, str]]) -> dict[str, Any]:
+    """
+    [(reference_id, value)] → 가장 안정적으로 반복되는 문자열 특성.
+    unknown/빈값은 제외한다.
+    """
+    known: dict[str, list[str]] = {}
+    for rid, value in observations:
+        if _is_known_text(value):
+            key = str(value).strip()
+            known.setdefault(key, []).append(str(rid))
+    total = len(observations)
+    if not known:
+        return _unknown_field("insufficient_cross_reference_evidence")
+    best_value, supports = max(
+        known.items(),
+        key=lambda kv: (len(kv[1]), kv[0]),
+    )
+    support_ids = sorted(set(supports))
+    return {
+        "status": "fused",
+        "value": best_value,
+        "confidence": _trait_confidence(supports=len(support_ids), total=total),
+        "support_reference_ids": support_ids,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -358,6 +412,399 @@ def signature_similarity(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def compute_visual_embedding(rgba: np.ndarray) -> Optional[dict[str, Any]]:
+    """
+    개체 시각 임베딩(결정론, 경량): 알파 마스크 bbox 를 고정 격자로 축약한 RGB 특징.
+    학습 모델 없이 동일 개체 일치의 보조 신호로만 사용한다.
+    """
+    from PIL import Image
+
+    mask = subject_mask(rgba)
+    if int(mask.sum()) < _MIN_MASK_PIXELS:
+        return None
+
+    ys, xs = np.where(mask)
+    crop = rgba[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
+    rgb = crop[:, :, :3].astype(np.float64) / 255.0
+    alpha = crop[:, :, 3].astype(np.float64) / 255.0
+    composite = (rgb * alpha[:, :, None]) + (0.5 * (1.0 - alpha[:, :, None]))
+    resample_bilinear = Image.Resampling.BILINEAR if hasattr(Image, "Resampling") else Image.BILINEAR
+    small = np.asarray(
+        Image.fromarray(np.clip(composite * 255.0, 0, 255).astype(np.uint8), mode="RGB").resize(
+            (32, 32), resample_bilinear
+        ),
+        dtype=np.float64,
+    )
+    grid = 4
+    cell = 32 // grid
+    feats: list[float] = []
+    for gy in range(grid):
+        for gx in range(grid):
+            tile = small[gy * cell : (gy + 1) * cell, gx * cell : (gx + 1) * cell, :]
+            feats.extend([float(tile[:, :, 0].mean()), float(tile[:, :, 1].mean()), float(tile[:, :, 2].mean())])
+
+    vec = np.asarray(feats, dtype=np.float64)
+    norm = float(np.linalg.norm(vec))
+    if norm <= 1e-12:
+        return None
+    vec = vec / norm
+    return {
+        "version": VISUAL_EMBEDDING_VERSION,
+        "vector": [round(float(v), 6) for v in vec],
+        "dim": int(len(vec)),
+    }
+
+
+def embedding_similarity(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
+    if (
+        not a
+        or not b
+        or a.get("version") != b.get("version")
+        or int(a.get("dim") or 0) <= 0
+        or int(a.get("dim") or 0) != int(b.get("dim") or 0)
+    ):
+        return {"comparable": False}
+    va = np.asarray(a.get("vector") or [], dtype=np.float64)
+    vb = np.asarray(b.get("vector") or [], dtype=np.float64)
+    if va.shape != vb.shape or len(va) == 0:
+        return {"comparable": False}
+    dot = float(np.clip(np.dot(va, vb), -1.0, 1.0))
+    return {"comparable": True, "cosine_similarity": round(dot, 4)}
+
+
+def _extract_coat_pattern_value(visual: dict[str, Any]) -> str:
+    region = (visual or {}).get("region_color_summary") or {}
+    if not isinstance(region, dict):
+        return UNKNOWN
+    left = ((region.get("left_third") or {}).get("dominant"))
+    center = ((region.get("center_third") or {}).get("dominant"))
+    right = ((region.get("right_third") or {}).get("dominant"))
+    if not (_is_known_text(left) and _is_known_text(center) and _is_known_text(right)):
+        return UNKNOWN
+    return f"{left}|{center}|{right}"
+
+
+def _fuse_coat(visuals: Sequence[tuple[str, dict[str, Any]]]) -> dict[str, Any]:
+    """레퍼런스별 코트 측정치를 융합한다. 기존 coat 스키마는 유지한다."""
+    measured = [(rid, (v.get("coat") or {})) for rid, v in visuals if (v.get("coat") or {}).get("status") == "measured"]
+    if not measured:
+        return _unknown_field("insufficient_cross_reference_evidence")
+
+    color_stats: dict[str, dict[str, Any]] = {}
+    luminance_vals: list[float] = []
+    tone_obs: list[tuple[str, str]] = []
+    for rid, coat in measured:
+        if isinstance(coat.get("mean_luminance"), (int, float)):
+            luminance_vals.append(float(coat["mean_luminance"]))
+        tone_obs.append((rid, str(coat.get("tone") or UNKNOWN)))
+        for c in coat.get("palette") or []:
+            if not isinstance(c, dict):
+                continue
+            name = str(c.get("name") or "").strip()
+            frac = float(c.get("fraction") or 0)
+            if not _is_known_text(name) or frac <= 0:
+                continue
+            st = color_stats.setdefault(name, {"weight": 0.0, "support": set()})
+            st["weight"] += frac
+            st["support"].add(rid)
+
+    ranked = sorted(
+        color_stats.items(),
+        key=lambda kv: (-float(kv[1]["weight"]), -len(kv[1]["support"]), kv[0]),
+    )
+    total_refs = len(measured)
+    dominant: list[dict[str, Any]] = []
+    secondary: list[dict[str, Any]] = []
+    for i, (name, st) in enumerate(ranked):
+        refs = sorted(st["support"])
+        item = {
+            "name": name,
+            "fraction": round(float(st["weight"]) / max(1.0, float(total_refs)), 4),
+            "confidence": _trait_confidence(supports=len(refs), total=total_refs),
+            "support_reference_ids": refs,
+        }
+        if i < 2:
+            dominant.append(item)
+        else:
+            secondary.append(item)
+
+    tone = _stable_string_trait(tone_obs)
+    mean_l = round(float(np.mean(luminance_vals)), 1) if luminance_vals else None
+    return {
+        "status": "measured",
+        "dominant_colors": dominant,
+        "secondary_colors": secondary,
+        "palette": [
+            {
+                "name": name,
+                "fraction": round(float(st["weight"]) / max(1.0, float(total_refs)), 4),
+                "support_reference_ids": sorted(st["support"]),
+            }
+            for name, st in ranked
+        ],
+        "mean_luminance": mean_l,
+        "tone": tone.get("value") if tone.get("status") == "fused" else UNKNOWN,
+        "tone_evidence": tone,
+        "length": _unknown_field(_SEMANTIC_ONLY_REASON),
+        "texture": _unknown_field(_SEMANTIC_ONLY_REASON),
+    }
+
+
+def _fuse_embedding(embeddings: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    usable = [(rid, e) for rid, e in embeddings.items() if e and (e.get("version") == VISUAL_EMBEDDING_VERSION)]
+    if not usable:
+        return _unknown_field("no_embedding_evidence")
+    vecs = [np.asarray(e.get("vector") or [], dtype=np.float64) for _, e in usable]
+    dims = {v.shape for v in vecs}
+    if len(dims) != 1:
+        return _unknown_field("embedding_dimension_mismatch")
+    centroid = np.mean(np.stack(vecs, axis=0), axis=0)
+    norm = float(np.linalg.norm(centroid))
+    if norm <= 1e-12:
+        return _unknown_field("embedding_zero_centroid")
+    centroid = centroid / norm
+
+    pairwise: list[float] = []
+    for i in range(len(usable)):
+        for j in range(i + 1, len(usable)):
+            sim = embedding_similarity(usable[i][1], usable[j][1])
+            if sim.get("comparable"):
+                pairwise.append(float(sim["cosine_similarity"]))
+
+    support_ids = [rid for rid, _ in usable]
+    conf = "high"
+    if pairwise:
+        m = float(np.mean(pairwise))
+        if m < 0.70:
+            conf = "medium"
+        if m < 0.55:
+            conf = "low"
+    elif len(support_ids) == 1:
+        conf = "medium"
+    return {
+        "status": "fused",
+        "version": VISUAL_EMBEDDING_VERSION,
+        "vector": [round(float(v), 6) for v in centroid],
+        "dim": int(len(centroid)),
+        "confidence": conf,
+        "support_reference_ids": support_ids,
+        "intra_reference_similarity": (
+            {
+                "mean": round(float(np.mean(pairwise)), 4),
+                "min": round(float(np.min(pairwise)), 4),
+                "max": round(float(np.max(pairwise)), 4),
+                "pair_count": len(pairwise),
+            }
+            if pairwise
+            else {"mean": None, "min": None, "max": None, "pair_count": 0}
+        ),
+    }
+
+
+def _fuse_unique_features(values: list[tuple[str, list[str]]], *, total_refs: int) -> dict[str, Any]:
+    seen: dict[str, set[str]] = {}
+    for rid, feats in values:
+        for feat in feats:
+            if _is_known_text(feat):
+                key = str(feat).strip()
+                seen.setdefault(key, set()).add(rid)
+    if not seen:
+        return {"status": UNKNOWN, "items": [], "reason": "insufficient_cross_reference_evidence"}
+    ranked = sorted(seen.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+    items = [
+        {
+            "value": feat,
+            "confidence": _trait_confidence(supports=len(refs), total=total_refs),
+            "support_reference_ids": sorted(refs),
+        }
+        for feat, refs in ranked
+    ]
+    return {"status": "fused", "items": items}
+
+
+def _semantic_text_or_unknown(value: Any) -> str:
+    if _is_known_text(value):
+        return str(value).strip()
+    return UNKNOWN
+
+
+def _compose_body_markings(traits: dict[str, Any]) -> str:
+    body = traits.get("body") if isinstance(traits, dict) else {}
+    coat = traits.get("coat") if isinstance(traits, dict) else {}
+    parts = [
+        _semantic_text_or_unknown((body or {}).get("chest_markings")),
+        _semantic_text_or_unknown((body or {}).get("torso_markings")),
+        _semantic_text_or_unknown((coat or {}).get("marking_distribution")),
+    ]
+    known = [p for p in parts if p != UNKNOWN]
+    return " / ".join(known) if known else UNKNOWN
+
+
+def _compose_distinctive_features(traits: dict[str, Any]) -> list[str]:
+    uniq = traits.get("unique_features") if isinstance(traits, dict) else []
+    if not isinstance(uniq, list):
+        return []
+    return [str(v).strip() for v in uniq if _is_known_text(v)]
+
+
+def _semantic_traits_from_result(vlm_result: Optional[dict[str, Any]]) -> dict[str, Any]:
+    if not vlm_result or not isinstance(vlm_result.get("traits"), dict):
+        return {
+            "facial_markings": _unknown_field("vlm_traits_unavailable"),
+            "body_markings": _unknown_field("vlm_traits_unavailable"),
+            "distinctive_features": {"status": UNKNOWN, "items": [], "reason": "vlm_traits_unavailable"},
+        }
+    traits = vlm_result["traits"]
+    facial = _semantic_text_or_unknown(((traits.get("face") or {}).get("facial_markings")))
+    body = _compose_body_markings(traits)
+    features = _compose_distinctive_features(traits)
+    return {
+        "facial_markings": (
+            {"status": "vlm", "value": facial}
+            if facial != UNKNOWN
+            else _unknown_field("vlm_insufficient_facial_markings")
+        ),
+        "body_markings": (
+            {"status": "vlm", "value": body}
+            if body != UNKNOWN
+            else _unknown_field("vlm_insufficient_body_markings")
+        ),
+        "distinctive_features": (
+            {"status": "vlm", "items": features}
+            if features
+            else {"status": UNKNOWN, "items": [], "reason": "vlm_no_distinctive_features"}
+        ),
+    }
+
+
+def _fuse_reference_traits(
+    *,
+    source_reference_ids: list[str],
+    reference_visuals: dict[str, dict[str, Any]],
+    reference_embeddings: dict[str, dict[str, Any]],
+    reference_semantics: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """
+    레퍼런스별 개체 특성을 융합해 안정적인 동일-개체 프로필을 만든다.
+    morphology(구조)는 별도 structural_identity 에 남긴다.
+    """
+    ordered = [rid for rid in source_reference_ids if rid in reference_visuals]
+    visuals = [(rid, reference_visuals[rid]) for rid in ordered]
+    total = len(ordered)
+
+    coat = _fuse_coat(visuals)
+    pattern_obs = [(rid, _extract_coat_pattern_value(reference_visuals[rid])) for rid in ordered]
+    coat_pattern = _stable_string_trait(pattern_obs)
+
+    facial_obs: list[tuple[str, str]] = []
+    body_obs: list[tuple[str, str]] = []
+    distinct_obs: list[tuple[str, list[str]]] = []
+    for rid in ordered:
+        sem = reference_semantics.get(rid) or {}
+        f = sem.get("facial_markings") or {}
+        b = sem.get("body_markings") or {}
+        d = sem.get("distinctive_features") or {}
+        facial_obs.append((rid, str(f.get("value") or UNKNOWN)))
+        body_obs.append((rid, str(b.get("value") or UNKNOWN)))
+        distinct_obs.append((rid, list(d.get("items") or [])))
+
+    facial_markings = _stable_string_trait(facial_obs)
+    body_markings = _stable_string_trait(body_obs)
+    distinctive_features = _fuse_unique_features(distinct_obs, total_refs=max(1, total))
+    embedding = _fuse_embedding(reference_embeddings)
+
+    strict_ids = [
+        rid
+        for rid in source_reference_ids
+        if ((reference_visuals.get(rid) or {}).get("status") == "measured")
+    ]
+    same_individual_gate = {
+        "status": ("ready" if strict_ids else UNKNOWN),
+        "analyzer": IDENTITY_FUSION_VERSION,
+        "reference_count": len(source_reference_ids),
+        "strict_lineage_reference_count": len(strict_ids),
+        "support_reference_ids": strict_ids,
+        "signal_confidence": {
+            "signature": _trait_confidence(supports=len(strict_ids), total=max(1, len(source_reference_ids))),
+            "coat_pattern": coat_pattern.get("confidence") if isinstance(coat_pattern, dict) else "low",
+            "visual_embedding": embedding.get("confidence") if isinstance(embedding, dict) else "low",
+            "facial_markings": facial_markings.get("confidence") if isinstance(facial_markings, dict) else "low",
+            "body_markings": body_markings.get("confidence") if isinstance(body_markings, dict) else "low",
+            "distinctive_features": (
+                distinctive_features.get("items", [{}])[0].get("confidence")
+                if (distinctive_features.get("items") if isinstance(distinctive_features, dict) else [])
+                else "low"
+            ),
+        },
+        # HSV/pHash + embedding 은 보조 합의 신호다. 단일 신호가 독재하지 않도록
+        # canonical_qa 에서 복합 판정한다.
+        "thresholds": {
+            "min_signature_hist_intersection": 0.16,
+            "min_embedding_cosine_similarity": 0.72,
+        },
+    }
+
+    return {
+        "coat": coat,
+        "coat_pattern": coat_pattern,
+        "facial_markings": facial_markings,
+        "body_markings": body_markings,
+        "distinctive_features": distinctive_features,
+        "visual_embedding": embedding,
+        "same_individual_gate": same_individual_gate,
+    }
+
+
+def _fuse_semantic_traits_payload(reference_semantics: dict[str, dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """per-reference VLM 결과를 보수적으로 융합해 legacy semantic_traits 형식을 유지한다."""
+    present: list[tuple[str, dict[str, Any], dict[str, Any]]] = []
+    for rid, sem in reference_semantics.items():
+        if sem.get("status") == "present" and isinstance(sem.get("traits"), dict):
+            present.append((rid, sem.get("traits") or {}, sem))
+    if not present:
+        return None
+
+    def _pick(obs: list[tuple[str, str]]) -> str:
+        fused = _stable_string_trait(obs)
+        if isinstance(fused, dict) and fused.get("status") == "fused":
+            return str(fused.get("value") or UNKNOWN)
+        return UNKNOWN
+
+    species = _pick([(rid, str(traits.get("species") or UNKNOWN)) for rid, traits, _ in present])
+    ears_shape = _pick(
+        [(rid, str(((traits.get("ears") or {}).get("shape") or UNKNOWN))) for rid, traits, _ in present]
+    )
+    coat_markings = _pick(
+        [
+            (rid, str(((traits.get("coat") or {}).get("marking_distribution") or UNKNOWN)))
+            for rid, traits, _ in present
+        ]
+    )
+    coat_length = _pick(
+        [(rid, str(((traits.get("coat") or {}).get("length") or UNKNOWN))) for rid, traits, _ in present]
+    )
+
+    models = sorted({str((meta.get("model") or "")) for _, _, meta in present if meta.get("model")})
+    support_ids = [rid for rid, _, _ in present]
+    from . import vlm_identity
+
+    return {
+        "status": "vlm",
+        "traits": {
+            "species": species,
+            "ears": {"shape": ears_shape},
+            "coat": {
+                "marking_distribution": coat_markings,
+                "length": coat_length,
+            },
+        },
+        "source_reference_ids": support_ids,
+        "image_count": len(support_ids),
+        "analyzer": vlm_identity.VLM_ANALYZER_VERSION,
+        "model": (models[0] if len(models) == 1 else models),
+    }
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 구조 신원
 # ══════════════════════════════════════════════════════════════════════════
@@ -470,7 +917,11 @@ def _diag_lookup(diagnostics: Optional[dict[str, Any]], *keys: str) -> Any:
 
 
 def evaluate_reference_eligibility(
-    ref: Any, cutout_rgba: Optional[np.ndarray]
+    ref: Any,
+    cutout_rgba: Optional[np.ndarray],
+    *,
+    strict_lineage_ok: bool = True,
+    cutout_reference: Optional[Any] = None,
 ) -> dict[str, Any]:
     """
     원본 레퍼런스 1건의 신원 작업 적격성.
@@ -520,11 +971,28 @@ def evaluate_reference_eligibility(
         reasons.append("subject_cropped_by_frame")
     if cutout_rgba is None:
         reasons.append("no_segmentation_available")
+    if not strict_lineage_ok:
+        reasons.append("no_strict_original_cutout_lineage")
 
-    usable = subject_detected is not False and rectangle_like is not True and cutout_rgba is not None
+    usable = (
+        strict_lineage_ok
+        and subject_detected is not False
+        and rectangle_like is not True
+        and cutout_rgba is not None
+    )
+
+    cutout_id = str(getattr(cutout_reference, "id", "") or "") or None
+    original_id = str(getattr(ref, "id", "") or "") or None
+    lineage = {
+        "status": "strict_parent_linked" if strict_lineage_ok else UNKNOWN,
+        "original_reference_id": original_id,
+        "cutout_reference_id": cutout_id,
+        "reason": None if strict_lineage_ok else "parent_reference_id_missing_or_mismatch",
+    }
 
     return {
         "analyzer": ELIGIBILITY_ANALYZER_VERSION,
+        "lineage": lineage,
         "subject_detected": subject_detected if subject_detected is not None else UNKNOWN,
         "animal_class": animal_class or UNKNOWN,
         "detection_confidence": confidence if confidence is not None else UNKNOWN,
@@ -599,14 +1067,17 @@ async def _profile_rows(pet_id: str) -> list[dict[str, Any]]:
         return []
     if _use_db() and _supabase():
         try:
-            r = (
-                _supabase()
-                .table(_table())
-                .select(_SELECT)
-                .eq("pet_id", pid)
-                .order("version", desc=False)
-                .execute()
-            )
+            def _select():
+                return (
+                    _supabase()
+                    .table(_table())
+                    .select(_SELECT)
+                    .eq("pet_id", pid)
+                    .order("version", desc=False)
+                    .execute()
+                )
+
+            r = await asyncio.to_thread(_select)
             return getattr(r, "data", None) or []
         except Exception as e:
             logger.exception("신원 프로필 조회 실패 (pet=%s)", pid)
@@ -683,7 +1154,7 @@ def _completeness(visual: dict[str, Any], structural: dict[str, Any], semantic_s
 async def _insert_profile_row(row: dict[str, Any]) -> tuple[bool, Optional[Exception]]:
     if _use_db() and _supabase():
         try:
-            _supabase().table(_table()).insert(row).execute()
+            await asyncio.to_thread(lambda: _supabase().table(_table()).insert(row).execute())
             return True, None
         except Exception as e:  # noqa: BLE001
             return False, e
@@ -692,6 +1163,101 @@ async def _insert_profile_row(row: dict[str, Any]) -> tuple[bool, Optional[Excep
             return False, PetIdentityError("DUPLICATE", "duplicate version")
     _MOCK_PROFILES.append(dict(row))
     return True, None
+
+
+def lineage_from_eligibility(reference_eligibility: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """
+    저장된 프로필 → 그것이 근거로 삼았던 원본→누끼 계보.
+
+    새 컬럼을 만들지 않는다: 계보는 이미 reference_eligibility[rid]["lineage"] 에
+    박제돼 있다(원본 id, 누끼 id, strict_parent_linked 여부). 그 값을
+    pet_reference_service.strict_lineage_map 과 같은 모양으로 되읽어, 재사용
+    판정이 **지금의 대장**과 **그때의 근거**를 직접 비교하게 한다.
+
+    계보 기록 이전의 오래된 프로필은 여기서 (None, False) 로 읽힌다 — 그때는
+    실제로 누끼를 근거로 쓰지 않았다는 뜻이므로, 지금 누끼가 있으면 불일치가
+    되어 한 번 다시 빌드된다. 그것이 맞는 동작이다.
+    """
+    out: dict[str, dict[str, Any]] = {}
+    for rid, entry in (reference_eligibility or {}).items():
+        lineage = entry.get("lineage") if isinstance(entry, dict) else None
+        lineage = lineage if isinstance(lineage, dict) else {}
+        cutout_id = lineage.get("cutout_reference_id")
+        out[str(rid)] = {
+            "cutout_reference_id": (str(cutout_id) if cutout_id else None),
+            "strict": lineage.get("status") == "strict_parent_linked",
+        }
+    return out
+
+
+def _analyze_one_original(
+    ref: Any,
+    cut: Any,
+    fetch: Callable[[Any], Optional[bytes]],
+) -> dict[str, Any]:
+    """
+    원본 레퍼런스 1건의 다운로드 + 결정론 분석(+옵션 VLM). 순수 동기 워커라
+    `asyncio.to_thread` 로 여러 레퍼런스를 동시에 돌릴 수 있다.
+
+    다른 레퍼런스의 결과와 **완전히 독립**이다 — 서로 다른 사진의 바이트라
+    VLM 시맨틱 캐시 키도 겹치지 않으므로, 동시에 실행해도 유료 호출이 늘지
+    않는다(같은 사진을 형태 프로필도 분석할 때만 캐시가 재사용된다).
+    """
+    from . import vlm_identity
+
+    strict_lineage_ok = bool(cut and cut.parent_reference_id and cut.parent_reference_id == ref.id)
+    cut_rgba = None
+    if cut is not None:
+        cut_bytes = fetch(cut)
+        if cut_bytes:
+            cut_rgba = load_rgba(cut_bytes)
+
+    entry = evaluate_reference_eligibility(
+        ref,
+        cut_rgba,
+        strict_lineage_ok=strict_lineage_ok,
+        cutout_reference=cut,
+    )
+    if cut_rgba is not None:
+        sig = compute_reference_signature(cut_rgba)
+        if sig:
+            entry["signature"] = sig
+
+    visual_entry: Optional[dict[str, Any]] = None
+    embedding_entry: Optional[dict[str, Any]] = None
+    structural_entry: Optional[dict[str, Any]] = None
+    usable_primary = bool(cut_rgba is not None and entry["usable_for_identity"])
+    if usable_primary:
+        visual_entry = analyze_visual_identity(cut_rgba)
+        embedding_entry = compute_visual_embedding(cut_rgba)
+        # 어느 레퍼런스가 최종 primary 로 뽑힐지는 병렬 실행 순서가 아니라
+        # 원래의 결정론적 순서(원본 등록 순)로 나중에 정한다 — 그래서 후보가
+        # 될 수 있는 레퍼런스마다 구조 분석을 미리 계산해 둔다(계산 자체는
+        # 결정론적이고 값싸다 — 다시 계산해도 결과가 달라지지 않는다).
+        structural_entry = analyze_structural_identity(cut_rgba)
+
+    semantic_entry: Optional[dict[str, Any]] = None
+    if vlm_identity.is_enabled():
+        orig_bytes = fetch(ref)
+        if orig_bytes:
+            result = vlm_identity.analyze_semantic_traits([(orig_bytes, ref.mime_type or "image/jpeg")])
+            semantic_fields = _semantic_traits_from_result(result)
+            semantic_entry = {
+                **semantic_fields,
+                "status": ("present" if result else UNKNOWN),
+                "traits": ((result or {}).get("traits") if result else None),
+                "model": ((result or {}).get("model") if result else None),
+                "analyzer": ((result or {}).get("analyzer") if result else None),
+            }
+
+    return {
+        "eligibility": entry,
+        "usable_primary": usable_primary,
+        "visual": visual_entry,
+        "embedding": embedding_entry,
+        "structural": structural_entry,
+        "semantic": semantic_entry,
+    }
 
 
 async def build_identity_profile(
@@ -721,12 +1287,7 @@ async def build_identity_profile(
     except pet_reference_service.PetReferenceError as e:
         raise PetIdentityError(e.code, e.message, status=e.status) from e
 
-    originals = [
-        r
-        for r in refs
-        if r.role == pet_reference_service.ROLE_ORIGINAL
-        and r.acceptance_state == pet_reference_service.STATE_ACCEPTED
-    ]
+    originals = pet_reference_service.active_originals(refs)
     if not originals:
         raise PetIdentityError(
             "NO_ORIGINAL_REFERENCES",
@@ -738,6 +1299,9 @@ async def build_identity_profile(
 
     source_ids = sorted(str(r.id) for r in originals if r.id)
     versions = analyzer_versions()
+    # 재사용 키의 일부다 — 원본 집합이 그대로여도 누끼가 나중에 붙거나 바뀌면
+    # 이 사상이 달라지고, 프로필은 다시 빌드된다 (append-only 새 버전).
+    lineage_map = pet_reference_service.strict_lineage_map(refs)
 
     if skip_if_unchanged:
         rows = await _profile_rows(pid)
@@ -746,6 +1310,7 @@ async def build_identity_profile(
             if (
                 sorted(latest.source_reference_ids) == source_ids
                 and latest.analyzer_versions == versions
+                and lineage_from_eligibility(latest.reference_eligibility) == lineage_map
             ):
                 return _to_profile(
                     max(rows, key=lambda r: int(r.get("version") or 0)), deduplicated=True
@@ -754,36 +1319,46 @@ async def build_identity_profile(
     fetch = fetch_bytes or _default_fetch_bytes
 
     # ── 레퍼런스별 적격성 + 시그니처, 프로필 수준 시각/구조는 primary 에서 ──
+    # 다운로드 + 분석은 레퍼런스마다 독립이라 동시에 돌린다(레이턴시만 줄고
+    # 유료 호출 수는 그대로다 — _analyze_one_original 문서 참고). 결과는
+    # 완료 순서가 아니라 **원본 등록 순서**로 순회해 합쳐야 primary 선택이
+    # 병렬화 전과 정확히 같은 결정론을 유지한다.
+    from .concurrency import gather_bounded
+
+    analysis_results = await gather_bounded(
+        [
+            (
+                lambda r=ref, c=cutout_by_original.get(str(ref.id)): asyncio.to_thread(
+                    _analyze_one_original, r, c, fetch
+                )
+            )
+            for ref in originals
+        ]
+    )
+
     eligibility: dict[str, Any] = {}
     visual: dict[str, Any] = {}
     structural: dict[str, Any] = {}
     primary_reference_id: Optional[str] = None
-    original_bytes_for_vlm: list[tuple[bytes, str]] = []
+    reference_visuals: dict[str, dict[str, Any]] = {}
+    reference_embeddings: dict[str, dict[str, Any]] = {}
+    reference_semantics: dict[str, dict[str, Any]] = {}
 
-    for ref in originals:
-        cut = cutout_by_original.get(str(ref.id))
-        cut_rgba = None
-        if cut is not None:
-            cut_bytes = fetch(cut)
-            if cut_bytes:
-                cut_rgba = load_rgba(cut_bytes)
+    for ref, res in zip(originals, analysis_results):
+        rid = str(ref.id)
+        eligibility[rid] = res["eligibility"]
 
-        entry = evaluate_reference_eligibility(ref, cut_rgba)
-        if cut_rgba is not None:
-            sig = compute_reference_signature(cut_rgba)
-            if sig:
-                entry["signature"] = sig
-        eligibility[str(ref.id)] = entry
+        if res["visual"] is not None:
+            reference_visuals[rid] = res["visual"]
+        if res["embedding"] is not None:
+            reference_embeddings[rid] = res["embedding"]
+        if res["usable_primary"] and primary_reference_id is None:
+            primary_reference_id = rid
+            visual = dict(res["visual"])
+            structural = res["structural"]
 
-        if cut_rgba is not None and primary_reference_id is None and entry["usable_for_identity"]:
-            primary_reference_id = str(ref.id)
-            visual = analyze_visual_identity(cut_rgba)
-            structural = analyze_structural_identity(cut_rgba)
-
-        if vlm_identity.is_enabled() and len(original_bytes_for_vlm) < vlm_identity.MAX_IMAGES:
-            orig_bytes = fetch(ref)
-            if orig_bytes:
-                original_bytes_for_vlm.append((orig_bytes, ref.mime_type or "image/jpeg"))
+        if res["semantic"] is not None:
+            reference_semantics[rid] = res["semantic"]
 
     if not visual:
         visual = {
@@ -791,19 +1366,23 @@ async def build_identity_profile(
             "reason": "no_analyzable_reference",
             "coat": _unknown_field("no_segmentation_available"),
         }
+    else:
+        fused = _fuse_reference_traits(
+            source_reference_ids=source_ids,
+            reference_visuals=reference_visuals,
+            reference_embeddings=reference_embeddings,
+            reference_semantics=reference_semantics,
+        )
+        visual.update(fused)
     if not structural:
         structural = {"status": UNKNOWN, "reason": "no_analyzable_reference"}
 
     # ── VLM 시맨틱 패스 (자체 네임스페이스; 결정론적 필드를 덮지 않는다) ──
     semantic_status = "skipped_vlm_disabled"
     if vlm_identity.is_enabled():
-        result = vlm_identity.analyze_semantic_traits(original_bytes_for_vlm)
-        if result:
-            visual["semantic_traits"] = {
-                "status": "vlm",
-                "source_reference_ids": source_ids[: result.get("image_count", 0)],
-                **result,
-            }
+        semantic_payload = _fuse_semantic_traits_payload(reference_semantics)
+        if semantic_payload:
+            visual["semantic_traits"] = semantic_payload
             semantic_status = "present"
         else:
             visual["semantic_traits"] = _unknown_field("vlm_analysis_failed")

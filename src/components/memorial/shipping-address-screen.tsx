@@ -78,119 +78,112 @@ export function ShippingAddressScreen({
     onComplete();
   };
 
-  const fieldStyle = {
-    background: "rgba(0, 0, 0, 0.35)",
-    border: "1px solid rgba(255, 255, 255, 0.12)",
-    color: "#F5F5F7",
-  } as const;
+  // Phase 10 — 입력은 .eb-input(오프화이트 · 헤어라인 · 골드 포커스 링) 하나로 통일.
+  const fieldClass = "eb-input w-full rounded-xl px-4 py-3 text-sm outline-none";
+  const labelClass = "eb-caption text-xs tracking-wider text-[var(--eb-text-2)]";
 
   return (
-    <div className="h-full flex flex-col min-h-0 overflow-hidden">
-      <header className="px-6 pt-8 pb-4 flex items-center justify-between relative shrink-0">
-        <motion.button
-          type="button"
-          onClick={onBack}
-          className="w-10 h-10 rounded-full flex items-center justify-center"
-          style={{ background: "#1C1C1E", border: "1px solid #333333" }}
-          whileTap={{ scale: 0.95 }}
-        >
-          <ArrowLeft className="w-4 h-4" style={{ color: "#F5F5F7" }} strokeWidth={1.5} />
-        </motion.button>
-        <h1 className="text-xl font-light absolute left-1/2 -translate-x-1/2" style={{ color: "#F5F5F7" }}>
+    <div className="shipping-address-screen h-full flex flex-col min-h-0 overflow-hidden bg-[var(--eb-bg)] text-[var(--eb-text)]">
+      <header className="eb-screen-header">
+        <div className="eb-screen-header__leading">
+          <motion.button
+            type="button"
+            onClick={onBack}
+            className="mem-icon-btn eb-back-btn w-10 h-10 rounded-full flex items-center justify-center"
+            whileTap={{ scale: 0.95 }}
+            aria-label="뒤로"
+          >
+            <ArrowLeft className="w-5 h-5" strokeWidth={1.5} />
+          </motion.button>
+        </div>
+        <h1 className="eb-screen-header__title screen-title text-xl font-light">
           {s.title}
         </h1>
-        <div className="w-10" aria-hidden />
+        <div className="eb-screen-header__trailing" aria-hidden />
       </header>
 
-      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-8 pb-6">
-        <div className="flex items-start gap-3 mb-6 rounded-2xl p-4" style={{ background: "rgba(201, 162, 39, 0.08)", border: "1px solid rgba(201, 162, 39, 0.2)" }}>
-          <Package className="w-5 h-5 shrink-0 mt-0.5" style={{ color: "#c9a227" }} />
-          <p className="text-sm font-light leading-relaxed" style={{ color: "#C8C8CC" }}>
-            {s.hint}
-          </p>
+      <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-6 pb-6">
+        <div className="eb-container mx-auto w-full max-w-[520px]">
+          <div className="eb-notice eb-notice--premium flex items-start gap-3 mb-6 rounded-2xl p-4">
+            <Package className="w-5 h-5 shrink-0 mt-0.5 text-[var(--eb-gold-text)]" />
+            <p className="text-sm leading-relaxed text-[var(--eb-text)]">
+              {s.hint}
+            </p>
+          </div>
+
+          <div className="space-y-4">
+            <label className="block space-y-2">
+              <span className={labelClass}>{s.recipientName}</span>
+              <input
+                value={form.recipientName}
+                onChange={(e) => update("recipientName", e.target.value)}
+                className={fieldClass}
+                autoComplete="name"
+              />
+            </label>
+
+            <label className="block space-y-2">
+              <span className={labelClass}>{s.phone}</span>
+              <input
+                value={form.phone}
+                onChange={(e) => update("phone", e.target.value)}
+                className={fieldClass}
+                inputMode="tel"
+                autoComplete="tel"
+              />
+            </label>
+
+            <label className="block space-y-2">
+              <span className={labelClass}>{s.postalCode}</span>
+              <input
+                value={form.postalCode}
+                onChange={(e) => update("postalCode", e.target.value)}
+                className={fieldClass}
+                inputMode="numeric"
+                autoComplete="postal-code"
+              />
+            </label>
+
+            <label className="block space-y-2">
+              <span className={`${labelClass} flex items-center gap-1.5`}>
+                <MapPin className="w-3.5 h-3.5" />
+                {s.addressLine1}
+              </span>
+              <input
+                value={form.addressLine1}
+                onChange={(e) => update("addressLine1", e.target.value)}
+                className={fieldClass}
+                autoComplete="street-address"
+              />
+            </label>
+
+            <label className="block space-y-2">
+              <span className={labelClass}>{s.addressLine2}</span>
+              <input
+                value={form.addressLine2 ?? ""}
+                onChange={(e) => update("addressLine2", e.target.value)}
+                className={fieldClass}
+              />
+            </label>
+          </div>
+
+          {error ? (
+            <p className="eb-field-error mt-4 text-sm text-center" role="alert">{error}</p>
+          ) : null}
         </div>
-
-        <div className="space-y-4">
-          <label className="block space-y-2">
-            <span className="text-xs tracking-wider" style={{ color: "#A1A1A6" }}>{s.recipientName}</span>
-            <input
-              value={form.recipientName}
-              onChange={(e) => update("recipientName", e.target.value)}
-              className="w-full rounded-xl px-4 py-3 text-sm outline-none"
-              style={fieldStyle}
-              autoComplete="name"
-            />
-          </label>
-
-          <label className="block space-y-2">
-            <span className="text-xs tracking-wider" style={{ color: "#A1A1A6" }}>{s.phone}</span>
-            <input
-              value={form.phone}
-              onChange={(e) => update("phone", e.target.value)}
-              className="w-full rounded-xl px-4 py-3 text-sm outline-none"
-              style={fieldStyle}
-              inputMode="tel"
-              autoComplete="tel"
-            />
-          </label>
-
-          <label className="block space-y-2">
-            <span className="text-xs tracking-wider" style={{ color: "#A1A1A6" }}>{s.postalCode}</span>
-            <input
-              value={form.postalCode}
-              onChange={(e) => update("postalCode", e.target.value)}
-              className="w-full rounded-xl px-4 py-3 text-sm outline-none"
-              style={fieldStyle}
-              inputMode="numeric"
-              autoComplete="postal-code"
-            />
-          </label>
-
-          <label className="block space-y-2">
-            <span className="text-xs tracking-wider flex items-center gap-1.5" style={{ color: "#A1A1A6" }}>
-              <MapPin className="w-3.5 h-3.5" />
-              {s.addressLine1}
-            </span>
-            <input
-              value={form.addressLine1}
-              onChange={(e) => update("addressLine1", e.target.value)}
-              className="w-full rounded-xl px-4 py-3 text-sm outline-none"
-              style={fieldStyle}
-              autoComplete="street-address"
-            />
-          </label>
-
-          <label className="block space-y-2">
-            <span className="text-xs tracking-wider" style={{ color: "#A1A1A6" }}>{s.addressLine2}</span>
-            <input
-              value={form.addressLine2 ?? ""}
-              onChange={(e) => update("addressLine2", e.target.value)}
-              className="w-full rounded-xl px-4 py-3 text-sm outline-none"
-              style={fieldStyle}
-            />
-          </label>
-        </div>
-
-        {error ? (
-          <p className="mt-4 text-sm text-center" style={{ color: "#e08b8b" }}>{error}</p>
-        ) : null}
       </div>
 
-      <div className="px-8 pb-10 shrink-0">
-        <motion.button
-          type="button"
-          onClick={handleSubmit}
-          className="w-full py-4 rounded-2xl font-normal text-[15px] tracking-wider"
-          style={{
-            background: "linear-gradient(135deg, #b8860b 0%, #c9a227 30%, #d4af37 50%, #f5d77a 70%, #d4af37 100%)",
-            boxShadow: "0 10px 40px rgba(201, 162, 39, 0.25)",
-            color: "#0a0a0a",
-          }}
-          whileHover={{ scale: 1.02 }}
-          whileTap={{ scale: 0.98 }}
-        >
-          {s.continueNfc}
-        </motion.button>
+      <div className="eb-screen-footer shrink-0">
+        <div className="eb-container mx-auto w-full max-w-[520px]">
+          <motion.button
+            type="button"
+            onClick={handleSubmit}
+            className="eb-btn eb-btn--primary eb-btn--block mem-btn-primary w-full rounded-2xl text-[15px] tracking-wider"
+            whileTap={{ scale: 0.98 }}
+          >
+            {s.continueNfc}
+          </motion.button>
+        </div>
       </div>
     </div>
   );

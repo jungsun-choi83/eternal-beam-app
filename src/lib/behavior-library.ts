@@ -4,9 +4,8 @@
  * 멤버가 행동을 하나씩 골라 생성한다. 여기에 네트워크도 React 도 없다.
  *
  * 판정은 새로 만들지 않는다 — premium-unlock.ts 의 behaviorState() 를 그대로
- * 쓴다. 목록도 하드코딩하지 않는다: 그룹은 **서버 레지스트리**(assets.idleEvents /
- * assets.actionEvents)에서 온다. 5번째 자발적 모션이 서버에 추가되면 이 화면에
- * 자동으로 나타나고, 코드를 고칠 필요가 없다.
+ * 쓴다. 후보 상태는 서버 레지스트리에서 오되, 소비자 화면에는 현재 판매 중인
+ * 상품만 노출한다. 레지스트리는 런타임/내부 모션도 포함할 수 있기 때문이다.
  *
  * ⚠️ 재생에 관여하지 않는다. READY 는 "재생 가능"이 아니라 "생성이 끝났다"는
  * 뜻이고, 실제 재생은 예전 그대로 스케줄러와 canonical 자산이 정한다.
@@ -23,6 +22,19 @@ export type BehaviorStatus = SideState; // "missing" | "generating" | "ready"
 /** 자발적(스케줄러가 알아서) / 상호작용(더블탭) */
 export type BehaviorGroupId = "spontaneous" | "interactive";
 
+/** 현재 소비자에게 판매하는 모션. 서버 레지스트리의 기술용 항목은 제외한다. */
+export const COMMERCIAL_BEHAVIOR_IDS = [
+  "BLINKING",
+  "EAR_TWITCHING",
+  "HEAD_TILTING",
+  "TAIL_WAGGING",
+  "COME_CLOSER",
+] as const;
+
+const COMMERCIAL_BEHAVIOR_SET = new Set<string>(COMMERCIAL_BEHAVIOR_IDS);
+
+export type BehaviorOfferAccess = "included" | "member" | "credit" | "locked";
+
 export interface BehaviorItem {
   /** 서버 액션 id — 그대로 ACTION:<id> 로 요청한다 */
   id: string;
@@ -35,6 +47,10 @@ export interface BehaviorItem {
    * ⚠️ 아직 재생에 연결되지 않았다. enabled=false 라고 재생이 멈추지 않는다.
    */
   enabled: boolean;
+  /** 서버 자격/가격에서 파생한 생성 제안 상태. READY 는 이미 Library 소유물이다. */
+  offerAccess: BehaviorOfferAccess | null;
+  /** 서버가 이 단건 상품 가격을 제공했을 때만 존재한다. */
+  priceCredits: number | null;
 }
 
 export interface BehaviorGroup {
@@ -74,13 +90,33 @@ export function preferenceOf(id: string, assets: PremiumAssets | null): boolean 
   return v === undefined ? true : Boolean(v);
 }
 
+function priceForAction(id: string, assets: PremiumAssets | null): number | null {
+  const expected = `ACTION:${id}`.toUpperCase();
+  for (const [key, raw] of Object.entries(assets?.prices ?? {})) {
+    if (key.toUpperCase() === expected && Number.isFinite(raw)) return raw;
+  }
+  return null;
+}
+
+function offerAccessFor(price: number | null, assets: PremiumAssets | null): BehaviorOfferAccess | null {
+  if (!assets) return null;
+  if (price === 0) return "included";
+  if (!assets.subscriptionRequired) return "credit";
+  return assets.entitled ? "member" : "locked";
+}
+
 function itemsFrom(ids: string[], assets: PremiumAssets | null): BehaviorItem[] {
-  return ids.map((id) => ({
+  return ids.filter((id) => COMMERCIAL_BEHAVIOR_SET.has(id)).map((id) => {
+    const priceCredits = priceForAction(id, assets);
+    return {
     id,
     status: behaviorState(id, assets),
     url: assets?.ready[id] ?? null,
     enabled: preferenceOf(id, assets),
-  }));
+      offerAccess: offerAccessFor(priceCredits, assets),
+      priceCredits,
+    };
+  });
 }
 
 /**
@@ -104,7 +140,8 @@ export function deriveBehaviorLibrary(input: {
   const all = groups.flatMap((g) => g.items);
   return {
     groups,
-    canGenerate: entitled,
+    // 구독 게이트가 꺼진 서버는 기존 크레딧 구매 경로가 권위다.
+    canGenerate: entitled || assets?.subscriptionRequired === false,
     anyGenerating: all.some((i) => i.status === "generating"),
     missingIds: all.filter((i) => i.status === "missing").map((i) => i.id),
     readyCount: all.filter((i) => i.status === "ready").length,

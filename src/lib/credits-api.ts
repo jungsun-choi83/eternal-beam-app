@@ -275,5 +275,7 @@ export async function openCreditPaymentWindow(checkout: CreditCheckout): Promise
     orderName: checkout.orderName,
     successUrl,
     failUrl,
+    // 기본값(데스크톱 iframe)은 COEP 헤더 때문에 Chrome 에서 막힌다 — 최상위 이동.
+    windowTarget: "self",
   });
 }

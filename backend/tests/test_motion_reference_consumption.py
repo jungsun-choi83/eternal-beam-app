@@ -14,6 +14,7 @@ from backend.services import canonical_pet_service as canon
 from backend.services import motion_reference_service as mrs
 from backend.services import motion_video_service as mv
 from backend.services import pet_identity_service as ids
+from backend.services import pet_morphology_service as morph
 from backend.services import pet_reference_service as refs
 from backend.services import pet_reference_set_service as sets
 from backend.services import pet_registry
@@ -62,10 +63,10 @@ def _mock_backend(monkeypatch):
     monkeypatch.setenv("PHASE6_VIDEO_ANCHOR", "0")
     monkeypatch.delenv("VIDEO_GENERATION_MOCK", raising=False)
     monkeypatch.delenv("RUNWAY_API_KEY", raising=False)
-    for m in (refs, pet_registry, ids, sets, canon, kf, mv, mrs):
+    for m in (refs, pet_registry, ids, morph, sets, canon, kf, mv, mrs):
         m.__reset_for_tests()
     yield
-    for m in (refs, pet_registry, ids, sets, canon, kf, mv, mrs):
+    for m in (refs, pet_registry, ids, morph, sets, canon, kf, mv, mrs):
         m.__reset_for_tests()
 
 
@@ -92,6 +93,10 @@ def _install_resolved_reference(monkeypatch, payload=REF_PAYLOAD):
 
 class RefCapableFake(FakeVideoProvider):
     supports_motion_reference = True
+
+
+class RefCapableNoCap(RefCapableFake):
+    supports_motion_reference = False
 
 
 def _sign(obj):
@@ -254,3 +259,20 @@ def test_unresolved_reference_keeps_existing_degraded_path(storage, monkeypatch)
     assert v.status == mv.STATUS_COMPLETE
     assert v.video_strategy == "IMAGE_TO_VIDEO"
     assert any("unavailable" in w for w in v.warnings)
+
+
+def test_provider_capability_ranking_prefers_motion_reference_support(storage, monkeypatch):
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY",))
+    _install_resolved_reference(monkeypatch)
+
+    # 라우팅 첫 순위가 소비 불가여도 registry preferred_any(supports_motion_reference)
+    # 기반 재정렬로 소비 가능 프로바이더를 우선 선택한다.
+    primary = RefCapableNoCap("seedance", [GOOD()])
+    fallback = RefCapableFake("wan", [GOOD()])
+    v = _build_run(h, [primary, fallback])
+
+    assert v.status == mv.STATUS_COMPLETE
+    assert v.video_strategy == "IMAGE_TO_VIDEO_WITH_MOTION_REF"
+    assert primary.calls == 0
+    assert fallback.calls == 1
+    assert fallback.requests[0].motion_reference_url is not None

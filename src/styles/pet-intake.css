@@ -1,0 +1,537 @@
+/* ==========================================================================
+   Pet Upload / Intake (Phase 3 · Phase 10 re-token)
+   Mobile-first; desktop overrides mirror the app-shell breakpoint (1024px+).
+   Consumes brand.css tokens only and reuses upload-card / upload-guide
+   primitives from memorial-premium.css — it does not redefine them.
+   Gold appears here in exactly three places: the active pet tab, the filled
+   photo-count dots and the "media accepted" check on the dropzone.
+   ========================================================================== */
+
+.pet-intake__header {
+  padding-top: var(--eb-header-top);
+  padding-bottom: var(--eb-space-3);
+}
+
+.pet-intake__header-inner {
+  display: flex;
+  align-items: center;
+  gap: var(--eb-space-3);
+  width: 100%;
+}
+
+.pet-intake__header-spacer {
+  width: var(--eb-touch);
+  flex-shrink: 0;
+}
+
+.pet-intake__scroll {
+  -webkit-overflow-scrolling: touch;
+}
+
+.pet-intake__layout {
+  width: 100%;
+  max-width: 360px;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--eb-space-3);
+  padding-bottom: var(--eb-space-6);
+}
+
+.pet-intake__rail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--eb-space-4);
+}
+
+.pet-intake__stage {
+  display: flex;
+  flex-direction: column;
+  gap: var(--eb-space-4);
+}
+
+.pet-intake__mobile-only {
+  display: block;
+}
+
+.pet-intake__desktop-only {
+  display: none;
+}
+
+/* ── Pet tabs ─────────────────────────────────────────────────────────── */
+
+.pet-intake__tabs {
+  display: flex;
+  align-items: center;
+  gap: var(--eb-space-2);
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.pet-intake__tab {
+  min-height: var(--eb-touch);
+  min-width: var(--eb-touch);
+  padding: 0 var(--eb-space-4);
+  border-radius: var(--eb-radius-pill);
+  font-size: var(--eb-type-body-sm);
+  font-weight: 500;
+  border: 1px solid var(--eb-hairline-strong);
+  background: var(--eb-surface);
+  color: var(--eb-text-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--eb-space-2);
+  cursor: pointer;
+  transition:
+    background var(--eb-dur) var(--eb-ease),
+    border-color var(--eb-dur) var(--eb-ease),
+    color var(--eb-dur) var(--eb-ease),
+    box-shadow var(--eb-dur) var(--eb-ease);
+}
+
+.pet-intake__tab:hover {
+  background: var(--eb-surface-2);
+  color: var(--eb-text);
+}
+
+/* Selected tab — the one solid-gold selection mark on this screen. */
+.pet-intake__tab--active,
+.pet-intake__tab--active:hover {
+  color: var(--eb-text-on-gold);
+  background: var(--eb-gold);
+  border-color: var(--eb-gold);
+  box-shadow: none;
+}
+
+.pet-intake__add-tab {
+  min-height: var(--eb-touch);
+  min-width: var(--eb-touch);
+  padding: 0 var(--eb-space-4);
+  border-radius: var(--eb-radius-pill);
+  border: 1px dashed var(--eb-gold-line);
+  background: transparent;
+  color: var(--eb-gold-text);
+  font-size: var(--eb-type-body-sm);
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--eb-space-1);
+  cursor: pointer;
+  transition:
+    background var(--eb-dur) var(--eb-ease),
+    border-color var(--eb-dur) var(--eb-ease),
+    opacity var(--eb-dur) var(--eb-ease);
+}
+
+.pet-intake__add-tab:hover:not(:disabled) {
+  background: var(--eb-gold-wash);
+}
+
+.pet-intake__add-tab:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pet-intake__tab:focus-visible,
+.pet-intake__add-tab:focus-visible {
+  outline: none;
+  box-shadow: var(--eb-focus-ring);
+}
+
+/* ── Photo count progress ─────────────────────────────────────────────── */
+
+.pet-intake__progress {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--eb-space-2);
+}
+
+.pet-intake__progress-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--eb-radius-pill);
+  background: var(--eb-surface-3);
+  border: 1px solid var(--eb-hairline);
+  flex-shrink: 0;
+  transition: background var(--eb-dur) var(--eb-ease), border-color var(--eb-dur) var(--eb-ease);
+}
+
+.pet-intake__progress-dot.is-filled {
+  background: var(--eb-gold);
+  border-color: var(--eb-gold);
+}
+
+.pet-intake__progress-label {
+  font-size: var(--eb-type-caption);
+  color: var(--eb-text-3);
+  margin-inline-start: var(--eb-space-1);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Validation banner (mirrors .eb-notice--error) ────────────────────── */
+
+.pet-intake__banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--eb-space-2);
+  padding: var(--eb-space-3) var(--eb-space-4);
+  border-radius: var(--eb-radius-md);
+  font-size: var(--eb-type-body-sm);
+  line-height: 1.45;
+}
+
+.pet-intake__banner--error {
+  color: var(--eb-terracotta-text);
+  background: var(--eb-terracotta-wash);
+  border: 1px solid var(--eb-terracotta-line);
+}
+
+/* 44px hit area, pulled into the banner's padding so the row stays compact. */
+.pet-intake__banner-dismiss {
+  margin: calc(var(--eb-space-3) * -1) calc(var(--eb-space-3) * -1) calc(var(--eb-space-3) * -1) auto;
+  min-width: var(--eb-touch);
+  min-height: var(--eb-touch);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--eb-radius-pill);
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--eb-dur) var(--eb-ease);
+}
+
+.pet-intake__banner-dismiss:hover {
+  background: rgba(var(--eb-terracotta-rgb), 0.12);
+}
+
+.pet-intake__banner-dismiss:focus-visible {
+  outline: none;
+  box-shadow: var(--eb-focus-ring);
+}
+
+/* ── Dropzone ─────────────────────────────────────────────────────────── */
+
+.pet-intake__stage-photo {
+  position: absolute;
+  inset: 0;
+}
+
+/* User video preview — whole frame visible on the warm neutral, never cropped
+   (a portrait phone clip in a 16:10 card used to lose its top and bottom). */
+.pet-intake__stage-video {
+  position: absolute;
+  inset: 0;
+  background: var(--eb-surface-2);
+}
+
+.pet-intake__stage-video video {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+}
+
+.pet-intake__dropzone {
+  cursor: pointer;
+  /* Short/wide on phones so the dropzone + thumbnail row + CTA all land in
+     the first viewport at 390×844 — a tall 4:5 card pushed the CTA (and on
+     short phones the dropzone itself) below the fold. */
+  aspect-ratio: 16 / 10;
+  max-height: min(40dvh, 22rem);
+}
+
+/* Accepted-media check — a small gold mark on top of the photo/video. */
+.pet-intake__media-check {
+  width: 2rem;
+  height: 2rem;
+  box-shadow: var(--eb-shadow-1);
+}
+
+/* Media-type chip drawn on top of the photo/video (dark chip on media). */
+.pet-intake__media-kind {
+  font-size: var(--eb-type-eyebrow);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  padding: var(--eb-space-1) var(--eb-space-2);
+}
+
+/* Play / pause control on the video stage. */
+.pet-intake__play {
+  width: 3.5rem;
+  height: 3.5rem;
+  border-radius: var(--eb-radius-pill);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── Thumbnails ───────────────────────────────────────────────────────── */
+
+.pet-intake__grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--eb-space-2);
+}
+
+.pet-intake__thumb {
+  position: relative;
+  border-radius: var(--eb-radius-sm);
+  overflow: hidden;
+  border: 1px solid var(--eb-hairline);
+  background: var(--eb-surface-2);
+  aspect-ratio: 1;
+}
+
+/* "Add photo" tile — same footprint as a thumbnail, adds to the SAME pet. */
+.pet-intake__add-photo {
+  border-radius: var(--eb-radius-sm);
+  border: 1px dashed var(--eb-hairline);
+  background: var(--eb-surface-2);
+  aspect-ratio: 1;
+  color: var(--eb-text-2);
+}
+
+.pet-intake__add-photo-body {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--eb-space-1);
+  font-size: var(--eb-type-caption);
+}
+
+/* Thumbnail media is a PetPhoto (pet-photo.css): whole pet, contain, blurred
+   fill. The old `img { object-fit: cover }` rule cropped portrait photos. */
+.pet-intake__thumb .eb-pet-photo {
+  position: absolute;
+  inset: 0;
+}
+
+.pet-intake__thumb-actions {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: flex;
+  gap: 0;
+}
+
+/*
+ * Thumbnail action (replace / remove): a 44px hit area with a visible 30px
+ * dark chip drawn by ::before. Works for both a <button> and the
+ * MediaFileTrigger <label> (the label's transparent file input fills the
+ * 44px box; its child is centred by the grid).
+ */
+.pet-intake__thumb-btn {
+  position: relative;
+  width: var(--eb-touch);
+  height: var(--eb-touch);
+  min-width: var(--eb-touch);
+  min-height: var(--eb-touch);
+  display: grid;
+  place-items: center;
+  border-radius: var(--eb-radius-pill);
+  background: transparent;
+  color: var(--eb-text-on-inverse);
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+.pet-intake__thumb-btn::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1.875rem;
+  height: 1.875rem;
+  margin: -0.9375rem 0 0 -0.9375rem;
+  border-radius: var(--eb-radius-pill);
+  background: rgba(31, 27, 23, 0.62);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  transition: background var(--eb-dur) var(--eb-ease), box-shadow var(--eb-dur) var(--eb-ease);
+}
+
+.pet-intake__thumb-btn:hover::before {
+  background: rgba(31, 27, 23, 0.78);
+}
+
+.pet-intake__thumb-btn > div,
+.pet-intake__thumb-btn > span,
+.pet-intake__thumb-btn > svg {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.pet-intake__thumb-btn:focus-visible,
+.pet-intake__thumb-btn:focus-within {
+  outline: none;
+}
+
+.pet-intake__thumb-btn:focus-visible::before,
+.pet-intake__thumb-btn:focus-within::before {
+  box-shadow: var(--eb-focus-ring);
+}
+
+.pet-intake__thumb-status {
+  position: absolute;
+  left: var(--eb-space-1);
+  right: var(--eb-space-1);
+  bottom: var(--eb-space-1);
+  border-radius: var(--eb-radius-xs);
+  background: rgba(31, 27, 23, 0.62);
+  color: var(--eb-text-on-inverse);
+  font-size: 0.6875rem;
+  line-height: 1.2;
+  padding: 3px 6px;
+  text-align: center;
+}
+
+/* ── Mobile expandable tips (guide moves below the dropzone/thumbnails so
+   it never pushes the upload area out of the first viewport) ───────────── */
+
+.pet-intake__tips {
+  border-top: 1px solid var(--eb-hairline);
+  padding-top: var(--eb-space-3);
+}
+
+.pet-intake__tips-summary {
+  display: flex;
+  align-items: center;
+  min-height: var(--eb-touch);
+  list-style: none;
+  cursor: pointer;
+  text-align: center;
+  justify-content: center;
+  font-size: var(--eb-type-caption);
+  line-height: 1.4;
+  color: var(--eb-text-3);
+}
+
+.pet-intake__tips-summary::-webkit-details-marker {
+  display: none;
+}
+
+.pet-intake__tips-summary::after {
+  content: "▾";
+  margin-inline-start: var(--eb-space-1);
+  color: var(--eb-text-3);
+}
+
+.pet-intake__tips[open] > .pet-intake__tips-summary::after {
+  content: "▴";
+}
+
+.pet-intake__tips-body {
+  padding-top: var(--eb-space-2);
+}
+
+/* ── Footer / readiness hint under the CTA ────────────────────────────── */
+
+.pet-intake__footer {
+  padding-top: var(--eb-space-3);
+  padding-bottom: var(--eb-footer-bottom);
+}
+
+.pet-intake__readiness {
+  text-align: center;
+  font-size: var(--eb-type-caption);
+  color: var(--eb-text-3);
+  margin: var(--eb-space-2) 0 0;
+}
+
+/* ── Desktop (1024px+) ────────────────────────────────────────────────── */
+
+@media (min-width: 1024px) {
+  .pet-intake__header-inner {
+    max-width: 1080px;
+    margin-inline: auto;
+  }
+
+  .pet-intake__layout {
+    max-width: 1080px;
+    flex-direction: row;
+    align-items: flex-start;
+    gap: var(--eb-space-12);
+    padding-bottom: var(--eb-space-12);
+  }
+
+  .pet-intake__rail {
+    width: 21rem;
+    flex-shrink: 0;
+    gap: var(--eb-space-6);
+  }
+
+  .pet-intake__stage {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .pet-intake__mobile-only {
+    display: none;
+  }
+
+  .pet-intake__desktop-only {
+    display: block;
+  }
+
+  .pet-intake__tabs {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .pet-intake__tab,
+  .pet-intake__add-tab {
+    justify-content: flex-start;
+    padding-inline: var(--eb-space-6);
+  }
+
+  .pet-intake__dropzone {
+    aspect-ratio: 16 / 9;
+    max-height: min(52dvh, 26rem);
+  }
+
+  .pet-intake__grid {
+    grid-template-columns: repeat(3, minmax(0, 10rem));
+  }
+
+  .pet-intake__footer-inner {
+    max-width: 1080px;
+    margin-inline: auto;
+  }
+
+  .pet-intake__footer-inner .mem-btn-primary {
+    max-width: 22rem;
+    margin-inline-start: auto;
+  }
+
+  .pet-intake__readiness {
+    max-width: 22rem;
+    margin-inline: auto 0;
+    text-align: right;
+  }
+}
+
+/* Short laptop viewports: keep the whole intake column (header · dropzone ·
+   thumbs · CTA) inside 768px without the inner scroll region kicking in. */
+@media (min-width: 1024px) and (max-height: 820px) {
+  .pet-intake__layout {
+    padding-bottom: var(--eb-space-6);
+  }
+
+  .pet-intake__dropzone {
+    max-height: min(44dvh, 22rem);
+  }
+}

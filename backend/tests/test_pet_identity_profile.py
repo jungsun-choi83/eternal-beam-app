@@ -29,6 +29,9 @@ from backend.services import pet_registry, vlm_identity
 from .conftest import ASGITestClient, make_jpeg_bytes
 
 
+_SEED_SEQ = 0
+
+
 @pytest.fixture(autouse=True)
 def _mock_backend(monkeypatch):
     monkeypatch.setenv("HYBRID_USE_SUPABASE", "0")
@@ -106,7 +109,15 @@ DIAG = {
 }
 
 
-def _seed_pet(uploads, *, content_id="cid1", user_id="alice@test", with_cutout=True, diagnostics=DIAG):
+def _seed_pet(
+    uploads,
+    *,
+    content_id="cid1",
+    user_id="alice@test",
+    with_cutout=True,
+    diagnostics=DIAG,
+    strict_lineage: bool = True,
+):
     """원본(+선택적 누끼) 레퍼런스를 대장에 등록하고 fetch 테이블을 돌려준다."""
     cutout_png = make_pet_cutout_png()
     original = _run(
@@ -120,12 +131,19 @@ def _seed_pet(uploads, *, content_id="cid1", user_id="alice@test", with_cutout=T
     )
     bytes_by_path = {original.object_path: make_jpeg_bytes()}
     if with_cutout:
+        cut_path = (
+            f"{user_id}/{content_id}/references/cutout_{original.content_hash[:16]}.png"
+            if strict_lineage
+            else f"{user_id}/{content_id}/cutout_vitmatte.png"
+        )
         derived = _run(
             refs.record_derived(
                 user_id=user_id,
                 content_id=content_id,
-                object_path=f"{user_id}/{content_id}/cutout_vitmatte.png",
-                derived_kind="cutout_vitmatte",
+                object_path=cut_path,
+                derived_kind=("cutout_reference" if strict_lineage else "cutout_vitmatte"),
+                parent_reference_id=(original.id if strict_lineage else None),
+                mime_type="image/png",
             )
         )
         bytes_by_path[derived.object_path] = cutout_png
@@ -134,6 +152,49 @@ def _seed_pet(uploads, *, content_id="cid1", user_id="alice@test", with_cutout=T
         return bytes_by_path.get(ref.object_path)
 
     return original, fetch
+
+
+def _seed_pet_with_strict_cutout(
+    uploads,
+    *,
+    content_id="cid1",
+    user_id="alice@test",
+    cutout_png: bytes | None = None,
+    diagnostics=DIAG,
+):
+    """parent_reference_id 가 명시된 strict lineage 원본+누끼를 시드한다."""
+    global _SEED_SEQ
+    _SEED_SEQ += 1
+    cutout_bytes = cutout_png or make_pet_cutout_png()
+    original_bytes = make_jpeg_bytes(96 + _SEED_SEQ, 96 + _SEED_SEQ)
+    original = _run(
+        refs.record_original(
+            user_id=user_id,
+            content_id=content_id,
+            data=original_bytes,
+            mime_type="image/jpeg",
+            diagnostics=diagnostics,
+        )
+    )
+    derived = _run(
+        refs.record_derived(
+            user_id=user_id,
+            content_id=content_id,
+            object_path=f"{user_id}/{content_id}/references/cutout_{original.content_hash[:16]}.png",
+            derived_kind="cutout_reference",
+            parent_reference_id=original.id,
+            mime_type="image/png",
+        )
+    )
+    bytes_by_path = {
+        original.object_path: original_bytes,
+        derived.object_path: cutout_bytes,
+    }
+
+    def fetch(ref):
+        return bytes_by_path.get(ref.object_path)
+
+    return original, derived, fetch
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -235,6 +296,30 @@ def test_eligibility_without_evidence_is_unknown():
     assert "no_segmentation_available" in entry["reasons"]
 
 
+def test_eligibility_marks_lineage_unknown_when_parent_link_missing():
+    class Ref:
+        id = "orig-1"
+        diagnostics = DIAG
+        person_detected = None
+
+    class Cut:
+        id = "cut-1"
+        parent_reference_id = None
+
+    rgba = ids.load_rgba(make_pet_cutout_png())
+    entry = ids.evaluate_reference_eligibility(
+        Ref(),
+        rgba,
+        strict_lineage_ok=False,
+        cutout_reference=Cut(),
+    )
+    assert entry["usable_for_identity"] is False
+    assert entry["lineage"]["status"] == ids.UNKNOWN
+    assert entry["lineage"]["original_reference_id"] == "orig-1"
+    assert entry["lineage"]["cutout_reference_id"] == "cut-1"
+    assert "no_strict_original_cutout_lineage" in entry["reasons"]
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 프로필 빌드
 # ══════════════════════════════════════════════════════════════════════════
@@ -265,6 +350,116 @@ def test_build_profile_from_valid_references(uploads):
     assert profile.completeness["visual"]["known"] >= 1
     assert profile.completeness["visual"]["unknown"] >= 1
     assert profile.completeness["semantic"] == "skipped_vlm_disabled"
+
+
+def test_build_profile_enforces_strict_lineage_for_identity_usability(uploads):
+    # parent_reference_id 없는 legacy cutout 은 strict lineage 미충족으로 usable=false.
+    original, fetch = _seed_pet(uploads, strict_lineage=False)
+    profile = _run(
+        ids.build_identity_profile(user_id="alice@test", pet_id="pet_cid1", fetch_bytes=fetch)
+    )
+    entry = profile.reference_eligibility[original.id]
+    assert entry["usable_for_identity"] is False
+    assert entry["lineage"]["status"] == ids.UNKNOWN
+    assert "no_strict_original_cutout_lineage" in entry["reasons"]
+    assert profile.status == ids.STATUS_PARTIAL
+
+
+def test_build_profile_fuses_reference_identity_signals_under_strict_lineage(uploads):
+    _seed_pet_with_strict_cutout(uploads, content_id="cid1", user_id="alice@test")
+    _seed_pet_with_strict_cutout(uploads, content_id="cid1", user_id="alice@test")
+
+    refs_all = _run(refs.list_references(user_id="alice@test", pet_id="pet_cid1"))
+    bytes_by_path = {}
+    for r in refs_all:
+        if r.role == refs.ROLE_ORIGINAL:
+            bytes_by_path[r.object_path] = make_jpeg_bytes(96, 96)
+    # 두 누끼는 동일한 시각 증거로 고정해 deterministic fusion 검증.
+    cut_png = make_pet_cutout_png()
+    for r in refs_all:
+        if r.role == refs.ROLE_DERIVED:
+            bytes_by_path[r.object_path] = cut_png
+
+    def fetch(ref):
+        return bytes_by_path.get(ref.object_path)
+
+    profile = _run(ids.build_identity_profile(user_id="alice@test", pet_id="pet_cid1", fetch_bytes=fetch))
+
+    assert profile.status == ids.STATUS_COMPLETE
+    visual = profile.visual_identity
+    assert visual["coat_pattern"]["status"] == "fused"
+    assert len(visual["coat_pattern"]["support_reference_ids"]) >= 2
+    assert visual["visual_embedding"]["status"] == "fused"
+    assert visual["visual_embedding"]["dim"] > 0
+    assert len(visual["visual_embedding"]["support_reference_ids"]) >= 2
+    assert visual["same_individual_gate"]["status"] == "ready"
+    assert visual["same_individual_gate"]["strict_lineage_reference_count"] >= 2
+
+
+def test_build_profile_fuses_vlm_semantics_per_reference(uploads, monkeypatch):
+    r1, _, _ = _seed_pet_with_strict_cutout(uploads, content_id="cid1", user_id="alice@test")
+    r2 = _run(
+        refs.record_original(
+            user_id="alice@test",
+            content_id="cid1",
+            data=make_jpeg_bytes(72, 72),
+            mime_type="image/jpeg",
+            diagnostics=DIAG,
+        )
+    )
+    c2 = _run(
+        refs.record_derived(
+            user_id="alice@test",
+            content_id="cid1",
+            object_path=f"alice@test/cid1/references/cutout_{r2.content_hash[:16]}.png",
+            derived_kind="cutout_reference",
+            parent_reference_id=r2.id,
+            mime_type="image/png",
+        )
+    )
+
+    refs_all = _run(refs.list_references(user_id="alice@test", pet_id="pet_cid1"))
+    bytes_by_path = {}
+    cut_png = make_pet_cutout_png()
+    for r in refs_all:
+        if r.role == refs.ROLE_ORIGINAL:
+            bytes_by_path[r.object_path] = make_jpeg_bytes(120, 120)
+        else:
+            bytes_by_path[r.object_path] = cut_png
+
+    monkeypatch.setenv("PET_VLM_IDENTITY_ENABLED", "1")
+
+    def fake_vlm(images):
+        marker = len(images[0][0]) if images else 0
+        face = "white blaze" if marker % 2 == 0 else "white blaze"
+        return {
+            "traits": {
+                "species": "dog",
+                "face": {"muzzle_color": "brown", "facial_markings": face},
+                "ears": {"shape": "upright", "color_markings": "brown"},
+                "coat": {"marking_distribution": "saddle", "length": "short"},
+                "body": {"chest_markings": "white patch", "torso_markings": "brown saddle"},
+                "paws": {"colors_markings": "tan"},
+                "tail": {"shape": "curved", "color_markings": "brown"},
+                "unique_features": ["small ear notch"],
+            },
+            "model": "test-stub",
+            "analyzer": vlm_identity.VLM_ANALYZER_VERSION,
+            "image_count": 1,
+        }
+
+    monkeypatch.setattr(vlm_identity, "analyze_semantic_traits", fake_vlm)
+
+    def fetch(ref):
+        return bytes_by_path.get(ref.object_path)
+
+    profile = _run(ids.build_identity_profile(user_id="alice@test", pet_id="pet_cid1", fetch_bytes=fetch))
+    visual = profile.visual_identity
+    assert visual["facial_markings"]["status"] == "fused"
+    assert visual["body_markings"]["status"] == "fused"
+    assert visual["distinctive_features"]["status"] == "fused"
+    assert visual["semantic_traits"]["status"] == "vlm"
+    assert visual["semantic_traits"]["traits"]["species"] == "dog"
 
 
 def test_build_is_idempotent_when_inputs_unchanged(uploads):
@@ -313,6 +508,122 @@ def test_new_reference_triggers_new_version(uploads):
     v2 = _run(ids.build_identity_profile(user_id="alice@test", pet_id="pet_cid1", fetch_bytes=fetch1))
     assert v1.version == 1 and v2.version == 2
     assert len(v2.source_reference_ids) == 2
+
+
+def test_cutout_attached_later_rebuilds_instead_of_reusing_a_stale_profile(uploads):
+    """
+    원본 집합이 그대로여도 누끼가 **나중에** 붙으면 프로필은 다시 빌드된다.
+
+    실제로 겪는 경로: 인테이크에서 한 장의 누끼 단계가 실패하면 원본만 기록된
+    채로 프로필이 빌드된다. 재시도로 누끼가 붙어도 source_reference_ids 는
+    그대로라, 예전 멱등 키는 "입력이 안 바뀌었다"로 판정했고 그 원본은
+    세그멘테이션이 생긴 뒤에도 영원히 신원에 기여하지 못했다.
+    """
+    original = _run(
+        refs.record_original(
+            user_id="alice@test",
+            content_id="cid1",
+            data=make_jpeg_bytes(),
+            mime_type="image/jpeg",
+            diagnostics=DIAG,
+        )
+    )
+    bytes_by_path = {original.object_path: make_jpeg_bytes()}
+
+    def fetch(ref):
+        return bytes_by_path.get(ref.object_path)
+
+    v1 = _run(ids.build_identity_profile(user_id="alice@test", pet_id="pet_cid1", fetch_bytes=fetch))
+    assert v1.version == 1
+    assert v1.reference_eligibility[str(original.id)]["usable_for_identity"] is False
+
+    # 누끼가 나중에 붙는다 — 원본 집합은 그대로다.
+    derived = _run(
+        refs.record_derived(
+            user_id="alice@test",
+            content_id="cid1",
+            object_path=f"alice@test/cid1/references/cutout_{original.content_hash[:16]}.png",
+            derived_kind="cutout_reference",
+            parent_reference_id=original.id,
+            mime_type="image/png",
+        )
+    )
+    bytes_by_path[derived.object_path] = make_pet_cutout_png()
+
+    v2 = _run(ids.build_identity_profile(user_id="alice@test", pet_id="pet_cid1", fetch_bytes=fetch))
+    assert v2.deduplicated is False
+    assert v2.version == 2
+    assert sorted(v2.source_reference_ids) == sorted(v1.source_reference_ids)
+    assert v2.reference_eligibility[str(original.id)]["usable_for_identity"] is True
+
+    # append-only: 옛 버전은 그대로 남는다.
+    old = _run(ids.get_profile(user_id="alice@test", pet_id="pet_cid1", version=1))
+    assert old is not None and old.id == v1.id
+
+    # 계보가 안정되면 다시 멱등이다 — 매 호출 새 버전이 아니다.
+    v3 = _run(ids.build_identity_profile(user_id="alice@test", pet_id="pet_cid1", fetch_bytes=fetch))
+    assert v3.deduplicated is True and v3.version == 2
+
+
+def test_parentless_cutout_upgraded_to_strict_lineage_rebuilds_the_profile(uploads):
+    """
+    부모 없는 누끼(레거시 content 폴백) → 엄격 부모 연결 누끼로 바뀌면 재빌드한다.
+
+    폴백 누끼는 usable_for_identity=False 다(계보 불명). 나중에 parent 로 묶인
+    누끼가 들어오면 pair_cutouts 가 그쪽을 택하고 그 원본이 비로소 신원 분석에
+    쓰인다 — 소비되는 누끼 id 와 strict 여부가 **둘 다** 바뀌므로 재사용 키가
+    풀려야 한다.
+    """
+    original = _run(
+        refs.record_original(
+            user_id="alice@test",
+            content_id="cid1",
+            data=make_jpeg_bytes(),
+            mime_type="image/jpeg",
+            diagnostics=DIAG,
+        )
+    )
+    loose = _run(
+        refs.record_derived(
+            user_id="alice@test",
+            content_id="cid1",
+            object_path="alice@test/cid1/dog_only_nobg.png",
+            derived_kind="cutout_client",
+            mime_type="image/png",
+        )
+    )
+    bytes_by_path = {
+        original.object_path: make_jpeg_bytes(),
+        loose.object_path: make_pet_cutout_png(),
+    }
+
+    def fetch(ref):
+        return bytes_by_path.get(ref.object_path)
+
+    v1 = _run(ids.build_identity_profile(user_id="alice@test", pet_id="pet_cid1", fetch_bytes=fetch))
+    assert v1.reference_eligibility[str(original.id)]["usable_for_identity"] is False
+    assert ids.lineage_from_eligibility(v1.reference_eligibility) == {
+        str(original.id): {"cutout_reference_id": str(loose.id), "strict": False}
+    }
+
+    strict = _run(
+        refs.record_derived(
+            user_id="alice@test",
+            content_id="cid1",
+            object_path=f"alice@test/cid1/references/cutout_{original.content_hash[:16]}.png",
+            derived_kind="cutout_reference",
+            parent_reference_id=original.id,
+            mime_type="image/png",
+        )
+    )
+    bytes_by_path[strict.object_path] = make_pet_cutout_png()
+
+    v2 = _run(ids.build_identity_profile(user_id="alice@test", pet_id="pet_cid1", fetch_bytes=fetch))
+    assert v2.deduplicated is False and v2.version == 2
+    assert v2.reference_eligibility[str(original.id)]["usable_for_identity"] is True
+    assert ids.lineage_from_eligibility(v2.reference_eligibility) == {
+        str(original.id): {"cutout_reference_id": str(strict.id), "strict": True}
+    }
 
 
 def test_ownership_isolation_for_build_and_get(uploads):

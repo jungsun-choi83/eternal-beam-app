@@ -35,14 +35,12 @@
   background: linear-gradient(
     180deg,
     transparent 0%,
-    rgba(212, 175, 55, 0.2) 20%,
-    rgba(212, 175, 55, 0.6) 50%,
-    rgba(212, 175, 55, 0.2) 80%,
+    rgba(184, 150, 62, 0.06) 20%,
+    rgba(184, 150, 62, 0.16) 50%,
+    rgba(184, 150, 62, 0.06) 80%,
     transparent 100%
   );
-  box-shadow:
-    0 0 12px rgba(212, 175, 55, 0.4),
-    0 0 24px rgba(212, 175, 55, 0.2);
+  box-shadow: none;
   animation:
     hologram-scanline-move 8s linear infinite,
     hologram-scanline-opacity 8s ease-in-out infinite;
@@ -58,8 +56,8 @@
     0deg,
     transparent 0px,
     transparent 1px,
-    rgba(212, 175, 55, 0.03) 1px,
-    rgba(212, 175, 55, 0.03) 2px
+    rgba(184, 150, 62, 0.015) 1px,
+    rgba(184, 150, 62, 0.015) 2px
   );
   background-size: 100% 2px;
 }
@@ -110,8 +108,8 @@
   will-change: transform, opacity;
   background: radial-gradient(
     ellipse 60% 40% at 50% 50%,
-    rgba(212, 175, 55, 0.08) 0%,
-    rgba(244, 208, 63, 0.04) 30%,
+    rgba(184, 150, 62, 0.07) 0%,
+    rgba(230, 215, 176, 0.04) 30%,
     transparent 70%
   );
   animation: hologram-aurora-1 22s ease-in-out infinite;
@@ -128,8 +126,8 @@
   will-change: transform, opacity;
   background: radial-gradient(
     ellipse 50% 60% at 70% 30%,
-    rgba(244, 208, 63, 0.06) 0%,
-    rgba(212, 175, 55, 0.03) 40%,
+    rgba(230, 215, 176, 0.06) 0%,
+    rgba(184, 150, 62, 0.03) 40%,
     transparent 70%
   );
   animation: hologram-aurora-2 25s ease-in-out infinite;
@@ -154,13 +152,10 @@
 @keyframes logo-holo-ambient {
   0%,
   100% {
-    filter: drop-shadow(0 0 6px rgba(138, 107, 26, 0.55))
-      drop-shadow(0 0 16px rgba(201, 162, 39, 0.32));
+    filter: drop-shadow(0 2px 6px rgba(184, 150, 62, 0.16));
   }
   50% {
-    filter: drop-shadow(0 0 14px rgba(244, 208, 63, 0.92))
-      drop-shadow(0 0 28px rgba(232, 212, 131, 0.55))
-      drop-shadow(0 0 44px rgba(201, 162, 39, 0.28));
+    filter: drop-shadow(0 4px 14px rgba(184, 150, 62, 0.3));
   }
 }
 
@@ -200,15 +195,15 @@
   text-shadow: none;
   background: linear-gradient(
     115deg,
-    #5c4818 0%,
-    #7a5f18 12%,
-    #a8862a 26%,
-    #e8d5a3 40%,
-    #fff4cc 48%,
-    #f4d03f 54%,
-    #d4af37 66%,
-    #9a7724 80%,
-    #5c4818 100%
+    #7a5f1c 0%,
+    #8a6d22 12%,
+    #a3832f 26%,
+    #c9ad63 40%,
+    #e6d7b0 48%,
+    #b8963e 54%,
+    #a3832f 66%,
+    #8a6d22 80%,
+    #7a5f1c 100%
   );
   background-size: 280% 280%;
   -webkit-background-clip: text;
@@ -228,7 +223,7 @@
   background: linear-gradient(
     105deg,
     transparent 40%,
-    rgba(255, 243, 196, 0.5) 50%,
+    rgba(255, 255, 255, 0.45) 50%,
     transparent 60%
   );
   animation: logo-holo-shimmer 4.8s ease-in-out infinite;
@@ -257,7 +252,7 @@
   background: linear-gradient(
     105deg,
     transparent 38%,
-    rgba(255, 243, 196, 0.55) 50%,
+    rgba(255, 255, 255, 0.45) 50%,
     transparent 62%
   );
   animation: logo-holo-shimmer 4.8s ease-in-out infinite;
@@ -334,7 +329,7 @@ html.ui-lite .hologram-aurora-2 {
 
   .logo-title--holo,
   .logo-title--auth {
-    background: linear-gradient(90deg, #a8862a, #e8d5a3, #c9a227);
+    background: linear-gradient(90deg, #8a6d22, #b8963e, #7a5f1c);
     background-size: 100% 100%;
   }
 }
@@ -353,7 +348,7 @@ html.ui-lite .hologram-aurora-2 {
   content: "";
   display: block;
   height: 2px;
-  background: linear-gradient(90deg, transparent, #c9a227, transparent);
+  background: linear-gradient(90deg, transparent, var(--eb-gold), transparent);
   animation: processing-scan 2s linear infinite;
 }
 
@@ -382,6 +377,6 @@ html.ui-lite .processing-scanline::after {
   position: absolute;
   inset: 0;
   width: 40%;
-  background: linear-gradient(90deg, transparent, #f5d77a, transparent);
+  background: linear-gradient(90deg, transparent, var(--eb-gold-soft), transparent);
   animation: processing-bar-pulse 1.8s ease-in-out infinite;
 }

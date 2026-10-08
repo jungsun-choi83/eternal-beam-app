@@ -43,6 +43,8 @@ class CandidateOut(BaseModel):
     external_job_id: str | None = None
     raw_object_path: str | None = None
     cutout_object_path: str | None = None
+    #: 하류 키프레임 생성이 실제로 먹은 입력 (raw 아님).
+    plate_object_path: str | None = None
     input_reference_ids: list[str] = []
     generation_metadata: dict[str, Any] = {}
     qa_result: dict[str, Any] = {}
@@ -99,6 +101,7 @@ def _out(v: svc.CanonicalVersion) -> CanonicalVersionOut:
                 external_job_id=c.external_job_id,
                 raw_object_path=c.raw_object_path,
                 cutout_object_path=c.cutout_object_path,
+                plate_object_path=c.plate_object_path,
                 input_reference_ids=c.input_reference_ids,
                 generation_metadata=c.generation_metadata,
                 qa_result=c.qa_result,
@@ -217,6 +220,8 @@ async def review_payload(
                 "qa_result": c.qa_result,
                 "raw_url": _sign(c.raw_bucket, c.raw_object_path),
                 "cutout_url": _sign(c.cutout_bucket, c.cutout_object_path),
+                # 검토자가 "무엇이 실제로 하류에 갔는가"를 눈으로 봐야 한다.
+                "plate_url": _sign(c.plate_bucket, c.plate_object_path),
                 "error": c.error,
             }
             for c in v.candidates

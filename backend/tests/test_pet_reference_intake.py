@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from backend.routers import assets as assets_router
 from backend.routers import matting as matting_router
 from backend.routers import pet_references_v1 as references_router
+from backend.services import asset_url_refresh
 from backend.services import pet_reference_service as refs
 from backend.services import pet_registry
 
@@ -389,22 +390,158 @@ def test_phase7b_rejects_claimed_user_mismatch(assets_client, monkeypatch):
     assert res.json()["detail"]["code"] == "INTAKE_IDENTITY_MISMATCH"
 
 
-def test_phase7b_rejects_different_original_for_same_upload(assets_client, monkeypatch):
+def _phase7b_put(assets_client, original: bytes, cutout: bytes | None = None, *, name="dog.jpg"):
+    files = {"file": (name, original, "image/jpeg")}
+    if cutout is not None:
+        files["cutout_file"] = ("cutout.png", cutout, "image/png")
+    return assets_client.post(
+        "/api/assets/original",
+        files=files,
+        data=_phase7b_form(),
+        headers=_phase7b_auth(),
+    )
+
+
+def test_phase7b_accepts_one_to_three_originals_each_with_its_own_cutout(
+    assets_client, uploads, monkeypatch
+):
+    """1 pet ├─ original N → cutout N (N = 1..3), 짝은 parent 로만 묶인다."""
     monkeypatch.setenv("ALLOW_INSECURE_TEST_AUTH", "1")
-    assets_client.post(
-        "/api/assets/original",
-        files={"file": ("dog.jpg", make_jpeg_bytes(), "image/jpeg")},
-        data=_phase7b_form(),
-        headers=_phase7b_auth(),
-    )
-    res = assets_client.post(
-        "/api/assets/original",
-        files={"file": ("other.jpg", make_jpeg_bytes(64, 64), "image/jpeg")},
-        data=_phase7b_form(),
-        headers=_phase7b_auth(),
-    )
+    photos = [make_jpeg_bytes(128, 96), make_jpeg_bytes(64, 64), make_jpeg_bytes(96, 72)]
+    cutouts = [make_rgba_png_bytes(0.3), make_rgba_png_bytes(0.5), make_rgba_png_bytes(0.7)]
+
+    pairs = []
+    for i, (photo, cut) in enumerate(zip(photos, cutouts)):
+        first = _phase7b_put(assets_client, photo, name=f"dog{i}.jpg")
+        assert first.status_code == 200, first.text
+        # 아직 자기 누끼가 없으니, 앞 장이 준비됐더라도 이 장은 ready 가 아니다.
+        assert first.json()["intake_ready"] is False
+        assert first.json()["cutout_reference_id"] is None
+
+        ready = _phase7b_put(assets_client, photo, cut, name=f"dog{i}.jpg")
+        assert ready.status_code == 200, ready.text
+        body = ready.json()
+        assert body["pet_id"] == "pet_stable"
+        assert body["reference_id"] == first.json()["reference_id"]
+        assert body["intake_ready"] is True
+        assert body["cutout_recorded"] is True
+        pairs.append((body["reference_id"], body["cutout_reference_id"]))
+
+    # 원본 3장·누끼 3장이 서로 다른 행이고, 각 누끼는 자기 원본만 가리킨다.
+    assert len({p[0] for p in pairs}) == 3
+    assert len({p[1] for p in pairs}) == 3
+
+    ledger = _run(refs.list_references(user_id="alice@test", pet_id="pet_stable"))
+    originals = [r for r in ledger if r.role == refs.ROLE_ORIGINAL]
+    derived = [r for r in ledger if r.role == refs.ROLE_DERIVED]
+    assert len(originals) == 3
+    assert len(derived) == 3
+    assert sorted(r.version for r in originals) == [1, 2, 3]
+    for original_id, cutout_id in pairs:
+        cut = next(r for r in derived if r.id == cutout_id)
+        assert cut.parent_reference_id == original_id
+        assert refs.strict_cutout_for_original(ledger, original_id).id == cutout_id
+    # 원본 3 + 누끼 3 = 6번의 업로드, 재시도는 멱등이라 늘지 않는다.
+    assert len(uploads) == 6
+
+    pairing = refs.pair_cutouts(ledger)
+    assert {k: v.id for k, v in pairing.items()} == dict(pairs)
+
+
+def test_phase7b_same_bytes_retry_does_not_spend_an_original_slot(assets_client, monkeypatch):
+    monkeypatch.setenv("ALLOW_INSECURE_TEST_AUTH", "1")
+    photo = make_jpeg_bytes()
+    for _ in range(4):
+        assert _phase7b_put(assets_client, photo).status_code == 200
+
+    ledger = _run(refs.list_references(user_id="alice@test", pet_id="pet_stable"))
+    assert len([r for r in ledger if r.role == refs.ROLE_ORIGINAL]) == 1
+    # 슬롯이 남아 있으므로 다른 두 장이 여전히 들어간다.
+    assert _phase7b_put(assets_client, make_jpeg_bytes(64, 64)).status_code == 200
+    assert _phase7b_put(assets_client, make_jpeg_bytes(96, 72)).status_code == 200
+
+
+def test_phase7b_rejects_a_fourth_original_for_the_same_pet(assets_client, monkeypatch):
+    monkeypatch.setenv("ALLOW_INSECURE_TEST_AUTH", "1")
+    for photo in (make_jpeg_bytes(128, 96), make_jpeg_bytes(64, 64), make_jpeg_bytes(96, 72)):
+        assert _phase7b_put(assets_client, photo).status_code == 200
+
+    res = _phase7b_put(assets_client, make_jpeg_bytes(80, 80))
     assert res.status_code == 409
-    assert res.json()["detail"]["code"] == "PHASE1_ORIGINAL_CONFLICT"
+    assert res.json()["detail"]["code"] == "PHASE1_ORIGINAL_LIMIT"
+
+    ledger = _run(refs.list_references(user_id="alice@test", pet_id="pet_stable"))
+    assert len([r for r in ledger if r.role == refs.ROLE_ORIGINAL]) == 3
+
+
+def test_phase7b_cutout_is_never_reattached_to_a_different_original(assets_client, monkeypatch):
+    """원본 2의 누끼가 원본 1에 붙는 일은 없다 — 경로도 부모도 원본별이다."""
+    monkeypatch.setenv("ALLOW_INSECURE_TEST_AUTH", "1")
+    photo_a, photo_b = make_jpeg_bytes(128, 96), make_jpeg_bytes(64, 64)
+    shared_cutout = make_rgba_png_bytes(0.5)
+
+    a = _phase7b_put(assets_client, photo_a, shared_cutout).json()
+    b = _phase7b_put(assets_client, photo_b, shared_cutout).json()
+
+    assert a["reference_id"] != b["reference_id"]
+    assert a["cutout_reference_id"] != b["cutout_reference_id"]
+    assert a["cutout_object_path"] != b["cutout_object_path"]
+
+    ledger = _run(refs.list_references(user_id="alice@test", pet_id="pet_stable"))
+    assert refs.strict_cutout_for_original(ledger, a["reference_id"]).id == a["cutout_reference_id"]
+    assert refs.strict_cutout_for_original(ledger, b["reference_id"]).id == b["cutout_reference_id"]
+
+
+def test_persist_cutout_does_not_add_a_parentless_cutout_to_a_strict_pet(
+    assets_client, monkeypatch
+):
+    """/api/assets/cutout 은 계약(원격 URL)을 지키되, 모호한 행을 남기지 않는다."""
+    import base64
+
+    monkeypatch.setenv("ALLOW_INSECURE_TEST_AUTH", "1")
+    _phase7b_put(assets_client, make_jpeg_bytes(128, 96), make_rgba_png_bytes(0.5))
+    _phase7b_put(assets_client, make_jpeg_bytes(64, 64), make_rgba_png_bytes(0.7))
+
+    before = _run(refs.list_references(user_id="alice@test", pet_id="pet_stable"))
+    res = assets_client.post(
+        "/api/assets/cutout",
+        json={
+            "user_id": "alice@test",
+            "content_id": "stable",
+            "data_url": "data:image/png;base64,"
+            + base64.b64encode(make_rgba_png_bytes(0.4)).decode(),
+        },
+    )
+    assert res.status_code == 200
+    assert res.json()["cutout_url"]
+
+    after = _run(refs.list_references(user_id="alice@test", pet_id="pet_stable"))
+    assert len(after) == len(before)
+    assert all(r.parent_reference_id for r in after if r.role == refs.ROLE_DERIVED)
+
+
+def test_pair_cutouts_keeps_legacy_single_photo_content_fallback():
+    """단일 사진 온보딩(부모 없는 누끼 1장)은 그대로 짝지어진다."""
+    original = refs.PetReference(
+        id="o1", pet_id="pet_c", content_id="c", user_id="u", role=refs.ROLE_ORIGINAL,
+        source=refs.SOURCE_APP, bucket="b", object_path="o.jpg", version=1,
+    )
+    legacy_cutout = refs.PetReference(
+        id="d1", pet_id="pet_c", content_id="c", user_id="u", role=refs.ROLE_DERIVED,
+        source=refs.SOURCE_PIPELINE, bucket="b", object_path="u/c/dog_only_nobg.png",
+        version=1, derived_kind="cutout_client",
+    )
+    assert refs.pair_cutouts([original, legacy_cutout])["o1"].id == "d1"
+    # 엄격 링크가 아니므로 장별 확인에는 쓰이지 않는다.
+    assert refs.strict_cutout_for_original([original, legacy_cutout], "o1") is None
+
+    # 원본이 둘이면 그 폴백은 모호해지므로 사라진다.
+    second = refs.PetReference(
+        id="o2", pet_id="pet_c", content_id="c", user_id="u", role=refs.ROLE_ORIGINAL,
+        source=refs.SOURCE_APP, bucket="b", object_path="o2.jpg", version=2,
+    )
+    pairing = refs.pair_cutouts([original, second, legacy_cutout])
+    assert pairing == {"o1": None, "o2": None}
 
 
 def test_phase7b_cutout_failure_preserves_original_and_retry_continues(
@@ -473,6 +610,13 @@ def test_derived_parent_must_be_same_pet_original(uploads):
 
 def test_phase1_get_reports_intake_ready(assets_client, monkeypatch):
     monkeypatch.setenv("ALLOW_INSECURE_TEST_AUTH", "1")
+    signed = []
+
+    def fake_sign(obj, *, ttl=None):
+        signed.append((obj, ttl))
+        return f"https://signed.test/{obj.path}?token=short-lived"
+
+    monkeypatch.setattr(asset_url_refresh, "sign_object", fake_sign)
     original = make_jpeg_bytes()
     created = assets_client.post(
         "/api/assets/original",
@@ -488,15 +632,123 @@ def test_phase1_get_reports_intake_ready(assets_client, monkeypatch):
     app = FastAPI()
     app.include_router(references_router.router, prefix="/api")
     response = ASGITestClient(app).get(
-        "/api/v1/pet/references/pet_stable", headers=_phase7b_auth()
+        "/api/v1/pet/references/pet_stable?content_id=stable", headers=_phase7b_auth()
     )
     assert response.status_code == 200
     body = response.json()
     assert body["intake_ready"] is True
     assert body["original_reference_id"] == created.json()["reference_id"]
     assert body["cutout_reference_id"] == created.json()["cutout_reference_id"]
+    assert body["content_id"] == "stable"
+    assert body["cutout_signed_url"].startswith("https://signed.test/")
+    assert body["cutout_signed_url_expires_at"]
     derived = next(item for item in body["references"] if item["role"] == "derived")
     assert derived["parent_reference_id"] == body["original_reference_id"]
+    assert signed == [
+        (
+            asset_url_refresh.StorageObject(
+                bucket=derived["bucket"], path=derived["object_path"]
+            ),
+            references_router.CUTOUT_SIGNED_URL_TTL_SECONDS,
+        )
+    ]
+
+
+def test_phase1_get_not_ready_and_wrong_scope_return_no_cutout_data(
+    assets_client, monkeypatch
+):
+    monkeypatch.setenv("ALLOW_INSECURE_TEST_AUTH", "1")
+    sign_calls = []
+    monkeypatch.setattr(
+        asset_url_refresh,
+        "sign_object",
+        lambda *args, **kwargs: sign_calls.append((args, kwargs)),
+    )
+    created = assets_client.post(
+        "/api/assets/original",
+        files={"file": ("dog.jpg", make_jpeg_bytes(), "image/jpeg")},
+        data=_phase7b_form(),
+        headers=_phase7b_auth(),
+    )
+    assert created.status_code == 200
+
+    app = FastAPI()
+    app.include_router(references_router.router, prefix="/api")
+    client = ASGITestClient(app)
+
+    not_ready = client.get(
+        "/api/v1/pet/references/pet_stable?content_id=stable",
+        headers=_phase7b_auth(),
+    )
+    assert not_ready.status_code == 200
+    assert not_ready.json()["intake_ready"] is False
+    assert not_ready.json()["cutout_signed_url"] is None
+    assert not_ready.json()["cutout_signed_url_expires_at"] is None
+
+    wrong_content = client.get(
+        "/api/v1/pet/references/pet_stable?content_id=another-slot",
+        headers=_phase7b_auth(),
+    )
+    assert wrong_content.status_code == 200
+    assert wrong_content.json()["intake_ready"] is False
+    assert wrong_content.json()["references"] == []
+    assert wrong_content.json()["cutout_signed_url"] is None
+
+    wrong_pet = client.get(
+        "/api/v1/pet/references/pet_other?content_id=stable",
+        headers=_phase7b_auth(),
+    )
+    assert wrong_pet.status_code == 200
+    assert wrong_pet.json()["references"] == []
+    assert wrong_pet.json()["cutout_signed_url"] is None
+
+    wrong_user = client.get(
+        "/api/v1/pet/references/pet_stable?content_id=stable",
+        headers=_phase7b_auth("mallory@test"),
+    )
+    assert wrong_user.status_code == 403
+    assert sign_calls == []
+
+
+def test_phase1_get_signs_parent_matched_cutout_not_latest_cutout(
+    assets_client, monkeypatch
+):
+    monkeypatch.setenv("ALLOW_INSECURE_TEST_AUTH", "1")
+    created = assets_client.post(
+        "/api/assets/original",
+        files={
+            "file": ("dog.jpg", make_jpeg_bytes(), "image/jpeg"),
+            "cutout_file": ("cutout.png", make_rgba_png_bytes(0.5), "image/png"),
+        },
+        data=_phase7b_form(),
+        headers=_phase7b_auth(),
+    )
+    assert created.status_code == 200
+    authoritative_path = created.json()["cutout_object_path"]
+    _run(
+        refs.record_derived(
+            user_id="alice@test",
+            content_id="stable",
+            object_path="alice@test/stable/references/latest_unparented_cutout.png",
+            derived_kind="cutout_client",
+        )
+    )
+    signed_paths = []
+
+    def fake_sign(obj, *, ttl=None):
+        signed_paths.append(obj.path)
+        return "https://signed.test/exact-cutout.png?token=short-lived"
+
+    monkeypatch.setattr(asset_url_refresh, "sign_object", fake_sign)
+    app = FastAPI()
+    app.include_router(references_router.router, prefix="/api")
+    response = ASGITestClient(app).get(
+        "/api/v1/pet/references/pet_stable?content_id=stable",
+        headers=_phase7b_auth(),
+    )
+    assert response.status_code == 200
+    assert signed_paths == [authoritative_path]
+    assert response.json()["cutout_reference_id"] == created.json()["cutout_reference_id"]
 
 
 def test_phase7b_stops_at_phase1_even_when_legacy_autobuild_flag_is_on(
