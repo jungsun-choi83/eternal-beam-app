@@ -502,7 +502,46 @@ def test_normal_eternal_beam_generation_never_touches_archive(
     )
 
     assert archive_lookup_called is False
+def test_archive_status_route_returns_completed_result(
+    client: ASGITestClient,
+):
+    response = _post(client, files=_photos(1))
+    assert response.status_code == 201
 
+    intake = archive_intake_service.mock_get("application-123")
+    assert intake is not None
+    run_id = intake["generation_run_id"]
+
+    anyio.run(
+        archive_intake_service.mark_generation_completed,
+        run_id,
+        "mock://final-video.mp4",
+    )
+
+    response = client.get(
+        "/api/internal/archive-intake/application-123/status",
+        headers={"X-Archive-Service-Token": SERVICE_TOKEN},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["application_id"] == "application-123"
+    assert data["status"] == "COMPLETED"
+    assert data["generation_run_id"] == run_id
+    assert data["result_url"] == "mock://final-video.mp4"
+
+
+def test_archive_status_route_rejects_invalid_token(
+    client: ASGITestClient,
+):
+    response = client.get(
+        "/api/internal/archive-intake/application-123/status",
+        headers={"X-Archive-Service-Token": "wrong-token"},
+    )
+
+    assert response.status_code == 401
+    
 def test_reference_count_is_total_stored_not_current_request_length(
     client: ASGITestClient,
 ):
