@@ -104,6 +104,24 @@ async def upload_asset_to_storage(object_path: str, data: bytes, content_type: s
     return await asyncio.to_thread(_sync)
 
 
+async def download_asset_from_storage(
+    object_path: str, *, bucket: str | None = None
+) -> bytes:
+    """Download a private server-side asset without creating a public URL."""
+    path = (object_path or "").strip()
+    if not path:
+        raise ValueError("object_path is required")
+    supabase = _client()
+    if not supabase:
+        raise RuntimeError("Supabase is not configured")
+
+    def _sync() -> bytes:
+        raw = supabase.storage.from_(bucket or BUCKET).download(path)
+        return bytes(raw)
+
+    return await asyncio.to_thread(_sync)
+
+
 def _ensure_user_asset_row_sync(supabase: Client, row: dict) -> None:
     try:
         supabase.table("user_assets").insert(row).execute()

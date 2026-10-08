@@ -39,7 +39,9 @@ CLEAN_PLATE_VERSION = "clean-plate-v1"
 GENERATED_KIND_CANONICAL_PLATE = "canonical_plate"
 GENERATED_KIND_KEYFRAME_PLATE = "keyframe_plate"
 
-#: 계약된 중립 배경 — 프롬프트의 "plain solid neutral light-gray" 와 같은 톤.
+#: 기본 중립 배경 — 프롬프트의 "plain solid neutral light-gray" 와 같은 톤.
+#: 정본이 배경을 고른 계보(pet_background)는 그 값을 명시적으로 넘긴다 — 이
+#: 기본값/env 는 결정이 저장되지 않은 옛 정본에만 쓰인다.
 _DEFAULT_BACKGROUND_RGB = (200, 200, 200)
 
 #: 알파가 "있다"고 볼 최소값(0~255) — vitmatte_service 와 같은 기준.
@@ -96,9 +98,14 @@ def plate_object_path(source_object_path: str) -> str:
     return f"{stem}_plate.png"
 
 
-def build_clean_plate(cutout_png: bytes) -> tuple[bytes, dict[str, Any]]:
+def build_clean_plate(
+    cutout_png: bytes, background: Optional[tuple[int, int, int]] = None
+) -> tuple[bytes, dict[str, Any]]:
     """
     누끼 RGBA → (불투명 RGB PNG, 메타).
+
+    background: 이 계보의 정본이 고른 배경색 (pet_background). None 이면
+    전역 기본(background_rgb())이다.
 
     out = α·I + (1−α)·B. 알파가 0 인 곳(그림자가 이미 빠진 곳)은 정확히 B 다.
     픽셀 위치·해상도는 그대로다 — 기하 변형 없음.
@@ -131,7 +138,7 @@ def build_clean_plate(cutout_png: bytes) -> tuple[bytes, dict[str, Any]]:
             f"누끼 전경이 {coverage:.2%} 뿐입니다 (최소 {MIN_PLATE_ALPHA_FRACTION:.0%}).",
         )
 
-    bg = background_rgb()
+    bg = tuple(int(v) for v in background) if background is not None else background_rgb()
     a = (alpha_u8.astype(np.float32) / 255.0)[:, :, None]
     fg = rgba[:, :, :3].astype(np.float32)
     bg_arr = np.array(bg, dtype=np.float32)[None, None, :]
@@ -171,6 +178,7 @@ async def ensure_plate(
     plate_bucket: Optional[str] = None,
     plate_object_path_hint: Optional[str] = None,
     provenance: Optional[dict[str, Any]] = None,
+    background: Optional[tuple[int, int, int]] = None,
 ) -> Optional[SimpleNamespace]:
     """
     플레이트를 **해결**한다: 이미 있으면 읽고, 없으면 누끼에서 만들어 올린다.
@@ -207,7 +215,7 @@ async def ensure_plate(
     if not cut_bytes:
         return None
 
-    plate_bytes, meta = build_clean_plate(cut_bytes)
+    plate_bytes, meta = build_clean_plate(cut_bytes, background)
     path = plate_object_path_hint or plate_object_path(raw_object_path or cutout_object_path)
     await supabase_assets.upload_asset_to_storage(path, plate_bytes, "image/png")
 

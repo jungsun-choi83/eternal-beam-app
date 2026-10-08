@@ -24,11 +24,12 @@ import functools
 import io
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 import numpy as np
 
@@ -226,8 +227,10 @@ def analyzer_versions(providers: Sequence[Any]) -> dict[str, Any]:
         motion_spec,
         motion_video_prompts,
         motion_video_qa,
+        qa_evidence_reuse,
         video_motion_providers,
         vlm_identity,
+        vlm_escalation,
     )
 
     return {
@@ -238,6 +241,9 @@ def analyzer_versions(providers: Sequence[Any]) -> dict[str, Any]:
         "qa": motion_video_qa.active_qa_version(),
         "sampling": motion_video_qa.FRAME_SAMPLING_VERSION,
         "vlm_motion_qa": vlm_identity.VLM_MOTION_QA_VERSION,
+        "vlm_escalation": vlm_escalation.VLM_ESCALATION_VERSION,
+        "qa_evidence_reuse": qa_evidence_reuse.QA_EVIDENCE_REUSE_VERSION,
+        "motion_qa_contract": motion_spec.MOTION_QA_CONTRACT_VERSION,
         "providers": [f"{p.name}:{p.model_name()}" for p in providers],
         "provider_bindings": [
             video_motion_providers.provider_identity(provider) for provider in providers
@@ -256,7 +262,14 @@ def analyzer_versions(providers: Sequence[Any]) -> dict[str, Any]:
 #: 여기 적힌 키만 그 비교에서 빠진다. 나머지는 전부 생성에 영향을 준다고 본다 —
 #: 새 키가 생겼을 때 기본값이 "다시 만든다" 여야, 조용히 낡은 자산을 재사용하는
 #: 실수가 생기지 않는다.
-QA_ONLY_VERSION_KEYS = ("qa", "sampling", "vlm_motion_qa")
+QA_ONLY_VERSION_KEYS = (
+    "qa",
+    "sampling",
+    "vlm_motion_qa",
+    "vlm_escalation",
+    "qa_evidence_reuse",
+    "motion_qa_contract",
+)
 
 
 def generation_versions(stamp: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -541,14 +554,24 @@ def severity_gate_mode(override: Optional[str] = None) -> str:
     return motion_video_qa.severity_gate_mode(override)
 
 
-def candidate_is_publishable(candidate: Any, *, mode: Optional[str] = None) -> bool:
+def candidate_is_publishable(
+    candidate: Any, *, mode: Optional[str] = None, motion_id: Optional[str] = None
+) -> bool:
     """후보 행(dict) 또는 MotionCandidate → 전달 가능 여부. PASS 는 항상 참."""
-    from . import motion_video_qa
+    from . import business_qa, motion_video_qa
 
     if isinstance(candidate, dict):
         decision, qa = candidate.get("decision"), candidate.get("qa_result")
+        motion = motion_id or candidate.get("motion_id")
     else:
         decision, qa = getattr(candidate, "decision", None), getattr(candidate, "qa_result", None)
+        motion = motion_id or getattr(candidate, "motion_id", None)
+    if business_qa.legacy_authority_retired(motion):
+        # Receipt-only authority: the legacy decision and the severity gate
+        # are not consulted, and a missing receipt is never deliverable.
+        return business_qa.is_deliverable(qa or {}, legacy_fallback=False)
+    if business_qa.receipt(qa or {}) is not None:
+        return business_qa.is_deliverable(qa or {})
     return motion_video_qa.is_publishable(qa or {}, decision=decision, mode=mode)
 
 
@@ -639,9 +662,14 @@ def _gate_selection_reason(candidate: dict[str, Any]) -> str:
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def _rank(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _rank(rows: list[dict[str, Any]], *, legacy_order: bool = True) -> list[dict[str, Any]]:
     from . import motion_video_qa as qa
 
+    if not legacy_order:
+        # Legacy authority retired: creation order only. Business QA ranks.
+        return sorted(
+            [c for c in rows if c["decision"] != "ERROR"], key=lambda c: c["attempt"]
+        )
     order = {qa.PASS: 0, qa.REVIEW: 1, qa.FAIL: 2, "ERROR": 3}
     return sorted(
         [c for c in rows if c["decision"] != "ERROR"],
@@ -692,10 +720,12 @@ async def build_motion_video(
     precomputed_contract: Optional[dict[str, Any]] = None,
 ) -> MotionVersion:
     from . import (
+        business_qa,
         canonical_pet_service,
         motion_spec,
         motion_video_prompts,
         motion_video_qa,
+        pet_background,
         pet_identity_service,
         pet_reference_service,
         supabase_assets,
@@ -711,7 +741,7 @@ async def build_motion_video(
     if not uid or not pid:
         raise MotionVideoError("MOTION_INVALID", "user_id 와 pet_id 가 필요합니다.")
 
-    # ── Phase 5.1 계약 (승인 키프레임 게이트 포함 — REVIEW/FAIL 은 여기서 거절) ─
+    # ── Phase 5.1 계약 (business-v1 전달 가능 키프레임 게이트 포함) ─────────
     # 호출자(런 오케스트레이터)가 STAGE_MOTION_SPEC 에서 같은 계약을 이미
     # 해석/검증해 뒀다면 여기서 다시 해석하지 않는다 — 계약 해석 자체가
     # 키프레임/신원/canonical/레퍼런스세트/형태/모션레퍼런스를 도합 여러 번
@@ -902,6 +932,9 @@ async def build_motion_video(
                     "keyframe_version": (payload or {}).get("version"),
                     "candidate_id": (payload or {}).get("candidate_id"),
                 },
+                # 플레이트를 다시 만들어야 하면 이 계보의 정본이 고른 배경으로 —
+                # 모션 단계가 다른 회색을 고르지 않는다.
+                background=pet_background.background_rgb(contract.get("background")),
             )
         except clean_plate_service.CleanPlateError as e:
             plate_error = f"{e.code}: {e.message}"
@@ -1131,7 +1164,15 @@ async def build_motion_video(
     ]
 
     candidates = await _candidate_rows(version_id) if resumable else []
-    passes = sum(1 for candidate in candidates if candidate.get("decision") == "PASS")
+    # BREATHING with legacy authority retired: only the receipt decides
+    # delivery, retry and selection. Every other motion keeps legacy_fallback.
+    legacy_fallback = not business_qa.legacy_authority_retired(contract["motion_id"])
+    passes = sum(
+        1 for candidate in candidates
+        if business_qa.is_deliverable(
+            candidate.get("qa_result") or {}, legacy_fallback=legacy_fallback
+        )
+    )
     contract_violation = any(
         bool((candidate.get("generation_metadata") or {}).get("contract_violation"))
         for candidate in candidates
@@ -1147,7 +1188,9 @@ async def build_motion_video(
         provider_identity = video_motion_providers.provider_identity(provider)
         logical_model = provider_identity["logical_model"]
         for attempt in range(1, max_candidates + 1):
-            if passes >= policy["stop_after_passes"]:
+            if passes >= policy["stop_after_passes"] or not business_qa.may_generate_next_candidate(
+                candidates, legacy_fallback=legacy_fallback
+            ):
                 return
             existing = next(
                 (
@@ -1343,7 +1386,37 @@ async def build_motion_video(
                 frame_sampler=sampler,
                 vlm_qa_fn=vlm_identity.qa_motion_video,
                 conformance_fn=conformance_fn or motion_video_qa.verify_output_conformance,
+                inherited_evidence=[
+                    evidence
+                    for evidence in [
+                        (contract.get("start_keyframe") or {}).get("approved_qa_evidence")
+                    ]
+                    if evidence
+                ],
             )
+            try:
+                business_qa.attach_business_result(
+                    qa,
+                    attempt_number=business_qa.automatic_attempt_number(
+                        candidates, current_candidate_id=cand_id
+                    ),
+                    request_kind=motion_class or "MOTION",
+                    fallback_available=True,
+                )
+            except Exception as exc:
+                if legacy_fallback:
+                    raise
+                # Business QA itself failed: safe default (block, no further
+                # spend, fallback still). Never the legacy decision.
+                logger.error("Business QA 영수증 생성 실패 — safe default", exc_info=True)
+                qa["business_qa"] = business_qa.safe_default_receipt(
+                    reason=business_qa.SAFE_DEFAULT_REASON_ERROR,
+                    request_kind=motion_class or "MOTION",
+                    attempt_number=business_qa.automatic_attempt_number(
+                        candidates, current_candidate_id=cand_id
+                    ),
+                    detail=f"{type(exc).__name__}: {exc}",
+                )
 
             cand_row["qa_result"] = qa
             cand_row["decision"] = qa["decision"]
@@ -1357,7 +1430,7 @@ async def build_motion_video(
                     "decision": qa["decision"],
                 },
             )
-            if qa["decision"] == motion_video_qa.PASS:
+            if business_qa.is_deliverable(qa, legacy_fallback=legacy_fallback):
                 passes += 1
 
     await run_provider(resolved[0], policy["max_primary"], "primary")
@@ -1367,13 +1440,18 @@ async def build_motion_video(
 
     from . import motion_video_qa as qa_mod
 
-    ranked = _rank(candidates)
-    selected = ranked[0] if ranked and ranked[0]["decision"] == qa_mod.PASS else None
+    ranked = _rank(candidates, legacy_order=legacy_fallback)
+    selected = business_qa.best_available_candidate(ranked, legacy_fallback=legacy_fallback)
+    fallback_receipt = business_qa.fallback_receipt(ranked)
     # 무결성 게이트: PASS 가 없으면 무결성 사유 없는 REVIEW/FAIL 후보를 전달용으로
     # 고른다. 버전 status 는 그대로(review/failed) 두고 후보만 selected 로 표시한다 —
-    # 결정도 status 도 고쳐 쓰지 않는다.
+    # 결정도 status 도 고쳐 쓰지 않는다. (legacy authority 가 은퇴한 모션에는 없다.)
     gated = None
-    if selected is None and severity_gate_mode() == SEVERITY_GATE_INTEGRITY_ONLY:
+    if (
+        selected is None
+        and legacy_fallback
+        and severity_gate_mode() == SEVERITY_GATE_INTEGRITY_ONLY
+    ):
         gated = choose_publishable_candidate(candidates)
     chosen = selected or gated
     if chosen:
@@ -1381,7 +1459,7 @@ async def build_motion_video(
         if gated is None:
             status = STATUS_COMPLETE
             selection_reason = (
-                f"best PASS candidate: {selected['provider']} attempt {selected['attempt']}, "
+                f"best business-deliverable candidate: {selected['provider']} attempt {selected['attempt']}, "
                 f"identity_similarity={selected['qa_result'].get('identity_similarity')}"
             )
         else:
@@ -1416,9 +1494,12 @@ async def build_motion_video(
                 )
             except Exception:
                 logger.warning("모션 대장 기록 실패", exc_info=True)
-    elif any(c["decision"] == qa_mod.REVIEW for c in candidates):
+    elif fallback_receipt:
         status = STATUS_REVIEW
-        selection_reason = "no PASS candidate — human review required"
+        selection_reason = "business-v1 automatic budget exhausted — fallback required"
+    elif legacy_fallback and any(c["decision"] == qa_mod.REVIEW for c in candidates):
+        status = STATUS_REVIEW
+        selection_reason = "no business-deliverable candidate — human review required"
     elif contract_violation:
         status = STATUS_FAILED
         selection_reason = (
@@ -1439,6 +1520,18 @@ async def build_motion_video(
                 for d in ("PASS", "REVIEW", "FAIL", "ERROR")
             },
             "policy": policy,
+            "business_qa": {
+                "version": business_qa.BUSINESS_QA_VERSION,
+                "selection_policy": business_qa.BEST_AVAILABLE_POLICY_VERSION,
+                "candidate_budget": business_qa.automatic_candidate_budget(motion_class or "MOTION"),
+                "selected": (
+                    dict((selected.get("qa_result") or {}).get("business_qa") or {})
+                    if selected else (dict(fallback_receipt) if fallback_receipt else None)
+                ),
+                "selection_priority": (
+                    business_qa.candidate_selection_priority(selected) if selected else None
+                ),
+            },
             **(
                 {"delivery": {"gate": SEVERITY_GATE_INTEGRITY_ONLY, "candidate_id": gated["id"],
                               "qa_decision": gated["decision"]}}
@@ -1563,6 +1656,8 @@ async def _evaluate_candidate_qa(
     frame_sampler: Callable[[bytes], Optional[list[Optional[np.ndarray]]]],
     vlm_qa_fn: Callable[..., Optional[dict[str, Any]]],
     conformance_fn: Callable[[bytes, dict[str, Any]], dict[str, Any]],
+    force_vlm: bool = False,
+    inherited_evidence: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """
     후보 1건의 전체 QA — build_motion_video 와 reevaluate_motion_candidate 가
@@ -1573,30 +1668,85 @@ async def _evaluate_candidate_qa(
     은 여전히 둘 다 끝난 뒤에만 conformance 로 하향 조정된다 — 필수 검사를
     건너뛰는 게 아니라 대기 시간만 겹친다.
     """
-    from . import motion_video_qa
+    from . import motion_video_qa, qa_evidence_reuse, vlm_escalation, vlm_identity
 
+    qa_started = time.perf_counter()
     conformance_task = asyncio.ensure_future(asyncio.to_thread(conformance_fn, video_bytes, output_spec))
     try:
         frames = await asyncio.to_thread(frame_sampler, video_bytes)
         temporal_qa, vlm_frames, vlm_fractions = await _breathing_evidence(
             contract["motion_id"], video_bytes, start_rgb, frames
         )
-        vlm_qa = await asyncio.to_thread(
-            vlm_qa_fn,
-            _frames_to_jpeg(vlm_frames),
-            motion_description=motion_description,
-            motion_class=motion_class,
-            sample_fractions=vlm_fractions,
-            reference_image=(start_bytes, "image/png"),
-            target_image=((target_bytes, "image/png") if target_bytes else None),
-        )
-        qa = motion_video_qa.evaluate_motion_video(
+        deterministic_qa = motion_video_qa.evaluate_motion_video(
             frames=frames,
             spec_contract=contract,
             start_keyframe_rgb=start_rgb,
             target_keyframe_rgb=target_rgb,
-            vlm_qa=vlm_qa,
+            vlm_qa=None,
             temporal_qa=temporal_qa,
+        )
+        escalation = vlm_escalation.should_call_vlm(
+            stage="MOTION",
+            qa_result=deterministic_qa,
+            request_kind=motion_class,
+            motion_id=contract["motion_id"],
+            force_call=force_vlm,
+            inherited_evidence=inherited_evidence,
+        )
+        should_call = escalation["decision"] == vlm_escalation.CALL
+        # Failure classes of VLM calls that return nothing are persisted on the
+        # escalation receipt (to_thread copies this context to the worker).
+        with vlm_identity.capture_call_failures() as vlm_failures:
+            vlm_qa = (
+                await asyncio.to_thread(
+                    vlm_qa_fn,
+                    _frames_to_jpeg(vlm_frames),
+                    motion_description=motion_description,
+                    motion_class=motion_class,
+                    sample_fractions=vlm_fractions,
+                    reference_image=(start_bytes, "image/png"),
+                    target_image=((target_bytes, "image/png") if target_bytes else None),
+                    expected_direction=(contract.get("qa_context") or {}).get("expected_direction"),
+                    interaction_type=(contract.get("qa_context") or {}).get("interaction_type"),
+                    allow_generated_hand=bool(
+                        (contract.get("qa_context") or {}).get("allow_generated_hand")
+                    ),
+                    tasks=escalation.get("requested_tasks") or (),
+                    unresolved_questions=escalation.get("unresolved_questions") or (),
+                    evidence_context={
+                        "stage_qa_version": motion_video_qa.active_qa_version(),
+                        "motion_contract_version": contract.get("registry_contract_version"),
+                        "inherited_fingerprints": [
+                            str(item.get("fingerprint"))
+                            for item in inherited_evidence
+                            if item.get("valid") is True and item.get("fingerprint")
+                        ]
+                    },
+                )
+                if should_call
+                else None
+            )
+        qa = (
+            motion_video_qa.evaluate_motion_video(
+                frames=frames,
+                spec_contract=contract,
+                start_keyframe_rgb=start_rgb,
+                target_keyframe_rgb=target_rgb,
+                vlm_qa=vlm_qa,
+                temporal_qa=temporal_qa,
+            )
+            if should_call
+            else deterministic_qa
+        )
+        qa["vlm_escalation"] = vlm_escalation.finalize_vlm_escalation(
+            escalation, called=should_call, result=vlm_qa, failures=vlm_failures
+        )
+        qa_evidence_reuse.attach_receipt(
+            qa,
+            stage="MOTION",
+            escalation=escalation,
+            vlm_result=vlm_qa,
+            inherited=inherited_evidence,
         )
         conformance = await conformance_task
     except BaseException:
@@ -1622,6 +1772,10 @@ async def _evaluate_candidate_qa(
     gate = motion_video_qa.severity_gate_mode()
     if gate != motion_video_qa.SEVERITY_GATE_OFF:
         qa["severity"] = motion_video_qa.severity_receipt(qa, gate)
+    qa["shadow_telemetry"] = {
+        "version": "business-qa-shadow-v1",
+        "qa_time_ms": round((time.perf_counter() - qa_started) * 1000.0, 3),
+    }
     return qa
 
 
@@ -1652,12 +1806,14 @@ async def reevaluate_motion_candidate(
     """
     from . import (
         asset_url_refresh,
+        business_qa,
         canonical_pet_service,
         motion_spec,
         motion_video_qa,
         pet_identity_service,
         supabase_assets,
         vlm_identity,
+        vlm_escalation,
     )
 
     uid = (user_id or "").strip()
@@ -1698,7 +1854,18 @@ async def reevaluate_motion_candidate(
     if (
         previous_qa.get("qa_version") == motion_video_qa.active_qa_version()
         and previous_qa.get("sampling_version") == motion_video_qa.FRAME_SAMPLING_VERSION
-        and previous_vlm.get("source") == vlm_identity.VLM_MOTION_QA_VERSION
+        and (
+            previous_vlm.get("source")
+            in {vlm_identity.VLM_MOTION_QA_VERSION, vlm_identity.VLM_TARGETED_QA_VERSION}
+            or (
+                (previous_qa.get("vlm_escalation") or {}).get("version")
+                == vlm_escalation.VLM_ESCALATION_VERSION
+                and (previous_qa.get("vlm_escalation") or {}).get("decision") == "SKIP"
+            )
+        )
+        and (previous_qa.get("motion_business_contract") or {}).get("version")
+        == motion_spec.MOTION_QA_CONTRACT_VERSION
+        and business_qa.receipt(previous_qa) is not None
         and not force_refresh
     ):
         return _to_version(version_row, candidates, deduplicated=True)
@@ -1774,6 +1941,22 @@ async def reevaluate_motion_candidate(
             else (vlm_qa_fn or vlm_identity.qa_motion_video)
         ),
         conformance_fn=conformance_fn or motion_video_qa.verify_output_conformance,
+        force_vlm=force_refresh,
+        inherited_evidence=[
+            evidence
+            for evidence in [
+                (contract.get("start_keyframe") or {}).get("approved_qa_evidence")
+            ]
+            if evidence
+        ],
+    )
+    business_qa.attach_business_result(
+        qa,
+        attempt_number=business_qa.automatic_attempt_number(
+            candidates, current_candidate_id=cand_id
+        ),
+        request_kind=contract["motion_class"] or "MOTION",
+        fallback_available=True,
     )
 
     metadata = dict(candidate.get("generation_metadata") or {})
@@ -1795,10 +1978,16 @@ async def reevaluate_motion_candidate(
     )
     candidate.update({"qa_result": qa, "decision": qa["decision"], "generation_metadata": metadata})
 
-    ranked = _rank(candidates)
-    selected = ranked[0] if ranked and ranked[0].get("decision") == motion_video_qa.PASS else None
+    legacy_fallback = not business_qa.legacy_authority_retired(motion_id)
+    ranked = _rank(candidates, legacy_order=legacy_fallback)
+    selected = business_qa.best_available_candidate(ranked, legacy_fallback=legacy_fallback)
+    fallback_receipt = business_qa.fallback_receipt(ranked)
     gated = None
-    if selected is None and severity_gate_mode() == SEVERITY_GATE_INTEGRITY_ONLY:
+    if (
+        selected is None
+        and legacy_fallback
+        and severity_gate_mode() == SEVERITY_GATE_INTEGRITY_ONLY
+    ):
         gated = choose_publishable_candidate(candidates)
     chosen = selected or gated
     for row in candidates:
@@ -1812,7 +2001,7 @@ async def reevaluate_motion_candidate(
     if selected:
         status = STATUS_COMPLETE
         selection_reason = (
-            f"best PASS candidate after {motion_video_qa.active_qa_version()}: "
+            f"best business-deliverable candidate after {motion_video_qa.active_qa_version()}: "
             f"{selected['provider']} attempt {selected['attempt']}"
         )
     elif gated:
@@ -1823,9 +2012,14 @@ async def reevaluate_motion_candidate(
         )
         selection_reason = _gate_selection_reason(gated)
         selected = gated
-    elif any(row.get("decision") == motion_video_qa.REVIEW for row in candidates):
+    elif fallback_receipt:
         status = STATUS_REVIEW
-        selection_reason = "no PASS candidate — human review required"
+        selection_reason = "business-v1 automatic budget exhausted — fallback required"
+    elif legacy_fallback and any(
+        row.get("decision") == motion_video_qa.REVIEW for row in candidates
+    ):
+        status = STATUS_REVIEW
+        selection_reason = "no business-deliverable candidate — human review required"
     else:
         status = STATUS_FAILED
         selection_reason = "no usable candidate"
@@ -1849,6 +2043,20 @@ async def reevaluate_motion_candidate(
                 for decision in ("PASS", "REVIEW", "FAIL", "ERROR")
             },
             "policy": dict((version_row.get("qa_summary") or {}).get("policy") or {}),
+            "business_qa": {
+                "version": business_qa.BUSINESS_QA_VERSION,
+                "selection_policy": business_qa.BEST_AVAILABLE_POLICY_VERSION,
+                "candidate_budget": business_qa.automatic_candidate_budget(
+                    contract["motion_class"] or "MOTION"
+                ),
+                "selected": (
+                    dict((selected.get("qa_result") or {}).get("business_qa") or {})
+                    if selected else (dict(fallback_receipt) if fallback_receipt else None)
+                ),
+                "selection_priority": (
+                    business_qa.candidate_selection_priority(selected) if selected else None
+                ),
+            },
         },
         "analyzer_versions": versions,
         "completed_at": _now_iso(),

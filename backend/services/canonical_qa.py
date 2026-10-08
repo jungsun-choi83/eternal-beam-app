@@ -24,7 +24,11 @@ coat_pattern 은 **자문(advisory)** 검사다 (v4). REVIEW 로 남은 coat_pat
 
 qa_result 예:
   {"identity_similarity": 0.62, "checks": {...}, "reasons": [...],
-   "vlm": {...}, "decision": "REVIEW", "qa_version": "canonical-qa-v4"}
+   "vlm": {...}, "decision": "REVIEW", "qa_version": "canonical-qa-v5"}
+
+v5 adds confidence-gated ``business_signals`` for Business QA vNext. The
+legacy checks and legacy decision are deliberately still calculated by the v4
+rules so old/new authority can be compared side by side.
 """
 
 from __future__ import annotations
@@ -37,7 +41,7 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
-CANONICAL_QA_VERSION = "canonical-qa-v4"
+CANONICAL_QA_VERSION = "canonical-qa-v5"
 
 PASS = "PASS"
 REVIEW = "REVIEW"
@@ -178,6 +182,11 @@ def _known_text(value: Any) -> bool:
 _VLM_EVIDENCE_KEYS = (
     "same_pet",
     "same_pet_confidence",
+    "face_head_consistent",
+    "ear_muzzle_consistent",
+    "distinctive_markings_consistent",
+    "persistent_morphology_consistent",
+    "presentation_difference_only",
     "anatomy_plausible",
     "single_pet",
     "human_present",
@@ -190,6 +199,8 @@ _VLM_EVIDENCE_KEYS = (
     "source",
     "model",
     "analyzer",
+    "called_tasks",
+    "targeted_vlm_evidence",
 )
 
 
@@ -198,6 +209,137 @@ def _vlm_evidence(vlm_qa: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
     if not vlm_qa:
         return None
     return {k: vlm_qa[k] for k in _VLM_EVIDENCE_KEYS if k in vlm_qa}
+
+
+def _strong_trait(field: Any) -> bool:
+    """Whether a fused profile trait has strong multi-reference support."""
+
+    return bool(
+        isinstance(field, dict)
+        and str(field.get("confidence") or "").lower() == "high"
+        and _support_count(field) >= 2
+    )
+
+
+def _strong_marking_evidence(profile_visual: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+    """Summarize existing persistent marking evidence without inventing traits."""
+
+    facial = profile_visual.get("facial_markings") or {}
+    body = profile_visual.get("body_markings") or {}
+    pattern = profile_visual.get("coat_pattern") or {}
+    distinctive = profile_visual.get("distinctive_features") or {}
+    strong_features = [
+        item
+        for item in (distinctive.get("items") or [])
+        if _strong_trait(item)
+    ] if isinstance(distinctive, dict) else []
+    evidence = {
+        "facial_markings": {
+            "confidence": facial.get("confidence") if isinstance(facial, dict) else None,
+            "support_reference_count": _support_count(facial),
+        },
+        "body_markings": {
+            "confidence": body.get("confidence") if isinstance(body, dict) else None,
+            "support_reference_count": _support_count(body),
+        },
+        "coat_pattern": {
+            "confidence": pattern.get("confidence") if isinstance(pattern, dict) else None,
+            "support_reference_count": _support_count(pattern),
+        },
+        "distinctive_features": [
+            {
+                "value": item.get("value"),
+                "confidence": item.get("confidence"),
+                "support_reference_count": _support_count(item),
+            }
+            for item in strong_features
+        ],
+    }
+    return bool(
+        _strong_trait(facial)
+        or _strong_trait(body)
+        or _strong_trait(pattern)
+        or strong_features
+    ), evidence
+
+
+def _semantic_identity_signal(
+    value: Any,
+    *,
+    confidence: str,
+    presentation_only: bool,
+    strong_profile_evidence: bool = True,
+) -> str:
+    """Translate VLM identity evidence into a confidence-gated business signal."""
+
+    answer = str(value or "unknown").lower()
+    if answer == "yes":
+        return PASS
+    if answer != "no":
+        return "unknown"
+    if presentation_only or confidence != "high" or not strong_profile_evidence:
+        return REVIEW
+    return FAIL
+
+
+def _canonical_business_identity_signals(
+    vlm_qa: Optional[dict[str, Any]],
+    profile_visual: dict[str, Any],
+    *,
+    reference_evidence_count: int,
+) -> tuple[dict[str, str], dict[str, Any]]:
+    """Build semantic identity authority while leaving legacy checks untouched."""
+
+    vlm = vlm_qa or {}
+    confidence = str(vlm.get("same_pet_confidence") or "unknown").lower()
+    presentation_only = str(vlm.get("presentation_difference_only") or "no").lower() == "yes"
+    strong_markings, marking_evidence = _strong_marking_evidence(profile_visual)
+    same_gate = profile_visual.get("same_individual_gate") or {}
+    raw_profile_count = (
+        same_gate.get("strict_lineage_reference_count")
+        if isinstance(same_gate, dict)
+        else 0
+    )
+    try:
+        profile_reference_count = max(0, int(raw_profile_count or 0))
+    except (TypeError, ValueError):
+        profile_reference_count = 0
+    multi_reference = max(reference_evidence_count, profile_reference_count) >= 2
+    signals = {
+        "canonical_face_head_identity": _semantic_identity_signal(
+            vlm.get("face_head_consistent"),
+            confidence=confidence,
+            presentation_only=presentation_only,
+            strong_profile_evidence=multi_reference,
+        ),
+        "canonical_ear_muzzle_identity": _semantic_identity_signal(
+            vlm.get("ear_muzzle_consistent"),
+            confidence=confidence,
+            presentation_only=presentation_only,
+            strong_profile_evidence=multi_reference,
+        ),
+        "canonical_distinctive_markings_identity": _semantic_identity_signal(
+            vlm.get("distinctive_markings_consistent"),
+            confidence=confidence,
+            presentation_only=presentation_only,
+            strong_profile_evidence=strong_markings,
+        ),
+        "canonical_persistent_morphology_identity": _semantic_identity_signal(
+            vlm.get("persistent_morphology_consistent"),
+            confidence=confidence,
+            presentation_only=presentation_only,
+            strong_profile_evidence=multi_reference,
+        ),
+    }
+    return signals, {
+        "same_pet_confidence": confidence,
+        "presentation_difference_only": presentation_only,
+        "strong_profile_marking_evidence": strong_markings,
+        "reference_evidence_count": max(reference_evidence_count, profile_reference_count),
+        "multi_reference_evidence": multi_reference,
+        "profile_marking_evidence": marking_evidence,
+        "signals": dict(signals),
+    }
 
 
 def _families(color_entries: list[dict[str, Any]], *, min_fraction: float = 0.15) -> set[str]:
@@ -503,6 +645,16 @@ def evaluate_candidate(
             # 났다는 사실만 한 줄 남긴다 — coat_pattern 을 PASS 로 고쳐 쓰지 않는다.
             reasons.append("advisory_checks_not_blocking:" + ",".join(advisory_not_pass))
 
+    business_signals, business_identity_evidence = _canonical_business_identity_signals(
+        vlm_qa,
+        profile_visual if isinstance(profile_visual, dict) else {},
+        reference_evidence_count=len(reference_signatures),
+    )
+    business_signals["canonical_cutout_integrity"] = (
+        FAIL if cutout_rgba is None or checks.get("cutout") == FAIL else PASS
+    )
+    identity_evidence["business_identity"] = business_identity_evidence
+
     return {
         "qa_version": CANONICAL_QA_VERSION,
         "identity_similarity": identity_similarity,
@@ -511,4 +663,5 @@ def evaluate_candidate(
         "identity_evidence": identity_evidence,
         "decision": decision,
         "vlm": _vlm_evidence(vlm_qa),
+        "business_signals": business_signals,
     }

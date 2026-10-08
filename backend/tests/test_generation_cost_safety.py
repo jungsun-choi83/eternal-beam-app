@@ -380,8 +380,15 @@ def test_motion_qa_versions_are_not_part_of_the_generation_identity():
         "qa": "qa-v1",
         "sampling": "samp-v1",
         "vlm_motion_qa": "vlm-v1",
+        "motion_qa_contract": "motion-qa-v1",
     }
-    requalified = {**stamp, "qa": "qa-v2", "sampling": "samp-v2", "vlm_motion_qa": "vlm-v2"}
+    requalified = {
+        **stamp,
+        "qa": "qa-v2",
+        "sampling": "samp-v2",
+        "vlm_motion_qa": "vlm-v2",
+        "motion_qa_contract": "motion-qa-v2",
+    }
 
     assert mvs.generation_versions(stamp) == mvs.generation_versions(requalified)
     assert set(mvs.generation_versions(stamp)) == {
@@ -407,6 +414,7 @@ def test_live_qa_version_constants_are_classified_as_qa_only():
     from backend.services import (
         canonical_pet_service as cps,
         canonical_qa,
+        motion_spec,
         motion_video_prompts,
         motion_video_qa,
         motion_video_service as mvs,
@@ -420,6 +428,7 @@ def test_live_qa_version_constants_are_classified_as_qa_only():
         "qa": motion_video_qa.MOTION_VIDEO_QA_VERSION,
         "sampling": motion_video_qa.FRAME_SAMPLING_VERSION,
         "vlm_motion_qa": vlm_identity.VLM_MOTION_QA_VERSION,
+        "motion_qa_contract": motion_spec.MOTION_QA_CONTRACT_VERSION,
         "prompt": motion_video_prompts.MOTION_VIDEO_PROMPT_VERSION,
     }
     generation = mvs.generation_versions(motion_stamp)

@@ -93,10 +93,17 @@ import type { PickedMedia } from '@/lib/pick-media-file'
 import {
   beginPhase1Intake,
   clearPhase1Intake,
+  identityForAddedPhotos,
   readPhase1Intake,
   type Phase1IntakeIdentity,
 } from '@/lib/phase1-intake-session'
 import { hasActiveGeneration, resolveResumeContentId } from '@/lib/generation-resume'
+import {
+  fetchPetInputsLocked,
+  intakeContinueTarget,
+  resolvePetInputsLocked,
+} from '@/lib/pet-input-lock'
+import { getPremiumAccessToken } from '@/lib/premium-auth-token'
 import { hasLibraryFlowMarker } from '@/lib/library-flow-state'
 import {
   matchingCutoutFallback,
@@ -510,6 +517,32 @@ export function EternalBeamApp() {
   const canStartIntake = uploadedImages.length > 0
   const intakeImageStates = activePetSlot.intakeImageStates
   const intakeIdentity = activePetSlot.intakeIdentity
+
+  // ── 펫 입력 잠금 (Stage 1c) ───────────────────────────────────────────────
+  // 생성이 시작된 아이의 사진은 바꿀 수 없다. 서버 답을 알면 그것이 정본이고
+  // (실패한 실행 뒤 풀리는 것도 서버만 안다), 모를 때는 "확인을 눌렀다"는 로컬
+  // 기록으로 곧바로 잠긴 화면을 보여 준다. 서버도 같은 변경을 PHASE1_LOCKED 로 막는다.
+  const [serverInputsLocked, setServerInputsLocked] = useState<Record<string, boolean | null>>({})
+  const lockPetId = intakeIdentity?.petId ?? null
+  useEffect(() => {
+    if (screen !== 'photoUpload' || !lockPetId) return
+    let cancelled = false
+    void (async () => {
+      const auth = await getPremiumAccessToken()
+      if (!auth.token) return
+      const locked = await fetchPetInputsLocked({ petId: lockPetId, accessToken: auth.token })
+      if (!cancelled) setServerInputsLocked((current) => ({ ...current, [lockPetId]: locked }))
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [screen, lockPetId])
+  const photosLocked = resolvePetInputsLocked({
+    serverLocked: lockPetId ? serverInputsLocked[lockPetId] : null,
+    localMarker: intakeIdentity ? hasActiveGeneration(intakeIdentity.contentId) : false,
+    // 빈 자리는 잠기지 않는다 — 거기서 고르는 사진은 새 신원의 새 아이다.
+    hasPhotos: uploadedImages.length > 0,
+  })
   const cutoutImage = activePetSlot.cutoutImage
   const selectedTheme = activePetSlot.selectedTheme
 
@@ -1060,6 +1093,7 @@ export function EternalBeamApp() {
    * 업로드 신원(content_id)은 그대로 둔다.
    */
   const handleImagesUpload = async (files: File[]) => {
+    if (photosLocked) return // 생성이 시작된 아이 — 사진을 더할 수 없다
     const slotIndex = activePetSlotIndex
     const slot = petSlots[slotIndex]
     if (!slot) return
@@ -1080,10 +1114,9 @@ export function EternalBeamApp() {
     if (urls.length === 0) return
     // 이미 사진이 있으면 **같은 아이에 장을 더하는 것**이므로 신원을 그대로 쓴다.
     // 비어 있으면 새 인테이크다 — 남아 있던 신원을 물려받지 않는다.
-    const identity =
-      existing.length > 0
-        ? slot.intakeIdentity ?? readPhase1Intake(slotId) ?? beginPhase1Intake(slotId)
-        : beginPhase1Intake(slotId)
+    // (빈 자리에 남아 있던 신원이 잠긴 아이의 것이어도 마찬가지다 — 새 사진은 새
+    // content_id/pet_id 로 올라가고, 잠긴 아이는 손대지 않는다.)
+    const identity = identityForAddedPhotos(slotId, existing.length, slot.intakeIdentity)
     updatePetSlot(slotIndex, (current) => {
       const base = current.mediaKind === 'video' ? [] : current.uploadedImages
       const nextImages = [...base, ...urls].slice(0, MAX_IMAGES_PER_PET)
@@ -1102,6 +1135,7 @@ export function EternalBeamApp() {
   }
 
   const handleRemoveUploadedImage = (index: number) => {
+    if (photosLocked) return // 생성이 시작된 아이 — 사진을 뺄 수 없다
     const slotIndex = activePetSlotIndex
     const slot = petSlots[slotIndex]
     if (!slot) return
@@ -1127,6 +1161,7 @@ export function EternalBeamApp() {
    * 않는다. 바뀐 장만 다시 처리 대상(pending)으로 되돌린다.
    */
   const handleReplaceUploadedImage = async (index: number, file: File) => {
+    if (photosLocked) return // 생성이 시작된 아이 — 사진을 바꿀 수 없다
     const slotIndex = activePetSlotIndex
     const slot = petSlots[slotIndex]
     if (!slot || slot.mediaKind !== 'image') return
@@ -1579,9 +1614,19 @@ export function EternalBeamApp() {
                 onReplaceImage={handleReplaceUploadedImage}
                 imageStates={intakeImageStates}
                 maxImages={MAX_IMAGES_PER_PET}
+                photosLocked={photosLocked}
                 onContinue={() => {
                   // 사진이 없으면(= 영상만 있거나 비어 있으면) 처리 화면은 할 일이
                   // 없다. 버튼도 막혀 있지만, 진입 경로를 한 번 더 닫아 둔다.
+                  // 잠긴 아이(생성이 이미 시작됨)는 처리 화면이 아니라 미리보기로
+                  // 간다 — 거기서 만들던 영상을 이어 본다. 처리 화면으로 보내면
+                  // 서버가 PHASE1_LOCKED 로 답할 것이 뻔하다.
+                  if (
+                    intakeContinueTarget({ canStart: canStartIntake, photosLocked }) === 'preview'
+                  ) {
+                    navigateTo('preview')
+                    return
+                  }
                   if (!canStartIntake) return
                   navigateTo('aiProcessing')
                 }}

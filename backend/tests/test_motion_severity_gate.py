@@ -225,18 +225,20 @@ COSMETIC_VLM = {**VLM_MV_OK, "unintended_large_motion": "yes"}      # MICRO → 
 INTEGRITY_VLM = {**VLM_MV_OK, "same_pet_all_frames": "no"}           # 무결성 FAIL
 
 
-def test_gate_off_is_unchanged_for_a_cosmetic_only_fail(storage, monkeypatch):
+def test_business_contract_delivers_cosmetic_only_fail_even_with_legacy_gate_off(storage, monkeypatch):
     h, _ = _prepare_pipeline(monkeypatch, storage)
     install_mv_vlm(monkeypatch, COSMETIC_VLM)
     v = _build_motion(h, "BREATHING", [FakeVideoProvider("seedance", [GOOD()])])
-    assert v.status == mv.STATUS_FAILED and v.selected_candidate_id is None
+    assert v.status == mv.STATUS_COMPLETE and v.selected_candidate_id is not None
     cand = v.candidates[0]
-    assert cand.decision == "FAIL" and cand.selected is False
+    assert cand.decision == "FAIL" and cand.selected is True
     assert "severity" not in cand.qa_result, "게이트 off 에서는 qa_result 형식도 이전과 같다"
     assert cand.qa_result["reasons"] == ["vlm_unintended_large_motion"]
-    with pytest.raises(publication.MotionPublicationError) as e:
-        _run(publication.publish_breathing(user_id=USER, pet_id=PET, motion_version_id=v.id, sign_fn=lambda a: "https://x"))
-    assert e.value.code == "MOTION_FAILED_NOT_PUBLISHABLE"
+    assert cand.qa_result["business_qa"]["delivery_action"] == "DELIVER_WITH_ADVISORY"
+    pub = _run(publication.publish_breathing(
+        user_id=USER, pet_id=PET, motion_version_id=v.id, sign_fn=lambda a: "https://x"
+    ))
+    assert pub.selected_candidate_id == cand.id
 
 
 def test_gate_on_cosmetic_only_fail_is_selected_and_published_without_rewriting_decision(storage, monkeypatch):
@@ -246,13 +248,13 @@ def test_gate_on_cosmetic_only_fail_is_selected_and_published_without_rewriting_
     v = _build_motion(h, "BREATHING", [FakeVideoProvider("seedance", [GOOD()])])
     cand = v.candidates[0]
     assert cand.decision == "FAIL", "결정은 고쳐 쓰지 않는다"
-    assert v.status == mv.STATUS_FAILED, "버전 status 도 그대로다"
+    assert v.status == mv.STATUS_COMPLETE
     assert v.selected_candidate_id == cand.id and cand.selected is True
-    assert v.selection_reason.startswith("integrity_only gate")
+    assert v.selection_reason.startswith("best business-deliverable candidate")
     assert cand.qa_result["severity"]["publishable"] is True
     assert cand.qa_result["severity"]["integrity"] == []
     assert cand.qa_result["severity"]["cosmetic"] == ["vlm_unintended_large_motion"]
-    assert v.qa_summary["delivery"]["candidate_id"] == cand.id
+    assert v.qa_summary["business_qa"]["selected"]["delivery_action"] == "DELIVER_WITH_ADVISORY"
 
     pub = _run(publication.publish_breathing(user_id=USER, pet_id=PET, motion_version_id=v.id, sign_fn=lambda a: "https://storage.test/x"))
     assert pub.selected_candidate_id == cand.id
@@ -287,7 +289,7 @@ def test_gate_on_pass_candidate_still_wins_over_cosmetic(storage, monkeypatch):
     install_mv_vlm(monkeypatch, VLM_MV_OK)
     v = _build_motion(h, "BREATHING", [FakeVideoProvider("seedance", [GOOD()])])
     assert v.status == mv.STATUS_COMPLETE and v.candidates[0].decision == "PASS"
-    assert v.selection_reason.startswith("best PASS candidate")
+    assert v.selection_reason.startswith("best business-deliverable candidate")
 
 
 def test_publication_gate_rejects_integrity_fail_even_when_marked_selected(monkeypatch):

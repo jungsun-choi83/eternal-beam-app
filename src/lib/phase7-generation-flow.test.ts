@@ -4,10 +4,11 @@
  * 핵심 계약:
  *   * 레거시 /api/generate-pet-video 는 **한 번도** 호출되지 않는다.
  *   * PASS → 발행 재생. REVIEW → 발행 없는 재생(qa_decision 그대로).
- *   * FAIL → 던진다. 레거시 생성기로 폴백하지 않는다.
+ *   * 안전한 fallback → 고객 재생. 인프라/무자산 실패만 던진다.
  */
 
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -17,7 +18,11 @@ import {
   retryPhase7Generation,
   runPhase7Generation,
 } from "./phase7-generation-flow.ts";
-import { GenerationRunError, pollGenerationRun } from "./generation-run-api.ts";
+import {
+  GenerationRunError,
+  pollGenerationRun,
+  submitBusinessQAFeedback,
+} from "./generation-run-api.ts";
 
 type Handler = (url: string, init?: RequestInit) => { status?: number; body: unknown };
 
@@ -96,6 +101,34 @@ test("PASS: 실행 생성 → 폴링 → 발행 재생", async () => {
   assert.ok(urls.every((u) => !u.includes("generate-pet-video")), urls.join("\n"));
 });
 
+test("Phase 12 feedback records acceptance without starting another generation", async () => {
+  const { fetchFn, urls } = makeFetch((url, init) => {
+    assert.equal(url, `/api/v1/pet/generation-runs/${RUN_ID}/feedback`);
+    assert.equal(init?.method, "POST");
+    assert.deepEqual(JSON.parse(String(init?.body)), {
+      accepted: false,
+      complaints: ["IDENTITY"],
+      comment: "face changed",
+    });
+    return {
+      body: {
+        run_id: RUN_ID,
+        accepted: false,
+        complaints: ["IDENTITY"],
+        recorded: true,
+      },
+    };
+  });
+
+  const result = await submitBusinessQAFeedback(
+    RUN_ID,
+    { accepted: false, complaints: ["IDENTITY"], comment: "face changed" },
+    deps(fetchFn)
+  );
+  assert.equal(result.recorded, true);
+  assert.deepEqual(urls, [`/api/v1/pet/generation-runs/${RUN_ID}/feedback`]);
+});
+
 test("REVIEW: 발행 없이 개발 재생 — QA 상태 그대로", async () => {
   const { fetchFn, urls } = makeFetch((url, init) => {
     if (init?.method === "POST") return { status: 202, body: runBody("QUEUED") };
@@ -127,6 +160,138 @@ test("REVIEW: 발행 없이 개발 재생 — QA 상태 그대로", async () => 
   assert.equal(patch.qa_decision, "REVIEW");
   assert.equal(patch.published, false);
   assert.ok(urls.every((u) => !u.includes("generate-pet-video")));
+});
+
+test("DELIVERED_FALLBACK: legacy FAILED status still returns customer playback", async () => {
+  const { fetchFn, urls } = makeFetch((url, init) => {
+    if (init?.method === "POST") return { status: 202, body: runBody("QUEUED") };
+    if (url.endsWith("/playback")) {
+      return {
+        body: {
+          run_id: RUN_ID,
+          status: "FAILED",
+          terminal_state: "DELIVERED_FALLBACK",
+          published: false,
+          qa_decision: "FALLBACK",
+          url: "https://storage.test/u/canonical_cutout.png?token=fresh",
+          delivery_format: "canonical_local_idle",
+          background_baked: false,
+          fallback_tier: "CANONICAL_LOCAL_IDLE",
+        },
+      };
+    }
+    return {
+      body: runBody("FAILED", {
+        terminal_state: "DELIVERED_FALLBACK",
+        current_stage: "DELIVERY",
+        last_error: null,
+      }),
+    };
+  });
+
+  const outcome = await runPhase7Generation(
+    { petId: "pet_abc", contentId: "cid-fallback", poll: { sleep: async () => {} } },
+    deps(fetchFn)
+  );
+  assert.equal(outcome.run.terminal_state, "DELIVERED_FALLBACK");
+  assert.equal(outcome.playback.qa_decision, "FALLBACK");
+  assert.equal(outcome.playback.delivery_format, "canonical_local_idle");
+  const patch = phase7PipelinePatch(outcome);
+  assert.equal(patch.idle_video_url, "", "Canonical image must not be passed to video playback");
+  assert.equal(
+    patch.cutout_display_url,
+    "https://storage.test/u/canonical_cutout.png?token=fresh"
+  );
+  assert.equal(patch.dog_only_nobg_url, patch.cutout_display_url);
+  assert.ok(urls.every((u) => !u.includes("generate-pet-video")));
+});
+
+test("DELIVERED_FALLBACK with completed status renders the returned canonical URL", async () => {
+  const { fetchFn } = makeFetch((url, init) => {
+    if (init?.method === "POST") return { status: 202, body: runBody("QUEUED") };
+    if (url.endsWith("/playback")) {
+      return {
+        body: {
+          run_id: RUN_ID,
+          status: "PUBLISHED",
+          terminal_state: "DELIVERED_FALLBACK",
+          published: false,
+          qa_decision: "FALLBACK",
+          url: "https://storage.test/u/canonical_cutout.png?token=fresh",
+          delivery_format: "canonical_local_idle",
+          background_baked: false,
+        },
+      };
+    }
+    return {
+      body: runBody("PUBLISHED", {
+        terminal_state: "DELIVERED_FALLBACK",
+        current_stage: "DELIVERY",
+        last_error: null,
+      }),
+    };
+  });
+
+  const outcome = await runPhase7Generation(
+    { petId: "pet_abc", contentId: "cid-fallback-ok", poll: { sleep: async () => {} } },
+    deps(fetchFn)
+  );
+  const patch = phase7PipelinePatch(outcome);
+  assert.equal(patch.cutout_display_url, "https://storage.test/u/canonical_cutout.png?token=fresh");
+  assert.equal(patch.idle_video_url, "");
+  assert.equal(patch.published, false);
+});
+
+test("no generated asset and no fallback: FAILED is an error and playback is never requested", async () => {
+  const { fetchFn, urls } = makeFetch((_url, init) => {
+    if (init?.method === "POST") return { status: 202, body: runBody("QUEUED") };
+    return {
+      body: runBody("FAILED", {
+        terminal_state: null,
+        last_error: { code: "NO_SAFE_FALLBACK", message: "no asset" },
+      }),
+    };
+  });
+
+  await assert.rejects(
+    runPhase7Generation(
+      { petId: "pet_abc", contentId: "cid-no-fallback", poll: { sleep: async () => {} } },
+      deps(fetchFn)
+    ),
+    (e: unknown) => (e as { code?: string }).code === "NO_SAFE_FALLBACK"
+  );
+  assert.ok(urls.every((u) => !u.endsWith("/playback")));
+});
+
+test("canonical still fallback is explicitly marked for static cutout rendering", () => {
+  const patch = phase7PipelinePatch({
+    run: runBody("FAILED", { terminal_state: "DELIVERED_FALLBACK" }),
+    playback: {
+      run_id: RUN_ID,
+      status: "FAILED",
+      published: false,
+      qa_decision: "FALLBACK",
+      url: "https://storage.test/u/canonical_raw.jpg?token=fresh",
+      delivery_format: "canonical_still",
+      background_baked: false,
+      asset_kind: "canonical_image",
+    },
+  });
+  assert.equal(patch.idle_video_url, "");
+  assert.equal(patch.cutout_display_url, "https://storage.test/u/canonical_raw.jpg?token=fresh");
+  assert.equal(patch.delivery_format, "canonical_still");
+});
+
+test("canonical fallback display uses image paths, with still mode wired on both screens", () => {
+  const display = readFileSync("src/components/memorial/pet-idle-display.tsx", "utf8");
+  const preview = readFileSync("src/components/memorial/preview-screen.tsx", "utf8");
+  const device = readFileSync(
+    "src/components/memorial/memorial-device-play-screen.tsx",
+    "utf8"
+  );
+  assert.match(display, /if \(staticCutout\)[\s\S]*?<img/);
+  assert.match(preview, /staticCutout=\{pipeline\?\.delivery_format === "canonical_still"\}/);
+  assert.match(device, /staticCutout=\{pipeline\?\.delivery_format === "canonical_still"\}/);
 });
 
 test("REVIEW 인데 리졸버가 발행/PASS 를 주장하면 계약 위반으로 거절", async () => {
@@ -472,4 +637,25 @@ test("Retry: 서버가 여전히 FAILED 를 돌려주면(재시도 불가) 폴�
     (e: GenerationRunError) => e.code === "MOTION_QA_FAIL"
   );
   assert.equal(gets, 0);
+});
+
+test("Phase 12 cohort preview exposes the existing feedback API without generation side effects", () => {
+  const source = readFileSync(
+    new URL("../components/memorial/preview-screen.tsx", import.meta.url),
+    "utf8"
+  );
+  const qaSource = readFileSync(
+    new URL("../components/memorial/motion-qa-feedback.tsx", import.meta.url),
+    "utf8"
+  );
+  assert.match(source, /<MotionQAFeedback/);
+  assert.match(qaSource, /data-business-qa-feedback/);
+  assert.match(source, /submitBusinessQAFeedback\(runState\.run_id/);
+  assert.match(qaSource, /\["IDENTITY", "ANATOMY", "MOTION"\]/);
+  // Internal QA controls never render in a production build, and only by
+  // explicit opt-in (VITE_INTERNAL_MOTION_QA=1) in a dev build.
+  assert.match(qaSource, /if \(!enrolled \|\| !isInternalMotionQAEnabled\(\)\) return null;/);
+  assert.match(qaSource, /if \(!import\.meta\.env\.DEV \|\| import\.meta\.env\.PROD\) return false;/);
+  assert.match(qaSource, /VITE_INTERNAL_MOTION_QA/);
+  assert.doesNotMatch(source, /handleUserTestFeedback[\s\S]{0,800}startGenerationRun/);
 });

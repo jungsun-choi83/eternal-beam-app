@@ -24,18 +24,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Any, Callable, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
 KEYFRAME_BUILDER_VERSION = "keyframe-builder-v1"
-KEYFRAME_QA_VERSION = "keyframe-qa-v1"
+KEYFRAME_QA_VERSION = "keyframe-qa-v2"
 
 STATUS_BUILDING = "building"
 STATUS_COMPLETE = "complete"
@@ -57,6 +58,9 @@ CANONICAL_REUSE_PROVIDER = "canonical_reuse"
 #: Canonical → 키프레임 재사용을 허용하는 역할. BREATHING 전용 요구사항이라
 #: NEUTRAL_IDLE 하나뿐이다 — 다른 역할(포즈가 바뀌는 LIE/SLEEP 포함)은 Canonical
 #: 자체가 그 포즈를 절대 보여줄 수 없으므로 대상이 아니다.
+#: motion-spec-v16 부터 홈(BREATHING)은 STAND_READY 에서 시작하고 generation-run 은
+#: allow_canonical_reuse 를 더 이상 켜지 않는다 — STAND_READY 는 의도적으로 여기
+#: 없다: 홈은 항상 생성된 서기 스틸이지 정본의 별칭이 아니다.
 _CANONICAL_REUSABLE_ROLES = ("NEUTRAL_IDLE",)
 
 
@@ -105,7 +109,7 @@ def _allow_review_canonical() -> bool:
 
 
 def analyzer_versions() -> dict[str, Any]:
-    from . import action_keyframe_spec, canonical_pet_service
+    from . import action_keyframe_spec, canonical_pet_service, qa_evidence_reuse, vlm_escalation
 
     return {
         **canonical_pet_service.analyzer_versions(),
@@ -113,6 +117,8 @@ def analyzer_versions() -> dict[str, Any]:
         "keyframe_spec": action_keyframe_spec.KEYFRAME_SPEC_VERSION,
         "keyframe_prompt": action_keyframe_spec.KEYFRAME_PROMPT_VERSION,
         "keyframe_qa": KEYFRAME_QA_VERSION,
+        "vlm_escalation": vlm_escalation.VLM_ESCALATION_VERSION,
+        "qa_evidence_reuse": qa_evidence_reuse.QA_EVIDENCE_REUSE_VERSION,
     }
 
 
@@ -127,7 +133,12 @@ def analyzer_versions() -> dict[str, Any]:
 #: 여기 적힌 키만 비교에서 빠진다. 나머지(빌더/스펙/프롬프트/프로바이더/정본·세트·
 #: 신원 분석기)는 전부 생성에 영향을 준다고 본다 — 모르는 키의 기본값은 "다시
 #: 만든다"여야 조용히 낡은 자산을 재사용하는 실수가 생기지 않는다.
-QA_ONLY_VERSION_KEYS = ("keyframe_qa", "canonical_qa")
+QA_ONLY_VERSION_KEYS = (
+    "keyframe_qa",
+    "canonical_qa",
+    "vlm_escalation",
+    "qa_evidence_reuse",
+)
 
 
 def generation_versions(stamp: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -138,6 +149,93 @@ def generation_versions(stamp: Optional[dict[str, Any]]) -> dict[str, Any]:
 # ══════════════════════════════════════════════════════════════════════════
 # 키프레임 QA — 정본 QA + 포즈
 # ══════════════════════════════════════════════════════════════════════════
+
+_KEYFRAME_VLM_EVIDENCE_KEYS = (
+    "pose_matches",
+    "pose_confidence",
+    "body_orientation_ok",
+    "required_regions_visible",
+)
+
+
+def _worst_status(values: Sequence[str]) -> str:
+    normalized = [str(value or "unknown") for value in values]
+    if "FAIL" in normalized:
+        return "FAIL"
+    if "REVIEW" in normalized or "unknown" in normalized:
+        return "REVIEW"
+    return "PASS"
+
+
+def _keyframe_business_evidence(
+    base: dict[str, Any],
+    vlm_qa: Optional[dict[str, Any]],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Separate Keyframe business domains while preserving legacy checks."""
+
+    vlm = vlm_qa or {}
+
+    def value(key: str) -> str:
+        return str(vlm.get(key) or "unknown").lower()
+
+    canonical_signals = dict(base.get("business_signals") or {})
+    signals = {
+        "keyframe_face_head_identity": str(
+            canonical_signals.get("canonical_face_head_identity") or "unknown"
+        ),
+        "keyframe_ear_muzzle_identity": str(
+            canonical_signals.get("canonical_ear_muzzle_identity") or "unknown"
+        ),
+        "keyframe_distinctive_markings_identity": str(
+            canonical_signals.get("canonical_distinctive_markings_identity") or "unknown"
+        ),
+        "keyframe_persistent_morphology_identity": str(
+            canonical_signals.get("canonical_persistent_morphology_identity") or "unknown"
+        ),
+        "keyframe_cutout_integrity": str(
+            canonical_signals.get("canonical_cutout_integrity") or "unknown"
+        ),
+    }
+
+    pose_contradiction = value("pose_matches") == "no" or value("body_orientation_ok") == "no"
+    if pose_contradiction:
+        # An explicit VLM ``no`` is the existing definition of a wrong
+        # required pose/orientation. Confidence is retained as evidence, but
+        # unlike visibility uncertainty this remains a hard contradiction.
+        signals["keyframe_pose_integrity"] = "FAIL"
+    elif value("pose_matches") == "yes" and value("body_orientation_ok") == "yes":
+        signals["keyframe_pose_integrity"] = "PASS"
+    else:
+        signals["keyframe_pose_integrity"] = "REVIEW"
+
+    signals["keyframe_visibility"] = (
+        "PASS" if value("required_regions_visible") == "yes" else "REVIEW"
+    )
+
+    same_pet = value("same_pet")
+    same_pet_confidence = value("same_pet_confidence")
+    presentation_only = value("presentation_difference_only") == "yes"
+    if same_pet == "yes":
+        same_pet_status = "PASS"
+    elif same_pet == "no" and same_pet_confidence == "high" and not presentation_only:
+        same_pet_status = "FAIL"
+    else:
+        same_pet_status = "REVIEW"
+
+    identity_signals = [
+        same_pet_status,
+        signals["keyframe_face_head_identity"],
+        signals["keyframe_ear_muzzle_identity"],
+        signals["keyframe_distinctive_markings_identity"],
+        signals["keyframe_persistent_morphology_identity"],
+    ]
+    domains = {
+        "identity_continuity": _worst_status(identity_signals),
+        "pose_correctness": signals["keyframe_pose_integrity"],
+        "anatomy": str((base.get("checks") or {}).get("vlm_anatomy") or "unknown"),
+        "visibility": signals["keyframe_visibility"],
+    }
+    return signals, domains
 
 
 def evaluate_keyframe_candidate(
@@ -216,6 +314,13 @@ def evaluate_keyframe_candidate(
     else:
         decision = canonical_qa.REVIEW
 
+    business_signals, business_domains = _keyframe_business_evidence(base, vlm_qa)
+    vlm_evidence = dict(base.get("vlm") or {})
+    if vlm_qa:
+        for key in _KEYFRAME_VLM_EVIDENCE_KEYS:
+            if key in vlm_qa:
+                vlm_evidence[key] = vlm_qa[key]
+
     return {
         "qa_version": KEYFRAME_QA_VERSION,
         "base_qa_version": base["qa_version"],
@@ -229,8 +334,106 @@ def evaluate_keyframe_candidate(
             "matches": v("pose_matches"),
             "confidence": v("pose_confidence"),
         },
-        "vlm": base.get("vlm"),
+        "business_signals": business_signals,
+        "business_domains": business_domains,
+        "identity_reference": {
+            "primary": "approved_canonical" if canonical_signature else "original_references",
+            "canonical_signature_used": bool(canonical_signature),
+            "secondary_reference_count": len(reference_signatures),
+        },
+        "vlm": vlm_evidence or None,
     }
+
+
+def _evaluate_keyframe_with_conditional_vlm(
+    *,
+    candidate_bytes: bytes,
+    vlm_ref_images: list[tuple[bytes, str]],
+    cutout_rgba: Optional[np.ndarray],
+    profile: Any,
+    canonical_signature: Optional[dict[str, Any]],
+    reference_signatures: list[dict[str, Any]],
+    spec: Any,
+    cache_mode: Optional[str] = None,
+    inherited_evidence: Sequence[Mapping[str, Any]] = (),
+) -> dict[str, Any]:
+    """Run deterministic Keyframe QA first, escalating the existing VLM only if needed."""
+
+    from . import canonical_qa, qa_evidence_reuse, vlm_escalation, vlm_identity
+
+    qa_started = time.perf_counter()
+    deterministic = evaluate_keyframe_candidate(
+        cutout_rgba=cutout_rgba,
+        profile=profile,
+        canonical_signature=canonical_signature,
+        reference_signatures=reference_signatures,
+        spec=spec,
+        vlm_qa=None,
+    )
+    escalation = vlm_escalation.should_call_vlm(
+        stage="KEYFRAME",
+        qa_result=deterministic,
+        request_kind="KEYFRAME",
+        pose_required=bool(getattr(spec, "required_pose", None)),
+        force_call=(
+            vlm_identity.qa_cache_mode(cache_mode) == vlm_identity.QA_CACHE_REFRESH
+        ),
+        inherited_evidence=inherited_evidence,
+    )
+    should_call = escalation["decision"] == vlm_escalation.CALL
+    kwargs = {
+        "required_pose": spec.required_pose,
+        "required_visibility": spec.required_visibility,
+        "tasks": escalation.get("requested_tasks") or (),
+        "unresolved_questions": escalation.get("unresolved_questions") or (),
+        "evidence_context": {
+            "stage_qa_version": KEYFRAME_QA_VERSION,
+            "base_qa_version": canonical_qa.CANONICAL_QA_VERSION,
+            "inherited_fingerprints": [
+                str(item.get("fingerprint"))
+                for item in inherited_evidence
+                if item.get("valid") is True and item.get("fingerprint")
+            ]
+        },
+    }
+    if cache_mode:
+        kwargs["cache_mode"] = cache_mode
+    vlm_qa = (
+        vlm_identity.qa_action_keyframe(
+            candidate_bytes,
+            vlm_ref_images,
+            **kwargs,
+        )
+        if should_call
+        else None
+    )
+    qa = (
+        evaluate_keyframe_candidate(
+            cutout_rgba=cutout_rgba,
+            profile=profile,
+            canonical_signature=canonical_signature,
+            reference_signatures=reference_signatures,
+            spec=spec,
+            vlm_qa=vlm_qa,
+        )
+        if should_call
+        else deterministic
+    )
+    qa["vlm_escalation"] = vlm_escalation.finalize_vlm_escalation(
+        escalation, called=should_call, result=vlm_qa
+    )
+    qa_evidence_reuse.attach_receipt(
+        qa,
+        stage="KEYFRAME",
+        escalation=escalation,
+        vlm_result=vlm_qa,
+        inherited=inherited_evidence,
+    )
+    qa["shadow_telemetry"] = {
+        "version": "business-qa-shadow-v1",
+        "qa_time_ms": round((time.perf_counter() - qa_started) * 1000.0, 3),
+    }
+    return qa
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -416,22 +619,24 @@ async def _canonical_neutral_idle_reuse_candidate(
     pid: str,
     uid: str,
     input_ids: list[str],
+    inherited_evidence: Sequence[Mapping[str, Any]] = (),
 ) -> Optional[dict[str, Any]]:
     """
     BREATHING → NEUTRAL_IDLE 전용 재사용 판정.
 
-    승인된 Canonical(PASS)이 **독립된** 신뢰 레퍼런스 사진들과 대조해 현재
+    승인된 Canonical이 **독립된** 신뢰 레퍼런스 사진들과 대조해 현재
     NEUTRAL_IDLE 계약(신원/포즈/방향/가시성)을 만족하면, 새 이미지 생성 없이
     Canonical 의 raw/cutout/plate 를 그대로 별칭하는 후보 행을 돌려준다.
     부적합하면 None — 호출부는 평소 생성 경로로 그대로 폴백한다.
 
     Canonical PASS 만으로는 부족하다: 여기서 돌리는 QA 는 현재 키프레임 QA
     (evaluate_keyframe_candidate) 그 자체이며, pose_matches/body_orientation_ok/
-    required_regions_visible 이 전부 확언돼야 PASS 다 (canonical 자신을 자신의
+    required_regions_visible 의 legacy 결과는 그대로 보존하고 business-v1 이
+    전달/재시도 권한을 결정한다 (canonical 자신을 자신의
     신원 레퍼런스로 쓰는 순환논리를 피하려고 canonical_signature 는 넘기지
     않는다 — 독립된 레퍼런스 사진의 signature 만 쓴다).
     """
-    from . import canonical_pet_service, canonical_qa, clean_plate_service, vlm_identity
+    from . import business_qa, canonical_pet_service, canonical_qa, clean_plate_service, vlm_identity
     from . import action_keyframe_spec
 
     if spec.role not in _CANONICAL_REUSABLE_ROLES:
@@ -447,21 +652,23 @@ async def _canonical_neutral_idle_reuse_candidate(
     if clean_plate_service.plate_required() and not alias_plate_object_path:
         return None
 
-    vlm_qa = vlm_identity.qa_action_keyframe(
-        anchor_bytes,
-        secondary_vlm_images,
-        required_pose=spec.required_pose,
-        required_visibility=spec.required_visibility,
-    )
-    qa = evaluate_keyframe_candidate(
+    qa = _evaluate_keyframe_with_conditional_vlm(
+        candidate_bytes=anchor_bytes,
+        vlm_ref_images=secondary_vlm_images,
         cutout_rgba=anchor_cutout_rgba,
         profile=profile,
         canonical_signature=None,
         reference_signatures=reference_signatures,
         spec=spec,
-        vlm_qa=vlm_qa,
+        inherited_evidence=inherited_evidence,
     )
-    if qa["decision"] != canonical_qa.PASS:
+    business_qa.attach_business_result(
+        qa,
+        attempt_number=1,
+        request_kind="KEYFRAME",
+        fallback_available=True,
+    )
+    if not business_qa.is_deliverable(qa):
         return None
 
     return {
@@ -521,6 +728,7 @@ async def build_keyframe(
     """
     from . import (
         action_keyframe_spec,
+        business_qa,
         canonical_image_providers,
         canonical_pet_service,
         canonical_qa,
@@ -528,6 +736,7 @@ async def build_keyframe(
         pet_identity_service,
         pet_reference_service,
         pet_reference_set_service,
+        qa_evidence_reuse,
         supabase_assets,
         vlm_identity,
     )
@@ -617,6 +826,15 @@ async def build_keyframe(
     cutout = cutout_fn or canonical_pet_service._default_cutout_fn
     cid = pid[4:] if pid.startswith("pet_") else pid
 
+    # ── 배경: 이 정본 계보가 고른 **그** 배경을 그대로 쓴다 ────────────────
+    # 키프레임은 배경을 다시 고르지 않는다 — 정본 output_spec 의 결정을 읽어
+    # 플레이트 색과 프롬프트 톤 양쪽에 적용한다 (결정이 없는 옛 정본은 기본 회색).
+    from . import pet_background
+
+    background = pet_background.from_output_spec(getattr(canonical, "output_spec", None))
+    background_tone = pet_background.prompt_tone(background.get("background_label"))
+    plate_background = pet_background.background_rgb(background)
+
     def _obj(bucket: Optional[str], path: Optional[str]):
         return SimpleNamespace(bucket=bucket or "", object_path=path or "", mime_type="image/png")
 
@@ -683,6 +901,7 @@ async def build_keyframe(
                     "canonical_version_id": canonical.id,
                     "canonical_candidate_id": anchor.id,
                 },
+                background=plate_background,
             )
         except clean_plate_service.CleanPlateError as e:
             plate_error = f"{e.code}: {e.message}"
@@ -752,8 +971,36 @@ async def build_keyframe(
         if sig:
             reference_signatures.append(sig)
 
+    canonical_lineage = {
+        "canonical_version_id": canonical.id,
+        "canonical_version": canonical.version,
+        "canonical_candidate_id": anchor.id,
+        "identity_profile_version": getattr(profile, "version", None),
+        "reference_set_version": getattr(refset, "version", None),
+        "morphology_profile_version": getattr(refset, "morphology_profile_version", None),
+    }
+    inherited_evidence = [
+        qa_evidence_reuse.profile_evidence(
+            identity_profile=profile,
+            reference_set=refset,
+            expected_identity_profile_version=canonical.identity_profile_version,
+            expected_reference_set_version=canonical.reference_set_version,
+        ),
+        qa_evidence_reuse.approved_asset_evidence(
+            source_stage="CANONICAL",
+            qa_result=anchor.qa_result,
+            lineage=canonical_lineage,
+            expected_lineage={
+                **canonical_lineage,
+                "identity_profile_version": canonical.identity_profile_version,
+                "reference_set_version": canonical.reference_set_version,
+            },
+            expected_qa_version=canonical_qa.CANONICAL_QA_VERSION,
+        ),
+    ]
+
     prompt = action_keyframe_spec.build_keyframe_prompt(
-        spec, (profile.visual_identity if profile else {})
+        spec, (profile.visual_identity if profile else {}), background_tone=background_tone
     )
 
     versions_stamp = {
@@ -858,6 +1105,7 @@ async def build_keyframe(
             pid=pid,
             uid=uid,
             input_ids=input_ids,
+            inherited_evidence=inherited_evidence,
         )
         if reuse_row is not None:
             if not await canonical_pet_service._insert(_candidates_table(), _MOCK_CANDIDATES, reuse_row):
@@ -883,13 +1131,23 @@ async def build_keyframe(
                 "selected_candidate_id": reuse_row["id"],
                 "selection_reason": (
                     f"reused canonical candidate {anchor.id} for NEUTRAL_IDLE — "
-                    "eligibility QA PASS, no keyframe provider call"
+                    "business-deliverable eligibility, no keyframe provider call"
                 ),
                 "qa_summary": {
                     "candidate_count": 1,
-                    "decisions": {"PASS": 1, "REVIEW": 0, "FAIL": 0, "ERROR": 0},
+                    "decisions": {
+                        decision: int(reuse_row["decision"] == decision)
+                        for decision in ("PASS", "REVIEW", "FAIL", "ERROR")
+                    },
                     "policy": policy,
                     "reused_from_canonical": True,
+                    "business_qa": {
+                        "version": business_qa.BUSINESS_QA_VERSION,
+                        "selection_policy": business_qa.BEST_AVAILABLE_POLICY_VERSION,
+                        "candidate_budget": business_qa.automatic_candidate_budget("KEYFRAME"),
+                        "selected": dict((reuse_row.get("qa_result") or {}).get("business_qa") or {}),
+                        "selection_priority": business_qa.candidate_selection_priority(reuse_row),
+                    },
                 },
                 "completed_at": _now_iso(),
             }
@@ -919,7 +1177,10 @@ async def build_keyframe(
     ]
 
     candidates = await _candidate_rows(keyframe_id) if resumable else []
-    passes = sum(1 for candidate in candidates if candidate.get("decision") == "PASS")
+    passes = sum(
+        1 for candidate in candidates
+        if business_qa.is_deliverable(candidate.get("qa_result") or {})
+    )
     contract_violation = any(
         bool((candidate.get("generation_metadata") or {}).get("contract_violation"))
         for candidate in candidates
@@ -930,7 +1191,10 @@ async def build_keyframe(
         if not limit or len(prompt) <= limit:
             return prompt, "full"
         compact = action_keyframe_spec.build_compact_keyframe_prompt(
-            spec, (profile.visual_identity if profile else {}), max_chars=limit
+            spec,
+            (profile.visual_identity if profile else {}),
+            max_chars=limit,
+            background_tone=background_tone,
         )
         if len(compact) <= limit:
             return compact, "compact"
@@ -976,7 +1240,7 @@ async def build_keyframe(
             return
 
         for attempt in range(1, max_candidates + 1):
-            if passes >= policy["stop_after_passes"]:
+            if passes >= policy["stop_after_passes"] or not business_qa.may_generate_next_candidate(candidates):
                 return
             existing = next(
                 (
@@ -1140,7 +1404,9 @@ async def build_keyframe(
                 # 남고, Phase 6 에는 그림자/배경이 빠진 이 파생물만 간다.
                 if clean_plate_service.plate_enabled():
                     try:
-                        plate_bytes, plate_meta = clean_plate_service.build_clean_plate(cut_bytes)
+                        plate_bytes, plate_meta = clean_plate_service.build_clean_plate(
+                            cut_bytes, plate_background
+                        )
                         plate_path = clean_plate_service.plate_object_path(raw_path)
                         await supabase_assets.upload_asset_to_storage(
                             plate_path, plate_bytes, "image/png"
@@ -1154,19 +1420,23 @@ async def build_keyframe(
                     except Exception:
                         logger.exception("키프레임 클린 플레이트 생성 실패")
 
-            vlm_qa = vlm_identity.qa_action_keyframe(
-                result.image_bytes,
-                vlm_ref_images,
-                required_pose=spec.required_pose,
-                required_visibility=spec.required_visibility,
-            )
-            qa = evaluate_keyframe_candidate(
+            qa = _evaluate_keyframe_with_conditional_vlm(
+                candidate_bytes=result.image_bytes,
+                vlm_ref_images=vlm_ref_images,
                 cutout_rgba=cutout_rgba,
                 profile=profile,
                 canonical_signature=canonical_signature,
                 reference_signatures=reference_signatures,
                 spec=spec,
-                vlm_qa=vlm_qa,
+                inherited_evidence=inherited_evidence,
+            )
+            business_qa.attach_business_result(
+                qa,
+                attempt_number=business_qa.automatic_attempt_number(
+                    candidates, current_candidate_id=cand_id
+                ),
+                request_kind="KEYFRAME",
+                fallback_available=True,
             )
             cand_row["qa_result"] = qa
             cand_row["decision"] = qa["decision"]
@@ -1184,7 +1454,7 @@ async def build_keyframe(
                     "decision": qa["decision"],
                 },
             )
-            if qa["decision"] == canonical_qa.PASS:
+            if business_qa.is_deliverable(qa):
                 passes += 1
 
     await run_provider(resolved_providers[0], policy["max_primary"], "primary")
@@ -1193,11 +1463,12 @@ async def build_keyframe(
         await run_provider(resolved_providers[1], policy["max_fallback"], "fallback")
 
     ranked = _rank_candidates(candidates)
-    selected = ranked[0] if ranked and ranked[0]["decision"] == canonical_qa.PASS else None
+    selected = business_qa.best_available_candidate(ranked)
+    fallback_receipt = business_qa.fallback_receipt(ranked)
     if selected:
         status = STATUS_COMPLETE
         selection_reason = (
-            f"best PASS candidate: {selected['provider']} attempt {selected['attempt']}, "
+            f"best business-deliverable candidate: {selected['provider']} attempt {selected['attempt']}, "
             f"identity_similarity={selected['qa_result'].get('identity_similarity')}"
         )
         await canonical_pet_service._update(
@@ -1226,9 +1497,12 @@ async def build_keyframe(
                     )
                 except Exception:
                     logger.warning("키프레임 대장 기록 실패 (path=%s)", path, exc_info=True)
+    elif fallback_receipt:
+        status = STATUS_REVIEW
+        selection_reason = "business-v1 automatic budget exhausted — fallback required"
     elif any(c["decision"] == canonical_qa.REVIEW for c in candidates):
         status = STATUS_REVIEW
-        selection_reason = "no PASS candidate — human review required"
+        selection_reason = "no business-deliverable candidate — human review required"
     else:
         status = STATUS_FAILED
         selection_reason = "no usable candidate"
@@ -1244,6 +1518,18 @@ async def build_keyframe(
                 for d in ("PASS", "REVIEW", "FAIL", "ERROR")
             },
             "policy": policy,
+            "business_qa": {
+                "version": business_qa.BUSINESS_QA_VERSION,
+                "selection_policy": business_qa.BEST_AVAILABLE_POLICY_VERSION,
+                "candidate_budget": business_qa.automatic_candidate_budget("KEYFRAME"),
+                "selected": (
+                    dict((selected.get("qa_result") or {}).get("business_qa") or {})
+                    if selected else (dict(fallback_receipt) if fallback_receipt else None)
+                ),
+                "selection_priority": (
+                    business_qa.candidate_selection_priority(selected) if selected else None
+                ),
+            },
         },
         "completed_at": _now_iso(),
     }
@@ -1269,12 +1555,15 @@ async def reevaluate_keyframe_candidate(
     """
     from . import (
         action_keyframe_spec,
+        business_qa,
         canonical_pet_service,
         canonical_qa,
         pet_identity_service,
         pet_reference_service,
         pet_reference_set_service,
+        qa_evidence_reuse,
         vlm_identity,
+        vlm_escalation,
     )
 
     uid = (user_id or "").strip()
@@ -1307,6 +1596,16 @@ async def reevaluate_keyframe_candidate(
     if (
         previous_qa.get("qa_version") == KEYFRAME_QA_VERSION
         and previous_qa.get("base_qa_version") == canonical_qa.CANONICAL_QA_VERSION
+        and business_qa.receipt(previous_qa) is not None
+        and (
+            (
+                (previous_qa.get("vlm_escalation") or {}).get("version")
+                == vlm_escalation.VLM_ESCALATION_VERSION
+                and (previous_qa.get("vlm_escalation") or {}).get("decision") == "SKIP"
+            )
+            or (previous_qa.get("vlm") or {}).get("source")
+            in {vlm_identity.VLM_KEYFRAME_QA_VERSION, vlm_identity.VLM_TARGETED_QA_VERSION}
+        )
         and not force_refresh
     ):
         return _to_keyframe(kf_row, candidates, deduplicated=True)
@@ -1380,17 +1679,52 @@ async def reevaluate_keyframe_candidate(
             if sig:
                 reference_signatures.append(sig)
 
-    vlm_qa = vlm_identity.qa_action_keyframe(
-        raw_bytes, vlm_ref_images, required_pose=spec.required_pose, required_visibility=spec.required_visibility,
-        **({"cache_mode": vlm_cache_mode} if vlm_cache_mode else {}),
-    )
-    qa = evaluate_keyframe_candidate(
+    canonical_lineage = {
+        "canonical_version_id": canonical.id,
+        "canonical_version": canonical.version,
+        "canonical_candidate_id": getattr(anchor, "id", None),
+        "identity_profile_version": getattr(profile, "version", None),
+        "reference_set_version": getattr(refset, "version", None),
+        "morphology_profile_version": getattr(refset, "morphology_profile_version", None),
+    }
+    inherited_evidence = [
+        qa_evidence_reuse.profile_evidence(
+            identity_profile=profile,
+            reference_set=refset,
+            expected_identity_profile_version=canonical.identity_profile_version,
+            expected_reference_set_version=canonical.reference_set_version,
+        ),
+        qa_evidence_reuse.approved_asset_evidence(
+            source_stage="CANONICAL",
+            qa_result=getattr(anchor, "qa_result", {}) or {},
+            lineage=canonical_lineage,
+            expected_lineage={
+                **canonical_lineage,
+                "identity_profile_version": canonical.identity_profile_version,
+                "reference_set_version": canonical.reference_set_version,
+            },
+            expected_qa_version=canonical_qa.CANONICAL_QA_VERSION,
+        ),
+    ]
+
+    qa = _evaluate_keyframe_with_conditional_vlm(
+        candidate_bytes=raw_bytes,
+        vlm_ref_images=vlm_ref_images,
         cutout_rgba=cutout_rgba,
         profile=profile,
         canonical_signature=canonical_signature,
         reference_signatures=reference_signatures,
         spec=spec,
-        vlm_qa=vlm_qa,
+        cache_mode=vlm_cache_mode,
+        inherited_evidence=inherited_evidence,
+    )
+    business_qa.attach_business_result(
+        qa,
+        attempt_number=business_qa.automatic_attempt_number(
+            candidates, current_candidate_id=cand_id
+        ),
+        request_kind="KEYFRAME",
+        fallback_available=True,
     )
 
     metadata = dict(candidate.get("generation_metadata") or {})
@@ -1407,7 +1741,8 @@ async def reevaluate_keyframe_candidate(
     candidate.update({"qa_result": qa, "decision": qa["decision"], "generation_metadata": metadata})
 
     ranked = _rank_candidates(candidates)
-    selected = ranked[0] if ranked and ranked[0]["decision"] == canonical_qa.PASS else None
+    selected = business_qa.best_available_candidate(ranked)
+    fallback_receipt = business_qa.fallback_receipt(ranked)
     for row in candidates:
         should_select = bool(selected and str(row.get("id")) == str(selected.get("id")))
         if bool(row.get("selected")) != should_select:
@@ -1419,7 +1754,7 @@ async def reevaluate_keyframe_candidate(
     if selected:
         status = STATUS_COMPLETE
         selection_reason = (
-            f"best PASS candidate after {KEYFRAME_QA_VERSION}: "
+            f"best business-deliverable candidate after {KEYFRAME_QA_VERSION}: "
             f"{selected['provider']} attempt {selected['attempt']}"
         )
         provenance = {
@@ -1445,9 +1780,12 @@ async def reevaluate_keyframe_candidate(
                     )
                 except Exception:
                     logger.warning("키프레임 재평가 대장 기록 실패 (path=%s)", path, exc_info=True)
+    elif fallback_receipt:
+        status = STATUS_REVIEW
+        selection_reason = "business-v1 automatic budget exhausted — fallback required"
     elif any(c["decision"] == canonical_qa.REVIEW for c in candidates):
         status = STATUS_REVIEW
-        selection_reason = "no PASS candidate — human review required"
+        selection_reason = "no business-deliverable candidate — human review required"
     else:
         status = STATUS_FAILED
         selection_reason = "no usable candidate"
@@ -1462,6 +1800,18 @@ async def reevaluate_keyframe_candidate(
                 d: sum(1 for c in candidates if c["decision"] == d) for d in ("PASS", "REVIEW", "FAIL", "ERROR")
             },
             "policy": dict((kf_row.get("qa_summary") or {}).get("policy") or {}),
+            "business_qa": {
+                "version": business_qa.BUSINESS_QA_VERSION,
+                "selection_policy": business_qa.BEST_AVAILABLE_POLICY_VERSION,
+                "candidate_budget": business_qa.automatic_candidate_budget("KEYFRAME"),
+                "selected": (
+                    dict((selected.get("qa_result") or {}).get("business_qa") or {})
+                    if selected else (dict(fallback_receipt) if fallback_receipt else None)
+                ),
+                "selection_priority": (
+                    business_qa.candidate_selection_priority(selected) if selected else None
+                ),
+            },
         },
         "completed_at": _now_iso(),
     }

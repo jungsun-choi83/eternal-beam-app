@@ -17,6 +17,7 @@ export type DeviceCommandPayload =
       event: "pet_asset";
       pet_id: string;
       motion_id: string;
+      spawn_vfx?: string;
     };
 
 export type DeviceCommandResult =

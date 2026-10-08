@@ -290,6 +290,26 @@
   aspect-ratio: 1;
 }
 
+/* "Add photo" tile — same footprint as a thumbnail, adds to the SAME pet. */
+.pet-intake__add-photo {
+  border-radius: var(--eb-radius-sm);
+  border: 1px dashed var(--eb-hairline);
+  background: var(--eb-surface-2);
+  aspect-ratio: 1;
+  color: var(--eb-text-2);
+}
+
+.pet-intake__add-photo-body {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--eb-space-1);
+  font-size: var(--eb-type-caption);
+}
+
 /* Thumbnail media is a PetPhoto (pet-photo.css): whole pet, contain, blurred
    fill. The old `img { object-fit: cover }` rule cropped portrait photos. */
 .pet-intake__thumb .eb-pet-photo {

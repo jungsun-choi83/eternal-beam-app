@@ -63,6 +63,8 @@ async def run_once(worker_id: str):
 
 async def _run() -> None:
     global _STOP
+    from ..services import business_qa_user_test
+
     worker_id = os.getenv("PET_GENERATION_WORKER_ID") or f"generation-{socket.gethostname()}-{os.getpid()}"
     poll_seconds = max(1.0, float(os.getenv("PET_GENERATION_WORKER_POLL_SEC", "10")))
     enabled = os.getenv("PET_GENERATION_WORKER_ENABLED", "0").strip().lower() in (
@@ -73,16 +75,22 @@ async def _run() -> None:
     if not enabled:
         raise RuntimeError("PET_GENERATION_WORKER_ENABLED=1 is required")
 
+    # Phase 12 is fail-closed only when an operator explicitly enables the
+    # limited/all user-test mode. OFF preserves the existing worker behavior.
+    readiness = business_qa_user_test.assert_worker_ready()
+
     heartbeat_every = max(1, int(os.getenv("PET_GENERATION_WORKER_HEARTBEAT_TICKS", "30")))
     logger.info(
         "Phase 7D worker started: worker_id=%s pid=%s poll_sec=%s lease_sec=%s "
-        "generation_mock=%s luma_mock=%s",
+        "generation_mock=%s luma_mock=%s business_qa_user_test=%s cohort_pets=%s",
         worker_id,
         os.getpid(),
         poll_seconds,
         os.getenv("GENERATION_RUN_LEASE_SECONDS", "300"),
         os.getenv("GENERATION_MOCK", "0"),
         os.getenv("LUMA_MOCK", "0"),
+        readiness["mode"],
+        readiness["cohort_pet_count"],
     )
     idle_ticks = 0
     while not _STOP:

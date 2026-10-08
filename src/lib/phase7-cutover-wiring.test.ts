@@ -81,8 +81,10 @@ test("StoredPipeline: 새 실행 산출물 표시 필드가 계약에 있다", (
 
 test("REVIEW 는 REVIEW 로 흐른다 — 흐름 코드가 결정을 가공하지 않는다", () => {
   const src = read(FLOW);
-  // REVIEW 재생은 published=false + qa_decision=REVIEW 계약 위반 시 거절한다.
-  assert.match(src, /playback\.published \|\| playback\.qa_decision !== "REVIEW"/);
+  // REVIEW 재생은 published=false 계약 위반 시 거절한다. 레거시 qa_decision 은
+  // 표시용 텔레메트리일 뿐 — 흐름 제어가 그 값을 읽지 않는다.
+  assert.match(src, /if \(playback\.published\) \{/);
+  assert.doesNotMatch(src, /qa_decision\s*(===|!==)/);
   assert.match(src, /REVIEW_PLAYBACK_INVALID/);
   // "PASS 로 승격" 같은 가공이 코드에 없다.
   assert.doesNotMatch(src, /qa_decision\s*[:=]\s*"PASS"/);

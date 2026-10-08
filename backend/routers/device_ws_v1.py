@@ -27,6 +27,13 @@ class DeviceCommandRequest(BaseModel):
     theme_id: str | None = None
     pet_id: str | None = None
     motion_id: str | None = None
+    spawn_vfx: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=64,
+        pattern=r"^[a-z][a-z0-9_-]*$",
+        strict=True,
+    )
 
     @field_validator("event")
     @classmethod
@@ -97,6 +104,9 @@ async def send_device_command(
             "delivery_format": published.delivery_format or "raw",
             "version": 1,
         }
+        if body.spawn_vfx is not None:
+            # Selector only: the device owns and resolves the local VFX asset.
+            command["spawn_vfx"] = body.spawn_vfx
         if published.delivery_format == "packed_alpha":
             command["packed_url"] = published.url
 

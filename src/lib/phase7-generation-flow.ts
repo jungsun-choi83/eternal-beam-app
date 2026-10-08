@@ -15,7 +15,9 @@
  * PASS  → Phase 7A 발행 → pets 포인터 → 발행 재생 (published: true)
  * REVIEW→ 발행 없음. 데이터베이스 상태는 REVIEW 그대로. 포장된 후보를
  *         실행 재생 리졸버로만 본다 (published: false, qa_decision: "REVIEW").
- * FAIL  → 재생 없음. 레거시 생성기로 **절대 폴백하지 않는다.**
+ * hard FAIL budget exhausted → server-resolved safe fallback playback.
+ * No safe asset / infrastructure failure → explicit error; the legacy
+ * generator is **never** invoked.
  */
 
 import {
@@ -189,22 +191,38 @@ export async function resumePhase7Generation(
   return finalizeRunOutcome(run, deps);
 }
 
-/** PUBLISHED/REVIEW 는 재생으로, 그 밖의 종료 상태는 명시적 에러로. */
+/** Generated/fallback delivery and legacy REVIEW are playback; other terminals are errors. */
 async function finalizeRunOutcome(
   run: GenerationRun,
   deps: RunApiDeps
 ): Promise<Phase7Outcome> {
-  if (run.status === "PUBLISHED") {
+  if (
+    run.status === "PUBLISHED" ||
+    run.terminal_state === "DELIVERED_GENERATED" ||
+    run.terminal_state === "DELIVERED_FALLBACK"
+  ) {
     const playback = await getRunPlayback(run.run_id, deps);
     return { run, playback };
   }
 
+  if (run.terminal_state === "TRUE_INFRASTRUCTURE_FAILURE") {
+    throw new GenerationRunError(
+      run.last_error?.message || "Fallback delivery infrastructure failed.",
+      "TRUE_INFRASTRUCTURE_FAILURE",
+      503
+    );
+  }
+
   const errorCode = (run.last_error?.code || "").toUpperCase();
   if (run.status === "FAILED" && errorCode === "MOTION_QA_REVIEW") {
-    // QA 는 REVIEW 를 REVIEW 로 남겼다. 발행 없이, 포장된 후보만 본다.
+    // Legacy-authority runs only: with BREATHING_QA_AUTHORITY=business the
+    // server never ends a BREATHING run in MOTION_QA_REVIEW (it delivers, or
+    // resolves the fallback). 발행 없이, 포장된 후보만 본다.
     const playback = await getRunPlayback(run.run_id, deps);
-    if (playback.published || playback.qa_decision !== "REVIEW") {
-      // 리졸버 계약 위반 — 가짜 발행/가짜 PASS 를 재생으로 받지 않는다.
+    // The contract is "not published"; the legacy qa_decision label is
+    // display-only telemetry and is not read for control flow.
+    if (playback.published) {
+      // 리졸버 계약 위반 — 가짜 발행을 재생으로 받지 않는다.
       throw new GenerationRunError(
         "REVIEW 재생 해석이 계약과 다릅니다.",
         "REVIEW_PLAYBACK_INVALID",
@@ -224,6 +242,9 @@ async function finalizeRunOutcome(
 /** 하이드레이션/파이프라인에 들어가는 최소 재생 필드 — 순수 함수. */
 export interface Phase7PipelinePatch {
   idle_video_url: string;
+  /** Canonical fallback tiers are images, not video URLs. */
+  cutout_display_url?: string;
+  dog_only_nobg_url?: string;
   background_baked: boolean;
   delivery_format: string | null;
   /** 새 시스템 산출물 표시 — 레거시 registry/register 쓰기를 우회하는 근거. */
@@ -235,7 +256,7 @@ export interface Phase7PipelinePatch {
 
 export function phase7PipelinePatch(outcome: Phase7Outcome): Phase7PipelinePatch {
   const { playback } = outcome;
-  return {
+  const base: Phase7PipelinePatch = {
     idle_video_url: playback.url,
     background_baked: playback.background_baked === true,
     delivery_format: playback.delivery_format ?? null,
@@ -243,4 +264,20 @@ export function phase7PipelinePatch(outcome: Phase7Outcome): Phase7PipelinePatch
     qa_decision: playback.qa_decision,
     published: playback.published === true,
   };
+  if (
+    playback.asset_kind === "canonical_image" ||
+    playback.delivery_format === "canonical_local_idle" ||
+    playback.delivery_format === "canonical_still"
+  ) {
+    return {
+      ...base,
+      // A signed PNG/JPEG must never reach IdleLoopVideo. Existing local
+      // cutout rendering supplies tier 3's idle motion; tier 4 is marked
+      // canonical_still and rendered without that motion by PetIdleDisplay.
+      idle_video_url: "",
+      cutout_display_url: playback.url,
+      dog_only_nobg_url: playback.url,
+    };
+  }
+  return base;
 }

@@ -23,8 +23,9 @@ VLM 은 보수적으로 답하라고 지시받는다 — unknown 이 구조적 �
   inconclusive        측정은 됐지만 어느 쪽도 확신할 수 없다
   unmeasurable        디코딩/마스크 실패 — 아무 주장도 하지 않는다
 
-이 증거의 **사용 규칙은 motion_video_qa 가 쥔다**: VLM "no" 는 여전히 FAIL 이고,
-시간축 증거는 unknown 만 해소하며, 상반된 VLM 증거를 절대 뒤집지 않는다.
+이 증거의 **레거시 사용 규칙은 motion_video_qa 가 쥔다**: 기존 shadow 판정은
+VLM "no" 를 계속 FAIL 로 보존한다. Business QA vNext 는 같은 저장 증거를 별도로
+소비하며, 고객 전달/재시도에서는 이 분석기에 1차 권한을 준다.
 
 ~2 주기(4~5초 클립)에서 엄격한 스펙트럼 피크는 요구하지 않는다 — 자기상관의
 양의 재발(periodic-ish)만 요구한다. 모든 임계는 env 로 조정 가능하다.
@@ -176,7 +177,7 @@ def _classify_temporal_metrics(
 
 def pet_mask_from_neutral_gray(keyframe_rgb: np.ndarray) -> Optional[np.ndarray]:
     """
-    NEUTRAL_IDLE 키프레임 → 펫 마스크(bool). 테두리 중앙값 배경색 대비 거리
+    홈(STAND_READY) 키프레임 → 펫 마스크(bool). 테두리 중앙값 배경색 대비 거리
     키잉 — motion_delivery_service 의 bgmodel 과 같은 계약(평탄한 중립 회색)에
     기댄다. 마스크가 비정상(거의 전부/거의 없음)이면 None.
     """

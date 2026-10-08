@@ -22,8 +22,11 @@ from typing import Any, Optional
 
 from . import (
     action_keyframe_service,
+    business_qa,
+    business_qa_user_test,
     canonical_image_providers,
     canonical_pet_service,
+    customer_fallback_service,
     durable_provider_jobs,
     motion_delivery_service,
     motion_publication_service,
@@ -33,6 +36,7 @@ from . import (
     pet_reference_service,
     pet_reference_set_service,
     premium_motion_finalization,
+    qa_shadow_telemetry,
     video_motion_providers,
 )
 
@@ -51,6 +55,13 @@ STATUS_RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
 STATUS_PUBLISHED = "PUBLISHED"
 STATUS_FAILED = "FAILED"
 STATUS_CANCELLED = "CANCELLED"
+
+# Product-level terminal outcomes live beside the durable orchestration status
+# during the Phase 1 shadow period. Database status remains PUBLISHED/FAILED for
+# backward compatibility.
+BUSINESS_DELIVERED_GENERATED = business_qa.DELIVERED_GENERATED
+BUSINESS_DELIVERED_FALLBACK = business_qa.DELIVERED_FALLBACK
+BUSINESS_TRUE_INFRASTRUCTURE_FAILURE = business_qa.TRUE_INFRASTRUCTURE_FAILURE
 
 STAGE_QUEUED = "QUEUED"
 STAGE_IDENTITY = "IDENTITY"
@@ -200,6 +211,8 @@ def __reset_for_tests() -> None:
     _LOCKS.clear()
     _START_LOCKS.clear()
     durable_provider_jobs.__reset_for_tests()
+    qa_shadow_telemetry.__reset_for_tests()
+    business_qa_user_test.__reset_for_tests()
 
 
 def _table() -> str:
@@ -406,7 +419,9 @@ async def _update(
 async def _progress(run: PetGenerationRun, fields: dict[str, Any]) -> PetGenerationRun:
     if not run.execution_token:
         raise PetGenerationRunError("WORKER_LEASE_REQUIRED", "worker lease 가 필요합니다.", status=409)
-    return await _update(run.id, fields, execution_token=run.execution_token)
+    progressed = await _update(run.id, fields, execution_token=run.execution_token)
+    qa_shadow_telemetry.observe_progress(run, progressed, fields)
+    return progressed
 
 
 async def _transition(
@@ -532,14 +547,24 @@ async def _claim_next(worker_id: str) -> Optional[PetGenerationRun]:
     client = _supabase() if _use_db() else None
     if client:
         try:
-            result = client.rpc(
-                "claim_next_pet_generation_run",
-                {
-                    "p_worker_id": worker_id,
-                    "p_lease_seconds": _lease_seconds(),
-                    "p_max_lease_recoveries": _max_lease_recoveries(),
-                },
-            ).execute()
+            pet_allowlist = business_qa_user_test.claim_pet_allowlist()
+            params = {
+                "p_worker_id": worker_id,
+                "p_lease_seconds": _lease_seconds(),
+                "p_max_lease_recoveries": _max_lease_recoveries(),
+                "p_pet_allowlist": pet_allowlist,
+            }
+            try:
+                result = client.rpc("claim_next_pet_generation_run", params).execute()
+            except Exception:
+                # Deployment-order compatibility only while Phase 12 is OFF:
+                # the old 3-argument claim RPC remains safe because no cohort
+                # isolation was requested. Active allowlist mode never falls
+                # back to an unfiltered claim.
+                if pet_allowlist is not None:
+                    raise
+                params.pop("p_pet_allowlist")
+                result = client.rpc("claim_next_pet_generation_run", params).execute()
             data = getattr(result, "data", None) or {}
             if isinstance(data, list):
                 data = data[0] if data else {}
@@ -559,8 +584,11 @@ async def _claim_next(worker_id: str) -> Optional[PetGenerationRun]:
     # same predicate, same cap, same ordering, same self-heal.
     now = datetime.now(timezone.utc)
     max_recoveries = _max_lease_recoveries()
+    pet_allowlist = business_qa_user_test.claim_pet_allowlist()
     eligible = []
     for row in _MOCK_RUNS:
+        if pet_allowlist is not None and str(row.get("pet_id") or "") not in pet_allowlist:
+            continue
         status = row.get("status")
         lease = row.get("lease_expires_at")
         lease_expired = False
@@ -730,7 +758,7 @@ class _LeaseHeartbeater:
             self.thread.join(timeout=2.0)
 
 
-async def _validate_intake(user_id: str, pet_id: str) -> str:
+async def _validate_intake_evidence(user_id: str, pet_id: str) -> tuple[str, Any, Any]:
     try:
         refs = await pet_reference_service.list_references(user_id=user_id, pet_id=pet_id)
     except pet_reference_service.PetReferenceError as exc:
@@ -756,7 +784,12 @@ async def _validate_intake(user_id: str, pet_id: str) -> str:
         raise PetGenerationRunError(
             "PHASE1_IDENTITY_MISMATCH", "Phase 1 원본과 누끼의 신원 연결이 일치하지 않습니다.", status=409
         )
-    return original.content_id
+    return original.content_id, original, cutout
+
+
+async def _validate_intake(user_id: str, pet_id: str) -> str:
+    content_id, _original, _cutout = await _validate_intake_evidence(user_id, pet_id)
+    return content_id
 
 
 def _phase_error(stage: str, exc: Exception) -> dict[str, Any]:
@@ -776,6 +809,191 @@ def _phase_error(stage: str, exc: Exception) -> dict[str, Any]:
     return error
 
 
+def _is_business_fallback(run: PetGenerationRun) -> bool:
+    decision = dict((run.provider_state.get("_business_qa") or {}))
+    return decision.get("fallback_resolution") in {"RESOLVED", "UNAVAILABLE", "ERROR"}
+
+
+def is_delivered_fallback(run: PetGenerationRun) -> bool:
+    """A terminal run whose customer outcome is a resolved safe fallback."""
+    receipt = dict(((run.provider_state or {}).get("_business_qa") or {}))
+    return (
+        run.status in (STATUS_PUBLISHED, STATUS_FAILED)
+        and receipt.get("terminal_state") == business_qa.DELIVERED_FALLBACK
+    )
+
+
+async def _finish_business_fallback(
+    run: PetGenerationRun,
+    *,
+    stage: str,
+    decision: dict[str, Any],
+    source_kind: str,
+    source_id: str,
+    current_candidates: Any = (),
+) -> PetGenerationRun:
+    """Resolve and persist the authoritative customer fallback outcome."""
+
+    provider_state = dict(_provider_state(run))
+    try:
+        fallback = await customer_fallback_service.resolve_best_safe_fallback(
+            user_id=run.user_id,
+            pet_id=run.pet_id,
+            motion_id=run.motion_id,
+            current_candidates=list(current_candidates or ()),
+        )
+    except customer_fallback_service.FallbackInfrastructureError as exc:
+        provider_state["_business_qa"] = {
+            "version": business_qa.BUSINESS_QA_VERSION,
+            "terminal_state": business_qa.TRUE_INFRASTRUCTURE_FAILURE,
+            "candidate_id": None,
+            "decision": dict(decision),
+            "fallback_resolution": "ERROR",
+            "source_kind": source_kind,
+            "source_id": source_id,
+            "infrastructure_error": {"code": exc.code, "message": exc.message},
+        }
+        failed = await _progress(
+            run,
+            {
+                "status": STATUS_FAILED,
+                "current_stage": stage,
+                "completed_at": _now_iso(),
+                "last_error": {
+                    "stage": stage,
+                    "code": "TRUE_INFRASTRUCTURE_FAILURE",
+                    "message": exc.message,
+                    "at": _now_iso(),
+                },
+                "provider_state": provider_state,
+                "execution_token": None,
+                "lease_expires_at": None,
+                "worker_id": None,
+                "next_attempt_at": None,
+            },
+        )
+        qa_shadow_telemetry.finalize_run(
+            failed,
+            fallback_used=False,
+            terminal_state=business_qa.TRUE_INFRASTRUCTURE_FAILURE,
+        )
+        await _reconcile_premium_after_stop(failed)
+        return failed
+    except Exception as exc:
+        provider_state["_business_qa"] = {
+            "version": business_qa.BUSINESS_QA_VERSION,
+            "terminal_state": business_qa.TRUE_INFRASTRUCTURE_FAILURE,
+            "candidate_id": None,
+            "decision": dict(decision),
+            "fallback_resolution": "ERROR",
+            "source_kind": source_kind,
+            "source_id": source_id,
+            "infrastructure_error": {
+                "code": type(exc).__name__,
+                "message": str(exc)[:1000],
+            },
+        }
+        failed = await _progress(
+            run,
+            {
+                "status": STATUS_FAILED,
+                "current_stage": stage,
+                "completed_at": _now_iso(),
+                "last_error": {
+                    "stage": stage,
+                    "code": "TRUE_INFRASTRUCTURE_FAILURE",
+                    "message": "Fallback resolution failed unexpectedly.",
+                    "at": _now_iso(),
+                },
+                "provider_state": provider_state,
+                "execution_token": None,
+                "lease_expires_at": None,
+                "worker_id": None,
+                "next_attempt_at": None,
+            },
+        )
+        qa_shadow_telemetry.finalize_run(
+            failed,
+            fallback_used=False,
+            terminal_state=business_qa.TRUE_INFRASTRUCTURE_FAILURE,
+        )
+        await _reconcile_premium_after_stop(failed)
+        return failed
+
+    if fallback is None:
+        provider_state["_business_qa"] = {
+            "version": business_qa.BUSINESS_QA_VERSION,
+            "terminal_state": None,
+            "candidate_id": None,
+            "decision": dict(decision),
+            "fallback_resolution": "UNAVAILABLE",
+            "source_kind": source_kind,
+            "source_id": source_id,
+        }
+        stopped = await _progress(
+            run,
+            {
+                "status": STATUS_FAILED,
+                "current_stage": stage,
+                "completed_at": _now_iso(),
+                "last_error": {
+                    "stage": stage,
+                    "code": "NO_SAFE_FALLBACK",
+                    "message": "No integrity-safe generated, owned, published, or Canonical asset is available.",
+                    "at": _now_iso(),
+                },
+                "provider_state": provider_state,
+                "execution_token": None,
+                "lease_expires_at": None,
+                "worker_id": None,
+                "next_attempt_at": None,
+            },
+        )
+        qa_shadow_telemetry.finalize_run(
+            stopped,
+            fallback_used=False,
+            terminal_state=business_qa.TRUE_INFRASTRUCTURE_FAILURE,
+        )
+        await _reconcile_premium_after_stop(stopped)
+        return stopped
+
+    provider_state["_business_qa"] = {
+        "version": business_qa.BUSINESS_QA_VERSION,
+        "terminal_state": business_qa.DELIVERED_FALLBACK,
+        "candidate_id": None,
+        "decision": dict(decision),
+        "fallback_resolution": "RESOLVED",
+        "fallback_asset": fallback.as_dict(),
+        "source_kind": source_kind,
+        "source_id": source_id,
+    }
+    delivered = await _progress(
+        run,
+        {
+            # A resolved fallback is a successful delivery, so the run ends in
+            # the normal completed status. It claims no new publication:
+            # publication_id stays unset and the stage stays DELIVERY.
+            "status": STATUS_PUBLISHED,
+            "current_stage": STAGE_DELIVERY,
+            "selected_candidate_id": None,
+            "completed_at": _now_iso(),
+            "last_error": None,
+            "provider_state": provider_state,
+            "execution_token": None,
+            "lease_expires_at": None,
+            "worker_id": None,
+            "next_attempt_at": None,
+        },
+    )
+    qa_shadow_telemetry.finalize_run(
+        delivered,
+        fallback_used=True,
+        terminal_state=business_qa.DELIVERED_FALLBACK,
+    )
+    await _reconcile_premium_after_stop(delivered)
+    return delivered
+
+
 def _next_poll_iso() -> str:
     delay = max(0.0, float(os.getenv("GENERATION_PROVIDER_POLL_SECONDS", "10")))
     now = datetime.now(timezone.utc)
@@ -785,9 +1003,10 @@ def _next_poll_iso() -> str:
 def _provider_state(run: PetGenerationRun) -> dict[str, Any]:
     """Refresh receipt summaries without discarding durable operator intent."""
     state = durable_provider_jobs.summary_for_run(run.id)
-    operator = dict(run.provider_state.get("_operator") or {})
-    if operator:
-        state["_operator"] = operator
+    for key in ("_operator", "_business_qa_cutover"):
+        value = dict(run.provider_state.get(key) or {})
+        if value:
+            state[key] = value
     return state
 
 
@@ -837,6 +1056,11 @@ async def _fail(run: PetGenerationRun, stage: str, exc: Exception) -> PetGenerat
             return _to_run(current) if current else run
         raise
     await _reconcile_premium_after_stop(failed)
+    qa_shadow_telemetry.finalize_run(
+        failed,
+        fallback_used=False,
+        terminal_state=business_qa.TRUE_INFRASTRUCTURE_FAILURE,
+    )
     return failed
 
 
@@ -1105,6 +1329,13 @@ async def _advance_keyframe_stage(
     # Lineage is verified **before** the pin is written: a keyframe built on
     # another canonical must never be remembered on the run.
     _assert_keyframe_lineage(run, keyframe)
+    qa_shadow_telemetry.record_candidates(
+        run,
+        stage="KEYFRAME",
+        stage_role=role,
+        parent_id=keyframe.id,
+        candidates=keyframe.candidates,
+    )
     provider_state = _provider_state(run)
     operator_state = dict(provider_state.get("_operator") or {})
     replacements = dict(operator_state.get("keyframe_replacement_requests") or {})
@@ -1127,6 +1358,15 @@ async def _advance_keyframe_stage(
         "canonical_version_id": keyframe.canonical_version_id,
     }
     run = await _progress(run, {"keyframes": keyframes, "provider_state": provider_state})
+    fallback_decision = business_qa.fallback_receipt(list(keyframe.candidates))
+    if fallback_decision is not None:
+        return await _finish_business_fallback(
+            run,
+            stage=STAGE_KEYFRAMES,
+            decision=fallback_decision,
+            source_kind=f"KEYFRAME:{role}",
+            source_id=keyframe.id,
+        )
     if keyframe.status == action_keyframe_service.STATUS_REVIEW:
         raise PetGenerationRunError(
             "KEYFRAME_QA_REVIEW",
@@ -1201,6 +1441,12 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
             # another reference set must never be remembered on the run, or every
             # Retry re-reads that pin and fails the same way forever.
             _assert_canonical_lineage(run, canonical)
+            qa_shadow_telemetry.record_candidates(
+                run,
+                stage="CANONICAL",
+                parent_id=canonical.id,
+                candidates=canonical.candidates,
+            )
             # Pin the version **before** judging its status (mirrors _motion()) so a
             # REVIEW canonical is remembered across retries — _canonical() then takes
             # the pinned-version branch and never calls build_canonical() again for
@@ -1227,6 +1473,15 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
                     "provider_state": provider_state,
                 },
             )
+            fallback_decision = business_qa.fallback_receipt(list(canonical.candidates))
+            if fallback_decision is not None:
+                return await _finish_business_fallback(
+                    run,
+                    stage=STAGE_CANONICAL,
+                    decision=fallback_decision,
+                    source_kind="CANONICAL",
+                    source_id=canonical.id,
+                )
             if canonical.status == canonical_pet_service.STATUS_REVIEW:
                 # Distinct from CANONICAL_NOT_COMPLETE: this is a recoverable,
                 # non-terminal state. Reusing this REVIEW version is not a bug — it
@@ -1261,20 +1516,17 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
             stage = STAGE_KEYFRAMES
             run = await _progress(run, {"current_stage": stage})
             run = await _heartbeat(run)
-            # BREATHING → NEUTRAL_IDLE Canonical reuse: only this motion's start
-            # keyframe may skip real keyframe generation when the approved
-            # Canonical already satisfies the NEUTRAL_IDLE contract on its own.
-            # Every other motion (incl. the other NEUTRAL_IDLE-starting idles)
-            # keeps generating a real keyframe, same as before.
-            keyframe, run = await _keyframe(
-                run,
-                spec.start_keyframe_role,
-                allow_canonical_reuse=(
-                    run.motion_id == MOTION_BREATHING and spec.start_keyframe_role == "NEUTRAL_IDLE"
-                ),
-            )
+            # HOME = STAND_READY (motion-spec-v16): the home keyframe is always a
+            # generated standing still. The Canonical is never aliased as the
+            # BREATHING/home start pose and its posture is never inspected —
+            # a sitting or lying Canonical must not become the home pose.
+            # Every STAND_READY-starting motion shares the one keyframe that
+            # _keyframe() resolves for this run's pinned Canonical.
+            keyframe, run = await _keyframe(run, spec.start_keyframe_role)
             keyframes = dict(run.keyframes)
             run = await _advance_keyframe_stage(run, spec.start_keyframe_role, keyframe, keyframes)
+            if _is_business_fallback(run):
+                return run
             # ── 전이(TRANSITION) 목표 키프레임 (2026-09-08) ─────────────────────
             # resolve_video_generation_spec 은 requires_target_keyframe 모션에서
             # **승인된** 목표 키프레임을 요구한다. 예전 파이프라인은 시작 역할만
@@ -1285,6 +1537,8 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
                 target_kf, run = await _keyframe(run, spec.target_keyframe_role)
                 keyframes = dict(run.keyframes)
                 run = await _advance_keyframe_stage(run, spec.target_keyframe_role, target_kf, keyframes)
+                if _is_business_fallback(run):
+                    return run
 
         # MOTION_SPEC 계보 검증은 항상 run.keyframes 의 영속 핀을 본다 — 위
         # 블록이 이번 틱에 스킵됐어도(재개) 이전 틱이 이미 같은 값을 박아
@@ -1326,6 +1580,12 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
         run = await _progress(run, {"current_stage": stage})
         run = await _heartbeat(run)
         motion, run = await _motion(run, contract)
+        qa_shadow_telemetry.record_candidates(
+            run,
+            stage="MOTION",
+            parent_id=motion.id,
+            candidates=motion.candidates,
+        )
         provider_state = _provider_state(run)
         operator_state = dict(provider_state.get("_operator") or {})
         replacement = dict(operator_state.get("replacement_request") or {})
@@ -1352,19 +1612,36 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
         stage = STAGE_QA
         run = await _progress(run, {"current_stage": stage})
         selected = None
-        if motion.status == motion_video_service.STATUS_COMPLETE:
+        # BREATHING with legacy authority retired: the selected candidate's
+        # receipt alone decides. Version status, the legacy decision and the
+        # severity gate are not consulted.
+        legacy_retired = business_qa.legacy_authority_retired(run.motion_id)
+        if legacy_retired:
             selected = next(
                 (
                     candidate
                     for candidate in motion.candidates
                     if candidate.id == motion.selected_candidate_id
                     and candidate.selected
-                    and candidate.decision == "PASS"
+                    and motion_video_service.candidate_is_publishable(
+                        candidate, motion_id=run.motion_id
+                    )
+                ),
+                None,
+            )
+        elif motion.status == motion_video_service.STATUS_COMPLETE:
+            selected = next(
+                (
+                    candidate
+                    for candidate in motion.candidates
+                    if candidate.id == motion.selected_candidate_id
+                    and candidate.selected
+                    and motion_video_service.candidate_is_publishable(candidate)
                 ),
                 None,
             )
             if not selected:
-                raise PetGenerationRunError("MOTION_QA_INVALID", "선택된 QA PASS 후보를 확인하지 못했습니다.", status=409)
+                raise PetGenerationRunError("MOTION_QA_INVALID", "선택된 전달 가능 후보를 확인하지 못했습니다.", status=409)
 
         # ── 무결성 게이트 (MOTION_QA_SEVERITY_GATE=integrity_only) ─────────────
         # PASS 가 없어도 빌더가 무결성 사유 없는 REVIEW/FAIL 후보를 selected 로 골라
@@ -1373,6 +1650,7 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
         gated = None
         if (
             selected is None
+            and not legacy_retired
             and motion.selected_candidate_id
             and motion_video_service.severity_gate_mode() == motion_video_service.SEVERITY_GATE_INTEGRITY_ONLY
         ):
@@ -1388,12 +1666,49 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
             )
         deliverable = selected or gated
 
-        # ── Phase 7G: QA 결정은 절대 바꾸지 않는다 — REVIEW 는 REVIEW 로 남는다.
-        # 다만 PASS 든 REVIEW 든 재생 가능한 후보는 packed-alpha 파생물로 포장한다
-        # (Phase 7F, 멱등). PASS 는 이어서 발행되고, REVIEW 는 발행 없이 개발/
-        # 현재-실행 재생 리졸버(GET /generation-runs/{id}/playback)로만 보인다.
+        # Phase 6: two paid candidates have both produced explicit business-v1
+        # integrity failures.  This is a normal bounded-budget product outcome,
+        # not the old "no strict PASS" runtime error.  The actual fallback asset
+        # ladder is intentionally deferred; persist its authoritative action so
+        # Phase 7 can resolve and publish it without buying Candidate 3.
+        fallback_decision = business_qa.fallback_receipt(list(motion.candidates))
+        if (
+            legacy_retired
+            and deliverable is None
+            and fallback_decision is None
+            and any(
+                str(getattr(candidate, "decision", "") or "").upper() in ("PASS", "REVIEW", "FAIL")
+                for candidate in motion.candidates
+            )
+        ):
+            # A QA-evaluated candidate exists but no receipt authorizes delivery,
+            # regeneration or fallback (missing receipt / exhausted). Safe
+            # default: block it and deliver the fallback still. The legacy
+            # decision is never consulted. Provider-only failures (no evaluated
+            # candidate) keep their normal retryable failure below.
+            fallback_decision = business_qa.safe_default_receipt(
+                reason=business_qa.SAFE_DEFAULT_REASON_MISSING,
+                request_kind=str(getattr(motion, "motion_class", "") or "MOTION"),
+            )
+        if deliverable is None and fallback_decision is not None:
+            return await _finish_business_fallback(
+                run,
+                stage=STAGE_QA,
+                decision=fallback_decision,
+                source_kind="MOTION",
+                source_id=motion.id,
+                current_candidates=motion.candidates,
+            )
+
+        # ── Phase 7G: legacy QA 결정은 절대 바꾸지 않는다. business-v1 영수증이
+        # 없는 역사적 REVIEW 만 아래 호환 경로에서 포장 후 검토 상태로 남는다.
+        # 새 business-deliverable REVIEW 는 위 deliverable 경로로 발행된다.
         review_candidate = None
-        if deliverable is None and motion.status == motion_video_service.STATUS_REVIEW:
+        if (
+            deliverable is None
+            and not legacy_retired
+            and motion.status == motion_video_service.STATUS_REVIEW
+        ):
             review_candidates = [
                 c for c in motion.candidates if getattr(c, "decision", "") == "REVIEW"
             ]
@@ -1430,7 +1745,11 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
             except motion_delivery_service.MotionDeliveryError as exc:
                 raise PetGenerationRunError(exc.code, exc.message, status=exc.status) from exc
 
-        if deliverable is None and motion.status == motion_video_service.STATUS_REVIEW:
+        if (
+            deliverable is None
+            and not legacy_retired
+            and motion.status == motion_video_service.STATUS_REVIEW
+        ):
             # 위 포장 블록은 진행 상황 표시를 위해 stage 를 DELIVERY 로 올렸을 수
             # 있다 — 하지만 REVIEW 는 QA 에서 비롯된 상태이므로, 실패로 남는
             # current_stage 는 원래 단계(QA)를 보존해야 한다. 그러지 않으면
@@ -1484,7 +1803,20 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
                 raise PetGenerationRunError(exc.code, exc.message, status=exc.status) from exc
             publication_id = finalization.publication_id
 
-        return await _progress(
+        final_provider_state = dict(_provider_state(run))
+        final_provider_state["_business_qa"] = {
+            "version": business_qa.BUSINESS_QA_VERSION,
+            "terminal_state": business_qa.DELIVERED_GENERATED,
+            "candidate_id": selected.id,
+            "candidate_decision": selected.decision,
+            "decision": dict(business_qa.receipt(getattr(selected, "qa_result", None)) or {}),
+            # logical_model / vendor / vendor_model / adapter of the delivered clip.
+            "provider_identity": dict(
+                (getattr(selected, "generation_metadata", None) or {}).get("provider_identity")
+                or {}
+            ),
+        }
+        completed_run = await _progress(
             run,
             {
                 "status": STATUS_PUBLISHED,
@@ -1496,8 +1828,15 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
                 "lease_expires_at": None,
                 "worker_id": None,
                 "next_attempt_at": None,
+                "provider_state": final_provider_state,
             },
         )
+        qa_shadow_telemetry.finalize_run(
+            completed_run,
+            fallback_used=False,
+            terminal_state=business_qa.DELIVERED_GENERATED,
+        )
+        return completed_run
     except durable_provider_jobs.ProviderWorkPending:
         latest_row = await _row_by_id(run.id)
         latest = _to_run(latest_row) if latest_row else run
@@ -1556,9 +1895,12 @@ async def process_next_generation_run(*, worker_id: str) -> Optional[PetGenerati
     wid = (worker_id or "").strip()
     if not wid:
         raise PetGenerationRunError("WORKER_ID_REQUIRED", "worker_id 가 필요합니다.", status=422)
+    claim_started = time.perf_counter()
     run = await _claim_next(wid)
+    claim_time_ms = (time.perf_counter() - claim_started) * 1000.0
     if not run:
         return None
+    qa_shadow_telemetry.mark_claimed(run, claim_time_ms=claim_time_ms)
     if _recovery_exhausted(run):
         # claim 이 상한을 넘겨 한 번 더 건네준 실행 — 워커가 이 실행 위에서
         # 계속 죽고 있다는 뜻이다(OOM 등). 일을 시키지 않고 종료시킨다. 이후엔
@@ -1591,7 +1933,10 @@ async def process_next_generation_run(*, worker_id: str) -> Optional[PetGenerati
                         status=409,
                     ),
                 )
-            return await _execute(run)
+            # The run keeps the QA authority mode stamped at its creation; an
+            # unstamped (older / in-flight) run stays on legacy authority.
+            with business_qa.qa_authority_scope(business_qa.run_qa_authority(run.provider_state)):
+                return await _execute(run)
 
 
 def _validate_request(motion_id: str, request_kind: str, idempotency_key: str) -> tuple[str, str, str]:
@@ -1641,13 +1986,16 @@ async def start_generation_run(
     if not uid or not pid:
         raise PetGenerationRunError("GENERATION_RUN_INVALID", "user_id 와 pet_id 가 필요합니다.")
     motion, kind, key = _validate_request(motion_id, request_kind, idempotency_key)
-    content_id = await _validate_intake(uid, pid)
+    try:
+        cutover = business_qa_user_test.cutover_receipt(user_id=uid, pet_id=pid)
+    except business_qa_user_test.UserTestError as exc:
+        raise PetGenerationRunError(exc.code, exc.message, status=exc.status) from exc
     now = _now_iso()
     row = {
         "id": str(uuid.uuid4()),
         "user_id": uid,
         "pet_id": pid,
-        "content_id": content_id,
+        "content_id": None,
         "motion_id": motion,
         "request_kind": kind,
         "idempotency_key": key,
@@ -1665,7 +2013,7 @@ async def start_generation_run(
         "motion_version": None,
         "selected_candidate_id": None,
         "publication_id": None,
-        "provider_state": {},
+        "provider_state": {"_business_qa_cutover": cutover},
         "last_error": None,
         "retry_count": 0,
         "created_at": now,
@@ -1682,8 +2030,19 @@ async def start_generation_run(
         row["product_key"] = (product_key or "").strip() or None
         row["reservation_ledger_id"] = (reservation_ledger_id or "").strip() or None
         row["credits_reserved"] = int(credits_reserved or 0)
-    async with _start_lock(uid, pid, motion, kind):
-        run, _created = await _insert_or_get(row)
+    # 실행 행이 생기는 순간 이 펫의 사진·누끼가 잠긴다(pet_inputs_locked). 인테이크
+    # 검증과 삽입을 펫 입력 문의 **단독** 구간에서 한 번에 한다 — 업로드/동기화/
+    # 거절(공유 구간)이 "잠금 확인"과 "쓰기" 사이에 이 삽입을 끼워 넣을 수 없고,
+    # 이 검증이 본 증거가 삽입 전에 바뀔 수도 없다.
+    async with pet_reference_service.pet_input_gate(pid).exclusive():
+        content_id, original, cutout = await _validate_intake_evidence(uid, pid)
+        row["content_id"] = content_id
+        async with _start_lock(uid, pid, motion, kind):
+            run, _created = await _insert_or_get(row)
+    qa_shadow_telemetry.start_run(
+        run,
+        upload_cutout_ms=qa_shadow_telemetry.upload_to_cutout_ms(original, cutout),
+    )
     return run
 
 
@@ -1714,7 +2073,7 @@ async def _stale_motion_pin(run: PetGenerationRun) -> bool:
       * 스펙 버전이 현재와 같으면 스테일이 아니다 — 기존 재사용 경로가 맞다
       * 종료되지 않은 프로바이더 작업이 하나라도 있으면 손대지 않는다
     """
-    if run.status != STATUS_FAILED:
+    if run.status != STATUS_FAILED and not is_delivered_fallback(run):
         return False
     if not run.motion_version_id or run.publication_id:
         return False
@@ -1756,7 +2115,7 @@ async def _stale_canonical_pin(run: PetGenerationRun) -> bool:
 
     행은 지우지 않는다 — 실행의 핀만 비운다.
     """
-    if run.status != STATUS_FAILED:
+    if run.status != STATUS_FAILED and not is_delivered_fallback(run):
         return False
     if not (run.canonical_version_id and run.canonical_version):
         return False
@@ -1812,7 +2171,9 @@ async def retry_generation_run(*, user_id: str, run_id: str) -> PetGenerationRun
             "현재 Phase 1 intake 가 생성 실행의 content_id 와 일치하지 않습니다.",
             status=409,
         )
-    if run.status == STATUS_PUBLISHED:
+    # A delivered fallback stays retryable, as it was under its old FAILED status.
+    fallback_delivered = is_delivered_fallback(run)
+    if run.status == STATUS_PUBLISHED and not fallback_delivered:
         return run
     if run.status in (STATUS_QUEUED, STATUS_RUNNING, STATUS_WAITING_PROVIDER):
         return run
@@ -1857,7 +2218,8 @@ async def retry_generation_run(*, user_id: str, run_id: str) -> PetGenerationRun
         )
     # FAILED / CANCELLED / RECOVERY_REQUIRED 에서만 QUEUED 로 — 읽기와 쓰기 사이에
     # 상태가 바뀌었으면(동시 재시도가 먼저 QUEUED 로 옮김 등) 그 결과를 돌려준다.
-    retried = await _transition(run.id, updates, from_statuses=RETRYABLE_RUN_STATUSES)
+    from_statuses = RETRYABLE_RUN_STATUSES + ((STATUS_PUBLISHED,) if fallback_delivered else ())
+    retried = await _transition(run.id, updates, from_statuses=from_statuses)
     if retried:
         return retried
     return await get_generation_run(user_id=user_id, run_id=run_id)
@@ -2172,6 +2534,44 @@ async def get_generation_run(*, user_id: str, run_id: str) -> PetGenerationRun:
     if run.user_id != (user_id or "").strip():
         raise PetGenerationRunError("PET_NOT_OWNED", "이 생성 실행에 접근할 권한이 없습니다.", status=403)
     return run
+
+
+#: 이 상태의 실행은 펫의 사진/누끼를 잠그지 않는다 — 사용자가 사진을 고쳐
+#: 다시 시도할 수 있어야 한다. 그 밖의 모든 상태(진행 중 + PUBLISHED)는 잠근다.
+UNLOCKING_RUN_STATUSES = (STATUS_FAILED, STATUS_CANCELLED)
+
+
+async def pet_has_locking_run(pet_id: str) -> bool:
+    """
+    이 펫에 FAILED/CANCELLED 가 **아닌** 생성 실행이 하나라도 있는가.
+
+    motion/request_kind/소유자를 가리지 않는다 — 어떤 실행이든 시작됐다면 그
+    실행은 당시의 원본·누끼에 계보를 핀으로 잡고 있다. 조회 실패는 예외로
+    올린다: "모른다"를 "잠기지 않았다"로 답하면 안 된다.
+    """
+    pid = (pet_id or "").strip()
+    if not pid:
+        return False
+    client = _supabase() if _use_db() else None
+    if client:
+        try:
+            result = await asyncio.to_thread(
+                lambda: client.table(_table())
+                .select("id")
+                .eq("pet_id", pid)
+                .not_.in_("status", list(UNLOCKING_RUN_STATUSES))
+                .limit(1)
+                .execute()
+            )
+            return bool(getattr(result, "data", None))
+        except Exception as exc:
+            raise PetGenerationRunError(
+                "GENERATION_RUNS_UNAVAILABLE", "생성 실행을 확인하지 못했습니다.", status=503
+            ) from exc
+    return any(
+        r.get("pet_id") == pid and r.get("status") not in UNLOCKING_RUN_STATUSES
+        for r in _MOCK_RUNS
+    )
 
 
 def run_dict(run: PetGenerationRun) -> dict[str, Any]:

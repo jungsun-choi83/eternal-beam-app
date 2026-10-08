@@ -25,6 +25,8 @@ import anyio
 import pytest
 
 from backend.services import (
+    business_qa,
+    customer_fallback_service,
     motion_spec,
     motion_video_service,
     pet_generation_run_service as runs,
@@ -219,7 +221,7 @@ def test_replacement_worker_builds_exactly_one_new_version_then_reuses_it(monkey
         status=runs.STATUS_RUNNING,
         current_stage=runs.STAGE_MOTION_GENERATION,
         canonical_version_id=source.canonical_version_id,
-        keyframes={"NEUTRAL_IDLE": {"id": source.start_keyframe_id, "version": 1}},
+        keyframes={"STAND_READY": {"id": source.start_keyframe_id, "version": 1}},
         motion_spec_version=motion_spec.MOTION_SPEC_VERSION,
         provider_state={"_operator": {"replacement_request": {"source_motion_version_id": source.id}}},
     )
@@ -275,3 +277,180 @@ def test_fail_still_terminal_and_not_replacement_eligible(storage, monkeypatch):
             )
         )
     assert error.value.code == "REPLACEMENT_NOT_JUSTIFIED"
+
+
+def test_two_hard_failures_return_business_fallback_not_motion_qa_failed(storage, monkeypatch):
+    seed_intake()
+    harness = PipelineHarness(monkeypatch, motion_status=motion_video_service.STATUS_REVIEW)
+    qa_result = {
+        "qa_version": "motion-test-v1",
+        "decision": "FAIL",
+        "checks": {"vlm_anatomy": "FAIL"},
+        "reasons": ["severe_anatomy_corruption"],
+    }
+    business_qa.attach_business_result(
+        qa_result,
+        attempt_number=2,
+        request_kind="MICRO",
+        fallback_available=True,
+    )
+    harness.motion.selected_candidate_id = None
+    harness.motion.candidates = [
+        SimpleNamespace(
+            id="00000000-0000-0000-0000-000000000699",
+            selected=False,
+            decision="FAIL",
+            qa_result=qa_result,
+        )
+    ]
+
+    async def resolve(**kwargs):
+        return customer_fallback_service.CustomerFallbackAsset(
+            tier=customer_fallback_service.TIER_PREVIOUS_MOTION,
+            asset_kind="motion_video",
+            user_id=kwargs["user_id"],
+            pet_id=kwargs["pet_id"],
+            requested_motion_id=kwargs["motion_id"],
+            delivery_format="packed_alpha",
+            bucket="user-assets",
+            object_path="motions/previous_packed.mp4",
+            publication_id="publication-previous",
+            provenance={"source": "pet_motion_publications"},
+        )
+
+    monkeypatch.setattr(customer_fallback_service, "resolve_best_safe_fallback", resolve)
+
+    start(key="fail:business-fallback")
+    result = work()
+
+    assert result.status == runs.STATUS_PUBLISHED  # fallback delivery is success
+    assert result.publication_id is None  # ...without claiming a publication
+    assert result.current_stage == runs.STAGE_DELIVERY
+    assert result.last_error is None
+    receipt = result.provider_state["_business_qa"]
+    assert receipt["terminal_state"] == business_qa.DELIVERED_FALLBACK
+    assert receipt["decision"]["retry_action"] == "FALLBACK"
+    assert receipt["fallback_resolution"] == "RESOLVED"
+    assert receipt["fallback_asset"]["tier"] == customer_fallback_service.TIER_PREVIOUS_MOTION
+    assert receipt["fallback_asset"]["publication_id"] == "publication-previous"
+    assert harness.counts["delivery"] == 0
+    assert harness.counts["publication"] == 0
+
+
+def _hard_fail_twice_harness(monkeypatch):
+    seed_intake()
+    harness = PipelineHarness(monkeypatch, motion_status=motion_video_service.STATUS_REVIEW)
+    qa_result = {
+        "qa_version": "motion-test-v1",
+        "decision": "FAIL",
+        "checks": {"vlm_anatomy": "FAIL"},
+    }
+    business_qa.attach_business_result(
+        qa_result, attempt_number=2, request_kind="MICRO", fallback_available=True
+    )
+    harness.motion.selected_candidate_id = None
+    harness.motion.candidates = [
+        SimpleNamespace(id="hard-2", selected=False, decision="FAIL", qa_result=qa_result)
+    ]
+    return harness
+
+
+def _canonical_idle_fallback(monkeypatch):
+    async def resolve(**kwargs):
+        return customer_fallback_service.CustomerFallbackAsset(
+            tier=customer_fallback_service.TIER_CANONICAL_IDLE,
+            asset_kind="canonical_image",
+            user_id=kwargs["user_id"],
+            pet_id=kwargs["pet_id"],
+            requested_motion_id=kwargs["motion_id"],
+            delivery_format=customer_fallback_service.FORMAT_CANONICAL_IDLE,
+            bucket="user-assets",
+            object_path="canonical/safe_cutout.png",
+            provenance={"source": "pet_canonical_candidates"},
+        )
+
+    monkeypatch.setattr(customer_fallback_service, "resolve_best_safe_fallback", resolve)
+
+
+def test_canonical_local_idle_fallback_completes_run_successfully(storage, monkeypatch):
+    harness = _hard_fail_twice_harness(monkeypatch)
+    _canonical_idle_fallback(monkeypatch)
+
+    start(key="fallback:canonical-idle")
+    result = work()
+
+    assert result.status == runs.STATUS_PUBLISHED
+    assert result.last_error is None
+    assert result.publication_id is None
+    assert runs.is_delivered_fallback(result)
+    receipt = result.provider_state["_business_qa"]
+    assert receipt["terminal_state"] == business_qa.DELIVERED_FALLBACK
+    assert (
+        receipt["fallback_asset"]["delivery_format"]
+        == customer_fallback_service.FORMAT_CANONICAL_IDLE
+    )
+    assert harness.counts["publication"] == 0
+
+
+def test_no_generated_asset_and_no_fallback_is_failed(storage, monkeypatch):
+    _hard_fail_twice_harness(monkeypatch)
+
+    async def none(**kwargs):
+        return None
+
+    monkeypatch.setattr(customer_fallback_service, "resolve_best_safe_fallback", none)
+
+    start(key="fallback:none")
+    result = work()
+
+    assert result.status == runs.STATUS_FAILED
+    assert result.last_error["code"] == "NO_SAFE_FALLBACK"
+    assert not runs.is_delivered_fallback(result)
+    receipt = result.provider_state["_business_qa"]
+    assert receipt["terminal_state"] is None
+    assert receipt["fallback_resolution"] == "UNAVAILABLE"
+
+
+def test_delivered_fallback_run_stays_retryable(storage, monkeypatch):
+    _hard_fail_twice_harness(monkeypatch)
+    _canonical_idle_fallback(monkeypatch)
+
+    start(key="fallback:retry")
+    delivered = work()
+    assert delivered.status == runs.STATUS_PUBLISHED
+
+    retried = _run(runs.retry_generation_run(user_id=delivered.user_id, run_id=delivered.id))
+    assert retried.status == runs.STATUS_QUEUED
+
+
+def test_fallback_store_outage_is_true_infrastructure_failure(storage, monkeypatch):
+    seed_intake()
+    harness = PipelineHarness(monkeypatch, motion_status=motion_video_service.STATUS_REVIEW)
+    qa_result = {
+        "qa_version": "motion-test-v1",
+        "decision": "FAIL",
+        "checks": {"vlm_anatomy": "FAIL"},
+    }
+    business_qa.attach_business_result(
+        qa_result, attempt_number=2, request_kind="MICRO", fallback_available=True
+    )
+    harness.motion.selected_candidate_id = None
+    harness.motion.candidates = [
+        SimpleNamespace(id="hard-2", selected=False, decision="FAIL", qa_result=qa_result)
+    ]
+
+    async def unavailable(**kwargs):
+        raise customer_fallback_service.FallbackInfrastructureError(
+            "FALLBACK_STORE_DOWN", "fallback storage unavailable"
+        )
+
+    monkeypatch.setattr(customer_fallback_service, "resolve_best_safe_fallback", unavailable)
+
+    start(key="fail:true-infrastructure")
+    result = work()
+
+    assert result.last_error["code"] == "TRUE_INFRASTRUCTURE_FAILURE"
+    receipt = result.provider_state["_business_qa"]
+    assert receipt["terminal_state"] == business_qa.TRUE_INFRASTRUCTURE_FAILURE
+    assert receipt["fallback_resolution"] == "ERROR"
+    assert harness.counts["publication"] == 0

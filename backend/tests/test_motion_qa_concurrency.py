@@ -81,7 +81,7 @@ def _run(coro):
     return anyio.run(lambda: coro)
 
 
-def _prepare_pipeline(monkeypatch, storage, roles=("NEUTRAL_IDLE",)):
+def _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY",)):
     h, canonical = _prepare_canonical(monkeypatch, storage)
     install_kf_vlm(monkeypatch, VLM_KF_OK)
     for role in roles:

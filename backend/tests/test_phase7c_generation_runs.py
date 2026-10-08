@@ -22,6 +22,7 @@ from backend.services import (
     pet_reference_service,
     pet_reference_set_service,
     pet_registry,
+    qa_shadow_telemetry,
 )
 
 from .conftest import ASGITestClient, make_jpeg_bytes
@@ -142,7 +143,7 @@ class PipelineHarness:
             id="00000000-0000-0000-0000-000000000501",
             pet_id=PET,
             user_id=USER,
-            keyframe_role="NEUTRAL_IDLE",
+            keyframe_role="STAND_READY",
             version=1,
             status=keyframe_status,
             canonical_version_id=self.canonical.id,
@@ -154,6 +155,14 @@ class PipelineHarness:
             id="00000000-0000-0000-0000-000000000602",
             selected=True,
             decision="PASS",
+            generation_metadata={
+                "provider_identity": {
+                    "logical_model": "minimax_h3_max_turbo",
+                    "vendor": "fal",
+                    "vendor_model": "minimax/h3-max-turbo/image-to-video",
+                    "adapter": "FalMinimaxH3MaxTurboProvider",
+                }
+            },
         )
         self.motion = SimpleNamespace(
             id="00000000-0000-0000-0000-000000000601",
@@ -314,16 +323,53 @@ def test_happy_path_persists_full_lineage_and_reaches_mocked_phase7a(storage, mo
     assert result.identity_profile_id == harness.profile.id
     assert result.reference_set_id == harness.refset.id
     assert result.canonical_version_id == harness.canonical.id
-    assert result.keyframes["NEUTRAL_IDLE"]["id"] == harness.keyframe.id
+    assert result.keyframes["STAND_READY"]["id"] == harness.keyframe.id
     assert result.motion_spec_version == motion_spec.MOTION_SPEC_VERSION
     assert result.motion_version_id == harness.motion.id
     assert result.motion_version == 1
     assert result.selected_candidate_id == harness.motion.selected_candidate_id
     assert result.publication_id == harness.publication.publication_id
+    assert result.provider_state["_business_qa"]["version"] == "business-v1"
+    assert result.provider_state["_business_qa"]["terminal_state"] == "DELIVERED_GENERATED"
+    assert result.provider_state["_business_qa"]["provider_identity"] == {
+        "logical_model": "minimax_h3_max_turbo",
+        "vendor": "fal",
+        "vendor_model": "minimax/h3-max-turbo/image-to-video",
+        "adapter": "FalMinimaxH3MaxTurboProvider",
+    }
     assert harness.calls.index("identity") < harness.calls.index("reference_set")
     assert harness.calls.index("canonical") < harness.calls.index("keyframe")
     assert harness.calls.index("motion_spec") < harness.calls.index("motion")
     assert harness.calls.index("motion") < harness.calls.index("publication")
+
+
+def test_shadow_telemetry_observes_pipeline_without_extra_paid_work(storage, monkeypatch):
+    seed_intake()
+    harness = PipelineHarness(monkeypatch)
+
+    queued = start()
+    result = work()
+
+    assert result.status == runs.STATUS_PUBLISHED
+    assert harness.counts["canonical_build"] == 1
+    assert harness.counts["keyframe_build"] == 1
+    assert harness.counts["motion_build"] == 1
+    assert harness.counts["publication"] == 1
+
+    rows = qa_shadow_telemetry.rows_for_run(queued.id)
+    stages = {row["stage"] for row in rows}
+    assert {"RUN", "CANONICAL", "KEYFRAME", "MOTION"} <= stages
+    aggregate = next(row for row in rows if row["stage"] == "RUN")
+    assert aggregate["fallback_used"] is False
+    assert aggregate["metadata"]["terminal_state"] == "DELIVERED_GENERATED"
+    assert aggregate["timings"]["upload_to_cutout_ms"] is not None
+    assert aggregate["timings"]["queue_wait_ms"] is not None
+    assert aggregate["timings"]["worker_claim_ms"] >= 0
+    assert aggregate["timings"]["total_request_ms"] is not None
+    assert {
+        "CANONICAL", "KEYFRAMES", "MOTION_GENERATION", "QA", "PUBLICATION"
+    } <= set(aggregate["timings"]["stages"])
+    assert aggregate["vlm_call_count"] == 0
 
 
 def test_motion_build_reuses_stage_motion_spec_contract(storage, monkeypatch):
@@ -460,13 +506,12 @@ def test_inconsistent_persisted_stage_falls_back_to_safe_recovery(storage, monke
     assert result.canonical_version_id == h.canonical.id
 
 
-def test_breathing_start_keyframe_requests_canonical_reuse(storage, monkeypatch):
-    """BREATHING 의 NEUTRAL_IDLE 시작 키프레임 호출만 Canonical 재사용을 켠다.
+def test_breathing_start_keyframe_is_stand_ready_without_canonical_reuse(storage, monkeypatch):
+    """HOME = STAND_READY (motion-spec-v16): BREATHING 의 시작 키프레임 호출은
+    STAND_READY 이고 Canonical 재사용을 **켜지 않는다**.
 
-    build_keyframe() 자체는 스텁이라 여기서는 재사용 판정 로직을 증명하지
-    않는다 — _execute() 가 BREATHING 의 start_keyframe_role 호출에 정확히
-    allow_canonical_reuse=True 를 실어 보내는 배선만 증명한다(요구 6의 짝:
-    non-BREATHING 은 test_unsellable... / 아래 BLINKING 테스트에서 False).
+    build_keyframe() 자체는 스텁이라 여기서는 _execute() 의 배선만 증명한다 —
+    정본이 어떤 자세든 홈은 항상 생성된 서기 스틸이지 정본의 별칭이 아니다.
     """
     seed_intake()
     harness = PipelineHarness(monkeypatch)
@@ -476,8 +521,8 @@ def test_breathing_start_keyframe_requests_canonical_reuse(storage, monkeypatch)
 
     assert result.status == runs.STATUS_PUBLISHED
     assert len(harness.keyframe_build_calls) == 1
-    assert harness.keyframe_build_calls[0]["keyframe_role"] == "NEUTRAL_IDLE"
-    assert harness.keyframe_build_calls[0]["allow_canonical_reuse"] is True
+    assert harness.keyframe_build_calls[0]["keyframe_role"] == "STAND_READY"
+    assert harness.keyframe_build_calls[0]["allow_canonical_reuse"] is False
 
 
 def test_same_idempotency_key_returns_same_run_without_duplicate_work(storage, monkeypatch):
@@ -784,7 +829,7 @@ def test_replacement_worker_refuses_to_reuse_review_source(monkeypatch):
         status=runs.STATUS_RUNNING,
         current_stage=runs.STAGE_MOTION_GENERATION,
         canonical_version_id=source.canonical_version_id,
-        keyframes={"NEUTRAL_IDLE": {"id": source.start_keyframe_id, "version": 1}},
+        keyframes={"STAND_READY": {"id": source.start_keyframe_id, "version": 1}},
         motion_spec_version=motion_spec.MOTION_SPEC_VERSION,
         provider_state={"_operator": {"replacement_request": {"source_motion_version_id": source.id}}},
     )
@@ -908,4 +953,3 @@ def test_migration_persists_lineage_and_uses_an_atomic_claim():
     assert "create or replace function public.claim_pet_generation_run" in sql
     assert "for update" in sql
     assert "to service_role" in sql
-

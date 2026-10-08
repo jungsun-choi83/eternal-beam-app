@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -126,9 +127,10 @@ def candidate_policy() -> dict[str, int]:
     """
     후보 상한 정책 — 전부 env 로 조정 가능 (요구 15).
 
-    점진적 조기 중단 (Phase 7 최적화): 기본 stop_after_passes=1 — **첫 PASS 에서
-    즉시 멈춘다.** 후보 N 의 QA 판정이 나기 전에 N+1 을 제출하는 일은 루프 구조상
-    없고(순차 생성→QA), 이 값은 "PASS 뒤에도 여분을 만들 것인가"만 정한다.
+    점진적 조기 중단 (Phase 7 최적화): 기본 stop_after_passes=1 — business-v1
+    전달 가능 후보에서 즉시 멈춘다. 후보 N 의 QA 판정이 나기 전에 N+1 을
+    제출하는 일은 루프 구조상 없고(순차 생성→QA), 이 값은 전달 가능 후보 뒤에도
+    여분을 만들 것인가만 정한다.
     예전 기본 2 는 PASS 하나가 나온 뒤에도 유료 시도를 한 번 더 태웠다 —
     중복 PASS 가 필요하면 env 로 명시적으로 올린다.
 
@@ -150,7 +152,7 @@ def candidate_policy() -> dict[str, int]:
 #: 다시 생성됐다 — 같은 입력, 같은 프롬프트, 같은 프로바이더인데도.
 #:
 #: 나머지 키는 전부 생성에 영향을 준다고 본다(레퍼런스 세트 스탬프 포함).
-QA_ONLY_VERSION_KEYS = ("canonical_qa",)
+QA_ONLY_VERSION_KEYS = ("canonical_qa", "vlm_escalation", "qa_evidence_reuse")
 
 
 def generation_versions(stamp: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -159,7 +161,14 @@ def generation_versions(stamp: Optional[dict[str, Any]]) -> dict[str, Any]:
 
 
 def analyzer_versions() -> dict[str, Any]:
-    from . import canonical_image_providers, canonical_prompt, canonical_qa, pet_reference_set_service
+    from . import (
+        canonical_image_providers,
+        canonical_prompt,
+        canonical_qa,
+        pet_reference_set_service,
+        qa_evidence_reuse,
+        vlm_escalation,
+    )
 
     providers = canonical_image_providers.resolve_providers()
     return {
@@ -167,6 +176,8 @@ def analyzer_versions() -> dict[str, Any]:
         "canonical_builder": CANONICAL_BUILDER_VERSION,
         "canonical_prompt": canonical_prompt.CANONICAL_PROMPT_VERSION,
         "canonical_qa": canonical_qa.CANONICAL_QA_VERSION,
+        "vlm_escalation": vlm_escalation.VLM_ESCALATION_VERSION,
+        "qa_evidence_reuse": qa_evidence_reuse.QA_EVIDENCE_REUSE_VERSION,
         "canonical_providers": [f"{p.name}:{p.model_name()}" for p in providers],
     }
 
@@ -359,41 +370,25 @@ async def _update(table: str, mock_store: list[dict[str, Any]], row_id: str, fie
 # ══════════════════════════════════════════════════════════════════════════
 
 
+#: 중립 역할 이름 — 정의는 canonical_reference_selector 에 있다.
+ROLE_ONLY_AVAILABLE = "ONLY_AVAILABLE"
+ROLE_SUPPORT_1 = "SUPPORT_1"
+ROLE_SUPPORT_2 = "SUPPORT_2"
+ROLE_SUPPORT_3 = "SUPPORT_3"
+
+
 def select_input_references(refset: Any) -> list[dict[str, str]]:
     """
-    신뢰 세트 → 생성 입력 (최대 3, 상보적). [{reference_id, role}].
+    신뢰 세트 → 생성 입력 (1–3장, 신원 우선). [{reference_id, role}].
 
-    우선순위: PRIMARY_FACE → PRIMARY_FULL_BODY → PRIMARY_3Q → 최고 측면.
-    항목이 하나도 없으면(제한 세트) 첫 원본 하나 — 사진 1장도 허용된다.
+    선택 규칙과 결정 로그는 canonical_reference_selector.select 에 있다 — 여기는
+    그 결과의 선택 목록만 돌려주는 얇은 창구다. build_canonical 은 같은 선택기를
+    (살아 있는 원본·해석 가능성 확인과 함께) 직접 부르고, 그 **하나의** 목록으로
+    프로바이더 입력·output_spec·QA 를 전부 만든다.
     """
-    by_role = {i["role"]: i for i in (refset.items or [])}
-    picks: list[dict[str, str]] = []
-    seen: set[str] = set()
+    from . import canonical_reference_selector
 
-    def add(item: Optional[dict[str, Any]], role: str) -> None:
-        if not item or len(picks) >= 3:
-            return
-        rid = str(item["reference_id"])
-        if rid in seen:
-            return
-        seen.add(rid)
-        picks.append({"reference_id": rid, "role": role})
-
-    add(by_role.get("PRIMARY_FACE"), "PRIMARY_FACE")
-    add(by_role.get("PRIMARY_FULL_BODY"), "PRIMARY_FULL_BODY")
-    side = by_role.get("PRIMARY_3Q")
-    side_role = "PRIMARY_3Q"
-    if not side:
-        left, right = by_role.get("PRIMARY_LEFT"), by_role.get("PRIMARY_RIGHT")
-        candidates = [(i, r) for i, r in ((left, "PRIMARY_LEFT"), (right, "PRIMARY_RIGHT")) if i]
-        if candidates:
-            candidates.sort(key=lambda t: -float(t[0].get("selection_score") or 0))
-            side, side_role = candidates[0]
-    add(side, side_role)
-
-    if not picks and refset.source_reference_ids:
-        picks.append({"reference_id": str(refset.source_reference_ids[0]), "role": "ONLY_AVAILABLE"})
-    return picks
+    return canonical_reference_selector.select(refset)["selected"]
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -444,9 +439,11 @@ async def build_canonical(
     가능한지 확인한다. 불가능하면 과금 없이 CANONICAL_QA_NOT_CONFIGURED.
     """
     from . import (
+        business_qa,
         canonical_image_providers,
         canonical_prompt,
         canonical_qa,
+        canonical_reference_selector,
         clean_plate_service,
         pet_identity_service,
         pet_reference_service,
@@ -530,26 +527,12 @@ async def build_canonical(
                 cands = await _candidate_rows(str(latest["id"]))
                 return _to_version(latest, cands, deduplicated=True)
 
-    # ── 유료 호출 전: 이 QA 구성으로 PASS 가 가능한가 ────────────────────
-    # 핵심 검사에 VLM 확언이 들어 있는데 VLM 을 부를 수 없으면 모든 후보가
-    # REVIEW 상한에 걸려 시도 상한(primary+fallback)을 전부 태운다. PASS 조건은
-    # 낮추지 않는다 — 구성 오류로 닫는다. 버전 행도 만들지 않는다.
-    if require_pass_capable_qa and canonical_qa.pass_requires_vlm():
-        vlm_unavailable = vlm_identity.unavailable_reason()
-        if vlm_unavailable:
-            raise CanonicalPetError(
-                "CANONICAL_QA_NOT_CONFIGURED",
-                "정본 QA 가 PASS 를 낼 수 없는 구성입니다 — 유료 생성을 제출하지 않았습니다 "
-                f"({vlm_unavailable}).",
-                status=503,
-            )
-
-    # ── 입력 레퍼런스 조립 ────────────────────────────────────────────────
-    picks = select_input_references(refset)
-    if not picks:
-        raise CanonicalPetError(
-            "NO_INPUT_REFERENCES", "생성에 쓸 신뢰 레퍼런스가 없습니다.", status=409
-        )
+    # Phase 8: legacy PASS still requires VLM, but customer delivery does not.
+    # ``require_pass_capable_qa`` remains accepted for API compatibility; VLM
+    # availability is no longer a generation precondition because clear
+    # deterministic Business QA can deliver without it. If escalation is
+    # needed and the configured VLM is unavailable, the preserved legacy
+    # result remains REVIEW and Business QA decides the customer action.
 
     refs = await pet_reference_service.list_references(user_id=uid, pet_id=pid)
     refs_by_id = {str(r.id): r for r in refs}
@@ -557,45 +540,9 @@ async def build_canonical(
     sign = sign_url_fn or _default_sign_url
     cutout = cutout_fn or _default_cutout_fn
 
-    provider_refs: list[CanonicalReference] = []
-    ref_signatures: list[dict[str, Any]] = []
-    vlm_ref_images: list[tuple[bytes, str]] = []
-    for pick in picks:
-        ref = refs_by_id.get(pick["reference_id"])
-        if not ref:
-            continue
-        data = fetch(ref)
-        provider_refs.append(
-            CanonicalReference(
-                reference_id=pick["reference_id"],
-                role=pick["role"],
-                url=sign(ref),
-                data=data,
-                mime_type=ref.mime_type or "image/jpeg",
-            )
-        )
-        sig = ((refset.reference_analysis.get(pick["reference_id"]) or {}).get("eligibility") or {}).get("signature")
-        if sig:
-            ref_signatures.append(sig)
-        if data:
-            vlm_ref_images.append((data, ref.mime_type or "image/jpeg"))
-
-    if not provider_refs:
-        raise CanonicalPetError(
-            "NO_INPUT_REFERENCES", "입력 레퍼런스를 불러오지 못했습니다.", status=409
-        )
-
-    input_ids = [p["reference_id"] for p in picks]
-    prompt = canonical_prompt.build_canonical_prompt(
-        visual_identity=(profile.visual_identity if profile else {}),
-        structural_identity=(profile.structural_identity if profile else {}),
-        reference_roles=[p["role"] for p in picks],
-    )
-
-    cid = pid[4:] if pid.startswith("pet_") else pid
-    policy = candidate_policy()
-
-    # ── 버전 행 — 프로바이더 호출 **전** ─────────────────────────────────
+    # ── 재개할 building 버전이 있는가 — 선택보다 **먼저** 본다 ─────────────────
+    # 재개하는 버전은 처음 확정한 입력 목록을 그대로 쓴다. 다시 고르면 저장된
+    # output_spec 과 실제 프로바이더 입력이 어긋날 수 있다.
     rows = await _version_rows(pid)
     durable_execution = any(getattr(provider, "durable_execution", False) for provider in resolved_providers)
     resumable = rows[-1] if rows else None
@@ -611,6 +558,112 @@ async def build_canonical(
     ):
         resumable = None
 
+    # ── 입력 레퍼런스: **하나의** 확정 목록 ──────────────────────────────────
+    # 해석 가능성(대장에 있고 바이트를 읽을 수 있는가)은 선택을 확정하는 과정의
+    # 일부다 — 쓸 수 없는 레퍼런스는 dropped_unresolvable 로 기록되고 다음 후보가
+    # 검토된다. 목록이 확정된 뒤에는 프로바이더 입력·output_spec·QA 시그니처·VLM QA
+    # 이미지가 전부 이 목록에서 나온다. 확정된 레퍼런스를 나중에 읽지 못하면
+    # 조용히 빼지 않고 실패한다.
+    loaded: dict[str, bytes] = {}
+
+    def _resolve_reference(rid: str) -> Optional[str]:
+        ref = refs_by_id.get(rid)
+        if not ref:
+            return "missing_from_ledger"
+        data = fetch(ref)
+        if not data:
+            return "bytes_unavailable"
+        loaded[rid] = data
+        return None
+
+    stored_spec = (resumable.get("output_spec") or {}) if resumable else {}
+    stored_picks = stored_spec.get("input_references") or []
+    selection: Optional[dict[str, Any]] = None
+    if stored_picks:
+        picks = [
+            {"reference_id": str(p.get("reference_id")), "role": str(p.get("role"))}
+            for p in stored_picks
+        ]
+        selection = stored_spec.get("selection") or None
+    else:
+        selection = canonical_reference_selector.select(
+            refset,
+            active_ids={str(r.id) for r in pet_reference_service.active_originals(refs) if r.id},
+            resolve=_resolve_reference,
+        )
+        picks = selection["selected"]
+        logger.info(
+            "정본 입력 선택 (pet=%s set=v%s): mode=%s selected=%s identity_confidence=%s",
+            pid,
+            refset.version,
+            selection["mode"],
+            [(p["reference_id"], p["role"]) for p in picks],
+            selection["identity_confidence"],
+        )
+    if not picks:
+        raise CanonicalPetError(
+            "NO_INPUT_REFERENCES", "생성에 쓸 신뢰 레퍼런스가 없습니다.", status=409
+        )
+
+    provider_refs: list[CanonicalReference] = []
+    ref_signatures: list[dict[str, Any]] = []
+    vlm_ref_images: list[tuple[bytes, str]] = []
+    for pick in picks:
+        rid = pick["reference_id"]
+        ref = refs_by_id.get(rid)
+        data = loaded.get(rid) or (fetch(ref) if ref else None)
+        if not ref or not data:
+            raise CanonicalPetError(
+                "INPUT_REFERENCE_UNRESOLVABLE",
+                "확정된 입력 레퍼런스를 불러오지 못했습니다.",
+                status=409,
+            )
+        provider_refs.append(
+            CanonicalReference(
+                reference_id=rid,
+                role=pick["role"],
+                url=sign(ref),
+                data=data,
+                mime_type=ref.mime_type or "image/jpeg",
+            )
+        )
+        # 시그니처는 누끼가 있는 레퍼런스에만 있다(저하 폴백 한 장에는 없을 수 있다).
+        sig = ((refset.reference_analysis.get(rid) or {}).get("eligibility") or {}).get("signature")
+        if sig:
+            ref_signatures.append(sig)
+        vlm_ref_images.append((data, ref.mime_type or "image/jpeg"))
+
+    input_ids = [p["reference_id"] for p in picks]
+
+    # ── 펫 적응형 중립 배경 — 이 정본 계보의 **유일한** 배경 결정 ──────────
+    # 신원 프로필의 코트 팔레트에서 한 번 고르고 output_spec 에 박제한다. 재개
+    # 중인 버전은 저장된 결정을 그대로 쓴다(다시 고르지 않는다). 키프레임·모션은
+    # 이 값을 읽기만 한다 (pet_background.from_output_spec).
+    from . import pet_background
+
+    background = (
+        pet_background.from_output_spec(stored_spec)
+        if resumable
+        else pet_background.select_background(profile.visual_identity if profile else {})
+    )
+    background_tone = pet_background.prompt_tone(background.get("background_label"))
+    plate_background = pet_background.background_rgb(background)
+    provider_output_spec = {
+        **canonical_prompt.CANONICAL_OUTPUT_SPEC,
+        "background": canonical_prompt.background_spec_text(background_tone),
+    }
+
+    prompt = canonical_prompt.build_canonical_prompt(
+        visual_identity=(profile.visual_identity if profile else {}),
+        structural_identity=(profile.structural_identity if profile else {}),
+        reference_roles=[p["role"] for p in picks],
+        background_tone=background_tone,
+    )
+
+    cid = pid[4:] if pid.startswith("pet_") else pid
+    policy = candidate_policy()
+
+    # ── 버전 행 — 프로바이더 호출 **전** ─────────────────────────────────
     if resumable:
         version_row = resumable
     else:
@@ -626,8 +679,15 @@ async def build_canonical(
             "input_reference_ids": input_ids,
             "prompt": prompt,
             "prompt_version": canonical_prompt.CANONICAL_PROMPT_VERSION,
-            # input_references: 어떤 역할의 레퍼런스가 들어갔는지 (검토 페이로드용).
-            "output_spec": {**canonical_prompt.CANONICAL_OUTPUT_SPEC, "input_references": picks},
+            # input_references: 확정된 입력 목록(역할 포함) — 프로바이더·QA 와 같은 목록.
+            # selection: 선택기의 버전과 모든 레퍼런스에 대한 결정 로그.
+            "output_spec": {
+                **provider_output_spec,
+                # 선택된 배경(RGB/label/선택기 버전/근거) — 하류가 재사용하는 정본.
+                "background_selection": background,
+                "input_references": picks,
+                **({"selection": selection} if selection else {}),
+            },
             "selected_candidate_id": None,
             "selection_reason": None,
             "qa_summary": {},
@@ -643,7 +703,10 @@ async def build_canonical(
 
     # ── 후보 루프 ────────────────────────────────────────────────────────
     candidates = await _candidate_rows(version_id) if resumable else []
-    passes = sum(1 for candidate in candidates if candidate.get("decision") == "PASS")
+    passes = sum(
+        1 for candidate in candidates
+        if business_qa.is_deliverable(candidate.get("qa_result") or {})
+    )
     contract_violation = any(
         bool((candidate.get("generation_metadata") or {}).get("contract_violation"))
         for candidate in candidates
@@ -659,7 +722,9 @@ async def build_canonical(
             return prompt, "full"
         try:
             compact = canonical_prompt.build_compact_canonical_prompt(
-                visual_identity=(profile.visual_identity if profile else {}), max_chars=limit
+                visual_identity=(profile.visual_identity if profile else {}),
+                max_chars=limit,
+                background_tone=background_tone,
             )
         except ValueError as exc:
             # compact 베이스 자체가 provider 상한보다 클 수 있다(max_chars=100 같은
@@ -710,7 +775,7 @@ async def build_canonical(
             return
 
         for attempt in range(1, max_candidates + 1):
-            if passes >= policy["stop_after_passes"]:
+            if passes >= policy["stop_after_passes"] or not business_qa.may_generate_next_candidate(candidates):
                 return
             existing = next(
                 (
@@ -780,7 +845,7 @@ async def build_canonical(
                     pid, version_row["version"], provider.name, attempt,
                 )
                 result = provider.generate(
-                    provider_refs, provider_prompt, dict(canonical_prompt.CANONICAL_OUTPUT_SPEC),
+                    provider_refs, provider_prompt, dict(provider_output_spec),
                     {"pet_id": pid, "canonical_version_id": version_id, "attempt": attempt},
                 )
             except CanonicalProviderError as e:
@@ -816,13 +881,9 @@ async def build_canonical(
 
             # ── Canonical 이미지 바이트가 나온 직후 ────────────────────────
             # raw 저장(스토리지 I/O) / 로컬 매팅·누끼 준비(CPU, 스레드로
-            # 오프로드) / Canonical VLM QA(외부 API 호출, 스레드로 오프로드)
-            # 는 셋 다 result.image_bytes 만 읽고 서로의 결과를 읽지 않는다
-            # — 동시에 시작해도 각 결과값은 순차 실행과 완전히 같다.
+            # 오프로드)는 동시에 시작한다. VLM은 누끼 기반 결정론 QA가 끝난
+            # 뒤 중앙 escalation policy가 요구할 때만 시작한다 (Phase 8).
             cutout_task = asyncio.create_task(asyncio.to_thread(cutout, result.image_bytes))
-            vlm_qa_task = asyncio.create_task(
-                asyncio.to_thread(vlm_identity.qa_canonical_image, result.image_bytes, vlm_ref_images)
-            )
 
             if not cand_row.get("raw_object_path"):
                 try:
@@ -845,10 +906,9 @@ async def build_canonical(
                         await _insert(_candidates_table(), _MOCK_CANDIDATES, cand_row)
                         candidates.append(cand_row)
                     logger.exception("정본 raw 저장 실패 (%s attempt=%d)", provider.name, attempt)
-                    # cutout/VLM QA 는 부작용 없는 순수 분석이다 — raw 저장이
-                    # 죽으면 결과를 버리고 조용히 드레인해 "Task exception was
-                    # never retrieved" 경고만 막는다 (복구 경로는 그대로).
-                    await asyncio.gather(cutout_task, vlm_qa_task, return_exceptions=True)
+                    # cutout 은 부작용 없는 순수 분석이다 — raw 저장이 죽으면
+                    # 결과를 버리고 조용히 드레인한다. VLM은 아직 호출되지 않았다.
+                    await asyncio.gather(cutout_task, return_exceptions=True)
                     # 이미 결제된 provider 결과다 — 새 유료 후보로 넘어가지 않는다.
                     # 재시도(재빌드 호출)는 같은 candidate/external_job_id 를 재사용해
                     # 저장만 다시 시도한다 (재제출 없음).
@@ -892,7 +952,7 @@ async def build_canonical(
                     return
                 try:
                     plate_bytes, plate_meta = await asyncio.to_thread(
-                        clean_plate_service.build_clean_plate, cut_bytes
+                        clean_plate_service.build_clean_plate, cut_bytes, plate_background
                     )
                     plate_path = clean_plate_service.plate_object_path(raw_path)
                     await supabase_assets.upload_asset_to_storage(plate_path, plate_bytes, "image/png")
@@ -917,13 +977,79 @@ async def build_canonical(
                     _build_and_upload_plate(),
                 )
 
-            vlm_qa = await vlm_qa_task
-            qa = canonical_qa.evaluate_candidate(
+            from . import vlm_escalation
+
+            qa_started = time.perf_counter()
+            deterministic_qa = canonical_qa.evaluate_candidate(
                 cutout_rgba=cutout_rgba,
                 profile=profile,
                 reference_signatures=ref_signatures,
-                vlm_qa=vlm_qa,
+                vlm_qa=None,
             )
+            from . import qa_evidence_reuse
+
+            inherited_profile_evidence = qa_evidence_reuse.profile_evidence(
+                identity_profile=profile,
+                reference_set=refset,
+                expected_identity_profile_version=refset.identity_profile_version,
+                expected_reference_set_version=refset.version,
+            )
+            escalation = vlm_escalation.should_call_vlm(
+                stage="CANONICAL",
+                qa_result=deterministic_qa,
+                request_kind="CANONICAL",
+                inherited_evidence=[inherited_profile_evidence],
+            )
+            should_call = escalation["decision"] == vlm_escalation.CALL
+            vlm_qa = (
+                await asyncio.to_thread(
+                    vlm_identity.qa_canonical_image,
+                    result.image_bytes,
+                    vlm_ref_images,
+                    tasks=escalation.get("requested_tasks") or (),
+                    unresolved_questions=escalation.get("unresolved_questions") or (),
+                    evidence_context={
+                        "stage_qa_version": canonical_qa.CANONICAL_QA_VERSION,
+                        "inherited_fingerprints": [
+                            inherited_profile_evidence["fingerprint"]
+                        ]
+                    },
+                )
+                if should_call
+                else None
+            )
+            qa = (
+                canonical_qa.evaluate_candidate(
+                    cutout_rgba=cutout_rgba,
+                    profile=profile,
+                    reference_signatures=ref_signatures,
+                    vlm_qa=vlm_qa,
+                )
+                if should_call
+                else deterministic_qa
+            )
+            qa["vlm_escalation"] = vlm_escalation.finalize_vlm_escalation(
+                escalation, called=should_call, result=vlm_qa
+            )
+            qa_evidence_reuse.attach_receipt(
+                qa,
+                stage="CANONICAL",
+                escalation=escalation,
+                vlm_result=vlm_qa,
+                inherited=[inherited_profile_evidence],
+            )
+            business_qa.attach_business_result(
+                qa,
+                attempt_number=business_qa.automatic_attempt_number(
+                    candidates, current_candidate_id=cand_id
+                ),
+                request_kind="CANONICAL",
+                fallback_available=True,
+            )
+            qa["shadow_telemetry"] = {
+                "version": "business-qa-shadow-v1",
+                "qa_time_ms": round((time.perf_counter() - qa_started) * 1000.0, 3),
+            }
             cand_row["qa_result"] = qa
             cand_row["decision"] = qa["decision"]
             await _update(
@@ -941,7 +1067,7 @@ async def build_canonical(
                     "decision": qa["decision"],
                 },
             )
-            if qa["decision"] == canonical_qa.PASS:
+            if business_qa.is_deliverable(qa):
                 passes += 1
 
     await run_provider(resolved_providers[0], policy["max_primary"], "primary")
@@ -960,11 +1086,12 @@ async def build_canonical(
         ),
     )
 
-    selected = ranked[0] if ranked and ranked[0]["decision"] == canonical_qa.PASS else None
+    selected = business_qa.best_available_candidate(ranked)
+    fallback_receipt = business_qa.fallback_receipt(ranked)
     if selected:
         status = STATUS_COMPLETE
         selection_reason = (
-            f"best PASS candidate: {selected['provider']} attempt {selected['attempt']}, "
+            f"best business-deliverable candidate: {selected['provider']} attempt {selected['attempt']}, "
             f"identity_similarity={selected['qa_result'].get('identity_similarity')}"
         )
         await _update(_candidates_table(), _MOCK_CANDIDATES, selected["id"], {"selected": True})
@@ -991,9 +1118,12 @@ async def build_canonical(
                     )
                 except Exception:
                     logger.warning("생성 레퍼런스 대장 기록 실패 (path=%s)", path, exc_info=True)
+    elif fallback_receipt:
+        status = STATUS_REVIEW
+        selection_reason = "business-v1 automatic budget exhausted — fallback required"
     elif any(c["decision"] == canonical_qa.REVIEW for c in candidates):
         status = STATUS_REVIEW
-        selection_reason = "no PASS candidate — human review required"
+        selection_reason = "no business-deliverable candidate — human review required"
     else:
         status = STATUS_FAILED
         selection_reason = (
@@ -1005,8 +1135,27 @@ async def build_canonical(
     qa_summary = {
         "candidate_count": len(candidates),
         "decisions": {d: sum(1 for c in candidates if c["decision"] == d) for d in ("PASS", "REVIEW", "FAIL", "ERROR")},
-        "canonical_confidence": ("low" if len({p['reference_id'] for p in picks}) < 2 else "normal"),
+        # 선택기가 말한 신원 신뢰도를 따른다: 한 장뿐/서로 어긋남/저하 폴백은 low,
+        # 2–3장이지만 같은 개체라는 확인이 없으면 unverified. normal 은 믿을 만한
+        # 동일-개체 확인이 있을 때만 나온다. 선택 로그가 없는 예전 버전은 기존
+        # 규칙 그대로다.
+        "canonical_confidence": (
+            (selection or {}).get("identity_confidence")
+            or ("low" if len({p['reference_id'] for p in picks}) < 2 else "normal")
+        ),
         "policy": policy,
+        "business_qa": {
+            "version": business_qa.BUSINESS_QA_VERSION,
+            "selection_policy": business_qa.BEST_AVAILABLE_POLICY_VERSION,
+            "candidate_budget": business_qa.automatic_candidate_budget("CANONICAL"),
+            "selected": (
+                dict((selected.get("qa_result") or {}).get("business_qa") or {})
+                if selected else (dict(fallback_receipt) if fallback_receipt else None)
+            ),
+            "selection_priority": (
+                business_qa.candidate_selection_priority(selected) if selected else None
+            ),
+        },
     }
     final_fields = {
         "status": status,
@@ -1045,7 +1194,15 @@ async def reevaluate_canonical_candidate(
     올라간 경우 이 함수가 저장된 raw/누끼를 그대로 다시 판정한다
     (motion_video_service.reevaluate_motion_candidate 와 같은 패턴).
     """
-    from . import canonical_qa, pet_identity_service, pet_reference_service, pet_reference_set_service, vlm_identity
+    from . import (
+        business_qa,
+        canonical_qa,
+        pet_identity_service,
+        pet_reference_service,
+        pet_reference_set_service,
+        vlm_identity,
+        vlm_escalation,
+    )
 
     uid = (user_id or "").strip()
     pid = (pet_id or "").strip()
@@ -1072,7 +1229,20 @@ async def reevaluate_canonical_candidate(
 
     previous_qa = dict(candidate.get("qa_result") or {})
     force_refresh = vlm_identity.qa_cache_mode(vlm_cache_mode) == vlm_identity.QA_CACHE_REFRESH
-    if previous_qa.get("qa_version") == canonical_qa.CANONICAL_QA_VERSION and not force_refresh:
+    if (
+        previous_qa.get("qa_version") == canonical_qa.CANONICAL_QA_VERSION
+        and business_qa.receipt(previous_qa) is not None
+        and (
+            (
+                (previous_qa.get("vlm_escalation") or {}).get("version")
+                == vlm_escalation.VLM_ESCALATION_VERSION
+                and (previous_qa.get("vlm_escalation") or {}).get("decision") == "SKIP"
+            )
+            or (previous_qa.get("vlm") or {}).get("source")
+            in {vlm_identity.VLM_CANONICAL_QA_VERSION, vlm_identity.VLM_TARGETED_QA_VERSION}
+        )
+        and not force_refresh
+    ):
         return _to_version(version_row, candidates, deduplicated=True)
 
     profile = await pet_identity_service.get_profile(
@@ -1112,24 +1282,94 @@ async def reevaluate_canonical_candidate(
 
     refs = await pet_reference_service.list_references(user_id=uid, pet_id=pid)
     refs_by_id = {str(r.id): r for r in refs}
+    # 새 선택기로 확정된 버전(output_spec.selection 이 있다)은 생성에 쓴 것과 **같은**
+    # 레퍼런스로만 재평가한다 — 하나라도 읽지 못하면 조용히 줄이지 않고 실패한다.
+    # 선택 로그가 없는 예전 버전은 기존 동작(읽히는 것만으로 진행) 그대로다.
+    strict_inputs = bool((version_row.get("output_spec") or {}).get("selection"))
     vlm_ref_images: list[tuple[bytes, str]] = []
     for pick in picks:
         ref = refs_by_id.get(str(pick.get("reference_id")))
-        if not ref:
+        data = fetch(ref) if ref else None
+        if not ref or not data:
+            if strict_inputs:
+                raise CanonicalPetError(
+                    "INPUT_REFERENCE_UNRESOLVABLE",
+                    "확정된 입력 레퍼런스를 불러오지 못했습니다.",
+                    status=409,
+                )
             continue
-        data = fetch(ref)
-        if data:
-            vlm_ref_images.append((data, ref.mime_type or "image/jpeg"))
+        vlm_ref_images.append((data, ref.mime_type or "image/jpeg"))
 
-    vlm_qa = vlm_identity.qa_canonical_image(
-        raw_bytes, vlm_ref_images, **({"cache_mode": vlm_cache_mode} if vlm_cache_mode else {})
-    )
-    qa = canonical_qa.evaluate_candidate(
+    qa_started = time.perf_counter()
+    deterministic_qa = canonical_qa.evaluate_candidate(
         cutout_rgba=cutout_rgba,
         profile=profile,
         reference_signatures=ref_signatures,
-        vlm_qa=vlm_qa,
+        vlm_qa=None,
     )
+    from . import qa_evidence_reuse
+
+    inherited_profile_evidence = qa_evidence_reuse.profile_evidence(
+        identity_profile=profile,
+        reference_set=refset,
+        expected_identity_profile_version=version_row.get("identity_profile_version"),
+        expected_reference_set_version=version_row.get("reference_set_version"),
+    )
+    escalation = vlm_escalation.should_call_vlm(
+        stage="CANONICAL",
+        qa_result=deterministic_qa,
+        request_kind="CANONICAL",
+        force_call=force_refresh,
+        inherited_evidence=[inherited_profile_evidence],
+    )
+    should_call = escalation["decision"] == vlm_escalation.CALL
+    vlm_qa = (
+        vlm_identity.qa_canonical_image(
+            raw_bytes,
+            vlm_ref_images,
+            tasks=escalation.get("requested_tasks") or (),
+            unresolved_questions=escalation.get("unresolved_questions") or (),
+            evidence_context={
+                "stage_qa_version": canonical_qa.CANONICAL_QA_VERSION,
+                "inherited_fingerprints": [inherited_profile_evidence["fingerprint"]]
+            },
+            **({"cache_mode": vlm_cache_mode} if vlm_cache_mode else {}),
+        )
+        if should_call
+        else None
+    )
+    qa = (
+        canonical_qa.evaluate_candidate(
+            cutout_rgba=cutout_rgba,
+            profile=profile,
+            reference_signatures=ref_signatures,
+            vlm_qa=vlm_qa,
+        )
+        if should_call
+        else deterministic_qa
+    )
+    qa["vlm_escalation"] = vlm_escalation.finalize_vlm_escalation(
+        escalation, called=should_call, result=vlm_qa
+    )
+    qa_evidence_reuse.attach_receipt(
+        qa,
+        stage="CANONICAL",
+        escalation=escalation,
+        vlm_result=vlm_qa,
+        inherited=[inherited_profile_evidence],
+    )
+    business_qa.attach_business_result(
+        qa,
+        attempt_number=business_qa.automatic_attempt_number(
+            candidates, current_candidate_id=cand_id
+        ),
+        request_kind="CANONICAL",
+        fallback_available=True,
+    )
+    qa["shadow_telemetry"] = {
+        "version": "business-qa-shadow-v1",
+        "qa_time_ms": round((time.perf_counter() - qa_started) * 1000.0, 3),
+    }
 
     metadata = dict(candidate.get("generation_metadata") or {})
     history = list(metadata.get("qa_history") or [])
@@ -1153,7 +1393,8 @@ async def reevaluate_canonical_candidate(
             c["attempt"],
         ),
     )
-    selected = ranked[0] if ranked and ranked[0]["decision"] == canonical_qa.PASS else None
+    selected = business_qa.best_available_candidate(ranked)
+    fallback_receipt = business_qa.fallback_receipt(ranked)
     for row in candidates:
         should_select = bool(selected and str(row.get("id")) == str(selected.get("id")))
         if bool(row.get("selected")) != should_select:
@@ -1163,7 +1404,7 @@ async def reevaluate_canonical_candidate(
     if selected:
         status = STATUS_COMPLETE
         selection_reason = (
-            f"best PASS candidate after {canonical_qa.CANONICAL_QA_VERSION}: "
+            f"best business-deliverable candidate after {canonical_qa.CANONICAL_QA_VERSION}: "
             f"{selected['provider']} attempt {selected['attempt']}"
         )
         provenance = {
@@ -1188,9 +1429,12 @@ async def reevaluate_canonical_candidate(
                     )
                 except Exception:
                     logger.warning("정본 재평가 대장 기록 실패 (path=%s)", path, exc_info=True)
+    elif fallback_receipt:
+        status = STATUS_REVIEW
+        selection_reason = "business-v1 automatic budget exhausted — fallback required"
     elif any(c["decision"] == canonical_qa.REVIEW for c in candidates):
         status = STATUS_REVIEW
-        selection_reason = "no PASS candidate — human review required"
+        selection_reason = "no business-deliverable candidate — human review required"
     else:
         status = STATUS_FAILED
         selection_reason = "no usable candidate"
@@ -1206,6 +1450,18 @@ async def reevaluate_canonical_candidate(
             },
             "canonical_confidence": (version_row.get("qa_summary") or {}).get("canonical_confidence", "normal"),
             "policy": dict((version_row.get("qa_summary") or {}).get("policy") or {}),
+            "business_qa": {
+                "version": business_qa.BUSINESS_QA_VERSION,
+                "selection_policy": business_qa.BEST_AVAILABLE_POLICY_VERSION,
+                "candidate_budget": business_qa.automatic_candidate_budget("CANONICAL"),
+                "selected": (
+                    dict((selected.get("qa_result") or {}).get("business_qa") or {})
+                    if selected else (dict(fallback_receipt) if fallback_receipt else None)
+                ),
+                "selection_priority": (
+                    business_qa.candidate_selection_priority(selected) if selected else None
+                ),
+            },
         },
         "completed_at": _now_iso(),
     }

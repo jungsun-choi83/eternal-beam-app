@@ -1287,12 +1287,7 @@ async def build_identity_profile(
     except pet_reference_service.PetReferenceError as e:
         raise PetIdentityError(e.code, e.message, status=e.status) from e
 
-    originals = [
-        r
-        for r in refs
-        if r.role == pet_reference_service.ROLE_ORIGINAL
-        and r.acceptance_state == pet_reference_service.STATE_ACCEPTED
-    ]
+    originals = pet_reference_service.active_originals(refs)
     if not originals:
         raise PetIdentityError(
             "NO_ORIGINAL_REFERENCES",

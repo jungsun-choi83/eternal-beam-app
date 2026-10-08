@@ -3,7 +3,7 @@ from __future__ import annotations
 import anyio
 import pytest
 
-from backend.services import canonical_qa
+from backend.services import business_qa, canonical_qa
 from backend.services import pet_identity_service as ids
 from backend.services import pet_reference_service as refs
 from backend.services import pet_registry
@@ -111,6 +111,9 @@ def test_canonical_qa_fail_closed_on_strong_pattern_contradiction():
     )
     assert qa["checks"]["coat_pattern"] == canonical_qa.FAIL
     assert "coat_pattern_strong_mismatch" in qa["reasons"]
+    result = _business_result(qa)
+    assert result["integrity_status"] == "PASS"
+    assert result["retry_action"] == "STOP"
 
 
 def test_canonical_qa_uses_multi_reference_signature_evidence(monkeypatch):
@@ -284,6 +287,9 @@ def test_canonical_qa_pattern_mismatch_single_reference_is_review():
     )
     assert qa["checks"]["coat_pattern"] == canonical_qa.REVIEW
     assert "coat_pattern_mismatch_single_reference" in qa["reasons"]
+    result = _business_result(qa)
+    assert result["delivery_action"] == "DELIVER_WITH_ADVISORY"
+    assert result["retry_action"] == "STOP"
 
 
 def test_canonical_qa_high_embedding_does_not_rewrite_coat_pattern():
@@ -336,6 +342,11 @@ def test_canonical_qa_persists_vlm_evidence():
     for key in (
         "same_pet",
         "same_pet_confidence",
+        "face_head_consistent",
+        "ear_muzzle_consistent",
+        "distinctive_markings_consistent",
+        "persistent_morphology_consistent",
+        "presentation_difference_only",
         "anatomy_plausible",
         "single_pet",
         "human_present",
@@ -349,7 +360,7 @@ def test_canonical_qa_persists_vlm_evidence():
     assert vlm["same_pet"] == "yes"
     assert vlm["same_pet_confidence"] == "high"
     assert vlm["identity_notes"] == "matching chest patch"
-    assert qa["qa_version"] == "canonical-qa-v4"
+    assert qa["qa_version"] == "canonical-qa-v5"
 
 
 def test_canonical_qa_vlm_different_pet_still_fails():
@@ -365,6 +376,305 @@ def test_canonical_qa_vlm_different_pet_still_fails():
     assert qa["decision"] == canonical_qa.FAIL
     assert qa["vlm"]["same_pet"] == "no"
     assert qa["vlm"]["identity_notes"] == "different blaze"
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# Business QA vNext Phase 2 — enhancement-tolerant Canonical authority
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def _presentation_variant(raw: bytes, *, gains: tuple[float, float, float], lift: float = 0.0) -> bytes:
+    import io
+
+    import numpy as np
+    from PIL import Image
+
+    with Image.open(io.BytesIO(raw)) as image:
+        rgba = np.asarray(image.convert("RGBA"), dtype=np.uint8).copy()
+    rgb = rgba[:, :, :3].astype(np.float64)
+    rgb = rgb * np.asarray(gains, dtype=np.float64)[None, None, :] + lift
+    rgba[:, :, :3] = np.clip(rgb, 0, 255).astype(np.uint8)
+    out = io.BytesIO()
+    Image.fromarray(rgba, mode="RGBA").save(out, format="PNG")
+    return out.getvalue()
+
+
+def _business_result(qa_result: dict) -> dict:
+    business_qa.attach_business_result(
+        qa_result,
+        attempt_number=1,
+        request_kind="CANONICAL",
+    )
+    return qa_result["business_qa"]
+
+
+def test_same_pet_brighter_presentation_is_deliverable():
+    profile, sig, cutout = _seed_strict_profile()
+    brighter = _presentation_variant(cutout, gains=(1.35, 1.35, 1.35), lift=22)
+    qa = canonical_qa.evaluate_candidate(
+        cutout_rgba=ids.load_rgba(brighter),
+        profile=profile,
+        reference_signatures=[sig],
+        vlm_qa={**VLM_QA_OK, "presentation_difference_only": "yes"},
+    )
+    result = _business_result(qa)
+
+    assert result["integrity_status"] == "PASS"
+    assert business_qa.is_deliverable(qa) is True
+    assert result["retry_action"] == "STOP"
+    assert result["authority_profile"] == "canonical-identity-v2"
+
+
+def test_same_pet_white_balance_change_is_deliverable():
+    profile, sig, cutout = _seed_strict_profile()
+    balanced = _presentation_variant(cutout, gains=(0.72, 1.08, 1.32), lift=12)
+    qa = canonical_qa.evaluate_candidate(
+        cutout_rgba=ids.load_rgba(balanced),
+        profile=profile,
+        reference_signatures=[sig],
+        vlm_qa={**VLM_QA_OK, "presentation_difference_only": "yes"},
+    )
+    result = _business_result(qa)
+
+    assert result["integrity_status"] == "PASS"
+    assert result["delivery_action"] in ("DELIVER", "DELIVER_WITH_ADVISORY")
+    assert result["retry_action"] == "STOP"
+
+
+def test_hsv_histogram_mismatch_is_diagnostic_only(monkeypatch):
+    from backend.services import pet_identity_service as pid
+
+    profile, sig, cutout = _seed_strict_profile()
+    monkeypatch.setattr(
+        pid,
+        "signature_similarity",
+        lambda a, b: {"comparable": True, "hist_intersection": 0.0, "phash_hamming": 31},
+    )
+    qa = canonical_qa.evaluate_candidate(
+        cutout_rgba=ids.load_rgba(cutout),
+        profile=profile,
+        reference_signatures=[sig],
+        vlm_qa=VLM_QA_OK,
+    )
+    assert qa["checks"]["identity_similarity"] == canonical_qa.FAIL
+
+    result = _business_result(qa)
+    assert result["authority_evidence"]["DIAGNOSTIC_ONLY"]["identity_similarity"] == "FAIL"
+    assert result["integrity_status"] == "PASS"
+    assert result["retry_action"] == "STOP"
+
+
+def test_rgb_grid_mismatch_is_diagnostic_only(monkeypatch):
+    from backend.services import pet_identity_service as pid
+
+    profile, sig, cutout = _seed_strict_profile()
+    profile.visual_identity["visual_embedding"]["support_reference_ids"] = ["r1", "r2"]
+    monkeypatch.setattr(
+        pid,
+        "embedding_similarity",
+        lambda a, b: {"comparable": True, "cosine_similarity": 0.05},
+    )
+    qa = canonical_qa.evaluate_candidate(
+        cutout_rgba=ids.load_rgba(cutout),
+        profile=profile,
+        reference_signatures=[sig],
+        vlm_qa=VLM_QA_OK,
+    )
+    assert qa["checks"]["visual_embedding"] == canonical_qa.FAIL
+
+    result = _business_result(qa)
+    assert result["authority_evidence"]["DIAGNOSTIC_ONLY"]["visual_embedding"] == "FAIL"
+    assert result["integrity_status"] == "PASS"
+    assert result["retry_action"] == "STOP"
+
+
+def test_coat_color_mismatch_alone_cannot_regenerate():
+    profile, sig, _ = _seed_strict_profile()
+    qa = canonical_qa.evaluate_candidate(
+        cutout_rgba=ids.load_rgba(make_pet_cutout_png(**_INVERTED)),
+        profile=profile,
+        reference_signatures=[sig],
+        vlm_qa=VLM_QA_OK,
+    )
+    assert qa["checks"]["coat_colors"] == canonical_qa.FAIL
+
+    result = _business_result(qa)
+    assert result["authority_evidence"]["IDENTITY_SUPPORT"]["coat_colors"] == "FAIL"
+    assert result["integrity_status"] == "PASS"
+    assert result["retry_action"] == "STOP"
+
+
+def test_minor_structure_difference_is_supporting_only():
+    profile, sig, cutout = _seed_strict_profile()
+    rgba = ids.load_rgba(cutout)
+    candidate_ar = ids.analyze_structural_identity(rgba)["silhouette"]["bbox_aspect_ratio"]
+    profile.structural_identity["silhouette"]["bbox_aspect_ratio"] = candidate_ar / 2.0
+    qa = canonical_qa.evaluate_candidate(
+        cutout_rgba=rgba,
+        profile=profile,
+        reference_signatures=[sig],
+        vlm_qa=VLM_QA_OK,
+    )
+    assert qa["checks"]["structure"] == canonical_qa.REVIEW
+
+    result = _business_result(qa)
+    assert result["authority_evidence"]["IDENTITY_SUPPORT"]["structure"] == "REVIEW"
+    assert result["integrity_status"] == "PASS"
+    assert result["retry_action"] == "STOP"
+
+
+def test_strong_facial_identity_contradiction_blocks():
+    profile, sig, cutout = _seed_strict_profile()
+    profile.visual_identity["same_individual_gate"]["strict_lineage_reference_count"] = 2
+    qa = canonical_qa.evaluate_candidate(
+        cutout_rgba=ids.load_rgba(cutout),
+        profile=profile,
+        reference_signatures=[sig],
+        vlm_qa={**VLM_QA_OK, "face_head_consistent": "no"},
+    )
+    result = _business_result(qa)
+
+    assert qa["business_signals"]["canonical_face_head_identity"] == canonical_qa.FAIL
+    assert result["integrity_status"] == "FAIL"
+    assert result["delivery_action"] == "BLOCK"
+    assert result["retry_action"] == "REGENERATE"
+
+
+def test_strong_persistent_morphology_contradiction_requires_multi_reference_evidence():
+    profile, sig, cutout = _seed_strict_profile()
+    contradiction = {**VLM_QA_OK, "persistent_morphology_consistent": "no"}
+
+    weak = canonical_qa.evaluate_candidate(
+        cutout_rgba=ids.load_rgba(cutout),
+        profile=profile,
+        reference_signatures=[sig],
+        vlm_qa=contradiction,
+    )
+    weak_result = _business_result(weak)
+    assert weak["business_signals"]["canonical_persistent_morphology_identity"] == canonical_qa.REVIEW
+    assert weak_result["retry_action"] == "STOP"
+
+    profile.visual_identity["same_individual_gate"]["strict_lineage_reference_count"] = 2
+    strong = canonical_qa.evaluate_candidate(
+        cutout_rgba=ids.load_rgba(cutout),
+        profile=profile,
+        reference_signatures=[sig],
+        vlm_qa=contradiction,
+    )
+    strong_result = _business_result(strong)
+    assert strong["business_signals"]["canonical_persistent_morphology_identity"] == canonical_qa.FAIL
+    assert strong_result["integrity_status"] == "FAIL"
+    assert strong_result["retry_action"] == "REGENERATE"
+
+
+def test_low_confidence_same_pet_disagreement_is_not_a_hard_contradiction():
+    profile, sig, cutout = _seed_strict_profile()
+    qa = canonical_qa.evaluate_candidate(
+        cutout_rgba=ids.load_rgba(cutout),
+        profile=profile,
+        reference_signatures=[sig],
+        vlm_qa={
+            **VLM_QA_OK,
+            "same_pet": "no",
+            "same_pet_confidence": "low",
+            "face_head_consistent": "unknown",
+            "ear_muzzle_consistent": "unknown",
+            "distinctive_markings_consistent": "unknown",
+        },
+    )
+    result = _business_result(qa)
+
+    assert qa["checks"]["vlm_same_pet"] == canonical_qa.FAIL
+    assert result["authority_evidence"]["IDENTITY_SUPPORT"]["vlm_same_pet"] == "FAIL"
+    assert result["delivery_action"] == "DELIVER_WITH_ADVISORY"
+    assert result["retry_action"] == "STOP"
+
+
+def test_strong_distinctive_marking_contradiction_with_good_evidence_blocks():
+    profile, sig, cutout = _seed_strict_profile()
+    profile.visual_identity["facial_markings"] = {
+        "status": "fused",
+        "value": "white blaze from forehead to muzzle",
+        "confidence": "high",
+        "support_reference_ids": ["r1", "r2"],
+    }
+    qa = canonical_qa.evaluate_candidate(
+        cutout_rgba=ids.load_rgba(cutout),
+        profile=profile,
+        reference_signatures=[sig],
+        vlm_qa={**VLM_QA_OK, "distinctive_markings_consistent": "no"},
+    )
+    result = _business_result(qa)
+
+    assert qa["business_signals"]["canonical_distinctive_markings_identity"] == canonical_qa.FAIL
+    assert qa["identity_evidence"]["business_identity"]["strong_profile_marking_evidence"] is True
+    assert result["integrity_status"] == "FAIL"
+    assert result["retry_action"] == "REGENERATE"
+
+
+def test_ambiguous_single_reference_marking_disagreement_is_advisory():
+    profile, sig, cutout = _seed_strict_profile()
+    qa = canonical_qa.evaluate_candidate(
+        cutout_rgba=ids.load_rgba(cutout),
+        profile=profile,
+        reference_signatures=[sig],
+        vlm_qa={**VLM_QA_OK, "distinctive_markings_consistent": "no"},
+    )
+    result = _business_result(qa)
+
+    assert qa["business_signals"]["canonical_distinctive_markings_identity"] == canonical_qa.REVIEW
+    assert result["delivery_action"] == "DELIVER_WITH_ADVISORY"
+    assert result["retry_action"] == "STOP"
+
+
+def test_severe_anatomy_corruption_remains_integrity_fail():
+    profile, sig, cutout = _seed_strict_profile()
+    qa = canonical_qa.evaluate_candidate(
+        cutout_rgba=ids.load_rgba(cutout),
+        profile=profile,
+        reference_signatures=[sig],
+        vlm_qa={**VLM_QA_OK, "anatomy_plausible": "no"},
+    )
+    result = _business_result(qa)
+
+    assert result["authority_evidence"]["INTEGRITY_HARD"]["vlm_anatomy"] == "FAIL"
+    assert result["integrity_status"] == "FAIL"
+    assert result["delivery_action"] == "BLOCK"
+
+
+def test_missing_or_invalid_cutout_is_integrity_fail():
+    profile, sig, _ = _seed_strict_profile()
+    qa = canonical_qa.evaluate_candidate(
+        cutout_rgba=None,
+        profile=profile,
+        reference_signatures=[sig],
+        vlm_qa=VLM_QA_OK,
+    )
+    result = _business_result(qa)
+
+    assert qa["checks"]["cutout"] == "unknown"  # legacy evidence is unchanged
+    assert qa["business_signals"]["canonical_cutout_integrity"] == canonical_qa.FAIL
+    assert result["integrity_status"] == "FAIL"
+    assert result["delivery_action"] == "BLOCK"
+
+
+@pytest.mark.parametrize(
+    "vlm_update",
+    ({"single_pet": "no"}, {"human_present": "yes"}),
+)
+def test_duplicate_pet_or_forbidden_contamination_remains_integrity_fail(vlm_update):
+    profile, sig, cutout = _seed_strict_profile()
+    qa = canonical_qa.evaluate_candidate(
+        cutout_rgba=ids.load_rgba(cutout),
+        profile=profile,
+        reference_signatures=[sig],
+        vlm_qa={**VLM_QA_OK, **vlm_update},
+    )
+    result = _business_result(qa)
+
+    assert result["authority_evidence"]["INTEGRITY_HARD"]["vlm_composition"] == "FAIL"
+    assert result["integrity_status"] == "FAIL"
+    assert result["delivery_action"] == "BLOCK"
 
 
 # ══════════════════════════════════════════════════════════════════════════

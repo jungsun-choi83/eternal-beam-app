@@ -16,14 +16,11 @@ import uuid
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from ..services import supabase_assets
+from ..services import pet_cutout_service, supabase_assets
 from ..services.cutout_errors import CutoutError
 from ..services.cutout_quality import analyze_alpha_fur_edge
 from ..services.debug_artifacts import store_debug_artifacts
-from ..services.vitmatte_service import (
-    DEBUG_ARTIFACTS_ENABLED,
-    matte_foreground_with_meta,
-)
+from ..services.vitmatte_service import DEBUG_ARTIFACTS_ENABLED, matte_foreground_with_meta
 
 logger = logging.getLogger(__name__)
 
@@ -62,12 +59,15 @@ async def post_matting_cutout(
     artifacts: dict[str, bytes] | None = {} if want_debug else None
 
     try:
-        png, vitmatte_meta = matte_foreground_with_meta(
+        generated = pet_cutout_service.generate_vitmatte_cutout_sync(
             raw,
             model_name=model,
             segmenter=segmenter,
             debug_artifacts=artifacts,
+            matte_function=matte_foreground_with_meta,
+            quality_function=analyze_alpha_fur_edge,
         )
+        png = generated.png
     except CutoutError as e:
         # 진단은 서버 로그로. 클라이언트에는 code/message 만 (트레이스백 노출 금지).
         logger.warning(
@@ -96,13 +96,7 @@ async def post_matting_cutout(
 
     # ViTMatte 는 트라이맵 unknown 영역을 단일 패스로 매팅한다 — rembg 처럼
     # "1차 후 재처리"하는 2패스가 아니므로 second_pass=False 로 정직하게 적는다.
-    quality_meta = {
-        **analyze_alpha_fur_edge(png),
-        **vitmatte_meta,
-        "refined": True,
-        "refinement_type": "vitmatte",
-        "second_pass": False,
-    }
+    quality_meta = generated.diagnostics
 
     cutout_url: str | None = None
     cutout_b64: str | None = None
@@ -121,14 +115,22 @@ async def post_matting_cutout(
             try:
                 from ..services import pet_reference_service
 
-                await pet_reference_service.record_derived(
-                    user_id=user_id,
-                    content_id=cid,
-                    object_path=path,
-                    derived_kind="cutout_vitmatte",
-                    mime_type="image/png",
-                    diagnostics=quality_meta,
-                )
+                # 잠긴 펫(생성이 시작됨)에는 새 누끼 행을 남기지 않는다. 판정
+                # 불가(예외)도 아래 except 로 떨어져 기록하지 않는다. 누끼 응답
+                # 계약은 그대로다.
+                if await pet_reference_service.pet_inputs_locked(
+                    pet_reference_service.pet_id_for_content(cid)
+                ):
+                    logger.info("matting/cutout: 잠긴 펫이라 누끼를 대장에 남기지 않는다 (cid=%s)", cid)
+                else:
+                    await pet_reference_service.record_derived(
+                        user_id=user_id,
+                        content_id=cid,
+                        object_path=path,
+                        derived_kind="cutout_vitmatte",
+                        mime_type="image/png",
+                        diagnostics=quality_meta,
+                    )
             except Exception:
                 logger.warning(
                     "matting/cutout: 파생 레퍼런스 기록 실패 (cid=%s)", cid, exc_info=True

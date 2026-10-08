@@ -50,6 +50,8 @@ interface PetIdleDisplayProps {
    * 없으면 레거시 자동 감지 그대로다.
    */
   deliveryFormat?: string | null;
+  /** Render a Canonical tier-4 fallback as a true still, without CSS breathing. */
+  staticCutout?: boolean;
   /**
    * 이벤트 소스별 명시 전달 포맷 (Phase 7I.1). 이벤트 id → 포맷.
    * 이벤트 모드는 BREATH 모드에서 파생되지 않는다 — 세대 혼합을 허용한다.
@@ -78,6 +80,7 @@ export function PetIdleDisplay({
   onFeetMarginChange,
   backgroundBaked = false,
   deliveryFormat = null,
+  staticCutout = false,
   eventDeliveryFormats,
 }: PetIdleDisplayProps) {
   const display = resolveIdleDisplaySource(idleVideoUrl, cutoutUrl, {
@@ -115,6 +118,18 @@ export function PetIdleDisplay({
         // 세로 카드 안에서 구운 가로 영상을 확대/절단하지 않는다. 동일 영상을
         // 흐린 배경으로만 한 장 더 써 남는 영역을 채운다.
         blurredBackdrop={backgroundBaked}
+      />
+    );
+  }
+
+  if (staticCutout) {
+    return (
+      <img
+        src={display.src}
+        alt=""
+        className={className}
+        style={style}
+        draggable={false}
       />
     );
   }

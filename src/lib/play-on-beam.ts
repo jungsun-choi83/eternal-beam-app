@@ -54,6 +54,7 @@ export async function playPublishedOnBeam(
     event: "pet_asset",
     pet_id: input.petId,
     motion_id: input.motionId,
+    spawn_vfx: "heart",
   });
   return petResult.ok
     ? { ok: true, commandId: petResult.command_id }

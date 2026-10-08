@@ -3,8 +3,12 @@
 
 ── 무엇을 하는가 ───────────────────────────────────────────────────────────
 사용자가 준 **원본 사진**을 스토리지에 영구 보존하고, 펫당 여러 장의
-레퍼런스를 append-only 로 기록한다(pet_reference_images). 이후 신원
-파이프라인(멀티뷰 → 정본 펫 이미지 → 액션 키프레임)의 출발점이다.
+레퍼런스를 기록한다(pet_reference_images). 이후 신원 파이프라인(멀티뷰 →
+정본 펫 이미지 → 액션 키프레임)의 출발점이다.
+
+행은 지우지 않고, 바이트·경로·계보 열은 고치지 않는다. 갱신되는 열은
+acceptance_state / rejection_code 둘뿐이다 — 사용자가 사진을 빼거나 바꾸면
+그 원본과 누끼가 rejected 로 물러나고, 같은 바이트가 다시 오면 되살아난다.
 
 ── 원본 vs 파생 ────────────────────────────────────────────────────────────
 role='original' 은 사용자 제공 증거다. 저장 경로에 콘텐츠 해시가 들어가므로
@@ -30,6 +34,7 @@ import io
 import logging
 import os
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -52,10 +57,20 @@ VIEW_UNKNOWN = "UNKNOWN"
 STATE_ACCEPTED = "accepted"
 STATE_REJECTED = "rejected"
 
+#: 사용자가 UI 에서 사진을 빼거나 바꿔서 물러난 원본(과 그 누끼)의 거절 코드.
+#: 이 코드로 거절된 행만 같은 바이트의 재등록으로 되살아난다 — 다른 이유의
+#: 거절은 재업로드로 풀리지 않는다.
+REJECTION_SUPERSEDED_BY_USER = "SUPERSEDED_BY_USER"
+#: 같은 원본의 누끼가 다른 바이트로 **교체**되어 물러난 누끼. 원본이 되살아날 때
+#: 함께 되살아나지 않는다 (그 자리는 교체한 누끼의 것이다) — 같은 누끼 바이트가
+#: 다시 올 때만 되살아난다.
+REJECTION_CUTOUT_REPLACED = "CUTOUT_REPLACED_BY_USER"
+
 #: 한 펫(=한 content_id)에 붙일 수 있는 **서로 다른** 원본 장수. 멀티 레퍼런스
 #: 인테이크는 1~3장을 같은 펫에 쌓는다 — 같은 바이트의 재시도는 여전히 멱등이라
 #: 이 상한을 소모하지 않는다.
 MAX_ORIGINALS_PER_PET = 3
+ORIGINAL_CAPACITY_ERROR_CODE = "PET_REFERENCE_ORIGINAL_LIMIT"
 
 _EXT_BY_MIME = {
     "image/jpeg": ".jpg",
@@ -101,6 +116,7 @@ _MOCK_REFS: list[dict[str, Any]] = []
 
 def __reset_for_tests() -> None:
     _MOCK_REFS.clear()
+    _INPUT_GATES.clear()
 
 
 def _now_iso() -> str:
@@ -143,6 +159,8 @@ class PetReference:
     recorded: bool = True
     #: 이번 호출이 기존 행을 돌려준 것인가 (멱등 재시도).
     deduplicated: bool = False
+    #: 이번 호출이 사용자가 뺐던(SUPERSEDED_BY_USER) 행을 되살렸는가.
+    reactivated: bool = False
 
 
 _SELECT = (
@@ -153,7 +171,13 @@ _SELECT = (
 )
 
 
-def _to_ref(row: dict[str, Any], *, recorded: bool = True, deduplicated: bool = False) -> PetReference:
+def _to_ref(
+    row: dict[str, Any],
+    *,
+    recorded: bool = True,
+    deduplicated: bool = False,
+    reactivated: bool = False,
+) -> PetReference:
     return PetReference(
         id=(str(row["id"]) if row.get("id") else None),
         pet_id=str(row.get("pet_id") or ""),
@@ -181,6 +205,7 @@ def _to_ref(row: dict[str, Any], *, recorded: bool = True, deduplicated: bool = 
         diagnostics=(row.get("diagnostics") or None),
         recorded=recorded,
         deduplicated=deduplicated,
+        reactivated=reactivated,
     )
 
 
@@ -292,12 +317,12 @@ def pair_cutouts(refs: list[PetReference]) -> dict[str, Optional[PetReference]]:
     content_id 를 공유하므로, parent 없는 누끼 하나가 세 원본 전부에 붙어
     "어느 원본의 누끼인지"를 잃는다. 그 경우 폴백을 쓰지 않고 엄격한 부모 링크만
     인정한다. 짝이 없으면 None.
+
+    accepted 가 아닌 누끼는 짝이 되지 않는다. 반면 "원본이 하나인가"는 거절된
+    원본까지 **전부** 센다 — 사진을 바꾼 펫에서 물러난 원본의 부모 없는 누끼가
+    새 원본에 흘러가면 안 된다.
     """
-    cutouts = [
-        r
-        for r in refs
-        if r.role == ROLE_DERIVED and (r.derived_kind or "").startswith("cutout")
-    ]
+    cutouts = active_cutouts(refs)
     originals = [r for r in refs if r.role == ROLE_ORIGINAL and r.id]
 
     originals_per_content: dict[str, int] = {}
@@ -337,14 +362,8 @@ def strict_cutout_for_original(
     oid = str(original_id or "").strip()
     if not oid:
         return None
-    for c in refs:
-        if (
-            c.role == ROLE_DERIVED
-            and (c.derived_kind or "").startswith("cutout")
-            and str(c.parent_reference_id or "") == oid
-            and c.acceptance_state == STATE_ACCEPTED
-            and c.recorded
-        ):
+    for c in active_cutouts(refs):
+        if str(c.parent_reference_id or "") == oid and c.recorded:
             return c
     return None
 
@@ -366,8 +385,8 @@ def strict_lineage_map(refs: list[PetReference]) -> dict[str, dict[str, Any]]:
     """
     pairing = pair_cutouts(refs)
     out: dict[str, dict[str, Any]] = {}
-    for r in refs:
-        if r.role != ROLE_ORIGINAL or r.acceptance_state != STATE_ACCEPTED or not r.id:
+    for r in active_originals(refs):
+        if not r.id:
             continue
         rid = str(r.id)
         cut = pairing.get(rid)
@@ -378,18 +397,33 @@ def strict_lineage_map(refs: list[PetReference]) -> dict[str, dict[str, Any]]:
     return out
 
 
+def active_originals(refs: list[PetReference]) -> list[PetReference]:
+    """
+    지금 이 펫의 증거로 **살아 있는** 원본 (accepted).
+
+    원본을 세거나 소비하는 모든 곳(신원/형태 프로필, 레퍼런스 세트, 인테이크
+    준비 판정, 장수 상한)이 이 한 곳을 거친다 — 사용자가 뺀 사진(rejected)이
+    어느 한 소비자에게만 남아 있는 일이 없도록.
+    """
+    return [r for r in refs if r.role == ROLE_ORIGINAL and r.acceptance_state == STATE_ACCEPTED]
+
+
+def active_cutouts(refs: list[PetReference]) -> list[PetReference]:
+    """accepted 상태의 누끼(파생)만. 물러난 원본의 누끼는 여기서 빠진다."""
+    return [
+        r
+        for r in refs
+        if r.role == ROLE_DERIVED
+        and (r.derived_kind or "").startswith("cutout")
+        and r.acceptance_state == STATE_ACCEPTED
+    ]
+
+
 def intake_readiness(
     refs: list[PetReference],
 ) -> tuple[bool, Optional[PetReference], Optional[PetReference]]:
     """Return the accepted original/cutout pair that makes Phase 1 ready."""
-    originals = [
-        r
-        for r in refs
-        if r.role == ROLE_ORIGINAL
-        and r.acceptance_state == STATE_ACCEPTED
-        and r.recorded
-        and r.id
-    ]
+    originals = [r for r in active_originals(refs) if r.recorded and r.id]
     paired = pair_cutouts(refs)
     for original in originals:
         cutout = paired.get(str(original.id))
@@ -445,10 +479,417 @@ async def _insert_row(row: dict[str, Any]) -> tuple[bool, Optional[Exception]]:
 
 
 def _find_existing_original(rows: list[dict[str, Any]], content_hash: str) -> Optional[dict[str, Any]]:
+    # 상태를 가리지 않는다 — 유니크 인덱스(pet_id, content_hash)도 상태를 보지
+    # 않으므로, 거절된 행이 있으면 같은 해시의 새 행은 어차피 삽입될 수 없다.
     for r in rows:
         if r.get("role") == ROLE_ORIGINAL and r.get("content_hash") == content_hash:
             return r
     return None
+
+
+def _original_capacity_error() -> PetReferenceError:
+    return PetReferenceError(
+        ORIGINAL_CAPACITY_ERROR_CODE,
+        f"A pet can have at most {MAX_ORIGINALS_PER_PET} active original references.",
+        status=409,
+    )
+
+
+def _is_original_capacity_db_error(exc: Optional[Exception]) -> bool:
+    if exc is None:
+        return False
+    if getattr(exc, "code", None) == ORIGINAL_CAPACITY_ERROR_CODE:
+        return True
+    if getattr(exc, "message", None) == ORIGINAL_CAPACITY_ERROR_CODE:
+        return True
+    return ORIGINAL_CAPACITY_ERROR_CODE in str(exc)
+
+
+def _assert_original_capacity(rows: list[dict[str, Any]], acceptance_state: str) -> None:
+    """Enforce the documented per-pet cap at the shared persistence boundary."""
+    if acceptance_state != STATE_ACCEPTED:
+        return
+    active_count = sum(
+        1
+        for row in rows
+        if row.get("role") == ROLE_ORIGINAL
+        and row.get("acceptance_state") == STATE_ACCEPTED
+    )
+    if active_count >= MAX_ORIGINALS_PER_PET:
+        raise _original_capacity_error()
+
+
+def _is_superseded(row: dict[str, Any]) -> bool:
+    return (
+        row.get("acceptance_state") == STATE_REJECTED
+        and row.get("rejection_code") == REJECTION_SUPERSEDED_BY_USER
+    )
+
+
+def _linked_derived_rows(rows: list[dict[str, Any]], original_ids: set[str]) -> list[dict[str, Any]]:
+    """parent_reference_id 로 이 원본들에 묶인 파생 행 (누끼 등)."""
+    return [
+        r
+        for r in rows
+        if r.get("role") == ROLE_DERIVED and str(r.get("parent_reference_id") or "") in original_ids
+    ]
+
+
+async def _update_acceptance_rows(pet_id: str, ids: list[str], patch: dict[str, Any]) -> None:
+    """상태 열만 바꾸는 **한 번의 UPDATE 문** (인메모리 경로는 같은 효과)."""
+    if _use_db() and _supabase():
+        await asyncio.to_thread(
+            lambda: _supabase()
+            .table(_table())
+            .update(patch)
+            .eq("pet_id", pet_id)
+            .in_("id", ids)
+            .execute()
+        )
+        return
+
+    for r in _MOCK_REFS:
+        if r.get("pet_id") == pet_id and str(r.get("id") or "") in ids:
+            r.update(patch)
+
+
+async def _set_acceptance(
+    pet_id: str, ids: list[str], *, state: str, rejection_code: Optional[str]
+) -> list[dict[str, Any]]:
+    """
+    여러 행의 acceptance_state 를 **한 번의 UPDATE 문**으로 바꾸고, 다시 읽어
+    실제로 바뀌었는지 확인한 뒤 최신 행들을 돌려준다.
+
+    원본과 그 누끼가 같은 문장 안에서 함께 뒤집히므로 "원본만 물러나고 누끼는
+    남은" 중간 상태가 커밋되지 않는다.
+
+    ── 왜 다시 읽는가 ──────────────────────────────────────────────────────
+    UPDATE 는 0행을 바꾸고도 오류 없이 돌아올 수 있다 (예: anon 키 + RLS 정책이
+    쓰기를 조용히 걸러낼 때). 그걸 성공으로 보고하면 물러났어야 할 사진이 계속
+    신원에 기여한다. 바뀌지 않은 행이 하나라도 있으면 예외로 올린다.
+    """
+    wanted = [i for i in dict.fromkeys(str(i) for i in ids if i)]
+    if not wanted:
+        return await _rows_for_pet(pet_id)
+    patch = {"acceptance_state": state, "rejection_code": rejection_code}
+
+    try:
+        await _update_acceptance_rows(pet_id, wanted, patch)
+    except Exception as e:
+        if _is_original_capacity_db_error(e):
+            raise _original_capacity_error() from e
+        logger.exception("펫 레퍼런스 상태 변경 실패 (pet=%s state=%s)", pet_id, state)
+        raise PetReferenceError(
+            "PET_REFERENCES_UNAVAILABLE", "레퍼런스 상태를 바꾸지 못했습니다.", status=503
+        ) from e
+
+    rows = await _rows_for_pet(pet_id)
+    by_id = {str(r.get("id") or ""): r for r in rows}
+    unchanged = [
+        i
+        for i in wanted
+        if i not in by_id
+        or by_id[i].get("acceptance_state") != state
+        or (by_id[i].get("rejection_code") or None) != rejection_code
+    ]
+    if unchanged:
+        logger.error(
+            "펫 레퍼런스 상태 변경이 적용되지 않았다 — UPDATE 가 %d/%d 행을 바꾸지 못했다 "
+            "(pet=%s state=%s ids=%s). 쓰기 권한(service role / RLS)을 확인할 것.",
+            len(unchanged),
+            len(wanted),
+            pet_id,
+            state,
+            unchanged,
+        )
+        raise PetReferenceError(
+            "PET_REFERENCE_UPDATE_NOT_APPLIED",
+            "레퍼런스 상태 변경이 저장되지 않았습니다.",
+            status=503,
+        )
+    return rows
+
+
+async def _existing_original_ref(
+    pet_id: str, rows: list[dict[str, Any]], existing: dict[str, Any]
+) -> PetReference:
+    """
+    같은 바이트의 기존 원본 행을 돌려준다. 사용자가 뺐던(SUPERSEDED_BY_USER)
+    행이면 연결된 누끼와 함께 accepted 로 되살린다 — 새 행을 만들지 않으므로
+    유니크 인덱스와 누끼 경로(cutout_{hash16}.png)가 그대로 맞물린다.
+    """
+    if not _is_superseded(existing):
+        return _to_ref(existing, deduplicated=True)
+
+    oid = str(existing.get("id") or "")
+    ids = [oid] + [
+        str(r.get("id") or "") for r in _linked_derived_rows(rows, {oid}) if _is_superseded(r)
+    ]
+    await _set_acceptance(pet_id, ids, state=STATE_ACCEPTED, rejection_code=None)
+    revived = {**existing, "acceptance_state": STATE_ACCEPTED, "rejection_code": None}
+    return _to_ref(revived, deduplicated=True, reactivated=True)
+
+
+# ── 사용자가 뺀 사진의 퇴장 / 동기화 ─────────────────────────────────────────
+
+
+async def _reject_originals(pet_id: str, rows: list[dict[str, Any]], original_ids: set[str]) -> list[str]:
+    """accepted 인 원본들과 그에 묶인 파생 행을 함께 거절한다. 바뀐 id 목록을 돌려준다."""
+    targets = [
+        str(r.get("id") or "")
+        for r in rows
+        if r.get("role") == ROLE_ORIGINAL
+        and str(r.get("id") or "") in original_ids
+        and r.get("acceptance_state") == STATE_ACCEPTED
+    ]
+    # 원본이 이미 물러났더라도, 뒤늦게 붙은 accepted 누끼는 마저 거절한다 (멱등).
+    targets += [
+        str(r.get("id") or "")
+        for r in _linked_derived_rows(rows, original_ids)
+        if r.get("acceptance_state") == STATE_ACCEPTED
+    ]
+    await _set_acceptance(
+        pet_id, targets, state=STATE_REJECTED, rejection_code=REJECTION_SUPERSEDED_BY_USER
+    )
+    return targets
+
+
+# ── 펫 입력 잠금 (생성이 시작된 뒤에는 사진·누끼를 바꿀 수 없다) ─────────────
+
+
+class _PetInputGate:
+    """
+    펫 하나의 입력 변경(다수 동시 허용)과 생성 실행 만들기(단독)를 가르는 문.
+
+    변경 요청은 shared() 안에서 "잠겼는가 확인 → 쓰기"를 하고, 실행 생성은
+    exclusive() 안에서 "인테이크 검증 → 실행 삽입"을 한다. 그래서 변경이 확인과
+    쓰기 사이에 실행 생성에 추월당하거나, 실행 생성이 검증과 삽입 사이에 변경에
+    추월당하지 않는다. 같은 펫의 사진 여러 장은 여전히 동시에 올라간다.
+
+    **프로세스 안에서만** 유효하다. API 가 여러 프로세스/인스턴스로 늘어나면
+    서로 다른 프로세스의 변경과 실행 생성은 이 문으로 직렬화되지 않는다.
+    """
+
+    def __init__(self) -> None:
+        self._shared = 0
+        self._exclusive = False
+        self._waiters: list[asyncio.Future] = []
+
+    async def _wait(self) -> None:
+        fut = asyncio.get_running_loop().create_future()
+        self._waiters.append(fut)
+        try:
+            await fut
+        finally:
+            if fut in self._waiters:
+                self._waiters.remove(fut)
+
+    def _wake(self) -> None:
+        for fut in list(self._waiters):
+            if not fut.done():
+                fut.get_loop().call_soon_threadsafe(
+                    lambda f=fut: f.done() or f.set_result(None)
+                )
+
+    @asynccontextmanager
+    async def shared(self):
+        while self._exclusive:
+            await self._wait()
+        self._shared += 1
+        try:
+            yield
+        finally:
+            self._shared -= 1
+            self._wake()
+
+    @asynccontextmanager
+    async def exclusive(self):
+        while self._exclusive or self._shared:
+            await self._wait()
+        self._exclusive = True
+        try:
+            yield
+        finally:
+            self._exclusive = False
+            self._wake()
+
+
+_INPUT_GATES: dict[str, _PetInputGate] = {}
+
+
+def pet_input_gate(pet_id: str) -> _PetInputGate:
+    pid = (pet_id or "").strip()
+    gate = _INPUT_GATES.get(pid)
+    if gate is None:
+        gate = _PetInputGate()
+        _INPUT_GATES[pid] = gate
+    return gate
+
+
+async def pet_inputs_locked(pet_id: str, refs: Optional[list[PetReference]] = None) -> bool:
+    """
+    이 펫의 사진·누끼가 잠겼는가. **잠금의 유일한 정의다** — 업로드, 누끼 교체,
+    동기화, 거절이 모두 이 함수 하나를 본다.
+
+    잠김 = 다음 중 하나:
+      (1) 대장에 생성 자산(role='generated': 정본/키프레임/모션)이 하나라도 있다
+      (2) FAILED/CANCELLED 가 아닌 생성 실행이 하나라도 있다
+    FAILED/CANCELLED 실행만 있는 펫은 생성 자산이 없을 때에만 풀려 있다.
+
+    판정할 수 없으면(대장·실행 조회 실패) 예외(503)다 — 모르는 것을 "안 잠김"
+    으로 답하지 않는다. refs 를 주면 그 대장을 쓰고, 없으면 여기서 읽는다.
+    """
+    pid = (pet_id or "").strip()
+    if not pid:
+        return False
+    ledger = refs if refs is not None else [_to_ref(r) for r in await _rows_for_pet(pid)]
+    if any(r.role == ROLE_GENERATED for r in ledger):
+        return True
+    from . import pet_generation_run_service
+
+    try:
+        return await pet_generation_run_service.pet_has_locking_run(pid)
+    except pet_generation_run_service.PetGenerationRunError as e:
+        raise PetReferenceError(e.code, e.message, status=e.status) from e
+
+
+async def assert_pet_inputs_unlocked(
+    pet_id: str, refs: Optional[list[PetReference]] = None
+) -> None:
+    """잠긴 펫이면 409 PHASE1_LOCKED. 판정 불가는 503 (pet_inputs_locked 참고)."""
+    if await pet_inputs_locked(pet_id, refs):
+        raise PetReferenceError(
+            "PHASE1_LOCKED",
+            "생성이 시작된 뒤에는 사진과 누끼를 바꿀 수 없습니다.",
+            status=409,
+        )
+
+
+async def supersede_cutouts(*, user_id: str, pet_id: str, reference_ids: list[str]) -> None:
+    """
+    누끼(파생) 행을 CUTOUT_REPLACED_BY_USER 로 물린다 — 같은 원본에 다른 누끼가
+    들어설 자리를 비운다. 행과 객체는 그대로 남으므로 과거 계보는 계속 조회된다.
+    원본에는 쓸 수 없다.
+    """
+    uid = (user_id or "").strip()
+    pid = (pet_id or "").strip()
+    wanted = {str(i) for i in (reference_ids or []) if i}
+    if not uid or not pid:
+        raise PetReferenceError("PET_REFERENCE_INVALID", "user_id 와 pet_id 가 필요합니다.")
+    rows = await _assert_pet_accessible(uid, pid)
+    targets = [r for r in rows if str(r.get("id") or "") in wanted]
+    if len(targets) != len(wanted) or any(r.get("role") != ROLE_DERIVED for r in targets):
+        raise PetReferenceError(
+            "PET_REFERENCE_NOT_FOUND", "교체할 누끼 레퍼런스가 없습니다.", status=404
+        )
+    await _set_acceptance(
+        pid,
+        [str(r["id"]) for r in targets if r.get("acceptance_state") == STATE_ACCEPTED],
+        state=STATE_REJECTED,
+        rejection_code=REJECTION_CUTOUT_REPLACED,
+    )
+
+
+async def reject_original(*, user_id: str, pet_id: str, reference_id: str) -> list[PetReference]:
+    """
+    원본 한 장과 그 누끼를 SUPERSEDED_BY_USER 로 거절한다. **멱등하다.**
+    잠긴 펫(pet_inputs_locked)이면 409 PHASE1_LOCKED 다.
+
+    행을 지우지 않는다 — 과거 세트/정본/키프레임이 핀으로 잡은 id 는 계속
+    조회된다(list_references 는 모든 상태를 돌려준다). 새 빌드만 이 원본을
+    더 이상 보지 않는다.
+    """
+    uid = (user_id or "").strip()
+    pid = (pet_id or "").strip()
+    rid = (reference_id or "").strip()
+    if not uid or not pid or not rid:
+        raise PetReferenceError(
+            "PET_REFERENCE_INVALID", "user_id, pet_id, reference_id 가 필요합니다."
+        )
+    async with pet_input_gate(pid).shared():
+        rows = await _assert_pet_accessible(uid, pid)
+        await assert_pet_inputs_unlocked(pid, [_to_ref(r) for r in rows])
+        target = next((r for r in rows if str(r.get("id") or "") == rid), None)
+        if not target or target.get("role") != ROLE_ORIGINAL:
+            raise PetReferenceError(
+                "PET_REFERENCE_NOT_FOUND", "거절할 원본 레퍼런스가 없습니다.", status=404
+            )
+        # 다른 이유로 이미 거절된 원본의 코드를 덮어쓰지 않는다.
+        if target.get("acceptance_state") == STATE_REJECTED and not _is_superseded(target):
+            return [_to_ref(r) for r in rows]
+        await _reject_originals(pid, rows, {rid})
+        return [_to_ref(r) for r in await _rows_for_pet(pid)]
+
+
+@dataclass(frozen=True)
+class OriginalSyncResult:
+    #: 동기화 후 살아 있는 원본 (accepted).
+    active: list[PetReference]
+    #: 이번 호출이 거절한 원본 id.
+    rejected_original_ids: list[str]
+    #: UI 에는 있지만 대장에 accepted 원본이 없는 해시 (업로드 실패/미도착).
+    missing_hashes: list[str]
+
+
+async def sync_active_originals(
+    *, user_id: str, pet_id: str, content_hashes: list[str]
+) -> OriginalSyncResult:
+    """
+    대장을 사용자의 **현재 사진 집합**에 맞춘다.
+
+    content_hashes 는 지금 UI 에 있는 모든 사진의 sha256 이다. 그 목록에 없는
+    accepted 원본은 누끼와 함께 거절되고, 목록에 있는 원본은 절대 거절되지
+    않는다. id 가 아니라 해시로 받는 이유: 이번 패스에서 업로드가 실패한
+    사진이라도 UI 에 남아 있는 한, 이전에 accepted 된 행은 살아 있어야 한다.
+
+    ── 알려진 한계: 읽기와 쓰기 사이의 창 ───────────────────────────────────
+    "어느 행을 물릴지"는 먼저 읽어서 정하고, 그 id 들을 한 번의 UPDATE 로 물린 뒤
+    다시 읽어 확인한다. 읽기와 UPDATE 는 한 트랜잭션이 아니다. 그 사이에 삽입된
+    원본/누끼는 이번 동기화가 보지 못한다 — 목록에 있는 사진을 잘못 물리는 일은
+    없고(물릴 대상은 해시로 정해진다), 놓친 행은 다음 동기화가 거둔다.
+    클라이언트는 펫당 한 번에 한 패스만 돌려 이 창을 피한다
+    (src/lib/reference-sync.ts). 원자적 SQL 함수는 실제 Supabase 통합 테스트가
+    생긴 뒤에 다시 검토한다.
+
+    여기서 되살리지는 않는다 — 재활성화는 바이트가 다시 올라올 때
+    (record_original) 일어난다. 목록이 비면 거절한다: 빈 목록은 "사진 없음"이
+    아니라 클라이언트 오류일 가능성이 높고, 전부 물리면 되돌릴 근거가 없다.
+    """
+    uid = (user_id or "").strip()
+    pid = (pet_id or "").strip()
+    if not uid or not pid:
+        raise PetReferenceError("PET_REFERENCE_INVALID", "user_id 와 pet_id 가 필요합니다.")
+    keep = {str(h or "").strip().lower() for h in (content_hashes or [])}
+    keep.discard("")
+    if not keep:
+        raise PetReferenceError(
+            "PET_REFERENCE_SYNC_EMPTY", "현재 사진의 해시가 최소 1개 필요합니다."
+        )
+
+    async with pet_input_gate(pid).shared():
+        rows = await _assert_pet_accessible(uid, pid)
+        # 바꿀 것이 없더라도 잠긴 펫에는 PHASE1_LOCKED 로 답한다 — 클라이언트가
+        # "이 펫은 잠겼다"를 이 응답으로 안다.
+        await assert_pet_inputs_unlocked(pid, [_to_ref(r) for r in rows])
+        stale = {
+            str(r.get("id") or "")
+            for r in rows
+            if r.get("role") == ROLE_ORIGINAL
+            and r.get("acceptance_state") == STATE_ACCEPTED
+            and str(r.get("content_hash") or "").lower() not in keep
+        }
+        stale.discard("")
+        if stale:
+            await _reject_originals(pid, rows, stale)
+            rows = await _rows_for_pet(pid)
+
+    active = active_originals([_to_ref(r) for r in rows])
+    active_hashes = {str(r.content_hash or "").lower() for r in active}
+    return OriginalSyncResult(
+        active=active,
+        rejected_original_ids=sorted(stale),
+        missing_hashes=sorted(keep - active_hashes),
+    )
 
 
 async def record_original(
@@ -487,7 +928,11 @@ async def record_original(
     content_hash = hashlib.sha256(data).hexdigest()
     existing = _find_existing_original(rows, content_hash)
     if existing:
-        return _to_ref(existing, deduplicated=True)
+        if _is_superseded(existing):
+            _assert_original_capacity(rows, STATE_ACCEPTED)
+        return await _existing_original_ref(pid, rows, existing)
+
+    _assert_original_capacity(rows, acceptance_state)
 
     path = original_object_path(uid, cid, content_hash, mime_type)
 
@@ -495,6 +940,17 @@ async def record_original(
 
     # 업로드가 곧 durable 보장이다. 실패는 그대로 올린다.
     await supabase_assets.upload_asset_to_storage(path, data, mime_type or "application/octet-stream")
+
+    # Close the in-process/mock race where another call reactivates an original
+    # while this call is uploading. Production DB mutations are additionally
+    # serialized by the advisory-lock trigger.
+    rows = await _assert_pet_accessible(uid, pid)
+    existing = _find_existing_original(rows, content_hash)
+    if existing:
+        if _is_superseded(existing):
+            _assert_original_capacity(rows, STATE_ACCEPTED)
+        return await _existing_original_ref(pid, rows, existing)
+    _assert_original_capacity(rows, acceptance_state)
 
     width, height = _image_dimensions(data)
     row: dict[str, Any] = {
@@ -529,10 +985,15 @@ async def record_original(
         ok, err = await _insert_row(row)
         if ok:
             return _to_ref(row)
+        if _is_original_capacity_db_error(err):
+            raise _original_capacity_error() from err
         again = await _rows_for_pet(pid)
         dup = _find_existing_original(again, content_hash)
         if dup:
-            return _to_ref(dup, deduplicated=True)
+            if _is_superseded(dup):
+                _assert_original_capacity(again, STATE_ACCEPTED)
+            return await _existing_original_ref(pid, again, dup)
+        _assert_original_capacity(again, acceptance_state)
         row["version"] = _next_version(again, ROLE_ORIGINAL)
         last_err = err
 
@@ -595,6 +1056,24 @@ async def record_derived(
                     "이미 다른 원본에 연결된 파생 레퍼런스입니다.",
                     status=409,
                 )
+            # 원본은 살아 있는데 누끼만 물러난 채 남은 경우(부분 실패, 또는 교체로
+            # 물러났던 누끼 바이트가 다시 온 경우)를 여기서 푼다. 원본이 여전히
+            # 물러나 있으면 누끼도 그대로 둔다.
+            owner = next(
+                (o for o in rows if str(o.get("id") or "") == existing_parent), None
+            )
+            if (
+                r.get("acceptance_state") == STATE_REJECTED
+                and r.get("rejection_code")
+                in (REJECTION_SUPERSEDED_BY_USER, REJECTION_CUTOUT_REPLACED)
+                and owner
+                and owner.get("acceptance_state") == STATE_ACCEPTED
+            ):
+                await _set_acceptance(
+                    pid, [str(r.get("id") or "")], state=STATE_ACCEPTED, rejection_code=None
+                )
+                revived = {**r, "acceptance_state": STATE_ACCEPTED, "rejection_code": None}
+                return _to_ref(revived, deduplicated=True, reactivated=True)
             return _to_ref(r, deduplicated=True)
 
     row: dict[str, Any] = {

@@ -16,6 +16,7 @@ from backend.routers import keyframes_v1
 from backend.scenarios.pet_scenarios import ACTION_ORDER, IDLE_EVENTS, PET_ACTIONS
 from backend.services import action_keyframe_service as kf
 from backend.services import action_keyframe_spec as spec_mod
+from backend.services import business_qa
 from backend.services import canonical_image_providers as providers_mod
 from backend.services import canonical_pet_service as canon
 from backend.services import canonical_qa
@@ -45,7 +46,7 @@ VLM_KF_OK = {
     "pose_confidence": "high",
     "body_orientation_ok": "yes",
     "required_regions_visible": "yes",
-    "source": "vlm-keyframe-qa-v1",
+    "source": vlm_identity.VLM_KEYFRAME_QA_VERSION,
 }
 
 
@@ -85,7 +86,7 @@ def install_kf_vlm(monkeypatch, result):
     monkeypatch.setattr(
         vlm_identity,
         "qa_action_keyframe",
-        lambda candidate, references, *, required_pose, required_visibility=(), candidate_mime="image/png": result,
+        lambda candidate, references, *, required_pose, required_visibility=(), candidate_mime="image/png", **kwargs: result,
     )
 
 
@@ -239,12 +240,15 @@ def test_roles_map_only_existing_action_ids():
             assert aid in known, f"{aid} 는 기존 레지스트리에 없다 — 새 액션 id 금지"
             assert aid not in seen, f"{aid} 가 두 역할에 매핑됐다"
             seen.add(aid)
-    # 중립 시작 행동은 NEUTRAL_IDLE 로 흡수된다 (다대일 재사용).
-    for aid in ("BREATHING", "BLINKING", "TOUCH", "IDLE_BREATH", "PET_HEAD", "LOOK_UP"):
-        assert spec_mod.role_for_action(aid) == "NEUTRAL_IDLE"
-    # Phase 4: 서기 시작(이동/눕기 전이)은 STAND_READY, LIE 시작은 LIE.
-    for aid in ("COME_CLOSER", "LIE_DOWN"):
+    # spec-v4: 홈/아이들/터치·보이스 반응과 서기 시작(이동/눕기 전이)이 전부
+    # STAND_READY(HOME) 하나로 흡수된다 (다대일 재사용). LIE 시작은 LIE.
+    for aid in (
+        "BREATHING", "BLINKING", "TOUCH", "IDLE_BREATH", "PET_HEAD", "LOOK_UP",
+        "COME_CLOSER", "LIE_DOWN",
+    ):
         assert spec_mod.role_for_action(aid) == "STAND_READY"
+    # NEUTRAL_IDLE 은 더 이상 어떤 런타임 액션의 시작 포즈도 아니다.
+    assert spec_mod.KEYFRAME_ROLES["NEUTRAL_IDLE"].supported_action_ids == ()
     for aid in ("LIE_IDLE", "STAND_UP"):
         assert spec_mod.role_for_action(aid) == "LIE"
     assert spec_mod.role_for_action("NOT_AN_ACTION") is None
@@ -270,9 +274,9 @@ def test_canonical_is_required(storage, monkeypatch):
     assert e.value.code == "CANONICAL_REQUIRED" and e.value.status == 409
 
 
-def test_review_canonical_rejected_unless_policy_allows(storage, monkeypatch):
+def test_legacy_review_canonical_is_selected_by_business_contract(storage, monkeypatch):
     h = _seed_three_ref_pet(monkeypatch)
-    install_vlm_qa(monkeypatch, None)  # VLM 확언 없음 → 정본은 REVIEW 에 머문다
+    install_vlm_qa(monkeypatch, None)  # legacy decision remains REVIEW
 
     def fetch(ref):
         return h.bytes_by_path.get(ref.object_path) or storage.get(ref.object_path)
@@ -285,14 +289,11 @@ def test_review_canonical_rejected_unless_policy_allows(storage, monkeypatch):
             cutout_fn=lambda raw: raw,
         )
     )
-    assert canonical.status == canon.STATUS_REVIEW
+    assert canonical.status == canon.STATUS_COMPLETE
+    selected = next(candidate for candidate in canonical.candidates if candidate.selected)
+    assert selected.decision == "REVIEW"
+    assert selected.qa_result["business_qa"]["delivery_action"] == "DELIVER"
 
-    with pytest.raises(kf.ActionKeyframeError) as e:
-        _build_kf(h, [FakeProvider("runway", [GOOD()])])
-    assert e.value.code == "CANONICAL_NOT_APPROVED"
-
-    # 명시적 정책으로만 허용된다 — 조용한 사용은 없다.
-    monkeypatch.setenv("KEYFRAME_ALLOW_REVIEW_CANONICAL", "1")
     install_kf_vlm(monkeypatch, VLM_KF_OK)
     built = _build_kf(h, [FakeProvider("runway", [GOOD(), GOOD()])])
     assert built.status == kf.STATUS_COMPLETE
@@ -329,6 +330,13 @@ def test_build_neutral_idle_with_canonical_anchor(storage, monkeypatch):
     )
     assert sent_input["kind"] == "clean_plate"
     assert sent_input["object_path"] == anchor.plate_object_path
+    selected_qa = next(c for c in k.candidates if c.selected).qa_result
+    reuse = selected_qa["qa_evidence_reuse"]
+    assert reuse["summary"]["inherited"] >= 3
+    assert any(
+        source["source_stage"] == "CANONICAL" and source["valid"] is True
+        for source in reuse["inherited_sources"]
+    )
     # 보조 신뢰 레퍼런스는 최대 2장.
     assert len(provider.seen_references[0]) <= 3
 
@@ -423,14 +431,15 @@ def test_prompt_contains_pose_and_traits_never_unknowns_or_themes(storage, monke
 def test_spec_snapshot_recorded_on_keyframe(storage, monkeypatch):
     h, _ = _prepare_canonical(monkeypatch, storage)
     install_kf_vlm(monkeypatch, VLM_KF_OK)
-    k = _build_kf(h, [FakeProvider("runway", [GOOD(), GOOD()])])
+    k = _build_kf(h, [FakeProvider("runway", [GOOD(), GOOD()])], role="STAND_READY")
     assert k.spec["spec_version"] == spec_mod.KEYFRAME_SPEC_VERSION
     assert "BREATHING" in k.spec["supported_action_ids"]
     assert k.spec["video_compat"]["loopable_base"] is True
 
 
 def test_neutral_idle_preserves_canonical_posture_not_a_pose_choice():
-    """spec-v2: NEUTRAL_IDLE 은 홈/기준 포즈다 — 앉기/서기를 **다시 고르지 않는다**.
+    """spec-v2: NEUTRAL_IDLE 은 앉기/서기를 **다시 고르지 않는다** (spec-v4 부터
+    홈은 STAND_READY 가 담당하지만 이 역할의 문구 계약은 그대로다).
 
     이전 문구 "sitting or standing pose" 는 이미지 모델에게 포즈 선택권을 줬고
     앉기로 강하게 쏠렸다. 이제 정본(Canonical)의 기존 자세를 그대로 물려받는다:
@@ -451,9 +460,9 @@ def test_neutral_idle_preserves_canonical_posture_not_a_pose_choice():
     # 가시성·역할 계약은 그대로다 — 문구만 바뀌었다.
     assert spec.required_visibility == ("face", "full_body", "ears", "front_paws")
     assert spec.video_compat["loopable_base"] is True
-    # 버전 범프 — 재사용 게이트(analyzer_versions)가 이 값을 비교하므로, 안
-    # 올리면 앉기로 쏠린 기존 NEUTRAL_IDLE 키프레임이 영원히 재사용된다.
-    assert spec_mod.KEYFRAME_SPEC_VERSION == "keyframe-spec-v3"
+    # 버전 범프 — 재사용 게이트(analyzer_versions)가 이 값을 비교한다. v4 는
+    # STAND_READY = HOME 전환(서술 완화 + 액션 매핑 이관)이다.
+    assert spec_mod.KEYFRAME_SPEC_VERSION == "keyframe-spec-v4"
     # 신원 앵커 소스는 raw 가 아니라 클린 플레이트다 (spec-v3).
     assert spec.preferred_canonical_source == "clean_plate"
     # 두 프롬프트 빌더 모두에 실제로 실린다 (컴팩트는 Runway 1000자 계약 유지).
@@ -469,11 +478,11 @@ def test_neutral_idle_preserves_canonical_posture_not_a_pose_choice():
 def test_phase4_four_pose_roles_and_lazy_generation_contract():
     """Phase 4: 포즈 역할 4종 + 지연 생성 계약 (스펙 수준).
 
-    신규 펫의 최소 생성물은 Canonical + NEUTRAL_IDLE 이다 — 기본 모션
-    (BREATHING/아이들 4종/PET_HEAD/LOOK_UP)이 전부 NEUTRAL_IDLE 시작이고 목표
+    신규 펫의 최소 생성물은 Canonical + STAND_READY(HOME) 이다 — 기본 모션
+    (BREATHING/아이들 4종/PET_HEAD/LOOK_UP)이 전부 STAND_READY 시작이고 목표
     키프레임이 없기 때문에, 런 오케스트레이션(KEYFRAMES 스테이지는 스펙이
-    가리키는 역할만 만든다)이 다른 역할을 만들 이유가 없다. STAND_READY/LIE/
-    SLEEP 은 그 역할을 시작(또는 목표)으로 요구하는 모션이 요청될 때만 생긴다.
+    가리키는 역할만 만든다)이 다른 역할을 만들 이유가 없다. LIE/SLEEP 은 그
+    역할을 시작(또는 목표)으로 요구하는 모션이 요청될 때만 생긴다.
     """
     from backend.services import motion_spec as ms
 
@@ -484,7 +493,7 @@ def test_phase4_four_pose_roles_and_lazy_generation_contract():
 
     # STAND_READY 는 명시적 서기다 — NEUTRAL_IDLE 과 달리 자세를 물려받지 않는다.
     stand = spec_mod.KEYFRAME_ROLES["STAND_READY"].required_pose
-    assert "standing upright" in stand and "all four" in stand
+    assert "standing naturally on all four legs" in stand
     assert "canonical reference" not in stand
 
     # SLEEP 은 LIE 와 다른 신체 구성 — 눈 감김 + 머리 내림 vs 머리 들고 깨어 있음.
@@ -492,12 +501,12 @@ def test_phase4_four_pose_roles_and_lazy_generation_contract():
     assert "head resting down" in spec_mod.KEYFRAME_ROLES["SLEEP"].required_pose
     assert "head upright and awake" in spec_mod.KEYFRAME_ROLES["LIE"].required_pose
 
-    # 신규 펫 기본 모션은 NEUTRAL_IDLE 하나만 요구한다 — 지연 생성의 근거.
+    # 신규 펫 기본 모션은 STAND_READY 하나만 요구한다 — 지연 생성의 근거.
     basic = ("BREATHING", "BLINKING", "EAR_TWITCHING", "HEAD_TILTING",
              "TAIL_WAGGING", "PET_HEAD", "LOOK_UP")
     for mid in basic:
         m = ms.MOTIONS[mid]
-        assert m.start_keyframe_role == "NEUTRAL_IDLE", mid
+        assert m.start_keyframe_role == "STAND_READY", mid
         assert not m.requires_target_keyframe and m.target_keyframe_role is None, mid
 
     # 역할별 수요 모션 — 해당 모션이 요청될 때만 그 역할이 필요해진다.
@@ -526,6 +535,168 @@ def test_stand_ready_builds_on_demand_with_role_scoped_storage(storage, monkeypa
     # 저장 경로가 역할별로 물질화된다.
     sel = next(c for c in k.candidates if c.selected)
     assert "/keyframes/stand_ready/v1/" in (sel.raw_object_path or "")
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# STAND_READY = HOME (keyframe-spec-v4)
+# ══════════════════════════════════════════════════════════════════════════
+
+
+def test_stand_ready_is_a_calm_neutral_home_stance():
+    """spec-v4: STAND_READY 는 홈 키프레임이다 — 차분한 중립 서기 자세.
+
+    v3 의 "alert / ready to move" 는 호흡 루프의 바탕으로는 긴장된 자세였다.
+    """
+    spec = spec_mod.KEYFRAME_ROLES["STAND_READY"]
+    pose = spec.required_pose
+    for wanted in (
+        "calm neutral stance",
+        "standing naturally on all four legs",
+        "all paws planted",
+        "weight evenly balanced",
+        "body level",
+        "no crouch, lean or mid-step",
+        "slight front three-quarter orientation",
+        "head level toward camera",
+        "natural relaxed mouth",
+        "relaxed tail and ears",
+        "full body visible",
+        "plain matte neutral background",
+        "no contact shadow",
+        "cast shadow",
+        "reflection",
+        "scenery",
+    ):
+        assert wanted in pose, wanted
+    for dropped in ("alert", "ready to move"):
+        assert dropped not in pose, dropped
+    # 정본 자세를 물려받지도, 검사하지도 않는다.
+    assert "canonical" not in pose and "existing" not in pose
+    assert spec.required_visibility == ("face", "full_body", "ears", "front_paws")
+    assert spec.video_compat["loopable_base"] is True
+    assert spec.preferred_canonical_source == "clean_plate"
+    # 역할 문구와 공용 베이스 모두 배경/그림자 금지를 실어 준다.
+    prompt = spec_mod.build_keyframe_prompt(spec, {})
+    assert "calm neutral stance" in prompt
+    assert "plain matte neutral background" in prompt
+    assert "Plain solid neutral light-gray background" in prompt
+    assert "No contact shadow" in prompt and "no cast shadow" in prompt
+    assert "no reflection" in prompt
+
+
+def test_stand_ready_compact_prompt_keeps_pose_and_identity_trait_lines():
+    """컴팩트(Runway ≤1000자) 프롬프트: 짧은 전용 포즈 절을 쓰되 포즈 요구는
+    하나도 빠지지 않고, 펫의 신원/형태 특성 줄이 길이 때문에 잘리지 않는다."""
+    from backend.services.canonical_prompt import _compact_trait_lines
+
+    spec = spec_mod.KEYFRAME_ROLES["STAND_READY"]
+    # 가장 긴 코트 색 이름 둘 + 긴 종 서술 + 가장 긴 귀 모양.
+    identity = {
+        "coat": {
+            "status": "measured",
+            "dominant_colors": [{"name": "dark_brown"}, {"name": "red_brown"}],
+        },
+        "semantic_traits": {
+            "traits": {"species": "domestic shorthair cat", "ears": {"shape": "semi_erect"}}
+        },
+    }
+    traits = _compact_trait_lines(identity)
+    assert len(traits) == 3
+
+    compact = spec_mod.build_compact_keyframe_prompt(spec, identity)
+    assert len(compact) <= 1000
+    for line in traits:
+        assert line in compact, line
+    assert "Clearly visible: face, full body, ears, front paws." in compact
+    # 포즈 요구는 required_pose 와 같은 항목 전부다 — 문장만 짧다.
+    assert spec.compact_pose in compact and spec.required_pose not in compact
+    for wanted in (
+        "standing on all four legs",
+        "all paws planted",
+        "weight evenly balanced",
+        "calm neutral stance",
+        "no crouch, lean or mid-step",
+        "slight front three-quarter",
+        "head level toward camera",
+        "relaxed mouth, ears and tail",
+        "full body visible",
+    ):
+        assert wanted in spec.compact_pose, wanted
+    # 배경/그림자 금지는 컴팩트 베이스가 맡는다.
+    assert "Plain solid neutral light-gray background" in compact
+    assert "No contact shadow, no cast shadow" in compact
+    # 전체 프롬프트는 긴 포즈 절을 그대로 쓴다.
+    assert spec.required_pose in spec_mod.build_keyframe_prompt(spec, identity)
+    # compact_pose 가 없는 역할은 지금까지처럼 required_pose 를 쓴다.
+    lie = spec_mod.KEYFRAME_ROLES["LIE"]
+    assert lie.compact_pose is None
+    assert lie.required_pose in spec_mod.build_compact_keyframe_prompt(lie, {})
+
+
+@pytest.mark.parametrize("canonical_posture", ["sitting", "lying"])
+def test_home_is_generated_stand_ready_whatever_the_canonical_posture(
+    storage, monkeypatch, canonical_posture
+):
+    """정본이 앉아/누워 있어도 HOME 은 **생성된** STAND_READY 다.
+
+    정본 자세를 검사하지 않고, 정본을 홈으로 별칭하지도 않는다 — 호출부가
+    allow_canonical_reuse=True 를 넘겨도 STAND_READY 는 재사용 대상 역할이
+    아니다. (픽스처 이미지에는 자세가 없으므로 "앉은/누운 정본"은 VLM 스텁으로
+    모델링한다: 정본 자체는 요구 포즈가 아니라고 답할 재사용 판정 호출이
+    **한 번도 일어나지 않아야** 한다.)
+    """
+    h, canonical = _prepare_canonical(monkeypatch, storage)
+    vlm_calls: list[dict] = []
+
+    def vlm_stub(candidate, references, *, required_pose, required_visibility=(), candidate_mime="image/png", **kwargs):
+        vlm_calls.append({"required_pose": required_pose, "references": len(references)})
+        return VLM_KF_OK
+
+    monkeypatch.setattr(vlm_identity, "qa_action_keyframe", vlm_stub)
+    provider = RecordingProvider("runway", [GOOD()] * 5)
+
+    k = _build_kf(h, [provider], role="STAND_READY", allow_canonical_reuse=True)
+
+    assert k.status == kf.STATUS_COMPLETE and k.keyframe_role == "STAND_READY"
+    # 실제 생성이 일어났다 — 정본 별칭 후보는 없다.
+    assert provider.calls == 1
+    sel = next(c for c in k.candidates if c.selected)
+    assert sel.provider == "runway" and sel.provider != kf.CANONICAL_REUSE_PROVIDER
+    assert not (sel.generation_metadata or {}).get("reused_from_canonical")
+    assert not k.qa_summary.get("reused_from_canonical")
+    assert "/keyframes/stand_ready/" in (sel.raw_object_path or "")
+    canonical_sel = next(c for c in canonical.candidates if c.selected)
+    assert sel.raw_object_path != canonical_sel.raw_object_path
+    # VLM 호출은 생성된 후보 1장에 대한 것뿐이다 — 재사용 적격성 판정(정본
+    # 자체를 후보로 넣는 호출: 정본이 레퍼런스에서 빠진다) 호출은 없다.
+    assert len(vlm_calls) == provider.calls
+    # 프롬프트는 서기를 요구하고 정본 자세 유지를 요구하지 않는다.
+    prompt = provider.seen_prompts[0]
+    assert "standing naturally on all four legs" in prompt
+    assert "existing body posture" not in prompt
+    assert all("standing naturally on all four legs" in c["required_pose"] for c in vlm_calls)
+    # 신원/형태 보존: 정본이 신원 앵커(첫 레퍼런스 + 시그니처 1순위)이고 계보가 남는다.
+    assert provider.seen_references[0][0].role == "CANONICAL"
+    assert "EXACT SAME pet" in prompt and "body proportions" in prompt
+    assert sel.qa_result["identity_reference"]["primary"] == "approved_canonical"
+    assert sel.qa_result["business_domains"]["identity_continuity"] == "PASS"
+    assert sel.qa_result["business_signals"]["keyframe_persistent_morphology_identity"] != "FAIL"
+    assert sel.input_canonical_candidate_id == canonical_sel.id
+    assert k.canonical_version_id == canonical.id and k.canonical_version == canonical.version
+
+
+def test_stand_ready_pose_failure_is_not_rescued_by_canonical(storage, monkeypatch):
+    """서지 못한 후보는 FAIL 이다 — 그렇다고 정본으로 대체하지 않는다."""
+    h, _ = _prepare_canonical(monkeypatch, storage)
+    install_kf_vlm(monkeypatch, {**VLM_KF_OK, "pose_matches": "no"})
+    provider = FakeProvider("runway", [GOOD()] * 10)
+
+    k = _build_kf(h, [provider], role="STAND_READY", allow_canonical_reuse=True)
+
+    assert k.status != kf.STATUS_COMPLETE
+    assert provider.calls >= 1
+    assert all(c.provider != kf.CANONICAL_REUSE_PROVIDER for c in k.candidates)
+    assert not any(c.selected for c in k.candidates)
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -612,7 +783,7 @@ def test_unsuitable_canonical_falls_back_to_keyframe_generation(storage, monkeyp
     # 함께 증명한다: 재사용은 실패하지만 평소 생성은 그대로 성공한다.
     seen = {"n": 0}
 
-    def vlm_stub(candidate, references, *, required_pose, required_visibility=(), candidate_mime="image/png"):
+    def vlm_stub(candidate, references, *, required_pose, required_visibility=(), candidate_mime="image/png", **kwargs):
         seen["n"] += 1
         if seen["n"] == 1:
             return {**VLM_KF_OK, "pose_matches": "no"}
@@ -630,18 +801,22 @@ def test_unsuitable_canonical_falls_back_to_keyframe_generation(storage, monkeyp
     assert sel.provider != kf.CANONICAL_REUSE_PROVIDER
 
 
-def test_uncertain_canonical_qa_declines_reuse_and_falls_back(storage, monkeypatch):
-    """VLM 확언이 전혀 없으면(unknown) 재사용 판정도 최대 REVIEW 다 — PASS 가 아니므로
-    재사용하지 않고 평소 경로로 폴백한다(그 경로 역시 REVIEW/FAIL 로 정직하게 남는다)."""
+def test_uncertain_canonical_reuse_keeps_review_evidence_without_paid_fallback(storage, monkeypatch):
+    """VLM unknown remains REVIEW evidence but cannot independently spend again."""
     h, _canonical = _prepare_canonical(monkeypatch, storage)
     install_kf_vlm(monkeypatch, None)  # VLM 비활성/무응답 — 모든 판정이 unknown
     provider = RecordingProvider("runway", [GOOD(), GOOD(), GOOD()])
 
     k = _build_kf(h, [provider], allow_canonical_reuse=True)
 
-    assert provider.calls >= 1  # 재사용 후보를 만들지 않고 평소 생성을 시도했다
-    assert all(c.provider != kf.CANONICAL_REUSE_PROVIDER for c in k.candidates)
-    assert k.status in (kf.STATUS_REVIEW, kf.STATUS_FAILED)
+    assert provider.calls == 0
+    assert k.status == kf.STATUS_COMPLETE
+    selected = next(candidate for candidate in k.candidates if candidate.selected)
+    assert selected.provider == kf.CANONICAL_REUSE_PROVIDER
+    assert selected.decision == "REVIEW"
+    assert selected.qa_result["business_qa"]["retry_action"] == "STOP"
+    assert k.qa_summary["decisions"]["REVIEW"] == 1
+    assert k.qa_summary["decisions"]["PASS"] == 0
 
 
 def test_canonical_reuse_only_applies_to_neutral_idle_role(storage, monkeypatch):
@@ -816,16 +991,17 @@ def test_pose_changing_role_uses_vlm_anatomy_for_structure(storage, monkeypatch)
     assert "structure_comparison_skipped_pose_change" in sel.qa_result["reasons"]
 
 
-def test_without_vlm_keyframe_is_review_only(storage, monkeypatch):
+def test_without_vlm_keyframe_keeps_legacy_review_but_delivers(storage, monkeypatch):
     h, _ = _prepare_canonical(monkeypatch, storage)
     install_kf_vlm(monkeypatch, None)
     k = _build_kf(h, [FakeProvider("runway", [GOOD(), GOOD(), GOOD()])])
-    assert k.status == kf.STATUS_REVIEW
-    assert k.selected_candidate_id is None
+    assert k.status == kf.STATUS_COMPLETE
+    assert k.selected_candidate_id is not None
     assert all(c.decision == "REVIEW" for c in k.candidates)
+    assert k.candidates[0].qa_result["business_qa"]["delivery_action"] == "DELIVER_WITH_ADVISORY"
 
 
-def test_identity_failure_triggers_fallback(storage, monkeypatch):
+def test_identity_support_failure_does_not_trigger_fallback(storage, monkeypatch):
     h, _ = _prepare_canonical(monkeypatch, storage)
     install_kf_vlm(monkeypatch, VLM_KF_OK)
     primary = FakeProvider("runway", [make_striped_cutout_png()] * 3)
@@ -834,8 +1010,10 @@ def test_identity_failure_triggers_fallback(storage, monkeypatch):
     k = _build_kf(h, [primary, fallback])
     assert k.status == kf.STATUS_COMPLETE
     sel = next(c for c in k.candidates if c.selected)
-    assert sel.provider == "gpt_image"
-    assert all(c.decision == "FAIL" for c in k.candidates if c.provider == "runway")
+    assert sel.provider == "runway"
+    assert primary.calls == 1 and fallback.calls == 0
+    assert sel.decision == "FAIL"
+    assert sel.qa_result["business_qa"]["retry_action"] == "STOP"
 
 
 def _advisory_pattern_profile():
@@ -845,6 +1023,15 @@ def _advisory_pattern_profile():
     profile, sig, cutout = _seed_strict_profile()
     _set_pattern(profile, "golden|tan|golden", confidence="high", supports=2)
     return profile, sig, cutout
+
+
+def _attach_keyframe_business(qa: dict, *, attempt: int = 1) -> dict:
+    business_qa.attach_business_result(
+        qa,
+        attempt_number=attempt,
+        request_kind="KEYFRAME",
+    )
+    return qa["business_qa"]
 
 
 def test_advisory_coat_pattern_review_does_not_block_keyframe_pass(storage):
@@ -906,6 +1093,174 @@ def test_pose_fail_blocks_even_when_identity_passes(storage):
     assert qa["decision"] == canonical_qa.FAIL
 
 
+@pytest.mark.parametrize(
+    "gains,lift",
+    [
+        ((1.35, 1.35, 1.35), 22),
+        ((0.72, 1.08, 1.32), 12),
+    ],
+)
+def test_same_pet_enhanced_color_or_lighting_is_business_deliverable(storage, gains, lift):
+    from .test_canonical_qa import _presentation_variant
+
+    profile, sig, cutout = _advisory_pattern_profile()
+    enhanced = _presentation_variant(cutout, gains=gains, lift=lift)
+    qa = kf.evaluate_keyframe_candidate(
+        cutout_rgba=ids.load_rgba(enhanced),
+        profile=profile,
+        canonical_signature=sig,
+        reference_signatures=[],
+        spec=spec_mod.KEYFRAME_ROLES["NEUTRAL_IDLE"],
+        vlm_qa={**VLM_KF_OK, "presentation_difference_only": "yes"},
+    )
+    result = _attach_keyframe_business(qa)
+
+    assert qa["identity_reference"]["primary"] == "approved_canonical"
+    assert result["authority_profile"] == business_qa.KEYFRAME_IDENTITY_AUTHORITY_VERSION
+    assert result["integrity_status"] == "PASS"
+    assert business_qa.is_deliverable(qa) is True
+    assert result["retry_action"] == "STOP"
+
+
+def test_minor_morphology_variation_is_supporting_and_does_not_regenerate(storage):
+    profile, sig, cutout = _advisory_pattern_profile()
+    rgba = ids.load_rgba(cutout)
+    candidate_ar = ids.analyze_structural_identity(rgba)["silhouette"]["bbox_aspect_ratio"]
+    profile.structural_identity["silhouette"]["bbox_aspect_ratio"] = candidate_ar / 2.0
+    qa = kf.evaluate_keyframe_candidate(
+        cutout_rgba=rgba,
+        profile=profile,
+        canonical_signature=sig,
+        reference_signatures=[],
+        spec=spec_mod.KEYFRAME_ROLES["NEUTRAL_IDLE"],
+        vlm_qa=VLM_KF_OK,
+    )
+    result = _attach_keyframe_business(qa)
+
+    assert qa["checks"]["structure"] == canonical_qa.REVIEW
+    assert result["authority_evidence"]["IDENTITY_SUPPORT"]["structure"] == "REVIEW"
+    assert result["integrity_status"] == "PASS"
+    assert result["retry_action"] == "STOP"
+
+
+def test_visibility_uncertainty_is_advisory_and_not_a_pose_hard_fail(storage):
+    profile, sig, cutout = _advisory_pattern_profile()
+    qa = kf.evaluate_keyframe_candidate(
+        cutout_rgba=ids.load_rgba(cutout),
+        profile=profile,
+        canonical_signature=sig,
+        reference_signatures=[],
+        spec=spec_mod.KEYFRAME_ROLES["NEUTRAL_IDLE"],
+        vlm_qa={**VLM_KF_OK, "required_regions_visible": "unknown"},
+    )
+    result = _attach_keyframe_business(qa)
+
+    # Legacy evidence remains unchanged while vNext separates visibility.
+    assert qa["checks"]["pose"] == canonical_qa.PASS
+    assert qa["business_domains"]["visibility"] == canonical_qa.REVIEW
+    assert qa["vlm"]["required_regions_visible"] == "unknown"
+    assert result["authority_evidence"]["QUALITY_ADVISORY"]["keyframe_visibility"] == "REVIEW"
+    assert result["integrity_status"] == "PASS"
+    assert result["retry_action"] == "STOP"
+
+
+def test_high_confidence_wrong_pose_is_business_hard_failure(storage):
+    profile, sig, cutout = _advisory_pattern_profile()
+    qa = kf.evaluate_keyframe_candidate(
+        cutout_rgba=ids.load_rgba(cutout),
+        profile=profile,
+        canonical_signature=sig,
+        reference_signatures=[],
+        spec=spec_mod.KEYFRAME_ROLES["NEUTRAL_IDLE"],
+        vlm_qa={**VLM_KF_OK, "pose_matches": "no", "pose_confidence": "high"},
+    )
+    result = _attach_keyframe_business(qa)
+
+    assert qa["business_domains"]["pose_correctness"] == canonical_qa.FAIL
+    assert result["authority_evidence"]["INTEGRITY_HARD"]["keyframe_pose_integrity"] == "FAIL"
+    assert result["retry_action"] == "REGENERATE"
+
+
+def test_high_confidence_wrong_pet_is_business_hard_failure(storage):
+    profile, sig, cutout = _advisory_pattern_profile()
+    qa = kf.evaluate_keyframe_candidate(
+        cutout_rgba=ids.load_rgba(cutout),
+        profile=profile,
+        canonical_signature=sig,
+        reference_signatures=[],
+        spec=spec_mod.KEYFRAME_ROLES["NEUTRAL_IDLE"],
+        vlm_qa={**VLM_KF_OK, "same_pet": "no", "same_pet_confidence": "high"},
+    )
+    result = _attach_keyframe_business(qa)
+
+    assert result["authority_evidence"]["INTEGRITY_HARD"]["vlm_same_pet"] == "FAIL"
+    assert result["retry_action"] == "REGENERATE"
+
+
+def test_severe_anatomy_issue_is_business_hard_failure(storage):
+    profile, sig, cutout = _advisory_pattern_profile()
+    qa = kf.evaluate_keyframe_candidate(
+        cutout_rgba=ids.load_rgba(cutout),
+        profile=profile,
+        canonical_signature=sig,
+        reference_signatures=[],
+        spec=spec_mod.KEYFRAME_ROLES["NEUTRAL_IDLE"],
+        vlm_qa={**VLM_KF_OK, "anatomy_plausible": "no"},
+    )
+    result = _attach_keyframe_business(qa)
+
+    assert qa["business_domains"]["anatomy"] == canonical_qa.FAIL
+    assert result["authority_evidence"]["INTEGRITY_HARD"]["vlm_anatomy"] == "FAIL"
+    assert result["retry_action"] == "REGENERATE"
+
+
+@pytest.mark.parametrize(
+    "contamination",
+    [
+        {"single_pet": "no"},
+        {"human_present": "yes"},
+    ],
+)
+def test_duplicate_pet_or_human_contamination_is_business_hard_failure(storage, contamination):
+    profile, sig, cutout = _advisory_pattern_profile()
+    qa = kf.evaluate_keyframe_candidate(
+        cutout_rgba=ids.load_rgba(cutout),
+        profile=profile,
+        canonical_signature=sig,
+        reference_signatures=[],
+        spec=spec_mod.KEYFRAME_ROLES["NEUTRAL_IDLE"],
+        vlm_qa={**VLM_KF_OK, **contamination},
+    )
+    result = _attach_keyframe_business(qa)
+
+    assert result["authority_evidence"]["INTEGRITY_HARD"]["vlm_composition"] == "FAIL"
+    assert result["retry_action"] == "REGENERATE"
+
+
+def test_strong_keyframe_face_contradiction_requires_strong_evidence(storage):
+    profile, sig, cutout = _advisory_pattern_profile()
+    contradiction = {**VLM_KF_OK, "face_head_consistent": "no"}
+
+    weak = kf.evaluate_keyframe_candidate(
+        cutout_rgba=ids.load_rgba(cutout), profile=profile,
+        canonical_signature=sig, reference_signatures=[],
+        spec=spec_mod.KEYFRAME_ROLES["NEUTRAL_IDLE"], vlm_qa=contradiction,
+    )
+    weak_result = _attach_keyframe_business(weak)
+    assert weak["business_signals"]["keyframe_face_head_identity"] == canonical_qa.REVIEW
+    assert weak_result["retry_action"] == "STOP"
+
+    profile.visual_identity["same_individual_gate"]["strict_lineage_reference_count"] = 2
+    strong = kf.evaluate_keyframe_candidate(
+        cutout_rgba=ids.load_rgba(cutout), profile=profile,
+        canonical_signature=sig, reference_signatures=[],
+        spec=spec_mod.KEYFRAME_ROLES["NEUTRAL_IDLE"], vlm_qa=contradiction,
+    )
+    strong_result = _attach_keyframe_business(strong)
+    assert strong["business_signals"]["keyframe_face_head_identity"] == canonical_qa.FAIL
+    assert strong_result["retry_action"] == "REGENERATE"
+
+
 def test_provider_error_distinct_from_qa_fail_and_falls_back(storage, monkeypatch):
     from backend.services.canonical_image_providers import CanonicalProviderError
 
@@ -932,13 +1287,17 @@ def test_early_stop_and_limits(storage, monkeypatch):
     k = _build_kf(h, [provider])
     assert provider.calls == 1  # 점진적 조기 중단: 첫 PASS 에서 즉시 멈춘다
     assert k.qa_summary["candidate_count"] == 1
+    first = k.candidates[0].qa_result["business_qa"]
+    assert first["delivery_action"] in ("DELIVER", "DELIVER_WITH_ADVISORY")
+    assert first["retry_action"] == "STOP"
+    assert first["authority_profile"] == business_qa.KEYFRAME_IDENTITY_AUTHORITY_VERSION
 
     monkeypatch.setenv("CANONICAL_MAX_PRIMARY", "1")
-    install_kf_vlm(monkeypatch, None)  # PASS 없음 → 상한까지만
+    install_kf_vlm(monkeypatch, None)  # legacy REVIEW → business delivery, no extra spend
     primary = FakeProvider("runway", [GOOD()] * 10)
     fallback = FakeProvider("gpt_image", [GOOD()] * 10)
     k2 = _build_kf(h, [primary, fallback], role="LOOK_UP")
-    assert primary.calls == 1 and fallback.calls == 2  # max_fallback 기본 2
+    assert primary.calls == 1 and fallback.calls == 0
 
 
 def test_candidates_persist_raw_and_cutout(storage, monkeypatch):
@@ -1114,7 +1473,8 @@ def test_qa_rerun_reuses_existing_candidate_and_flips_review_to_pass(storage, mo
     primary = FakeProvider("runway", [GOOD()])
 
     k = _build_kf(h, [primary])
-    assert k.status == kf.STATUS_REVIEW
+    assert k.status == kf.STATUS_COMPLETE
+    assert k.candidates[0].decision == "REVIEW"
     calls_after_build = primary.calls
     stale_candidate_id = k.candidates[0].id
 

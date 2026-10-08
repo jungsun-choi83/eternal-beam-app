@@ -48,6 +48,11 @@ interface PhotoUploadScreenProps {
   onReplaceImage?: (index: number, file: File) => void;
   imageStates?: Array<{ status: "pending" | "uploading" | "success" | "error"; error?: string | null }>;
   maxImages?: number;
+  /**
+   * 이 아이의 생성이 이미 시작되어 사진을 더 바꿀 수 없다. 추가·교체·삭제를
+   * 끄고 그 사실을 알린다. 서버도 같은 변경을 409 PHASE1_LOCKED 로 거절한다.
+   */
+  photosLocked?: boolean;
   onContinue: () => void;
   onBack: () => void;
 }
@@ -67,6 +72,7 @@ export function PhotoUploadScreen({
   onImagesUpload,
   onRemoveImage,
   onReplaceImage,
+  photosLocked = false,
   imageStates,
   maxImages = 3,
   onContinue,
@@ -392,7 +398,7 @@ export function PhotoUploadScreen({
             <MediaFileTrigger
               onFiles={ingestFiles}
               multiple
-              disabled={!isVideo && selectedImages.length >= maxImages}
+              disabled={photosLocked || (!isVideo && selectedImages.length >= maxImages)}
               className="block touch-manipulation"
             >
               <motion.div
@@ -475,6 +481,12 @@ export function PhotoUploadScreen({
               </motion.div>
             </MediaFileTrigger>
 
+            {photosLocked ? (
+              <div className="eb-notice eb-notice--info" role="status">
+                {u.photosLockedNotice}
+              </div>
+            ) : null}
+
             {selectedImages.length > 0 && !isVideo ? (
               <div className="pet-intake__grid">
                 {selectedImages.map((url, index) => {
@@ -488,7 +500,7 @@ export function PhotoUploadScreen({
                     <div key={`pet-photo-slot-${index}`} className="pet-intake__thumb">
                       <PetPhoto src={previewUrls[index] || url} variant="full" />
                       <div className="pet-intake__thumb-actions">
-                        {onReplaceImage ? (
+                        {onReplaceImage && !photosLocked ? (
                           <MediaFileTrigger
                             onFiles={(files) => {
                               replaceIndexRef.current = index;
@@ -505,7 +517,7 @@ export function PhotoUploadScreen({
                             </span>
                           </MediaFileTrigger>
                         ) : null}
-                        {onRemoveImage ? (
+                        {onRemoveImage && !photosLocked ? (
                           <button
                             type="button"
                             aria-label={u.removeImageAria(index + 1)}
@@ -520,6 +532,27 @@ export function PhotoUploadScreen({
                     </div>
                   );
                 })}
+                {/* 같은 아이에 사진을 더한다. 이 타일이 없으면 화면에 보이는 "+" 는
+                    "펫 추가"뿐이라, 두 번째 사진이 **다른 펫**으로 들어가곤 했다 —
+                    그러면 Start 는 활성 펫의 한 장만 제출한다. 여기서 고른 사진은
+                    위 큰 선택 영역과 같은 경로(ingestFiles → onImagesUpload)로
+                    **활성 펫의 배열에** 붙는다. */}
+                {!photosLocked && selectedImages.length < maxImages ? (
+                  <MediaFileTrigger
+                    onFiles={ingestFiles}
+                    multiple
+                    className="pet-intake__add-photo touch-manipulation"
+                  >
+                    <span
+                      className="pet-intake__add-photo-body"
+                      role="button"
+                      aria-label={u.addPhotoAria(selectedImages.length, maxImages)}
+                    >
+                      <Plus className="w-5 h-5" strokeWidth={2} aria-hidden />
+                      <span>{u.addPhoto}</span>
+                    </span>
+                  </MediaFileTrigger>
+                ) : null}
               </div>
             ) : null}
 

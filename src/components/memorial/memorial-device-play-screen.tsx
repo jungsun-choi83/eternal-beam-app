@@ -604,6 +604,7 @@ function MemorialDevicePlayScreenInner({
                 // packed_alpha 는 명시로 선택한다 — 휴리스틱이 놓치면 회색
                 // 매트 절반이 그대로 보인다 (Phase 7F).
                 deliveryFormat={breathingDeliveryFormat}
+                staticCutout={pipeline?.delivery_format === "canonical_still"}
                 className={playbackFrameClass(bakedAsset)}
                 style={{
                   filter: `drop-shadow(0 16px 32px ${theme.accent}66)`,

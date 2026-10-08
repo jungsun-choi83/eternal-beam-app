@@ -250,6 +250,13 @@ from .routers import pet_references_v1  # noqa: E402
 
 app.include_router(pet_references_v1.router, prefix="/api", tags=["pet-references"])
 
+from .routers import archive_intake_v1  # noqa: E402
+
+app.include_router(
+    archive_intake_v1.router,
+    prefix="/api",
+    tags=["archive-intake"],
+)
 # 펫 신원 프로필 (Phase 2). 레퍼런스에서 파생된 버전드 시각/구조 신원 —
 # 생성 파이프라인은 건드리지 않는다. 빌드/조회 모두 인증 필수.
 from .routers import pet_identity_v1  # noqa: E402
@@ -288,8 +295,10 @@ app.include_router(motion_references_v1.router, prefix="/api", tags=["motion-ref
 # Phase 7C durable orchestration. The browser creates/queries one run; this
 # server-owned coordinator invokes Phase 2–7A without exposing phase fan-out.
 from .routers import generation_runs_v1  # noqa: E402
+from .routers import business_qa_ops_v1  # noqa: E402
 
 app.include_router(generation_runs_v1.router, prefix="/api", tags=["pet-generation-runs"])
+app.include_router(business_qa_ops_v1.router, prefix="/api", tags=["business-qa-ops"])
 
 # Optional heavy pipeline endpoints (Luma/generate). Disable by default on lightweight deployments.
 _enable_generate = os.getenv("ENABLE_GENERATE_API", "0").strip().lower() in ("1", "true", "yes")

@@ -22,6 +22,7 @@ test("sendDeviceCommand sends authenticated JSON and accepts sent", async () => 
     event: "pet_asset",
     pet_id: "pet_abc",
     motion_id: "BREATHING",
+    spawn_vfx: "heart",
   };
   const result = await sendDeviceCommand(payload, {
     apiBase: "https://api.test",
@@ -39,6 +40,28 @@ test("sendDeviceCommand sends authenticated JSON and accepts sent", async () => 
     "Bearer jwt-device",
   );
   assert.deepEqual(JSON.parse(String(calls[0].init?.body)), payload);
+});
+
+test("sendDeviceCommand keeps pet_asset backward compatible without spawn_vfx", async () => {
+  let wireBody: unknown;
+  const payload: DeviceCommandPayload = {
+    device_id: demoDeviceId(),
+    event: "pet_asset",
+    pet_id: "pet_abc",
+    motion_id: "BREATHING",
+  };
+
+  const result = await sendDeviceCommand(payload, {
+    getToken: token,
+    fetchFn: async (_url, init) => {
+      wireBody = JSON.parse(String(init?.body));
+      return fakeResponse({ command_id: "cmd-legacy", delivery: "pending" });
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(wireBody, payload);
+  assert.equal("spawn_vfx" in (wireBody as Record<string, unknown>), false);
 });
 
 test("sendDeviceCommand accepts offline pending delivery", async () => {

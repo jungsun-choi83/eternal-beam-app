@@ -60,9 +60,13 @@ import {
   type Phase7Outcome,
 } from "@/lib/phase7-generation-flow";
 import { clearActiveGeneration, readActiveGeneration } from "@/lib/generation-resume";
-import type { GenerationRun } from "@/lib/generation-run-api";
+import {
+  submitBusinessQAFeedback,
+  type GenerationRun,
+} from "@/lib/generation-run-api";
 import { deriveGenerationProgress, isRecoverableErrorCode } from "@/lib/generation-progress";
 import { GenerationProgressScreen } from "@/components/memorial/generation-progress-screen";
+import { MotionQAFeedback, type MotionQAComplaint } from "@/components/memorial/motion-qa-feedback";
 import { useProcessingClock } from "@/lib/use-processing-clock";
 import { getEternalBeamPetId } from "@/lib/pet-identity";
 import {
@@ -241,6 +245,12 @@ function PreviewScreenInner({
   const [genError, setGenError] = useState<string | null>(null);
   const [genErrorRecoverable, setGenErrorRecoverable] = useState(false);
   const [runState, setRunState] = useState<GenerationRun | null>(null);
+  const [userTestFeedback, setUserTestFeedback] = useState<
+    "idle" | "submitting" | "sent" | "error"
+  >("idle");
+  useEffect(() => {
+    setUserTestFeedback("idle");
+  }, [runState?.run_id]);
   /** 확인/재개가 실제로 generation-run 제출을 시도했는가 — 순수 클라이언트
    *  검증 오류(사진 없음 등)는 여기 걸리지 않는다. 새 폴 진행 화면의 전면
    *  오류 카드는 **제출이 실제로 일어난 뒤**에만 뜬다. */
@@ -580,7 +590,13 @@ function PreviewScreenInner({
       // theme_play/pet_asset; this path used to fire pet_asset unconditionally
       // and fire-and-forget the instant the run published, with no consent,
       // no failure surfaced, and no device_id resolution.
-      if (devicePetId && outcome.run.status === "PUBLISHED") {
+      if (
+        devicePetId &&
+        outcome.run.status === "PUBLISHED" &&
+        // Fallback delivery has no published pointer to hydrate from — keep
+        // the marker so a refresh re-resolves the fallback playback URL.
+        outcome.run.terminal_state !== "DELIVERED_FALLBACK"
+      ) {
         // Phase 9 — 발행(PUBLISHED)은 종착점이다. 재개 마커를 여기서 지우지
         // 않으면 다시 열 이유가 없는 완료된 실행이 localStorage 에 영원히
         // 남는다(REVIEW/FAILED/RECOVERY_REQUIRED 는 여전히 재개 대상이라
@@ -1127,6 +1143,29 @@ function PreviewScreenInner({
   // 발행된 재생 레일 — Library 갈래는 언제나, Create 갈래는 기기 전달(device)로
   // 발행이 끝난 뒤. 실물(shipping)은 배송지로 이어지는 확인 CTA 를 그대로 둔다.
   const showPublishedRail = isLibraryFlow || (hasIdle && deliveryMode === "device");
+  const userTestEnrolled = Boolean(
+    (
+      runState?.provider_state?._business_qa_cutover as
+        | { enrolled?: boolean }
+        | undefined
+    )?.enrolled
+  );
+  const handleUserTestFeedback = useCallback(
+    async (accepted: boolean, complaint?: MotionQAComplaint) => {
+      if (!runState?.run_id || userTestFeedback === "submitting") return;
+      setUserTestFeedback("submitting");
+      try {
+        await submitBusinessQAFeedback(runState.run_id, {
+          accepted,
+          complaints: complaint ? [complaint] : [],
+        });
+        setUserTestFeedback("sent");
+      } catch {
+        setUserTestFeedback("error");
+      }
+    },
+    [runState?.run_id, userTestFeedback]
+  );
   // Only BREATHING exists once a Create-flow pet is READY — the device contract
   // supports nothing else yet, so this is real data, not a placeholder.
   const motionLabel = isLibraryFlow ? libraryPublication?.motionId ?? null : hasIdle ? "BREATHING" : null;
@@ -1377,6 +1416,7 @@ function PreviewScreenInner({
                     backgroundBaked={false}
                     // packed_alpha 는 명시로 선택한다 (Phase 7F).
                     deliveryFormat={breathingDeliveryFormat}
+                    staticCutout={pipeline?.delivery_format === "canonical_still"}
                     className={playbackFrameClass(bakedAsset)}
                     style={{
                       filter: `drop-shadow(0 16px 32px ${currentTheme.accent}66)`,
@@ -1531,6 +1571,15 @@ function PreviewScreenInner({
             ) : null}
 
             <p className="preview-composer__hint">{p.beamHint}</p>
+
+            {/* 내부 QA 컨트롤 — 고객 화면에는 나오지 않는다. 개발 빌드에서
+                VITE_INTERNAL_MOTION_QA=1 로 명시적으로 켠 경우에만 렌더된다. */}
+            <MotionQAFeedback
+              enrolled={!isLibraryFlow && userTestEnrolled}
+              language={language}
+              status={userTestFeedback}
+              onFeedback={(accepted, complaint) => void handleUserTestFeedback(accepted, complaint)}
+            />
 
             {onOpenMembership ? (
               <button

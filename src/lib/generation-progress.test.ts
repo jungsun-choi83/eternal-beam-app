@@ -114,6 +114,52 @@ test("PUBLISHED 은 완료 — waiting 여부와 무관하게 항상 완료", ()
   );
 });
 
+test("DELIVERED_FALLBACK 은 legacy FAILED status 보다 우선해 완료로 보인다", () => {
+  assert.deepEqual(
+    deriveGenerationProgress({
+      status: "FAILED",
+      terminal_state: "DELIVERED_FALLBACK",
+      current_stage: "DELIVERY",
+    }),
+    { kind: "stage", stage: "complete", waiting: false }
+  );
+});
+
+test("DELIVERED_FALLBACK with completed status is complete, never an error view", () => {
+  assert.deepEqual(
+    deriveGenerationProgress({
+      status: "PUBLISHED",
+      terminal_state: "DELIVERED_FALLBACK",
+      current_stage: "DELIVERY",
+    }),
+    { kind: "stage", stage: "complete", waiting: false }
+  );
+});
+
+test("FAILED without a delivered terminal_state (no fallback) stays an error view", () => {
+  assert.deepEqual(
+    deriveGenerationProgress({
+      status: "FAILED",
+      terminal_state: null,
+      current_stage: "QA",
+      last_error: { code: "NO_SAFE_FALLBACK", message: "no asset" },
+    }),
+    { kind: "error", recoverable: false, message: "no asset" }
+  );
+});
+
+test("TRUE_INFRASTRUCTURE_FAILURE 는 QA 실패와 구분되는 복구 가능 오류", () => {
+  assert.deepEqual(
+    deriveGenerationProgress({
+      status: "FAILED",
+      terminal_state: "TRUE_INFRASTRUCTURE_FAILURE",
+      current_stage: "DELIVERY",
+      last_error: { code: "TRUE_INFRASTRUCTURE_FAILURE", message: "storage unavailable" },
+    }),
+    { kind: "error", recoverable: true, message: "storage unavailable" }
+  );
+});
+
 test("FAILED/CANCELLED 은 복구 불가 에러 뷰", () => {
   assert.deepEqual(
     deriveGenerationProgress({
