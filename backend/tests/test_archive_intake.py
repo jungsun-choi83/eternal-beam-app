@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import ANY
 
 import anyio
@@ -13,11 +14,11 @@ from fastapi import FastAPI
 from backend.routers import archive_intake_v1
 from backend.services import archive_intake_preparation_service
 from backend.services import archive_intake_service
+from backend.services import motion_publication_service
 from backend.services import pet_cutout_service
 from backend.services import pet_generation_run_service
 from backend.services import pet_reference_service
 from backend.services import pet_registry
-
 from .conftest import ASGITestClient, make_jpeg_bytes, make_rgba_png_bytes
 
 
@@ -410,8 +411,137 @@ def test_metadata_resend_preserves_success_and_future_lifecycle_fields(
     assert saved["result_url"] == "mock://result.mp4"
     assert saved["created_at"] == created_at
     assert saved["future_delivery_receipt"] == "receipt-1"
+def test_generation_completion_saves_result_url(
+    client: ASGITestClient,
+):
+    response = _post(client, files=_photos(1))
+    assert response.status_code == 201
+
+    intake = archive_intake_service.mock_get("application-123")
+    assert intake is not None
+    assert intake["status"] == "GENERATION_QUEUED"
+
+    run_id = intake["generation_run_id"]
+    assert run_id
+
+    completed = anyio.run(
+        archive_intake_service.mark_generation_completed,
+        run_id,
+        "mock://final-video.mp4",
+    )
+
+    assert completed is not None
+    assert completed["status"] == "COMPLETED"
+    assert completed["result_url"] == "mock://final-video.mp4"
+    assert completed["generation_run_id"] == run_id
+
+    saved = archive_intake_service.mock_get("application-123")
+    assert saved is not None
+    assert saved["status"] == "COMPLETED"
+    assert saved["result_url"] == "mock://final-video.mp4"
+
+def test_published_archive_generation_syncs_result_url(
+    client: ASGITestClient,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    response = _post(client, files=_photos(1))
+    assert response.status_code == 201
+
+    intake = archive_intake_service.mock_get("application-123")
+    assert intake is not None
+    run_id = intake["generation_run_id"]
+
+    async def fake_get_published_breathing(**kwargs):
+        return SimpleNamespace(url="mock://published-video.mp4")
+
+    monkeypatch.setattr(
+        motion_publication_service,
+        "get_published_breathing",
+        fake_get_published_breathing,
+    )
+
+    run = SimpleNamespace(
+        id=run_id,
+        user_id="archive_application-123",
+        pet_id="pet_archive_application-123",
+    )
+
+    anyio.run(
+        lambda: pet_generation_run_service._sync_archive_completion(run)
+    )
+
+    saved = archive_intake_service.mock_get("application-123")
+    assert saved is not None
+    assert saved["status"] == "COMPLETED"
+    assert saved["result_url"] == "mock://published-video.mp4"
+
+def test_normal_eternal_beam_generation_never_touches_archive(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    archive_lookup_called = False
+
+    async def track_archive_lookup(*args, **kwargs):
+        nonlocal archive_lookup_called
+        archive_lookup_called = True
+        return None
+
+    monkeypatch.setattr(
+        archive_intake_service,
+        "get_intake_by_generation_run_id",
+        track_archive_lookup,
+    )
+
+    run = SimpleNamespace(
+        id="normal-eternal-beam-run",
+        user_id="normal-user",
+        pet_id="normal-pet",
+    )
+
+    anyio.run(
+        lambda: pet_generation_run_service._sync_archive_completion(run)
+    )
+
+    assert archive_lookup_called is False
+def test_archive_status_route_returns_completed_result(
+    client: ASGITestClient,
+):
+    response = _post(client, files=_photos(1))
+    assert response.status_code == 201
+
+    intake = archive_intake_service.mock_get("application-123")
+    assert intake is not None
+    run_id = intake["generation_run_id"]
+
+    anyio.run(
+        archive_intake_service.mark_generation_completed,
+        run_id,
+        "mock://final-video.mp4",
+    )
+
+    response = client.get(
+        "/api/internal/archive-intake/application-123/status",
+        headers={"X-Archive-Service-Token": SERVICE_TOKEN},
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["application_id"] == "application-123"
+    assert data["status"] == "COMPLETED"
+    assert data["generation_run_id"] == run_id
+    assert data["result_url"] == "mock://final-video.mp4"
 
 
+def test_archive_status_route_rejects_invalid_token(
+    client: ASGITestClient,
+):
+    response = client.get(
+        "/api/internal/archive-intake/application-123/status",
+        headers={"X-Archive-Service-Token": "wrong-token"},
+    )
+
+    assert response.status_code == 401
+    
 def test_reference_count_is_total_stored_not_current_request_length(
     client: ASGITestClient,
 ):
