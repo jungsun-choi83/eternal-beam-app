@@ -99,16 +99,16 @@ def _int_env(name: str, default: int) -> int:
 #: 프로바이더 폴백)이 실제로 쓰인다 — 높은 상한. 프롬프트/스펙은 "무엇을
 #: 만들 것인가"만 정하고, 몇 번 더 과금할지는 여기(정책)가 정한다.
 _CLASS_PRIMARY_DEFAULTS: dict[str, int] = {
-    "MICRO": 2,
-    "TRANSITION": 3,
-    "INTERACTION": 3,
-    "LOCOMOTION": 4,
+    "MICRO": 1,
+    "TRANSITION": 1,
+    "INTERACTION": 1,
+    "LOCOMOTION": 1,
 }
 _CLASS_FALLBACK_DEFAULTS: dict[str, int] = {
-    "MICRO": 1,
-    "TRANSITION": 2,
-    "INTERACTION": 2,
-    "LOCOMOTION": 2,
+    "MICRO": 0,
+    "TRANSITION": 0,
+    "INTERACTION": 0,
+    "LOCOMOTION": 0,
 }
 
 
@@ -1259,6 +1259,7 @@ async def build_motion_video(
                     provider_identity["adapter"],
                     attempt,
                 )
+                
                 result = provider.generate(
                     MotionVideoRequest(
                         prompt=prompt,
