@@ -104,3 +104,4 @@ myenv/
 .recovery/
 :memory:.ses
 
+docs/aws-audit/
