@@ -5,7 +5,7 @@
 우리 책임은 "패키지가 준비됐다" 를 외부 시스템에 알리고 ACK 를 받는 데까지다.
 셰이더 변형·호흡 애니메이션·디바이스 표시는 외부 시스템(다른 개발자 소유)이
 한다. 이 모듈은 패키지 파일을 다시 만들지 않는다 — 이미 저장된
-exhibition/{run_id}/ 파일 4개의 서명 URL 만 보낸다.
+exhibition/{run_id}/visitor_XXXX.zip 하나의 서명 URL 만 보낸다.
 
 ── 요청 ─────────────────────────────────────────────────────────────────────
   POST {EXHIBITION_HANDOFF_URL}
@@ -13,9 +13,9 @@ exhibition/{run_id}/ 파일 4개의 서명 URL 만 보낸다.
   Idempotency-Key: <run_id>          (같은 run_id 재전송 = 같은 패키지)
   Authorization: Bearer <EXHIBITION_HANDOFF_TOKEN>   (설정된 경우만)
 
-  {"run_id", "exhibition_id", "schema_version": "EXHIBITION_RIG_INPUT_V1",
-   "motion": "BREATHING", "subject_rgba_url", "breathing_weight_url",
-   "locked_mask_url", "manifest_url"}
+  {"event": "pet_asset", "run_id", "package_id": "visitor_0028",
+   "schema_version": "EXHIBITION_RIG_INPUT_V1", "motion": "BREATHING",
+   "packed_url": <signed URL to visitor_0028.zip>}
 
 ── ACK ──────────────────────────────────────────────────────────────────────
   2xx + {"run_id": <같은 run_id>, "accepted": true}  → 성공
@@ -42,18 +42,14 @@ logger = logging.getLogger(__name__)
 
 HANDOFF_SCHEMA_VERSION = "EXHIBITION_RIG_INPUT_V1"
 HANDOFF_MOTION = "BREATHING"
+HANDOFF_EVENT = "pet_asset"
 
 MODE_MOCK = "mock"
 MODE_HTTP = "http"
 MODE_OFF = "off"
 
-#: 페이로드 키 → 패키지 파일 이름 (exhibition_prep_service.PACKAGE_FILES 와 같은 이름).
-PAYLOAD_FILES = {
-    "subject_rgba_url": "subject_rgba.png",
-    "breathing_weight_url": "breathing_weight.png",
-    "locked_mask_url": "locked_mask.png",
-    "manifest_url": "manifest.json",
-}
+#: row 의 ZIP 패키지 경로 컬럼 (exhibition_prep_service.process_run 이 쓴다).
+PACKAGE_ZIP_FIELD = "package_zip_path"
 
 
 def _env_float(name: str, default: float, minimum: float) -> float:
@@ -140,8 +136,7 @@ def _requests_transport(
 
 
 def build_payload(row: dict[str, Any], artifacts: Any, *, url_ttl_sec: int) -> dict[str, Any]:
-    """이미 저장된 패키지 파일 4개의 서명 URL 로 페이로드를 만든다. 파일은 만들지 않는다."""
-    outputs = row.get("outputs_json") or {}
+    """이미 저장된 visitor_XXXX.zip 하나의 서명 URL 로 페이로드를 만든다. 파일은 만들지 않는다."""
     manifest = row.get("manifest_json") or {}
     schema = manifest.get("schema_version")
     if schema != HANDOFF_SCHEMA_VERSION:
@@ -150,30 +145,33 @@ def build_payload(row: dict[str, Any], artifacts: Any, *, url_ttl_sec: int) -> d
             f"Package schema {schema!r} is not {HANDOFF_SCHEMA_VERSION}.",
             retryable=False,
         )
-    payload: dict[str, Any] = {
+    package_id = row.get("package_id")
+    zip_path = row.get(PACKAGE_ZIP_FIELD)
+    if not package_id or not zip_path:
+        raise HandoffError(
+            "HANDOFF_PACKAGE_UNAVAILABLE",
+            "ZIP package is missing (run has no queue_number or was not packaged).",
+            retryable=True,
+        )
+    url = artifacts.signed_url(zip_path, url_ttl_sec)
+    if not url:
+        raise HandoffError(
+            "HANDOFF_PACKAGE_UNAVAILABLE", f"ZIP package at {zip_path} could not be signed.", retryable=True
+        )
+    return {
+        "event": HANDOFF_EVENT,
         "run_id": str(row["id"]),
-        "exhibition_id": row.get("exhibition_id"),
+        "package_id": package_id,
         "schema_version": HANDOFF_SCHEMA_VERSION,
         "motion": HANDOFF_MOTION,
+        "packed_url": url,
     }
-    for key, name in PAYLOAD_FILES.items():
-        path = outputs.get(name)
-        url = artifacts.signed_url(path, url_ttl_sec) if path else None
-        if not url:
-            raise HandoffError(
-                "HANDOFF_PACKAGE_UNAVAILABLE",
-                f"Package file {name} is missing or could not be signed.",
-                retryable=True,
-            )
-        payload[key] = url
-    return payload
 
 
 def redacted_payload(payload: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
     """DB 기록용 — 서명 URL(토큰 포함) 대신 저장 경로를 남긴다."""
-    outputs = row.get("outputs_json") or {}
-    out = {k: v for k, v in payload.items() if k not in PAYLOAD_FILES}
-    out["files"] = {key: outputs.get(name) for key, name in PAYLOAD_FILES.items()}
+    out = {k: v for k, v in payload.items() if k != "packed_url"}
+    out["zip_path"] = row.get(PACKAGE_ZIP_FIELD)
     return out
 
 

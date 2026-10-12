@@ -251,6 +251,7 @@ _EXHIBITION_MODULES = [
     "services/exhibition_handoff_client.py",
     "services/exhibition_queue_service.py",
     "routers/exhibition_queue_v1.py",
+    "services/exhibition_pose_normalizer.py",
 ]
 #: 외부 전시 시스템에 POST 하는 단 하나의 모듈 — 여기만 HTTP 클라이언트를 쓴다.
 _HTTP_ALLOWED = {"services/exhibition_handoff_client.py": {"requests"}}

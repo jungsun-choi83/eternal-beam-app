@@ -11,6 +11,9 @@ EXHIBITION_PREP_RUN — 전시용 리깅 입력 패키지 생성 (일반 펫 생
   MAPS    : exhibition_breathing_maps (OpenCV/NumPy, 추가 모델 추론 없음)
   PACKAGE : exhibition/{run_id}/ 에 subject_rgba.png, breathing_weight.png,
             locked_mask.png, preview_overlay.png, manifest.json (manifest 는 마지막)
+            READY 이고 queue_number 가 있으면 그중 4개(preview_overlay 제외)를
+            exhibition/{run_id}/visitor_{queue_number:04d}.zip 으로도 묶는다 —
+            디포메이션 개발자에게 넘기는 단일 핸드오프 패키지.
 
 우리 책임은 패키지 + 핸드오프(서명 URL 전달, ACK 확인)까지다. 2.5D 리깅·
 호흡 애니메이션·디바이스 표시는 외부 시스템 몫이며 여기서 하지 않는다.
@@ -26,6 +29,7 @@ import json
 import logging
 import os
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
@@ -33,6 +37,7 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from . import exhibition_breathing_maps as maps_mod
+from . import exhibition_pose_normalizer as pose_mod
 from .exhibition_handoff_client import (
     ExhibitionHandoffClient,
     HandoffError,
@@ -69,6 +74,13 @@ PACKAGE_FILES = {
     "manifest": "manifest.json",
 }
 
+#: 리깅 핸드오프 ZIP 에 들어가는 파일 — preview_overlay(운영자용)는 제외.
+ZIP_PACKAGE_KEYS = ("subject_rgba", "breathing_weight", "locked_mask", "manifest")
+
+
+def package_id_for(queue_number: int) -> str:
+    return f"visitor_{int(queue_number):04d}"
+
 #: 전시 실행 전용 입력 상한 (긴 변). 일반 누끼 경로는 리사이즈하지 않는다 —
 #: 여기서만 줄여 12MP 사진의 ViTMatte 메모리 폭주를 막는다.
 def max_input_side() -> int:
@@ -81,6 +93,38 @@ def max_input_side() -> int:
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 MatteFn = Callable[[bytes], tuple[bytes, dict]]
+NormalizeFn = Callable[[bytes, dict], bytes]
+
+#: 변형(호흡) 적합성 판정 — 1 장 업로드에서 리테이크 없이 자동으로 결정한다.
+SUITABILITY_GOOD = "GOOD_FOR_DEFORMATION"
+SUITABILITY_NEEDS_NORMALIZATION = "NEEDS_AI_NORMALIZATION"
+#: 몸통 면적이 실루엣 대비 이보다 작으면 호흡 영역을 안전하게 추정할 수 없다고 본다
+#: (웅크린/가려진 포즈 — 잠금(머리+지면)이 실루엣 대부분을 차지). frontal/round/clothed
+#: 참조 자세(≥0.24)는 통과, round_blob 같은 근거 없는 실루엣은 head 판정에서 먼저 걸린다.
+SUITABILITY_MIN_TORSO_AREA_FRAC = 0.20
+
+
+def classify_suitability(manifest: dict[str, Any]) -> str:
+    """build_package() 가 이미 만든 manifest(머리 등급/신뢰도, 몸통 면적, 테두리 접촉,
+    구조 QA)만으로 변형 파이프라인에 쓸 포즈가 적합한지 판정한다 — 새 모델 추론 없음.
+
+    NEEDS_AI_NORMALIZATION 예: 누워 있거나 웅크린 자세, 다리가 가려짐, 머리와 몸통이
+    한 덩어리로 붙음(= 신뢰할 수 있는 머리 없음), 몸통 기하가 불안정함, 부적절한
+    프레이밍(테두리에 닿음) — 신원은 또렷해도 변형에는 쓸 수 없는 경우들이다.
+    신호가 없으면(결측) 안전한 쪽으로 — NEEDS_AI_NORMALIZATION.
+    """
+    flags = manifest.get("flags") or {}
+    diagnostics = manifest.get("diagnostics") or {}
+    torso_area_frac = diagnostics.get("torso_area_frac")
+
+    head_usable = flags.get("head_low_confidence") is False
+    torso_usable = torso_area_frac is not None and torso_area_frac >= SUITABILITY_MIN_TORSO_AREA_FRAC
+    pose_in_frame = flags.get("touches_frame_edge") is False
+    structurally_sound = flags.get("interior_holes") is False
+
+    if head_usable and torso_usable and pose_in_frame and structurally_sound:
+        return SUITABILITY_GOOD
+    return SUITABILITY_NEEDS_NORMALIZATION
 
 
 class ExhibitionInputError(ValueError):
@@ -198,6 +242,7 @@ def build_package(
     head_hint_in_source: Optional[tuple[float, float]] = None,
     matte_fn: MatteFn = _default_matte,
     on_stage: Callable[[str], None] = lambda _s: None,
+    queue_number: Optional[int] = None,
 ) -> tuple[str, list[str], dict[str, tuple[bytes, str]], dict[str, Any]]:
     """순수 처리부: (status, review_reasons, files{name: (bytes, type)}, manifest).
 
@@ -279,6 +324,9 @@ def build_package(
         "cutout": _cutout_diagnostics(meta),
         "diagnostics": {**result.diagnostics, "frame_edge_sides": edge["sides"]},
     }
+    if queue_number is not None:
+        manifest.setdefault("queue_number", int(queue_number))
+        manifest.setdefault("package_id", package_id_for(queue_number))
 
     files = {
         PACKAGE_FILES["subject_rgba"]: (_png(canvas, "RGBA"), "image/png"),
@@ -289,6 +337,19 @@ def build_package(
     return status, review_reasons, files, manifest
 
 
+def _build_zip_bytes(files: dict[str, tuple[bytes, str]], manifest_bytes: bytes) -> bytes:
+    """4개 파일을 ZIP 루트에 직접 담는다 (하위 폴더 없음, preview_overlay 제외)."""
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for key in ZIP_PACKAGE_KEYS:
+            if key == "manifest":
+                zf.writestr(PACKAGE_FILES["manifest"], manifest_bytes)
+            else:
+                name = PACKAGE_FILES[key]
+                zf.writestr(name, files[name][0])
+    return buf.getvalue()
+
+
 def process_run(
     run: dict[str, Any],
     *,
@@ -296,6 +357,7 @@ def process_run(
     artifacts: ArtifactStore,
     worker_id: Optional[str] = None,
     matte_fn: MatteFn = _default_matte,
+    normalize_fn: Optional[NormalizeFn] = None,
 ) -> dict[str, Any]:
     """클레임된 실행 1건을 끝까지 처리하고 최종 필드를 반환한다. 예외를 올리지 않는다."""
     from .cutout_errors import CutoutError
@@ -317,6 +379,7 @@ def process_run(
     try:
         source_png = artifacts.get(run["source_path"])
         hint = (run.get("head_hint") or {}).get("xy_in_source")
+        queue_number = run.get("queue_number")
         status, reasons, files, manifest = build_package(
             run_id,
             source_png,
@@ -324,20 +387,74 @@ def process_run(
             head_hint_in_source=tuple(hint) if hint else None,
             matte_fn=matte_fn,
             on_stage=_stage,
+            queue_number=queue_number,
         )
+
+        # ── 적합성 게이트: 리테이크/추가 사진 없음 — 이 자리에서 바로 결정한다.
+        original_manifest = manifest
+        pose_suitability = classify_suitability(manifest)
+        normalized_source_path = None
+        if pose_suitability == SUITABILITY_NEEDS_NORMALIZATION:
+            normalize = normalize_fn or pose_mod.default_normalize
+            prompt = pose_mod.build_normalization_prompt(original_manifest)
+            try:
+                normalized_png = normalize(source_png, original_manifest)
+            except pose_mod.PoseNormalizationError as e:
+                logger.info(
+                    "exhibition run %s: pose normalization skipped (%s) — continuing with original image",
+                    run_id, e.code,
+                )
+                pose_record = {"decision": pose_suitability, "source_used": "original", "normalization_error": e.code}
+            else:
+                normalized_source_bytes, normalized_info = normalize_source(normalized_png)
+                status, reasons, files, manifest = build_package(
+                    run_id,
+                    normalized_source_bytes,
+                    normalized_info,
+                    matte_fn=matte_fn,
+                    on_stage=_stage,
+                    queue_number=queue_number,
+                )
+                normalized_source_path = run_object_path(run_id, "source_normalized.png")
+                artifacts.put(normalized_source_path, normalized_source_bytes, "image/png")
+                pose_record = {
+                    "decision": pose_suitability,
+                    "source_used": "ai_normalized",
+                    "original_source_path": run["source_path"],
+                    "normalized_source_path": normalized_source_path,
+                    "prompt": prompt,
+                }
+        else:
+            pose_record = {"decision": pose_suitability, "source_used": "original"}
+        manifest["pose_suitability"] = pose_record
+
         outputs: dict[str, str] = {}
         for name, (data, ctype) in files.items():
             path = run_object_path(run_id, name)
             artifacts.put(path, data, ctype)
             outputs[name] = path
+        manifest_bytes = json.dumps(manifest, indent=2).encode("utf-8")
         manifest_path = run_object_path(run_id, PACKAGE_FILES["manifest"])
-        artifacts.put(manifest_path, json.dumps(manifest, indent=2).encode("utf-8"), "application/json")
+        artifacts.put(manifest_path, manifest_bytes, "application/json")
         outputs[PACKAGE_FILES["manifest"]] = manifest_path
+        if normalized_source_path is not None:
+            outputs["source_normalized.png"] = normalized_source_path
+
+        package_id = None
+        package_zip_path = None
+        if status == STATUS_READY and queue_number is not None:
+            package_id = manifest["package_id"]
+            zip_bytes = _build_zip_bytes(files, manifest_bytes)
+            package_zip_path = run_object_path(run_id, f"{package_id}.zip")
+            artifacts.put(package_zip_path, zip_bytes, "application/zip")
+
         return _finish({
             "status": status,
             "review_reasons": reasons,
             "outputs_json": outputs,
             "manifest_json": manifest,
+            "package_id": package_id,
+            "package_zip_path": package_zip_path,
             "error_code": None,
             "error_message": None,
         })
@@ -480,6 +597,7 @@ def public_view(row: dict[str, Any], artifacts: Optional[ArtifactStore] = None) 
         "error_message": row.get("error_message"),
         "outputs": outputs,
         "output_urls": urls,
+        "package_id": row.get("package_id"),
         "manifest": row.get("manifest_json"),
         "handoff": {
             "status": row.get("handoff_status"),

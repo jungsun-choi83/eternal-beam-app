@@ -22,10 +22,7 @@ from backend.tests.test_exhibition_prep_run import (
 )
 
 URL = "https://exhibit.example/api/rig-inputs"
-PAYLOAD_KEYS = {
-    "run_id", "exhibition_id", "schema_version", "motion",
-    "subject_rgba_url", "breathing_weight_url", "locked_mask_url", "manifest_url",
-}
+PAYLOAD_KEYS = {"event", "run_id", "package_id", "schema_version", "motion", "packed_url"}
 
 
 @pytest.fixture
@@ -65,7 +62,10 @@ def http_client(endpoint, **cfg):
     return hc.ExhibitionHandoffClient(hc.HandoffConfig(mode=hc.MODE_HTTP, url=URL, **cfg), transport=endpoint)
 
 
-def ready_run(stores, **create_kw):
+def ready_run(stores, *, queue_number=28, **create_kw):
+    """기본 queue_number=28 → package_id visitor_0028 (핸드오프 ZIP 패키징에 필요)."""
+    if queue_number is not None:
+        create_kw.setdefault("allocate_queue_number", lambda: queue_number)
     final = _run(stores, _jpeg(800, 800), fake_matte(frontal_dog), **create_kw)
     assert final["status"] == st.STATUS_READY
     return final
@@ -98,37 +98,35 @@ def test_successful_ack_confirms_handoff(stores):
     assert call["headers"]["Content-Type"] == "application/json"
 
 
-def test_payload_is_exactly_the_contract_with_signed_urls(stores):
-    run = ready_run(stores, exhibition_id="expo-7")
+def test_payload_is_exactly_the_contract_with_a_single_packed_url(stores):
+    run = ready_run(stores, exhibition_id="expo-7", queue_number=28)
     endpoint = FakeEndpoint(ack)
     row = handoff(stores, run["id"], http_client(endpoint))
 
     payload = endpoint.calls[0]["payload"]
-    assert set(payload) == PAYLOAD_KEYS
+    assert set(payload) == PAYLOAD_KEYS  # four separate asset URLs are gone — one packed_url instead
+    assert payload["event"] == "pet_asset"
     assert payload["run_id"] == run["id"]
-    assert payload["exhibition_id"] == "expo-7"
+    assert payload["package_id"] == "visitor_0028"
     assert payload["schema_version"] == "EXHIBITION_RIG_INPUT_V1"
     assert payload["motion"] == "BREATHING"
     rid = run["id"]
-    assert payload["subject_rgba_url"] == f"memory://exhibition/{rid}/subject_rgba.png"
-    assert payload["breathing_weight_url"] == f"memory://exhibition/{rid}/breathing_weight.png"
-    assert payload["locked_mask_url"] == f"memory://exhibition/{rid}/locked_mask.png"
-    assert payload["manifest_url"] == f"memory://exhibition/{rid}/manifest.json"
-    # preview_overlay(운영자용)는 보내지 않는다.
+    assert payload["packed_url"] == f"memory://exhibition/{rid}/visitor_0028.zip"
+    # preview_overlay(운영자용)는 ZIP 에도 페이로드에도 없다.
     assert not any("preview_overlay" in str(v) for v in payload.values())
     # DB 에는 서명 URL 대신 저장 경로만 남는다.
     rec = row["handoff_request"]
-    assert "subject_rgba_url" not in rec and rec["files"]["manifest_url"] == f"exhibition/{rid}/manifest.json"
+    assert "packed_url" not in rec and rec["zip_path"] == f"exhibition/{rid}/visitor_0028.zip"
 
 
-def test_signed_urls_use_configured_ttl(stores):
+def test_signed_url_uses_configured_ttl(stores):
     run = ready_run(stores)
     store, artifacts = stores
     seen = []
     real = artifacts.signed_url
     artifacts.signed_url = lambda path, ttl=3600: seen.append(ttl) or real(path, ttl)
     handoff(stores, run["id"], http_client(FakeEndpoint(ack), url_ttl_sec=7200))
-    assert seen == [7200] * 4
+    assert seen == [7200]
 
 
 # ── 실패 ─────────────────────────────────────────────────────────────────────
@@ -198,15 +196,25 @@ def test_requests_transport_passes_timeout_and_parses_json(monkeypatch):
     assert seen == {"url": URL, "json": {"run_id": "r"}, "headers": {"X": "1"}, "timeout": 4.0}
 
 
-def test_missing_package_file_fails_handoff(stores):
+def test_missing_zip_package_fails_handoff(stores):
     run = ready_run(stores)
     store, artifacts = stores
-    del artifacts.objects[f"exhibition/{run['id']}/locked_mask.png"]
+    del artifacts.objects[run["package_zip_path"]]
     endpoint = FakeEndpoint(ack)
     row = handoff(stores, run["id"], http_client(endpoint))
     assert row["handoff_status"] == st.HANDOFF_FAILED
     assert row["handoff_error_code"] == "HANDOFF_PACKAGE_UNAVAILABLE"
     assert endpoint.calls == []  # 불완전한 패키지는 보내지 않는다
+
+
+def test_run_without_queue_number_cannot_be_handed_off(stores):
+    run = ready_run(stores, queue_number=None)
+    assert run.get("package_id") is None and run.get("package_zip_path") is None
+    endpoint = FakeEndpoint(ack)
+    row = handoff(stores, run["id"], http_client(endpoint))
+    assert row["handoff_status"] == st.HANDOFF_FAILED
+    assert row["handoff_error_code"] == "HANDOFF_PACKAGE_UNAVAILABLE"
+    assert endpoint.calls == []
 
 
 # ── 재시도 · 멱등 ────────────────────────────────────────────────────────────
@@ -231,6 +239,34 @@ def test_retry_resends_the_same_package_without_rerunning_cutout_or_maps(stores)
     assert artifacts.objects == before  # 패키지 파일 재작성 없음
     assert endpoint.calls[0]["payload"] == endpoint.calls[1]["payload"]
     assert {c["headers"]["Idempotency-Key"] for c in endpoint.calls} == {run["id"]}
+
+
+def test_retry_mints_a_fresh_signed_zip_url_without_rerunning_cutout_or_maps(stores):
+    run = ready_run(stores)
+    store, artifacts = stores
+    zip_path = run["package_zip_path"]
+    zip_bytes_before = artifacts.objects[zip_path][0]
+    sign_calls = []
+    real = artifacts.signed_url
+
+    def _tracking_signed_url(path, ttl=3600):
+        sign_calls.append(path)
+        return real(path, ttl) + f"?attempt={len(sign_calls)}"
+
+    artifacts.signed_url = _tracking_signed_url
+    endpoint = FakeEndpoint((502, None, "bad gateway"), ack)
+
+    first = handoff(stores, run["id"], http_client(endpoint))
+    second = handoff(stores, run["id"], http_client(endpoint))
+
+    assert first["handoff_status"] == st.HANDOFF_FAILED
+    assert second["handoff_status"] == st.HANDOFF_CONFIRMED
+    assert sign_calls == [zip_path, zip_path]  # 매 시도마다 새로 서명한다
+    first_url = endpoint.calls[0]["payload"]["packed_url"]
+    second_url = endpoint.calls[1]["payload"]["packed_url"]
+    assert first_url != second_url and first_url.split("?")[0] == second_url.split("?")[0]
+    # ZIP 바이트 자체는 재작성되지 않는다 — CUTOUT/MAPS 재실행 없음.
+    assert artifacts.objects[zip_path][0] == zip_bytes_before
 
 
 def test_retry_does_not_call_matting_or_map_generation(stores, monkeypatch):
@@ -308,7 +344,7 @@ def test_mock_mode_returns_successful_ack_without_network(stores, monkeypatch):
     row = handoff(stores, run["id"], client)
     assert row["handoff_status"] == st.HANDOFF_CONFIRMED
     assert row["handoff_ack"] == {"run_id": run["id"], "accepted": True, "mock": True}
-    assert set(row["handoff_request"]) == (PAYLOAD_KEYS - set(hc.PAYLOAD_FILES)) | {"files"}
+    assert set(row["handoff_request"]) == (PAYLOAD_KEYS - {"packed_url"}) | {"zip_path"}
 
 
 def test_mode_resolution_from_env(monkeypatch):
@@ -395,7 +431,10 @@ _HANDOFF_COLUMNS = {
 def test_supabase_handoff_writes_only_handoff_columns_of_exhibition_table():
     client = _FakeSupabase()
     store, artifacts = st.SupabaseRunStore(client), st.SupabaseArtifactStore(client, bucket="b")
-    row = svc.create_run(_jpeg(800, 800), created_by="ops", store=store, artifacts=artifacts)
+    row = svc.create_run(
+        _jpeg(800, 800), created_by="ops", store=store, artifacts=artifacts,
+        exhibition_id="expo-1", allocate_queue_number=lambda: 28,
+    )
     claimed = store.claim_next("w1", stale_after_minutes=20)
     svc.process_run(claimed, store=store, artifacts=artifacts, worker_id="w1", matte_fn=fake_matte(frontal_dog))
     objects_before = dict(client.objects)
@@ -410,5 +449,4 @@ def test_supabase_handoff_writes_only_handoff_columns_of_exhibition_table():
     writes = [p for _t, op, p in handoff_ops if op != "select"]
     assert writes and all(set(p) <= _HANDOFF_COLUMNS for p in writes)
     assert client.objects == objects_before  # 저장소에 아무것도 다시 쓰지 않는다
-    payload_urls = [v for k, v in out["handoff_request"]["files"].items()]
-    assert all(u.startswith(f"exhibition/{row['id']}/") for u in payload_urls)
+    assert out["handoff_request"]["zip_path"] == f"exhibition/{row['id']}/visitor_0028.zip"
