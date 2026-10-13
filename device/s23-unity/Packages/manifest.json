@@ -9,6 +9,7 @@
     "com.unity.timeline": "1.8.13",
     "com.unity.visualeffectgraph": "17.3.0",
     "com.unity.modules.adaptiveperformance": "1.0.0",
+    "com.unity.modules.androidjni": "1.0.0",
     "com.unity.modules.audio": "1.0.0",
     "com.unity.modules.imageconversion": "1.0.0",
     "com.unity.modules.jsonserialize": "1.0.0",

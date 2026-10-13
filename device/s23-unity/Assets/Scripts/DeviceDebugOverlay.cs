@@ -12,6 +12,7 @@ public class DeviceDebugOverlay : MonoBehaviour
     private string videoUrl = "-";
     private string playerStatus = "IDLE";
     private string error = "-";
+    private string eventPetAssetStatus = "IDLE";
 
     private void Start()
     {
@@ -65,6 +66,7 @@ public class DeviceDebugOverlay : MonoBehaviour
             $"Motion       {motion}\n" +
             $"Video        {GetFileName(videoUrl)}\n" +
             $"Player       {playerStatus}\n" +
+            $"Pet Asset    {eventPetAssetStatus}\n" +
             $"Error        {error}";
     }
 
@@ -73,5 +75,11 @@ public class DeviceDebugOverlay : MonoBehaviour
         if (string.IsNullOrEmpty(url) || url == "-") return "-";
         int index = url.LastIndexOf('/');
         return index >= 0 ? url.Substring(index + 1) : url;
+    }
+
+    public void SetPetAssetStatus(string status)
+    {
+        eventPetAssetStatus = string.IsNullOrEmpty(status) ? "-" : status;
+        Refresh();
     }
 }

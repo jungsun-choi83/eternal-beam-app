@@ -5,24 +5,24 @@ namespace EternalBeam.Device
 {
     public sealed class UdpJsonReceiver : MonoBehaviour
     {
-        public int port = UdpJsonListener.DefaultPort;
+        public event Action<PetDeviceMessage> OnMessage;
 
         private UdpJsonListener _listener;
-        [SerializeField] private DeviceDebugOverlay debugOverlay;
 
-        public event Action<PetDeviceMessage> OnMessage;
+        public NetworkSettings networkSettings;
+        public DeviceDebugOverlay debugOverlay;
 
         private void OnEnable()
         {
             try
             {
-                _listener = new UdpJsonListener(port);
-                Debug.Log($"[eb-udp] listening on 0.0.0.0:{port}");
+                _listener = new UdpJsonListener(networkSettings.udpPort);
+                Debug.Log($"[eb-udp] listening on 0.0.0.0:{networkSettings.udpPort}");
                 debugOverlay?.SetUdpReady();
             }
             catch (Exception e)
             {
-                Debug.LogError($"[eb-udp] bind failed on :{port} — {e.Message}");
+                Debug.LogError($"[eb-udp] bind failed on :{networkSettings.udpPort} — {e.Message}");
             }
         }
 

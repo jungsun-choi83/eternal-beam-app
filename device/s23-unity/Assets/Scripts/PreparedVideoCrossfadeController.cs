@@ -24,11 +24,6 @@ public class PreparedVideoCrossfadeController : MonoBehaviour
     [SerializeField] private Material materialA;
     [SerializeField] private Material materialB;
 
-    [Header("Video Clips")]
-    [SerializeField] private VideoClip winterClip;
-    [SerializeField] private VideoClip springClip;
-    [SerializeField] private VideoClip halloweenClip;
-
     [Header("Settings")]
     [SerializeField] private float fadeDuration = 1.5f;
 
@@ -71,14 +66,6 @@ public class PreparedVideoCrossfadeController : MonoBehaviour
         if (playerB != null) playerB.loopPointReached -= OnVideoFinished;
         if (playerA != null) playerA.errorReceived -= OnVideoError;
         if (playerB != null) playerB.errorReceived -= OnVideoError;
-    }
-
-
-    private void Update()
-    {
-        if (Input.GetKeyDown(KeyCode.Alpha1)) RequestSwitch(winterClip, false);
-        else if (Input.GetKeyDown(KeyCode.Alpha2)) RequestSwitch(springClip, false);
-        else if (Input.GetKeyDown(KeyCode.Alpha3)) RequestSwitch(halloweenClip, false);
     }
 
     public Transform GetIncomingRenderObject()

@@ -20,6 +20,7 @@ namespace EternalBeam.Device
         public string ThemeId;
         public string VideoUrl;
         public string PackedUrl;
+        public string SpawnAudio;
         public string DeliveryFormat;
         public string Source;
         public string Target;
@@ -46,18 +47,19 @@ namespace EternalBeam.Device
                  + " video_url=" + V(VideoUrl)
                  + " packed_url=" + V(PackedUrl)
                  + " delivery_format=" + V(DeliveryFormat)
-                 + " source=" + V(Source);
+                 + " source=" + V(Source)
+                 + " spawn_audio=" + V(SpawnAudio);
         }
     }
 
     public sealed class UdpJsonListener : IDisposable
     {
-        public const int DefaultPort = 5005;
-
         private readonly UdpClient _client;
         private readonly Thread _thread;
         private readonly ConcurrentQueue<string> _queue = new ConcurrentQueue<string>();
         private volatile bool _running = true;
+
+        public const int DefaultPort = 5005;
 
         public UdpJsonListener(int port = DefaultPort)
         {
@@ -97,6 +99,7 @@ namespace EternalBeam.Device
                 msg.ThemeId = (string)o["theme_id"];
                 msg.VideoUrl = (string)o["video_url"];
                 msg.PackedUrl = (string)o["packed_url"];
+                msg.SpawnAudio = (string)o["spawn_audio"];
                 msg.DeliveryFormat = (string)o["delivery_format"];
                 msg.Source = (string)o["source"];
                 msg.Target = (string)o["target"];

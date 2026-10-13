@@ -50,21 +50,28 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Assets\Scripts\NfcVfxMessageHandler.cs" />
+    <Compile Include="Assets\Scripts\SO\SO_DemoSequenceControlSettings.cs" />
     <Compile Include="Assets\Scripts\MotionLibrary.cs" />
     <Compile Include="Assets\Scripts\VideoLayer.cs" />
     <Compile Include="Assets\Scripts\MotionPlaybackController.cs" />
     <Compile Include="Assets\Scripts\DeviceDebugOverlay.cs" />
+    <Compile Include="Assets\Scripts\KeepScreenAwake.cs" />
     <Compile Include="Assets\Scripts\SpawnSequenceReceiver.cs" />
     <Compile Include="Assets\Scripts\AudioMessageHandler.cs" />
+    <Compile Include="Assets\Scripts\SO\SO_NetworkSettings.cs" />
     <Compile Include="Assets\Scripts\VideoCrossfadeTest.cs" />
     <Compile Include="Assets\Scripts\Testing\LocalMotionClipReferenceTester.cs" />
     <Compile Include="Assets\Scripts\PetVideoScreen.cs" />
     <Compile Include="Assets\Scripts\SO\BackgroundMusicData.cs" />
+    <Compile Include="Assets\Scripts\EventPet\EventPetMessageHandler.cs" />
+    <Compile Include="Assets\Scripts\EventPet\EventPetAssetDownloader.cs" />
     <Compile Include="Assets\Scripts\UdpJsonReceiver.cs" />
     <Compile Include="Assets\Scripts\Testing\MotionTestScript.cs" />
     <Compile Include="Assets\Scripts\UdpJsonListener.cs" />
+    <Compile Include="Assets\Scripts\PetModeController.cs" />
     <Compile Include="Assets\Scripts\PreparedVideoCrossfadeController.cs" />
     <Compile Include="Assets\Scripts\PetVideoMessageHandler.cs" />
+    <Compile Include="Assets\Scripts\EventPet\EventPetAssetLoader.cs" />
     <Compile Include="Assets\Scripts\DeviceBootstrap.cs" />
     <Compile Include="Assets\Scripts\TweenActionController.cs" />
     <Compile Include="Assets\Scripts\Testing\PetMovementTester.cs" />
@@ -83,6 +90,10 @@
     </Reference>
     <Reference Include="UnityEngine.AdaptivePerformanceModule">
       <HintPath>C:\Program Files\Unity\Hub\Editor\6000.3.23f1\Editor\Data\Managed\UnityEngine\UnityEngine.AdaptivePerformanceModule.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="UnityEngine.AndroidJNIModule">
+      <HintPath>C:\Program Files\Unity\Hub\Editor\6000.3.23f1\Editor\Data\Managed\UnityEngine\UnityEngine.AndroidJNIModule.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="UnityEngine.AnimationModule">
@@ -553,20 +564,20 @@
       <HintPath>Library\PackageCache\com.unity.ext.nunit@d8c07649098d\net40\unity-custom\nunit.framework.dll</HintPath>
       <Private>False</Private>
     </Reference>
-    <Reference Include="Newtonsoft.Json">
-      <HintPath>Library\PackageCache\com.unity.nuget.newtonsoft-json@4dfd81071c64\Runtime\Newtonsoft.Json.dll</HintPath>
-      <Private>False</Private>
-    </Reference>
-    <Reference Include="Mono.Cecil">
-      <HintPath>Library\PackageCache\com.unity.nuget.mono-cecil@ecb9724e46ff\Mono.Cecil.dll</HintPath>
-      <Private>False</Private>
-    </Reference>
     <Reference Include="DOTweenEditor">
       <HintPath>Assets\Plugins\Demigiant\DOTween\Editor\DOTweenEditor.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="DOTween">
       <HintPath>Assets\Plugins\Demigiant\DOTween\DOTween.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>Library\PackageCache\com.unity.nuget.newtonsoft-json@4dfd81071c64\Runtime\Newtonsoft.Json.dll</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="Mono.Cecil">
+      <HintPath>Library\PackageCache\com.unity.nuget.mono-cecil@ecb9724e46ff\Mono.Cecil.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="Unity.Android.Types">

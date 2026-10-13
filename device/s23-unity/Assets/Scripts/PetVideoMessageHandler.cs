@@ -5,9 +5,6 @@ using EternalBeam.Device;
 
 public class PetVideoMessageHandler : MonoBehaviour
 {
-    [SerializeField] private UdpJsonReceiver receiver;
-    [SerializeField] private PreparedVideoCrossfadeController crossfadeController;
-    [SerializeField] private TweenActionController tweenActionController;
     private string idleVideoUrl;
     private string pendingActionUrl;
     private string pendingActionEvent;
@@ -17,9 +14,15 @@ public class PetVideoMessageHandler : MonoBehaviour
     private bool isReady;
     private bool waitingForInitialIdle;
 
-    [Header("Demo Mode")]
+    [Tooltip("If true, the Pet will use local motion clips instead of downloading from the server.")]
     public bool demoModeEnabled = false;
-    [SerializeField] private LocalMotionClipReferenceTester localMotionReference;
+
+    public SO_DemoSequenceControlSettings demoSetting;
+    public UdpJsonReceiver receiver;
+    public PreparedVideoCrossfadeController crossfadeController;
+    public TweenActionController tweenActionController;
+    public PetModeController petModeController;
+    public LocalMotionClipReferenceTester localMotionReference;
 
     private void OnEnable()
     {
@@ -27,6 +30,8 @@ public class PetVideoMessageHandler : MonoBehaviour
         crossfadeController.OnVideoPlaybackStarted += HandleVideoPlaybackStarted;
         crossfadeController.OnNonLoopVideoFinished += HandleActionFinished;
         crossfadeController.OnVideoPlaybackFailed += HandlePlaybackFailed;
+        petModeController.OnDemoModeActive += HandleDemoMode;
+        petModeController.OnEventModeActive += HandleEventMode;
     }
 
     private void OnDisable()
@@ -35,6 +40,8 @@ public class PetVideoMessageHandler : MonoBehaviour
         crossfadeController.OnVideoPlaybackStarted -= HandleVideoPlaybackStarted;
         crossfadeController.OnNonLoopVideoFinished -= HandleActionFinished;
         crossfadeController.OnVideoPlaybackFailed -= HandlePlaybackFailed;
+        petModeController.OnDemoModeActive -= HandleDemoMode;
+        petModeController.OnEventModeActive -= HandleEventMode;
     }
 
     private void HandleMessage(PetDeviceMessage msg)
@@ -51,13 +58,14 @@ public class PetVideoMessageHandler : MonoBehaviour
             HandleVideoTuning(msg);
             return;
         }
+        if (petModeController.CurrentMode != PetMode.Demo) return;
         switch (eventName)
         {
             case "idle":
             case "touch":
             //case "approach":
+            //case "nfc_match":
             case "voice":
-                //case "nfc_match":
                 break;
             default:
                 return;
@@ -148,6 +156,12 @@ public class PetVideoMessageHandler : MonoBehaviour
     {
         isActionPlaying = false;
         currentActionEvent = null;
+        if (petModeController.CurrentMode != PetMode.Demo)
+        {
+            pendingActionUrl = null;
+            pendingActionEvent = null;
+            return;
+        }
         if (!string.IsNullOrEmpty(pendingActionUrl))
         {
             string nextUrl = pendingActionUrl;
@@ -202,7 +216,7 @@ public class PetVideoMessageHandler : MonoBehaviour
         startingEvent = null;
         if (demoModeEnabled)
         {
-            yield return new WaitForSeconds(4f);
+            yield return new WaitForSeconds(demoSetting.initPetSpawnDelayTimeInSecond);
             VideoClip idleClip = localMotionReference.GetMotion(PetMotion.Idle);
             crossfadeController.RequestSwitch(idleClip, true);
             Debug.Log("[Pet] Demo Init → Local Idle requested");
@@ -240,6 +254,32 @@ public class PetVideoMessageHandler : MonoBehaviour
             default:
                 return PetMotion.Idle;
         }
+    }
+
+    private void HandleDemoMode()
+    {
+        if (!isReady) return;
+        if (demoModeEnabled)
+        {
+            RequestMotion("idle", null, true);
+            return;
+        }
+        if (!string.IsNullOrEmpty(idleVideoUrl))
+        {
+            RequestMotion("idle", idleVideoUrl, true);
+            return;
+        }
+    }
+
+    private void HandleEventMode()
+    {
+        StopAllCoroutines();
+        isActionPlaying = false;
+        currentActionEvent = null;
+        pendingActionUrl = null;
+        pendingActionEvent = null;
+        startingEvent = null;
+        Debug.Log("[Pet] Event Mode → Demo Pet state cleared");
     }
 
     private void RequestMotion(string eventName, string url, bool loop)

@@ -6,8 +6,8 @@ public class AudioMessageHandler : MonoBehaviour
 {
     private string currentThemeId;
 
-    [Header("Network")]
-    [SerializeField] private UdpJsonReceiver receiver;
+    public SO_DemoSequenceControlSettings demoSetting;
+    public UdpJsonReceiver receiver;
 
     [Header("Background Music")]
     public BackgroundMusicData[] backgroundMusicData;
@@ -41,8 +41,21 @@ public class AudioMessageHandler : MonoBehaviour
     {
         SetupBackgroundMusicSource(backgroundMusicSourceA);
         SetupBackgroundMusicSource(backgroundMusicSourceB);
-        SetupBackgroundMusicSource(petAudioSource);
         currentBackgroundMusicSource = backgroundMusicSourceA;
+    }
+
+    private void Start()
+    {
+#if UNITY_ANDROID && !UNITY_EDITOR
+    using (AndroidJavaClass unityPlayer =
+           new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+    {
+        AndroidJavaObject activity =
+            unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+
+        activity.Call("setVolumeControlStream", 3);
+    }
+#endif
     }
 
     private void SetupBackgroundMusicSource(AudioSource source)
@@ -57,20 +70,23 @@ public class AudioMessageHandler : MonoBehaviour
         if (msg == null || !msg.Valid) return;
         if (msg.Event == "demo_init")
         {
-            StartCoroutine(PlayDemoAudioCoroutine(msg.ThemeId));
+            StartCoroutine(PlayDemoAudioCoroutine(msg.ThemeId, msg.SpawnAudio));
             return;
         }
-        Debug.Log($"[Audio Manager] Received theme={msg.ThemeId}");
-        if (currentThemeId == msg.ThemeId) return;
-        currentThemeId = msg.ThemeId;
-        PlayBackgroundMusic(msg.ThemeId);
+        if (msg.Event == "nfc_match")
+        {
+            Debug.Log($"[Audio Manager] Received theme={msg.ThemeId}");
+            if (currentThemeId == msg.ThemeId) return;
+            currentThemeId = msg.ThemeId;
+            PlayBackgroundMusic(msg.ThemeId);
+        }
     }
 
-    private IEnumerator PlayDemoAudioCoroutine(string themeId)
+    private IEnumerator PlayDemoAudioCoroutine(string themeId, string spawnAudioId)
     {
         Debug.Log("[Audio Manager] Demo Init received, playing demo audio");
-        PlayPetSound(petSpawnSound);
-        yield return new WaitForSeconds(5f);
+        PlayPetSound(spawnAudioId);
+        yield return new WaitForSeconds(demoSetting.initThemeAudioDelayTimeInSecond);
         PlayBackgroundMusic(themeId);
     }
 
@@ -139,9 +155,16 @@ public class AudioMessageHandler : MonoBehaviour
         }
     }
 
-    public void PlayPetSound(AudioClip clip)
+    public void PlayPetSound(string soundId)
     {
+        Debug.Log($"[PetAudio] PlayPetSound called");
+        AudioClip clip = soundId switch
+        {
+            "heart" => petSpawnSound,
+            _ => null
+        };
         if (clip == null || petAudioSource == null) return;
+        petAudioSource.volume = 1f;
         petAudioSource.PlayOneShot(clip);
     }
 }

@@ -1,3 +1,4 @@
+using System.Collections;
 using UnityEngine;
 using UnityEngine.VFX;
 using EternalBeam.Device;
@@ -7,12 +8,12 @@ public class NfcVfxMessageHandler : MonoBehaviour
     private string currentThemeId;
     private VisualEffect currentVisualEffect;
 
-    [Header("Network")]
-    [SerializeField] private UdpJsonReceiver receiver;
+    public SO_DemoSequenceControlSettings demoSetting;
+    public UdpJsonReceiver receiver;
 
     [Header("Theme VFX")]
-    [SerializeField] private GameObject forestVfx;
-    [SerializeField] private GameObject snowVfx;
+    public GameObject forestVfx;
+    public GameObject snowVfx;
 
     private void Start()
     {
@@ -32,16 +33,29 @@ public class NfcVfxMessageHandler : MonoBehaviour
     private void HandleMessage(PetDeviceMessage msg)
     {
         if (msg == null || !msg.Valid) return;
+        if (msg.Event == "demo_init")
+        {
+            StartCoroutine(HandleDemoInit(msg.ThemeId));
+            return;
+        }
         if (msg.Event == "video_tuning")
         {
             if (msg.VfxIntensity.HasValue) SetVFXIntensity(msg.VfxIntensity.Value);
             return;
         }
-        if (msg.Event != "nfc_match") return;
-        Debug.Log($"[NFC VFX] Received theme={msg.ThemeId}");
-        if (currentThemeId == msg.ThemeId) return;
-        currentThemeId = msg.ThemeId;
-        PlayThemeVfx(msg.ThemeId);
+        if (msg.Event == "nfc_match")
+        {
+            Debug.Log($"[NFC VFX] Received theme={msg.ThemeId}");
+            if (currentThemeId == msg.ThemeId) return;
+            currentThemeId = msg.ThemeId;
+            PlayThemeVfx(msg.ThemeId);
+        }
+    }
+
+    private IEnumerator HandleDemoInit(string themeId)
+    {
+        yield return new WaitForSeconds(demoSetting.initThemeVFXDelayTimeInSecond);
+        PlayThemeVfx(themeId);
     }
 
     private void PlayThemeVfx(string themeId)
