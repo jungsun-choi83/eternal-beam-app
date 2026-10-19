@@ -12,12 +12,17 @@
  * (JWT + SHAKER_OPS_USER_IDS). 여기서는 어느 화면을 그릴지만 정한다.
  */
 
-export type OpsRoute = "dashboard" | "orders" | "partners" | "shaker";
+export type OpsRoute = "dashboard" | "orders" | "partners" | "shaker" | "exhibition";
 
 export const OPS_ROOT = "/ops";
 export const OPS_ORDERS_PATH = "/ops/production";
 export const OPS_PARTNERS_PATH = "/ops/partners";
 export const OPS_SHAKER_PATH = "/ops/shaker";
+/**
+ * 전시 현장 스태프 화면(사진 접수·대기열·SHOW NEXT). `/ops` 아래가 아닌 이유:
+ * 현장 태블릿에 짧은 주소로 띄운다. 공개 대기열(`/exhibition/queue`)은 Ops 가 아니다.
+ */
+export const OPS_EXHIBITION_STAFF_PATH = "/exhibition/staff";
 
 export interface OpsNavItem {
   route: OpsRoute;
@@ -31,6 +36,7 @@ export const OPS_NAV: readonly OpsNavItem[] = [
   { route: "orders", path: OPS_ORDERS_PATH, label: "Orders" },
   { route: "partners", path: OPS_PARTNERS_PATH, label: "Partners" },
   { route: "shaker", path: OPS_SHAKER_PATH, label: "Shaker" },
+  { route: "exhibition", path: OPS_EXHIBITION_STAFF_PATH, label: "Exhibition" },
 ];
 
 function normalize(pathname: string): string {
@@ -49,6 +55,7 @@ export function opsRouteFor(pathname: string): OpsRoute | null {
   if (p === OPS_ORDERS_PATH || p === "/ops/search") return "orders";
   if (p === OPS_PARTNERS_PATH) return "partners";
   if (p === OPS_SHAKER_PATH) return "shaker";
+  if (p === OPS_EXHIBITION_STAFF_PATH) return "exhibition";
   return null;
 }
 

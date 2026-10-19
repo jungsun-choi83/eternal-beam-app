@@ -24,6 +24,7 @@ from . import (
     action_keyframe_service,
     business_qa,
     business_qa_user_test,
+    archive_intake_service,
     canonical_image_providers,
     canonical_pet_service,
     customer_fallback_service,
@@ -37,7 +38,7 @@ from . import (
     pet_reference_set_service,
     premium_motion_finalization,
     qa_shadow_telemetry,
-    video_motion_providers,
+    video_motion_providers, 
 )
 
 logger = logging.getLogger(__name__)
@@ -993,6 +994,30 @@ async def _finish_business_fallback(
     await _reconcile_premium_after_stop(delivered)
     return delivered
 
+async def _sync_archive_completion(run: PetGenerationRun) -> None:
+    if not str(run.user_id or "").startswith("archive_"):
+        return
+    try:
+        intake = await archive_intake_service.get_intake_by_generation_run_id(
+            run.id
+        )
+        if not intake:
+            return
+
+        published = await motion_publication_service.get_published_breathing(
+            user_id=run.user_id,
+            pet_id=run.pet_id,
+        )
+
+        await archive_intake_service.mark_generation_completed(
+            run.id,
+            published.url,
+        )
+    except Exception:
+        logger.exception(
+            "Archive completion sync failed for generation run %s",
+            run.id,
+        )
 
 def _next_poll_iso() -> str:
     delay = max(0.0, float(os.getenv("GENERATION_PROVIDER_POLL_SECONDS", "10")))
@@ -1836,6 +1861,7 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
             fallback_used=False,
             terminal_state=business_qa.DELIVERED_GENERATED,
         )
+        await _sync_archive_completion(completed_run)
         return completed_run
     except durable_provider_jobs.ProviderWorkPending:
         latest_row = await _row_by_id(run.id)

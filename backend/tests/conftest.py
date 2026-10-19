@@ -87,6 +87,14 @@ def _clean_cutout_env(monkeypatch: pytest.MonkeyPatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _exhibition_pose_gate_off(monkeypatch: pytest.MonkeyPatch):
+    """전시 포즈 게이트(YOLO + CLIP)는 기본 유닛 테스트에서 끈다 — 가중치 없이 돌아야 한다.
+    게이트 자체 테스트는 detect_fn/score_fn 을 주입하거나 mode 를 직접 켠다."""
+    monkeypatch.setenv("EXHIBITION_POSE_GATE_MODE", "off")
+    yield
+
+
 class ASGITestClient:
     """
     최소한의 동기 테스트 클라이언트.
