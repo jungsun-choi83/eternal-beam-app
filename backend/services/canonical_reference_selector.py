@@ -465,3 +465,171 @@ def select(
             "max_references": MAX_REFERENCES,
         },
     }
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# 레퍼런스별 기여 가이드 (정본 프롬프트용)
+# ══════════════════════════════════════════════════════════════════════════
+#
+# 확정된 입력 목록의 각 사진이 **무엇을 보여 주는지**를 세트의 분류/가시성
+# 근거에서만 읽어 적는다. 프롬프트는 이 목록을 공급 순서 그대로 "Reference N"
+# 으로 풀어 쓴다 — 그래서 사진 순서와 설명 순서가 구조적으로 일치한다.
+#
+# 근거 없는 기여는 적지 않는다: VLM 이 꺼져 있거나 가시성이 unknown 이면 그
+# 사진은 "같은 펫의 사진 — 명확히 보이는 것만 쓰라"로만 소개된다. 한 장이
+# 모든 특징을 지배하지 않도록, 각 사진은 자기가 보여 주는 것에만 권위를 갖는다.
+#
+# v2 (apricot 개 실사 분석): 위에서 내려다본(TOP) 사진과 프레임에 잘린 사진은
+# 원근/절단 때문에 **체형 비율·얼굴 구조의 근거가 될 수 없다** — 코트 분포·
+# 무늬·꼬리의 자세/깃털/색에는 쓰되, 꼬리 **길이**와 비율 권위는 주지 않는다.
+# 실사에서 TOP 뷰가 "tail reference" 로 얼굴·비율 권위를 받아 비율 드리프트에
+# 기여했다. 체형 비율 권위는 옆/3Q/전신 뷰(중간 이상 신뢰)에서만 나온다.
+
+REFERENCE_GUIDE_VERSION = "canonical-reference-guide-v2"
+
+_VIEW_TEXT: dict[str, str] = {
+    "FRONT": "front view",
+    "LEFT": "left side",
+    "RIGHT": "right side",
+    "BACK": "rear view",
+    "FRONT_LEFT_3Q": "front-left three-quarter view",
+    "FRONT_RIGHT_3Q": "front-right three-quarter view",
+    "FACE_CLOSEUP": "face close-up",
+    "FULL_BODY": "full-body view",
+    "TOP": "overhead view",
+}
+
+#: 체형 비율의 근거가 될 수 있는 뷰 — 옆/3Q/전신. 정면·위·뒤는 원근이 비율을 왜곡한다.
+PROPORTION_VIEWS = ("LEFT", "RIGHT", "FRONT_LEFT_3Q", "FRONT_RIGHT_3Q", "FULL_BODY")
+#: 얼굴 구조의 근거가 될 수 있는 뷰.
+FACE_VIEWS = ("FRONT", "FACE_CLOSEUP", "FRONT_LEFT_3Q", "FRONT_RIGHT_3Q")
+#: 원근이 체형·꼬리 길이를 왜곡하는 뷰.
+FORESHORTENED_VIEWS = ("TOP",)
+
+CAVEAT_OVERHEAD = "overhead_foreshortened"
+CAVEAT_CROPPED = "cropped_by_frame"
+
+_ROLE_HEADLINE: dict[str, str] = {
+    "PRIMARY_FACE": "face reference",
+    "PRIMARY_FULL_BODY": "full-body reference",
+    "PRIMARY_3Q": "three-quarter reference",
+    "PRIMARY_LEFT": "left-side reference",
+    "PRIMARY_RIGHT": "right-side reference",
+    "PRIMARY_FRONT": "front reference",
+    "PRIMARY_MARKINGS": "markings reference",
+    "PRIMARY_BACK": "rear reference",
+    "PRIMARY_TAIL": "tail reference",
+    ROLE_ONLY_AVAILABLE: "the only reference photo",
+}
+
+#: 기여 문구 — 근거(역할/뷰/가시성)별. 순서는 출력 순서다.
+_CONTRIB_FACE = "facial identity: eye shape and spacing, muzzle length and shape, nose, facial markings"
+_CONTRIB_EARS = "ear shape, set and markings"
+_CONTRIB_BODY = (
+    "body proportions: leg length, torso length, head-to-body ratio and overall build"
+)
+_CONTRIB_COAT_DISTRIBUTION = "how the coat colors and markings are distributed along the body"
+_CONTRIB_GROOMING = "the grooming pattern: where the coat is clipped short and where it is left longer"
+_CONTRIB_3Q = "head-to-body proportion and coat placement seen from a three-quarter angle"
+_CONTRIB_SIDE = "the {side} side of the body and its markings"
+_CONTRIB_TAIL = "tail shape, length and carriage"
+_CONTRIB_TAIL_FORESHORTENED = (
+    "tail carriage, feathering and color (not its length — it is foreshortened from above)"
+)
+_CONTRIB_PAWS = "paw color and markings"
+_CONTRIB_MARKINGS = "the exact placement and shape of the distinctive markings"
+_CONTRIB_GENERIC = "every identity detail it clearly shows"
+
+
+def _cropped(a: dict[str, Any]) -> bool:
+    """프레임에 잘린 사진인가 — 적격성의 직접 근거(테두리 접촉)만 믿는다."""
+    e = a.get("eligibility") or {}
+    reasons = e.get("reasons") or []
+    border = e.get("border_contact")
+    return (
+        "subject_cropped_by_frame" in reasons
+        or (isinstance(border, list) and bool(border))
+        or e.get("full_body_visible") == "unlikely"
+    )
+
+
+def reference_guide(refset: Any, picks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """
+    확정된 입력 목록(picks, 공급 순서) → 사진별 기여 가이드.
+
+    반환 항목: {reference_id, role, headline, view, view_label, facets, caveats,
+    evidence, contributes}. contributes 는 근거가 있는 기여 문구의 목록이다.
+    근거가 전혀 없으면 [_CONTRIB_GENERIC] 하나다 — 빈 목록은 돌려주지 않는다.
+    순수/결정론적이다 (세트의 저장된 분석만 읽는다).
+    """
+    out: list[dict[str, Any]] = []
+    for pick in picks:
+        rid = str(pick.get("reference_id") or "")
+        role = str(pick.get("role") or "")
+        a = _analysis(refset, rid)
+        facets = sorted(_facets(a))
+        view = _confident_view(a)
+        has_evidence = bool(facets) or view is not None
+        overhead = view in FORESHORTENED_VIEWS
+        cropped = _cropped(a)
+        caveats = [c for c, on in ((CAVEAT_OVERHEAD, overhead), (CAVEAT_CROPPED, cropped)) if on]
+
+        contributes: list[str] = []
+
+        def add(text: str) -> None:
+            if text not in contributes:
+                contributes.append(text)
+
+        face_evidence = role == "PRIMARY_FACE" or "face_visible" in facets or view in FACE_VIEWS
+        body_evidence = (
+            role == "PRIMARY_FULL_BODY" or "full_body_visible" in facets or view == "FULL_BODY"
+        )
+        # 체형 비율: 옆/3Q/전신 뷰가 확인됐고 원근·절단이 없을 때만.
+        proportion_ok = (
+            (view in PROPORTION_VIEWS or role in ("PRIMARY_FULL_BODY", "PRIMARY_3Q", "PRIMARY_LEFT", "PRIMARY_RIGHT"))
+            and not overhead
+            and not cropped
+        )
+
+        if face_evidence and not overhead:
+            add(_CONTRIB_FACE)
+            add(_CONTRIB_EARS)
+        elif "ears_visible" in facets or face_evidence:
+            add(_CONTRIB_EARS)
+        if body_evidence and proportion_ok:
+            add(_CONTRIB_BODY)
+        if body_evidence or overhead:
+            add(_CONTRIB_COAT_DISTRIBUTION)
+            add(_CONTRIB_GROOMING)
+        if (role == "PRIMARY_3Q" or (view or "").endswith("_3Q")) and proportion_ok:
+            add(_CONTRIB_3Q)
+        if role == "PRIMARY_LEFT" or view == "LEFT" or "left_side_visible" in facets:
+            add(_CONTRIB_SIDE.format(side="left"))
+        if role == "PRIMARY_RIGHT" or view == "RIGHT" or "right_side_visible" in facets:
+            add(_CONTRIB_SIDE.format(side="right"))
+        if role == "PRIMARY_TAIL" or "tail_visible" in facets:
+            add(_CONTRIB_TAIL_FORESHORTENED if overhead else _CONTRIB_TAIL)
+        if "paws_visible" in facets:
+            add(_CONTRIB_PAWS)
+        if role == "PRIMARY_MARKINGS" or "distinct_markings_visible" in facets:
+            add(_CONTRIB_MARKINGS)
+        if not contributes:
+            contributes.append(_CONTRIB_GENERIC)
+
+        headline = _ROLE_HEADLINE.get(role) or (
+            "supporting reference" if role in NEUTRAL_ROLES else "reference photo"
+        )
+        out.append(
+            {
+                "reference_id": rid,
+                "role": role,
+                "headline": headline,
+                "view": (_VIEW_TEXT.get(view) if view else None),
+                "view_label": view,
+                "facets": facets,
+                "caveats": caveats,
+                "evidence": ("vlm" if has_evidence else "none"),
+                "contributes": contributes,
+            }
+        )
+    return out

@@ -1,107 +1,30 @@
-# 환경 변수
-.env
-env.local
-.env.local
-.env.production
-.env.*.local
-# Vercel/배포용 실키·토큰 (절대 커밋 금지)
-.env.vercel.prod
-.env.*.prod
+# Dependencies
+node_modules/
+/dist
+/outputs
 .vercel/
 
-# 의존성
-node_modules
+# Python virtual environments & caches
 .venv/
-**/.venv/
-python/.venv/
-
-# 빌드
-dist
-build
-
-# Python
-__pycache__/
-*.pyc
-*.pt
-
-# 기타
-.DS_Store
-*.log
-
-# 로컬 생성물·대용량 미디어 (GitHub/Vercel에 불필요)
-dist/
-output/
-outputs/
-server/output/
-media/
-*.mp4
-# Theme backgrounds (tracked; run scripts/sync_theme_backgrounds.py)
-!backend/themes/*.mp4
-!EternalBeam/Assets/Backgrounds/*.mp4
-!public/backgrounds/**/*.mp4
-!public/demo/*.mp4
-!python/backgrounds/*.mp4
-__pycache__/
-*.rtf
-KakaoTalk_*
-/test_*.png
-/composited_output.png
-/cutout.png
-/input.jpg
-/idle1_mp4.png
-v0-design/
-.cursorignore
-
-# 로컬 샘플·개인 자산 (저장소에 올리지 않음)
-python/dog.jpg.jpg
-python/dog.jpg_nobg.png
-python/idle1.png
-python/out_depth.png
-고야사진.jpg
-제우스포카.jpg
-새 폴더/
-
-.vercel
-
-# 로컬 디버그·스크래치 (루트에 쌓이기 쉬움)
-/_device_poll*
-/_poll_*
-/_prod_bundle.js
-/build_log.txt
-/curl_verbose.txt
-/git_out.txt
-/tsconfig.tsbuildinfo
-/*.apk
-/Pet.apk
-/*_test_result*.json
-/cutout_*test*.json
-/live_*resp*.json
-/live_idle_*.json
-/post_deploy_*.json
-/final_idle_verify.json
-/body.png
-/head.png
-/forest.mp4
-/public/eternal-beam-logo-restored.png
-/Eternal Beam-logo.png
-/eternal-beam-blacklogo.png.png
-/eternal-beam-logo.png.png
-/*_cutout_debug.png
-/*_split_debug.png
-/*-removebg-preview.png
-# Python virtual environment
-backend/venv/
-venv/
-
-# Python cache
-__pycache__/
-*.pyc
-
-# Environment variables
-.env
 myenv/
-.env*
-.recovery/
+__pycache__/
+*.pyc
+
+# Environment variables / Secrets
+.env
+.env.local
 :memory:.ses
 
+# OS files
+.DS_Store
+**/.DS_Store
+Thumbs.db
+
+# Large AI Model weights & Recovery
+*.pt
+.recovery/
+
+# Custom project paths
+docs/aws-audit/
+public/prototypes/
 docs/aws-audit/

@@ -15,37 +15,50 @@ from typing import Any
 # v2 (2026-09-17): 그림자 금지 절 추가. I2V 는 정지 그림자를 **움직이는**
 # 그림자로 살려내고, packed-alpha 매트가 그것을 전경으로 삼킨다.
 MOTION_VIDEO_PROMPT_VERSION = "motion-video-prompt-v2"
+GAIT = {
+    "dog": {
+        "prompt": "runs naturally straight toward the camera in a short, energetic burst",
+        "qa_expect": "a running gait with a brief airborne phase, then smooth braking",
+        "qa_reject": "a slow walk or trot with a paw always on the ground",
+    },
+    "cat": {
+        "prompt": "walks confidently straight toward the camera with a smooth, steady, natural cat walk",
+        "qa_expect": "a continuous, steady walking gait with alternating paws and a calm stop",
+        "qa_reject": "a run or leap, sliding without leg movement, floating, or repeated stop-start",
+    },
+}
+
+def _gait(species):
+    return GAIT.get((species or "").lower(), GAIT["dog"])
 
 _IDENTITY_LOCK = (
-    "The exact same pet as in the supplied reference image(s). Do not alter the "
-    "face, fur colors, markings, ears, body proportions, paws or tail at any point "
-    "in the video. No new objects, no other animals, no scenery. "
-    "The background must remain a single flat matte neutral tone with no texture, "
-    "no gradient, no vignette, no floor plane and no horizon line. "
-    "There must be no contact shadow under the pet, no cast shadow, no reflection, "
-    "no glossy surface and no ambient grounding darkening of any kind. "
-    "The pet silhouette must remain clean and clearly separated from the background, "
-    "including around the ears, fur edges, paws, legs and tail. "
-    "All paws must remain fully visible and cleanly separated. "
-    "Camera and framing remain completely fixed. No text, no stylization."
+    "The same pet as in the first frame, unchanged for the whole clip: same face, "
+    "fur colors, markings, ears, body proportions, paws and tail. "
+    "The background is one flat, matte, uniform neutral tone, identical to the first "
+    "frame, with even shadowless studio lighting and constant exposure. "
+    "The camera and framing stay completely fixed. "
+    "The pet silhouette stays clean and clearly separated from the background, "
+    "including ears, fur edges, paws, legs and tail, and all paws stay fully visible. "
+    "The clip is silent. Keep it free of shadows, reflections and camera movement."
 )
 
 
 def _micro(spec_contract: dict[str, Any], description: str) -> str:
     parts = [
-        _IDENTITY_LOCK,
-        f"The pet stays in the same pose and position. Only this subtle natural "
-        f"motion occurs: {description}.",
-        "No other intentional or expressive behavior occurs. The pet remains silent: "
-        "no barking, vocalizing, panting, licking, chewing, or unnecessary mouth, jaw "
-        "or tongue movement. If audio is generated, it must be absolute silence.",
-        "No body translation, no walking, no large movement of any kind.",
+        "The pet stays in place with its paws planted, calm and relaxed, and looks "
+        f"naturally alive. {description.rstrip('.')}.",
+        "All movement is very small, soft and unhurried, like a real animal quietly "
+        "at rest. The pet does not walk, step, slide, noticeably shift its weight or "
+        "change its position in the frame. Its overall body proportions and silhouette "
+        "remain stable except for the subtle movement explicitly described above.",
     ]
     if (spec_contract.get("video_compat") or {}).get("returns_to_start_pose"):
         parts.append(
-            "By the final frame the pet has returned to exactly the starting pose, "
-            "so the clip can hand back to the idle loop without a visible jump."
+            "Near the end of the clip, the motion gradually settles back toward the starting idle state. "
+            "The final frame closely matches the starting pose, position, scale and appearance so the clip "
+            "can loop without a visible jump."
         )
+        parts.append(_IDENTITY_LOCK)
     return "\n".join(parts)
 
 
@@ -63,16 +76,16 @@ def _transition(spec_contract: dict[str, Any], description: str) -> str:
     )
 
 
-def _locomotion(spec_contract: dict[str, Any], description: str) -> str:
+def _locomotion(spec_contract: dict[str, Any], description: str,species=None) -> str:
+    description = description.format(gait_text=_gait(species)["prompt"])
     return "\n".join(
         [
-            _IDENTITY_LOCK,
-            f"The pet performs this whole-body motion: {description}.",
-            "Leg movement is anatomically correct with natural gait timing; paws "
-            "contact the ground plausibly, but the ground itself stays the flat "
-            "neutral background — no contact shadow, cast shadow or ground plane "
-            "appears under the paws. The body may move within the frame, but "
-            "the camera itself does not move.",
+            f"The pet performs this whole-body motion: {description.rstrip('.')}.",
+            "Locomotion must be anatomically correct and appropriate to this pet's "
+            "species and morphology, with natural limb timing and plausible contact "
+            "with the flat neutral ground. The pet moves within the frame, staying fully  "
+            "inside it, while the camera itself stays completely still.",
+            _IDENTITY_LOCK
         ]
     )
 
