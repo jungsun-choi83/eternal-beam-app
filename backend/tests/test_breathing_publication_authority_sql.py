@@ -208,8 +208,14 @@ def test_migration_replaces_the_six_argument_function_and_stacks_after_the_gate(
     assert pg.ok(
         "select pronargs from pg_proc where proname = 'publish_phase6_breathing'"
     ) == "7"
-    names = sorted(p.name for p in _MIGRATIONS.glob("2026*.sql"))
-    assert names.index(_RETIRE.name) == names.index(_GATE.name) + 1 == len(names) - 1
+    paths = sorted(_MIGRATIONS.glob("2026*.sql"), key=lambda p: p.name)
+    names = [p.name for p in paths]
+    assert names.index(_RETIRE.name) == names.index(_GATE.name) + 1
+    # 은퇴 이후의 어떤 마이그레이션도 발행 함수를 다시 정의하지 않는다
+    # (예전에는 "은퇴가 전체에서 마지막" 으로 이를 보장했지만, 그러면 무관한
+    # 새 마이그레이션마다 이 테스트가 깨진다).
+    later = paths[names.index(_RETIRE.name) + 1 :]
+    assert [p.name for p in later if "publish_phase6_breathing" in p.read_text()] == []
     sql = _RETIRE.read_text()
     assert "drop function if exists public.publish_phase6_breathing(text, text, uuid, uuid, text, text);" in sql
     assert "timestamptz '2026-10-02T15:52:00+00:00'" in sql
