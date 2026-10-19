@@ -1,9 +1,13 @@
 """
 EXHIBITION_PREP_RUN — 전시용 리깅 입력 패키지 생성 (일반 펫 생성과 분리).
 
-  QUEUED → RUNNING[CUTOUT → MAPS → PACKAGE] → READY | NEEDS_REVIEW | FAILED
+  QUEUED → RUNNING[(GATE) → CUTOUT → MAPS → PACKAGE] → READY | NEEDS_REVIEW | FAILED
   READY(= PACKAGE_READY) → handoff_status: HANDOFF_SENDING → HANDOFF_CONFIRMED | HANDOFF_FAILED
 
+  GATE    : exhibition_pose_gate (로컬: YOLO 동물 bbox 크롭 → CLIP 제로샷, 외부 API 없음).
+            CUTOUT **전에** 시점/포즈를 판정한다 — GOOD 이면 원본, NEEDS_AI_NORMALIZATION
+            이면 exhibition_pose_normalizer 로 재생성한 이미지로 아래 단계를 **한 번만** 돈다.
+            불확실하면 GOOD(생성 과금 없음). 실루엣 신호(classify_suitability)는 진단으로만 남는다.
   CUTOUT  : vitmatte_service.matte_foreground_with_meta() 를 **파이썬으로 직접**
             호출한다. /api/matting/cutout 을 거치지 않는 이유: 그 라우터는
             저장 시 user_assets 행과 pet_references 파생 행(cutout_vitmatte)을
@@ -37,6 +41,8 @@ import numpy as np
 from PIL import Image, ImageOps
 
 from . import exhibition_breathing_maps as maps_mod
+from . import exhibition_canvas as canvas_mod
+from . import exhibition_pose_gate as gate_mod
 from . import exhibition_pose_normalizer as pose_mod
 from .exhibition_handoff_client import (
     ExhibitionHandoffClient,
@@ -94,10 +100,12 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 
 MatteFn = Callable[[bytes], tuple[bytes, dict]]
 NormalizeFn = Callable[[bytes, dict], bytes]
+PoseGateFn = Callable[[bytes], dict]
 
 #: 변형(호흡) 적합성 판정 — 1 장 업로드에서 리테이크 없이 자동으로 결정한다.
-SUITABILITY_GOOD = "GOOD_FOR_DEFORMATION"
-SUITABILITY_NEEDS_NORMALIZATION = "NEEDS_AI_NORMALIZATION"
+#: 판정은 **CUTOUT 전에** exhibition_pose_gate(YOLO 크롭 → 로컬 CLIP 제로샷)가 내린다.
+SUITABILITY_GOOD = gate_mod.DECISION_GOOD
+SUITABILITY_NEEDS_NORMALIZATION = gate_mod.DECISION_NEEDS_NORMALIZATION
 #: 몸통 면적이 실루엣 대비 이보다 작으면 호흡 영역을 안전하게 추정할 수 없다고 본다
 #: (웅크린/가려진 포즈 — 잠금(머리+지면)이 실루엣 대부분을 차지). frontal/round/clothed
 #: 참조 자세(≥0.24)는 통과, round_blob 같은 근거 없는 실루엣은 head 판정에서 먼저 걸린다.
@@ -106,12 +114,12 @@ SUITABILITY_MIN_TORSO_AREA_FRAC = 0.20
 
 def classify_suitability(manifest: dict[str, Any]) -> str:
     """build_package() 가 이미 만든 manifest(머리 등급/신뢰도, 몸통 면적, 테두리 접촉,
-    구조 QA)만으로 변형 파이프라인에 쓸 포즈가 적합한지 판정한다 — 새 모델 추론 없음.
+    구조 QA)만으로 실루엣이 변형에 쓸 만한지 판정한다 — 새 모델 추론 없음.
 
-    NEEDS_AI_NORMALIZATION 예: 누워 있거나 웅크린 자세, 다리가 가려짐, 머리와 몸통이
-    한 덩어리로 붙음(= 신뢰할 수 있는 머리 없음), 몸통 기하가 불안정함, 부적절한
-    프레이밍(테두리에 닿음) — 신원은 또렷해도 변형에는 쓸 수 없는 경우들이다.
-    신호가 없으면(결측) 안전한 쪽으로 — NEEDS_AI_NORMALIZATION.
+    **진단 전용** (manifest.pose_suitability.silhouette_check). 생성(과금)을 트리거하지
+    않는다 — 그 결정은 CUTOUT 전에 exhibition_pose_gate 가 시점/포즈로 내린다. 실루엣
+    신호는 위에서 본 사진이나 등 돌린 사진도 깨끗이 통과시키므로 시점 판정에 쓸 수 없다.
+    신호가 없으면(결측) NEEDS_AI_NORMALIZATION 으로 기록한다.
     """
     flags = manifest.get("flags") or {}
     diagnostics = manifest.get("diagnostics") or {}
@@ -256,12 +264,15 @@ def build_package(
     alpha_full = rgba_full[:, :, 3]
     edge = maps_mod.detect_frame_edge_touch(alpha_full)
     x1, y1, x2, y2 = maps_mod.subject_crop_rect(alpha_full)
-    canvas = maps_mod.clean_straight_rgba(rgba_full[y1:y2, x1:x2].copy())
+    crop = maps_mod.clean_straight_rgba(rgba_full[y1:y2, x1:x2].copy())
+    # 고정 캔버스 정규화 (비율 유지, 지면선·높이 일정) — 맵은 이 캔버스 위에서 계산한다.
+    canvas, norm = canvas_mod.normalize_subject_canvas(crop)
 
     scale = float(source_info.get("processing_scale") or 1.0)
     hint_canvas = None
     if head_hint_in_source is not None:
-        hint_canvas = (head_hint_in_source[0] * scale - x1, head_hint_in_source[1] * scale - y1)
+        hint_crop = (head_hint_in_source[0] * scale - x1, head_hint_in_source[1] * scale - y1)
+        hint_canvas = canvas_mod.transform_point(hint_crop, norm)
     result = maps_mod.build_breathing_maps(canvas, head_hint_xy=hint_canvas)
 
     on_stage(STAGE_PACKAGE)
@@ -288,14 +299,17 @@ def build_package(
         "review_reasons": review_reasons,
         "canvas_wh": [w, h],
         "crop_rect_in_source": crop_in_source,
+        "normalization": norm,
         "source": {
             "sha256": source_info.get("source_sha256"),
             "source_wh": source_info.get("source_wh"),
             "processing_scale": scale,
-            "note": "crop_rect_in_source is x1,y1,x2,y2 (end-exclusive) in EXIF-oriented source pixels; "
-                    "canvas pixels map to source pixels via (canvas / processing_scale) + crop origin.",
+            "note": "crop_rect_in_source is x1,y1,x2,y2 (end-exclusive) in EXIF-oriented source pixels. "
+                    "All maps and anchors are on the fixed normalized canvas (see normalization): "
+                    "normalized -> crop via (p - normalization.offset_xy) / normalization.scale_xy, "
+                    "crop -> source via (crop / processing_scale) + crop origin.",
         },
-        "coordinate_space": "canvas pixels, origin top-left, +x right, +y down",
+        "coordinate_space": "normalized canvas pixels, origin top-left, +x right, +y down",
         "anchors": {
             "breathing_center": list(result.breathing_center),
             "breathing_axis": list(result.breathing_axis),
@@ -313,6 +327,8 @@ def build_package(
         "files": {
             "subject_rgba": {"path": PACKAGE_FILES["subject_rgba"], "format": "PNG RGBA 8-bit",
                              "color_space": "sRGB", "alpha": "straight (not premultiplied)",
+                             "layout": "fixed normalized canvas; subject height = target_height_frac of canvas, "
+                                       "feet on ground_line_frac row, centered horizontally (see normalization)",
                              "rgb_under_zero_alpha": "edge color bleed, otherwise 0 (source background removed)"},
             "breathing_weight": {"path": PACKAGE_FILES["breathing_weight"], "format": "PNG grayscale 16-bit",
                                  "range": "0..65535 => deformation weight 0..1", "premultiplied_by_alpha": True},
@@ -358,8 +374,15 @@ def process_run(
     worker_id: Optional[str] = None,
     matte_fn: MatteFn = _default_matte,
     normalize_fn: Optional[NormalizeFn] = None,
+    pose_gate_fn: Optional[PoseGateFn] = None,
 ) -> dict[str, Any]:
-    """클레임된 실행 1건을 끝까지 처리하고 최종 필드를 반환한다. 예외를 올리지 않는다."""
+    """클레임된 실행 1건을 끝까지 처리하고 최종 필드를 반환한다. 예외를 올리지 않는다.
+
+      원본 → pose_gate(로컬) ─ GOOD  → build_package(원본)
+                            └ NEEDS → normalize_fn(생성) → build_package(생성본)
+                                       (생성 실패/미설정 → build_package(원본))
+    build_package(CUTOUT→MAPS→PACKAGE)는 어느 경로든 **정확히 한 번** 돈다.
+    """
     from .cutout_errors import CutoutError
 
     run_id = run["id"]
@@ -380,52 +403,54 @@ def process_run(
         source_png = artifacts.get(run["source_path"])
         hint = (run.get("head_hint") or {}).get("xy_in_source")
         queue_number = run.get("queue_number")
-        status, reasons, files, manifest = build_package(
-            run_id,
-            source_png,
-            run.get("source_info") or {},
-            head_hint_in_source=tuple(hint) if hint else None,
-            matte_fn=matte_fn,
-            on_stage=_stage,
-            queue_number=queue_number,
-        )
 
-        # ── 적합성 게이트: 리테이크/추가 사진 없음 — 이 자리에서 바로 결정한다.
-        original_manifest = manifest
-        pose_suitability = classify_suitability(manifest)
+        # ── 포즈/시점 게이트 (로컬, CUTOUT 전): 리테이크/추가 사진 없음 — 여기서 바로 결정한다.
+        gate = (pose_gate_fn or gate_mod.assess_pose)(source_png)
+        pose_suitability = (
+            SUITABILITY_NEEDS_NORMALIZATION
+            if gate.get("decision") == SUITABILITY_NEEDS_NORMALIZATION
+            else SUITABILITY_GOOD
+        )
+        pose_record: dict[str, Any] = {"decision": pose_suitability, "source_used": "original", "gate": gate}
+        package_source, package_info = source_png, run.get("source_info") or {}
+        package_hint = tuple(hint) if hint else None
         normalized_source_path = None
         if pose_suitability == SUITABILITY_NEEDS_NORMALIZATION:
             normalize = normalize_fn or pose_mod.default_normalize
-            prompt = pose_mod.build_normalization_prompt(original_manifest)
+            prompt = pose_mod.build_normalization_prompt(gate)
             try:
-                normalized_png = normalize(source_png, original_manifest)
+                normalized_png = normalize(source_png, gate)
             except pose_mod.PoseNormalizationError as e:
                 logger.info(
                     "exhibition run %s: pose normalization skipped (%s) — continuing with original image",
                     run_id, e.code,
                 )
-                pose_record = {"decision": pose_suitability, "source_used": "original", "normalization_error": e.code}
+                pose_record["normalization_error"] = e.code
             else:
                 normalized_source_bytes, normalized_info = normalize_source(normalized_png)
-                status, reasons, files, manifest = build_package(
-                    run_id,
-                    normalized_source_bytes,
-                    normalized_info,
-                    matte_fn=matte_fn,
-                    on_stage=_stage,
-                    queue_number=queue_number,
-                )
                 normalized_source_path = run_object_path(run_id, "source_normalized.png")
                 artifacts.put(normalized_source_path, normalized_source_bytes, "image/png")
-                pose_record = {
-                    "decision": pose_suitability,
-                    "source_used": "ai_normalized",
-                    "original_source_path": run["source_path"],
-                    "normalized_source_path": normalized_source_path,
-                    "prompt": prompt,
-                }
-        else:
-            pose_record = {"decision": pose_suitability, "source_used": "original"}
+                # 생성본은 원본과 좌표계가 다르다 — 운영자 머리 힌트는 원본 전용이라 넘기지 않는다.
+                package_source, package_info, package_hint = normalized_source_bytes, normalized_info, None
+                pose_record.update(
+                    source_used="ai_normalized",
+                    original_source_path=run["source_path"],
+                    normalized_source_path=normalized_source_path,
+                    prompt=prompt,
+                )
+                if normalize_fn is None:
+                    pose_record["generator"] = pose_mod.generator_info()
+
+        status, reasons, files, manifest = build_package(
+            run_id,
+            package_source,
+            package_info,
+            head_hint_in_source=package_hint,
+            matte_fn=matte_fn,
+            on_stage=_stage,
+            queue_number=queue_number,
+        )
+        pose_record["silhouette_check"] = classify_suitability(manifest)
         manifest["pose_suitability"] = pose_record
 
         outputs: dict[str, str] = {}
@@ -461,7 +486,7 @@ def process_run(
     except CutoutError as e:
         logger.warning("exhibition run %s cutout rejected: %s %s", run_id, e.code, e.message)
         return _finish({"status": STATUS_FAILED, "error_code": e.code, "error_message": e.message[:2000]})
-    except maps_mod.ExhibitionMapError as e:
+    except (maps_mod.ExhibitionMapError, canvas_mod.CanvasNormalizationError) as e:
         logger.warning("exhibition run %s maps failed: %s %s", run_id, e.code, e.message)
         return _finish({"status": STATUS_FAILED, "error_code": e.code, "error_message": e.message[:2000]})
     except Exception as e:  # noqa: BLE001 — 워커는 계속 돌아야 한다

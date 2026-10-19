@@ -9,7 +9,7 @@ RGBA 를 넘기면, 이 모듈이 **추가 모델 추론 없이** OpenCV/NumPy �
   - anchors          : breathing_center / breathing_axis / ground_y / head_point
 를 만든다. 일반 펫 생성 파이프라인(정본·키프레임·모션·QA·발행)과는 무관하다.
 
-── 방법 (dt-torso-v2) ───────────────────────────────────────────────────────
+── 방법 (dt-torso-v3) ───────────────────────────────────────────────────────
   1. 알파 ≥ 128 → 실루엣, 가장 큰 연결 성분, 구멍 메우기
   2. 거리 변환 D (가장자리에서 멀수록 큼 — 다리/꼬리/귀처럼 얇은 부위는 작다)
   3. 반경 r = OPEN_RADIUS_FRAC·max(D) 열기(opening)로 얇은 부위를 걷어낸 코어
@@ -23,8 +23,10 @@ RGBA 를 넘기면, 이 모듈이 **추가 모델 추론 없이** OpenCV/NumPy �
        NO_PLAUSIBLE_HEAD 근거 없음 → head_point 없음 + 위쪽 예방 잠금, NEEDS_REVIEW
      불확실할수록 **더 많이 잠그고 덜 움직인다** — 약한 추정이 얼굴에 호흡 가중치를 주지 않는다.
   5. 잠금 = 머리(또는 예방) 영역 ∪ 실루엣 아래 GROUND_BAND_FRAC 띠(발/지면 접촉), 페더링
-  6. 가중치 = smoothstep(D) × 흐린 몸통 × 몸통 중심 가우시안, 다시 흐림,
-     (1 − 잠금) 과 알파를 곱해 0..1 로 정규화
+  6. 가중치 (chest-axial-v3) = 두께 smoothstep(D) × 흐린 몸통 × 몸 축 프로필(가슴 최대 →
+     복부 완만 → 목 끝 소멸) × 척추선 수직 가우시안, 다시 흐림, (1 − 잠금) 과 알파를 곱해
+     0..1 로 정규화. breathing_center 는 최종 가중치의 무게중심(가슴 쪽 몸통 안).
+     머리·목 위·발·아랫다리·꼬리는 잠금(머리·지면 띠)과 두께 통과선으로 ≈ 0.
 
 맵은 긴 변 WORK_MAX_SIDE 로 줄여 계산하고 캔버스 크기로 올린다 — 어차피
 저주파 맵이라 품질 손실이 없고, 12MP 입력에서 float 배열 여러 장을 잡지 않는다.
@@ -43,7 +45,23 @@ import numpy as np
 
 from .matte_hole_qa import HoleQaConfig, measure_frame
 
-MAP_METHOD = "dt-torso-v2"
+MAP_METHOD = "dt-torso-v3"
+WEIGHT_METHOD = "chest-axial-v3"
+
+# ── 호흡 가중치 배치 (v3): 가슴/갈비뼈가 가장 세고 복부로 갈수록 부드럽게 ─────────
+#: 몸 축 좌표 t(−1 엉덩이 … +1 목 끝)에서 복부 쪽이 유지하는 최소 강도.
+ABDOMEN_FLOOR = 0.30
+#: 엉덩이 → 가슴 램프 (smoothstep 구간). 정점은 t ≥ 0.6 (윗몸통/갈비뼈).
+CHEST_RAMP_LO, CHEST_RAMP_HI = -0.6, 0.6
+#: 목 쪽 끝에서 사라지는 램프 (머리 잠금이 나머지를 맡는다).
+NECK_FADE_LO, NECK_FADE_HI = 0.9, 1.25
+#: 척추선에서의 수직 가우시안 폭 (× max D ≈ 몸통 반두께).
+CROSS_SIGMA_FRAC = 1.1
+#: 두께 통과선 (D / max D): 이 아래(다리·꼬리·귀, 반폭 ≈ 0.15–0.3·D)는 0, 이 위(갈비뼈·몸통)는 1.
+#: 빨리 포화시켜 두께가 몸통 안의 모양을 정하지 않게 한다 — 그 역할은 몸 축 프로필이 맡는다.
+INTERIOR_LO, INTERIOR_HI = 0.25, 0.55
+#: 몸통 마스크 페더 반경 (× max D) — 다리로 새는 양을 제한한다.
+TORSO_SOFT_FRAC = 0.25
 
 #: 맵 계산 해상도 상한 (긴 변 px).
 WORK_MAX_SIDE = 1024
@@ -92,8 +110,9 @@ CROP_PAD_FRAC = 0.04
 CROP_MIN_PAD_PX = 16
 #: 전시 interior_holes QA. 정지 전신 사진이라 (1) 발 겹침으로 닫힌 다리 사이·배 밑 빈틈은
 #: 구멍으로 세지 않고 (2) 머리·목·가슴·몸통의 크고 깊은 구멍은 하나라도 즉시 실패시킨다.
-#: 일반 파이프라인(HoleQaConfig.from_env)은 둘 다 끈 채 그대로다 — matte_hole_qa 참고.
-EXHIBITION_HOLE_QA = HoleQaConfig(natural_gap_filter=True, protected_hole_rule=True)
+#: (3) 말린 꼬리·목줄 같은 외곽 근처 얇은 틈도 세지 않는다.
+#: 일반 파이프라인(HoleQaConfig.from_env)은 모두 끈 채 그대로다 — matte_hole_qa 참고.
+EXHIBITION_HOLE_QA = HoleQaConfig(natural_gap_filter=True, protected_hole_rule=True, contour_slit_filter=True)
 
 class ExhibitionMapError(Exception):
     """맵을 만들 수 없을 때 (빈 알파, 몸통 미검출 등). code 는 실행 error_code 로 간다."""
@@ -696,6 +715,52 @@ def _breathing_axis(torso: np.ndarray) -> tuple[float, float]:
     return (round(float(minor[0]), 4), round(float(minor[1]), 4))
 
 
+def _body_axis(
+    head: HeadEstimate, torso_center: tuple[float, float], *, shape_stats: _Shape
+) -> tuple[float, float]:
+    """몸통 중심 → 머리 쪽 단위 벡터 (가슴이 있는 끝). 머리 점이 없으면 방향 라벨/실루엣 모양으로."""
+    if head.xy is not None:
+        vx, vy = head.xy[0] - torso_center[0], head.xy[1] - torso_center[1]
+        n = math.hypot(vx, vy)
+        if n > 1e-6:
+            return (vx / n, vy / n)
+    labels = {"up": (0.0, -1.0), "down": (0.0, 1.0), "left": (-1.0, 0.0), "right": (1.0, 0.0)}
+    if head.direction in labels:
+        return labels[head.direction]
+    # 근거 없음: 세로 자세면 위, 가로 자세면 위(등 쪽) — 어느 끝이 가슴인지 지어내지 않는다.
+    return (0.0, -1.0)
+
+
+def _axial_profile(
+    torso: np.ndarray, center: tuple[float, float], axis: tuple[float, float], hw: tuple[int, int]
+) -> tuple[np.ndarray, dict[str, Any]]:
+    """몸 축을 따라가는 호흡 강도 (가슴/갈비뼈 쪽이 가장 세고 복부로 갈수록 부드럽게, 목 끝에서 사라진다).
+
+    t = 축 좌표를 몸통 길이로 정규화한 값: −1 = 엉덩이 끝, 0 = 몸통 중심, +1 = 목 쪽 끝.
+      axial(t) = ABDOMEN_FLOOR + (1 − ABDOMEN_FLOOR)·smoothstep(CHEST_RAMP_LO, CHEST_RAMP_HI, t)
+                 × (1 − smoothstep(NECK_FADE_LO, NECK_FADE_HI, t))
+    전부 부드러운 램프 — 사각 띠가 없다.
+    """
+    h, w = hw
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+    t_raw = (xx - center[0]) * axis[0] + (yy - center[1]) * axis[1]
+    del yy, xx
+    t_torso = t_raw[torso]
+    t_pos = max(float(t_torso.max()), 1.0)
+    t_neg = max(float(-t_torso.min()), 1.0)
+    t = np.where(t_raw >= 0, t_raw / t_pos, t_raw / t_neg).astype(np.float32)
+    chest = _smoothstep(CHEST_RAMP_LO, CHEST_RAMP_HI, t)
+    neck_fade = 1.0 - _smoothstep(NECK_FADE_LO, NECK_FADE_HI, t)
+    axial = (ABDOMEN_FLOOR + (1.0 - ABDOMEN_FLOOR) * chest) * neck_fade
+    diag = {
+        "abdomen_floor": ABDOMEN_FLOOR,
+        "chest_ramp": [CHEST_RAMP_LO, CHEST_RAMP_HI],
+        "neck_fade": [NECK_FADE_LO, NECK_FADE_HI],
+        "torso_half_length_px": [round(t_neg, 1), round(t_pos, 1)],
+    }
+    return axial.astype(np.float32), diag
+
+
 def build_breathing_maps(
     rgba: np.ndarray,
     *,
@@ -750,14 +815,18 @@ def build_breathing_maps(
 
     tys, txs = np.nonzero(torso)
     cx, cy = float(txs.mean()), float(tys.mean())
-    sigma_c = 0.9 * math.sqrt(float(torso.sum()) / math.pi)
+    body_axis = _body_axis(head, (cx, cy), shape_stats=_shape_stats(solid))
+    axial, axial_diag = _axial_profile(torso, (cx, cy), body_axis, (h, w))
     yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
-    radial = np.exp(-((xx - cx) ** 2 + (yy - cy) ** 2) / (2.0 * sigma_c**2))
+    # 척추선(몸통 중심을 지나는 몸 축)에서의 수직 거리 — 옆구리로 갈수록 부드럽게 줄어든다.
+    perp = (xx - cx) * (-body_axis[1]) + (yy - cy) * body_axis[0]
+    cross = np.exp(-(perp**2) / (2.0 * (CROSS_SIGMA_FRAC * d_max) ** 2))
     del yy, xx
 
-    interior = _smoothstep(0.1, 0.7, dist / d_max)
-    torso_soft = np.clip(_blur(torso, 0.35 * d_max), 0.0, 1.0)
-    weight = _blur(interior * torso_soft * radial, 0.15 * d_max)
+    # 두께(거리 변환)로 갈비뼈/몸통만 남기고 다리·꼬리·귀처럼 얇은 부위는 0 으로.
+    interior = _smoothstep(INTERIOR_LO, INTERIOR_HI, dist / d_max)
+    torso_soft = np.clip(_blur(torso, TORSO_SOFT_FRAC * d_max), 0.0, 1.0)
+    weight = _blur(interior * torso_soft * axial * cross, 0.15 * d_max)
     weight *= 1.0 - locked_soft
     weight *= solid  # 실루엣 밖으로 흐린 값이 새지 않게
 
@@ -805,10 +874,17 @@ def build_breathing_maps(
     full_rows = np.flatnonzero((alpha_u8 >= SOLID_ALPHA).any(axis=1))
     ground_y = float(full_rows[-1]) if full_rows.size else round(ground_y_w * inv, 1)
 
+    # 호흡 중심 = 최종 가중치의 무게중심 (가슴 쪽으로 치우친 몸통 안의 점) — 캔버스 좌표.
+    wy, wx = np.mgrid[0:H, 0:W].astype(np.float32)
+    wsum = float(weight.sum())
+    bc = (float((weight * wx).sum() / wsum), float((weight * wy).sum() / wsum))
+    del wy, wx
+    peak_y, peak_x = np.unravel_index(int(np.argmax(weight)), weight.shape)
+
     return MapResult(
         breathing_weight=weight,
         locked=locked_full,
-        breathing_center=(round(cx * inv, 1), round(cy * inv, 1)),
+        breathing_center=(round(bc[0], 1), round(bc[1], 1)),
         breathing_axis=_breathing_axis(torso),
         ground_y=ground_y,
         head=head_out,
@@ -818,6 +894,12 @@ def build_breathing_maps(
             "d_max_px": round(d_max * inv, 2),
             "open_radius_px": round(OPEN_RADIUS_FRAC * d_max * inv, 2),
             "torso_area_frac": round(float(torso.sum()) / float(solid.sum()), 4),
+            "weight_method": WEIGHT_METHOD,
+            "torso_centroid": [round(cx * inv, 1), round(cy * inv, 1)],
+            "body_axis": [round(body_axis[0], 4), round(body_axis[1], 4)],
+            "chest_peak": [int(peak_x), int(peak_y)],
+            "axial_profile": axial_diag,
+            "cross_sigma_px": round(CROSS_SIGMA_FRAC * d_max * inv, 2),
             "ground_band_frac": GROUND_BAND_FRAC,
             "head_direction": head.direction,
             "head_constriction": head.constriction,

@@ -84,6 +84,7 @@ def _now_iso() -> str:
 class RunStore(Protocol):
     def insert(self, row: dict[str, Any]) -> dict[str, Any]: ...
     def get(self, run_id: str) -> Optional[dict[str, Any]]: ...
+    def get_by_queue_number(self, exhibition_id: str, queue_number: int) -> Optional[dict[str, Any]]: ...
     def claim_next(self, worker_id: str, *, stale_after_minutes: int) -> Optional[dict[str, Any]]: ...
     def update(self, run_id: str, fields: dict[str, Any], *, claimed_by: Optional[str] = None) -> bool: ...
     def update_if(self, run_id: str, fields: dict[str, Any], *, match: dict[str, Any]) -> bool: ...
@@ -114,6 +115,17 @@ class SupabaseRunStore:
 
     def get(self, run_id: str) -> Optional[dict[str, Any]]:
         res = self._c.table(TABLE).select("*").eq("id", run_id).limit(1).execute()
+        return res.data[0] if res.data else None
+
+    def get_by_queue_number(self, exhibition_id: str, queue_number: int) -> Optional[dict[str, Any]]:
+        res = (
+            self._c.table(TABLE)
+            .select("*")
+            .eq("exhibition_id", exhibition_id)
+            .eq("queue_number", queue_number)
+            .limit(1)
+            .execute()
+        )
         return res.data[0] if res.data else None
 
     def claim_next(self, worker_id: str, *, stale_after_minutes: int) -> Optional[dict[str, Any]]:
@@ -234,6 +246,12 @@ class InMemoryRunStore:
     def get(self, run_id: str) -> Optional[dict[str, Any]]:
         r = self.rows.get(run_id)
         return dict(r) if r else None
+
+    def get_by_queue_number(self, exhibition_id: str, queue_number: int) -> Optional[dict[str, Any]]:
+        for r in self.rows.values():
+            if r.get("exhibition_id") == exhibition_id and r.get("queue_number") == queue_number:
+                return dict(r)
+        return None
 
     def claim_next(self, worker_id: str, *, stale_after_minutes: int) -> Optional[dict[str, Any]]:
         with self._lock:

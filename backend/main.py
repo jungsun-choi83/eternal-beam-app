@@ -307,9 +307,10 @@ if os.getenv("ENABLE_DEV_PREMIUM_TRIGGER", "0").strip().lower() in ("1", "true",
 
 # 전시 준비 실행(운영자 전용, 일반 펫 생성과 분리). 기본 꺼짐.
 if os.getenv("ENABLE_EXHIBITION_PREP", "0").strip().lower() in ("1", "true", "yes"):
-    from .routers import exhibition_prep_v1, exhibition_queue_v1
+    from .routers import exhibition_device_v1, exhibition_prep_v1, exhibition_queue_v1
     app.include_router(exhibition_prep_v1.router, prefix="/api", tags=["exhibition-prep"])
     app.include_router(exhibition_queue_v1.router, prefix="/api", tags=["exhibition-queue"])
+    app.include_router(exhibition_device_v1.router, prefix="/api", tags=["exhibition-device"])
 
 # 프리뷰 출력 디렉토리 (main.py와 같은 위치 기준)
 _output_dir = os.path.join(os.path.dirname(__file__), "..", "outputs")

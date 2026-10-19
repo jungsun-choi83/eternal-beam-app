@@ -146,6 +146,10 @@ async def device_websocket(
 
         heartbeat_seconds = max(5, int(__import__("os").getenv("DEVICE_WS_HEARTBEAT_SECONDS", "25")))
         while True:
+            # Catches up on commands a sibling process (e.g. the Exhibition
+            # worker) persisted while we were idle — at least every
+            # heartbeat_seconds, sooner if the device is chatty.
+            await device_gateway.sync_pending(device_id)
             try:
                 message = await asyncio.wait_for(websocket.receive_json(), timeout=heartbeat_seconds)
             except asyncio.TimeoutError:

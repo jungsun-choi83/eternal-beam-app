@@ -102,7 +102,7 @@ def test_full_body_run_is_ready_with_complete_package(stores):
 
     manifest = json.loads(artifacts.get(f"exhibition/{rid}/manifest.json"))
     assert manifest["schema_version"] == "EXHIBITION_RIG_INPUT_V1"
-    assert manifest["map_method"] == "dt-torso-v2"
+    assert manifest["map_method"] == "dt-torso-v3"
     assert manifest["subject_class"] == "dog"
     assert manifest["flags"] == {
         "touches_frame_edge": False,
@@ -116,8 +116,9 @@ def test_full_body_run_is_ready_with_complete_package(stores):
     assert len(manifest["anchors"]["breathing_axis"]) == 2
     assert isinstance(manifest["anchors"]["ground_y"], float)
 
-    # 출력 크기 = RGBA 캔버스 = manifest.canvas_wh
+    # 출력 크기 = RGBA 캔버스 = manifest.canvas_wh = 고정 정규화 캔버스
     w, h = manifest["canvas_wh"]
+    assert [w, h] == [1024, 1024] == manifest["normalization"]["canvas_wh"]
     rgba = _decode(artifacts.get(f"exhibition/{rid}/subject_rgba.png"))
     weight = _decode(artifacts.get(f"exhibition/{rid}/breathing_weight.png"))
     locked = _decode(artifacts.get(f"exhibition/{rid}/locked_mask.png"))
@@ -126,9 +127,9 @@ def test_full_body_run_is_ready_with_complete_package(stores):
     assert weight.shape == (h, w) and weight.dtype == np.uint16
     assert locked.shape == (h, w) and locked.dtype == np.uint8
     assert preview.shape[:2] == (h, w)
-    # crop rect 은 원본 좌표, 크기가 캔버스와 일치 (scale 1.0).
+    # crop rect 은 원본 좌표, 크기가 정규화 전 크롭과 일치 (scale 1.0).
     x1, y1, x2, y2 = manifest["crop_rect_in_source"]
-    assert (x2 - x1, y2 - y1) == (w, h)
+    assert [x2 - x1, y2 - y1] == manifest["normalization"]["crop_wh"]
     # 원본 배경(초록)이 패키지에 남지 않는다.
     assert not ((rgba[:, :, 3] == 0) & (rgba[:, :, 1] == 255)).any()
 
@@ -152,7 +153,7 @@ def test_weak_neck_real_like_pet_is_ready_with_fallback_head_lock(stores, shape)
     final = _run(stores, _jpeg(900, 1200), fake_matte(shape))
     assert final["status"] == st.STATUS_READY, final["review_reasons"]
     m = final["manifest_json"]
-    assert m["map_method"] == "dt-torso-v2"
+    assert m["map_method"] == "dt-torso-v3"
     hp = m["anchors"]["head_point"]
     assert hp["xy"] is not None and hp["source"] == "auto"
     assert hp["tier"] == "USABLE_FALLBACK" and 0.5 <= hp["confidence"] < 0.75
@@ -207,8 +208,9 @@ def test_large_input_is_capped_and_crop_maps_back_to_source(stores, monkeypatch)
     assert m["source"]["processing_scale"] == 0.5
     assert m["source"]["source_wh"] == [2000, 1600]
     x1, y1, x2, y2 = m["crop_rect_in_source"]
-    w, h = m["canvas_wh"]
-    assert (x2 - x1, y2 - y1) == (w * 2, h * 2)
+    cw, ch = m["normalization"]["crop_wh"]
+    assert (x2 - x1, y2 - y1) == (cw * 2, ch * 2)
+    assert m["canvas_wh"] == [1024, 1024]
 
 
 def test_bad_upload_is_rejected_before_any_write(stores):
@@ -252,9 +254,30 @@ _EXHIBITION_MODULES = [
     "services/exhibition_queue_service.py",
     "routers/exhibition_queue_v1.py",
     "services/exhibition_pose_normalizer.py",
+    "services/exhibition_pose_gate.py",
+    "services/exhibition_canvas.py",
+    "routers/exhibition_device_v1.py",
 ]
 #: 외부 전시 시스템에 POST 하는 단 하나의 모듈 — 여기만 HTTP 클라이언트를 쓴다.
 _HTTP_ALLOWED = {"services/exhibition_handoff_client.py": {"requests"}}
+#: 금지 조각("canonical")에 걸리지만 명시적으로 허용하는 import — 생성 **프로바이더 어댑터**만.
+#: 정본 빌더/QA/크레딧(canonical_pet_service, canonical_qa …)은 여전히 금지다.
+_FORBIDDEN_EXCEPTIONS = {
+    "services/exhibition_pose_normalizer.py": {
+        "canonical_image_providers",
+        "canonical_image_providers.GptImageProvider",
+        "canonical_image_providers.CanonicalProviderError",
+        "canonical_image_providers.CanonicalReference",
+    },
+    # EXHIBITION_HANDOFF_MODE=device_gateway 가 같은 pet_asset 페이로드를 보내는 유일한 통로 —
+    # 새 디바이스 연결을 만들지 않고 기존 Device Gateway(backend/services/device_gateway.py)를
+    # 그대로 재사용한다. 그 외 일반 파이프라인(canonical/motion/generation/credit …)은 여전히 금지.
+    "services/exhibition_handoff_client.py": {".device_gateway"},
+    # GET /exhibition/device/pet/{n} 인증이 Device Gateway WS 와 같은
+    # device_gateway.authenticate_device(ETERNAL_BEAM_DEVICE_TOKENS) 를 재사용한다 —
+    # 새 디바이스 인증 체계를 만들지 않는다. 그 외는 여전히 금지.
+    "routers/exhibition_device_v1.py": {"services.device_gateway"},
+}
 
 _FORBIDDEN_IMPORT_FRAGMENTS = (
     "pet_generation", "generation_runs", "generation_queue", "generation_reconciler",
@@ -280,7 +303,8 @@ def _imports(path: pathlib.Path) -> list[str]:
 @pytest.mark.parametrize("rel", _EXHIBITION_MODULES)
 def test_exhibition_modules_do_not_import_normal_pipeline(rel):
     imported = _imports(_BACKEND / rel)
-    bad = [n for n in imported if any(f in n for f in _FORBIDDEN_IMPORT_FRAGMENTS)]
+    exceptions = _FORBIDDEN_EXCEPTIONS.get(rel, set())
+    bad = [n for n in imported if n not in exceptions and any(f in n for f in _FORBIDDEN_IMPORT_FRAGMENTS)]
     assert bad == [], f"{rel} imports normal-pipeline modules: {bad}"
     # HTTP 로 누끼 라우터를 부르지 않는다 — HTTP 클라이언트 자체를 쓰지 않는다.
     allowed = _HTTP_ALLOWED.get(rel, set())

@@ -64,7 +64,10 @@ def test_weight_peaks_on_torso_and_is_low_frequency():
     res = m.build_breathing_maps(rgba)
     cx, cy = (int(v) for v in res.breathing_center)
     assert 300 < cy < 450 and 200 < cx < 320  # 몸통 타원 안
-    assert res.breathing_weight[cy, cx] > 0.9
+    assert cy < 360  # v3: 호흡 중심은 몸통 중심(360)보다 가슴 쪽
+    assert res.breathing_weight[cy, cx] > 0.8  # 중심은 가슴 쪽으로 치우친 장의 무게중심이라 정점(1.0)은 아니다
+    px, py = res.diagnostics["chest_peak"]
+    assert 210 < py < 330 and 200 < px < 320  # 정점은 윗몸통(가슴)
     # 저주파: 이웃 픽셀 간 변화가 작다 (경계 계단 없음).
     w = res.breathing_weight
     assert float(np.abs(np.diff(w, axis=0)).max()) < 0.1

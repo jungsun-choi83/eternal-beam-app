@@ -6,9 +6,12 @@ EXHIBITION HANDOFF — READY 패키지 → 외부 전시 시스템 (HANDOFF_SEND
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 import requests
 
+from backend.services import device_gateway
 from backend.services import exhibition_handoff_client as hc
 from backend.services import exhibition_prep_service as svc
 from backend.services import exhibition_prep_store as st
@@ -215,6 +218,106 @@ def test_run_without_queue_number_cannot_be_handed_off(stores):
     assert row["handoff_status"] == st.HANDOFF_FAILED
     assert row["handoff_error_code"] == "HANDOFF_PACKAGE_UNAVAILABLE"
     assert endpoint.calls == []
+
+
+# ── device_gateway 모드 — Exhibition → 기존 Device Gateway → Pi ────────────────
+
+
+@pytest.fixture(autouse=True)
+def _isolated_device_gateway(monkeypatch):
+    monkeypatch.setenv("HYBRID_USE_SUPABASE", "0")
+    monkeypatch.delenv("ETERNAL_BEAM_DEVICE_TOKENS", raising=False)
+    monkeypatch.delenv("ETERNAL_BEAM_DEVICE_ID", raising=False)
+    monkeypatch.delenv("ETERNAL_BEAM_DEVICE_TOKEN", raising=False)
+    device_gateway.__reset_for_tests()
+    yield
+    device_gateway.__reset_for_tests()
+
+
+def device_gateway_client(**cfg):
+    return hc.ExhibitionHandoffClient(hc.HandoffConfig(mode=hc.MODE_DEVICE_GATEWAY, **cfg))
+
+
+def test_device_gateway_mode_enqueues_pet_asset_command_to_the_one_configured_device(monkeypatch, stores):
+    monkeypatch.setenv("ETERNAL_BEAM_DEVICE_TOKENS", '{"beam-001": "secret"}')
+    run = ready_run(stores, exhibition_id="expo-7", queue_number=28)
+
+    row = handoff(stores, run["id"], device_gateway_client())
+
+    assert row["handoff_status"] == st.HANDOFF_CONFIRMED
+    assert row["handoff_ack"]["device_id"] == "beam-001"
+    assert row["handoff_ack"]["accepted"] is True
+    command_id = row["handoff_ack"]["command_id"]
+
+    # Same contract payload as http/mock — just delivered via the existing gateway queue.
+    [queued] = asyncio.run(device_gateway.pending("beam-001"))
+    assert queued["command_id"] == command_id
+    assert set(queued) - {"command_id"} == PAYLOAD_KEYS
+    assert queued["event"] == "pet_asset"
+    assert queued["package_id"] == "visitor_0028"
+    assert queued["schema_version"] == "EXHIBITION_RIG_INPUT_V1"
+    assert queued["motion"] == "BREATHING"
+    assert queued["packed_url"] == f"memory://exhibition/{run['id']}/visitor_0028.zip"
+
+    # DB record still redacts the signed URL, same as http/mock.
+    assert "packed_url" not in row["handoff_request"]
+    assert row["handoff_request"]["zip_path"] == f"exhibition/{run['id']}/visitor_0028.zip"
+
+
+def test_device_gateway_mode_delivers_live_and_pi_ack_clears_the_pending_command(monkeypatch, stores):
+    monkeypatch.setenv("ETERNAL_BEAM_DEVICE_TOKENS", '{"beam-001": "secret"}')
+    run = ready_run(stores, queue_number=28)
+
+    class FakeSocket:
+        def __init__(self):
+            self.sent: list[dict] = []
+
+        async def send_json(self, value):
+            self.sent.append(value)
+
+    socket = FakeSocket()
+    asyncio.run(device_gateway.register("beam-001", socket))
+    row = handoff(stores, run["id"], device_gateway_client())
+    command_id = row["handoff_ack"]["command_id"]
+
+    # Live delivery: the connected socket received the command immediately.
+    assert socket.sent[-1]["command_id"] == command_id
+    assert socket.sent[-1]["event"] == "pet_asset"
+
+    # Handoff being HANDOFF_CONFIRMED only means "the Gateway took delivery" —
+    # the command is still pending Pi's ACK until the Pi actually sends one.
+    assert [c["command_id"] for c in asyncio.run(device_gateway.pending("beam-001"))] == [command_id]
+
+    assert asyncio.run(device_gateway.acknowledge("beam-001", command_id))
+    assert asyncio.run(device_gateway.pending("beam-001")) == []
+
+
+def test_device_gateway_mode_fails_closed_when_no_device_is_configured(stores):
+    run = ready_run(stores)
+    row = handoff(stores, run["id"], device_gateway_client())
+    assert row["handoff_status"] == st.HANDOFF_FAILED
+    assert row["handoff_error_code"] == "HANDOFF_DEVICE_GATEWAY_NO_DEVICE"
+
+
+def test_device_gateway_mode_fails_closed_and_does_not_guess_when_multiple_devices_are_configured(
+    monkeypatch, stores
+):
+    monkeypatch.setenv("ETERNAL_BEAM_DEVICE_TOKENS", '{"beam-001": "a", "beam-002": "b"}')
+    run = ready_run(stores)
+    row = handoff(stores, run["id"], device_gateway_client())
+    assert row["handoff_status"] == st.HANDOFF_FAILED
+    assert row["handoff_error_code"] == "HANDOFF_DEVICE_GATEWAY_AMBIGUOUS_DEVICE"
+    assert asyncio.run(device_gateway.pending("beam-001")) == []
+    assert asyncio.run(device_gateway.pending("beam-002")) == []
+
+
+def test_device_gateway_mode_falls_back_to_single_device_id_token_pair(monkeypatch, stores):
+    monkeypatch.setenv("ETERNAL_BEAM_DEVICE_ID", "beam-001")
+    monkeypatch.setenv("ETERNAL_BEAM_DEVICE_TOKEN", "secret")
+    run = ready_run(stores)
+    row = handoff(stores, run["id"], device_gateway_client())
+    assert row["handoff_status"] == st.HANDOFF_CONFIRMED
+    assert row["handoff_ack"]["device_id"] == "beam-001"
 
 
 # ── 재시도 · 멱등 ────────────────────────────────────────────────────────────

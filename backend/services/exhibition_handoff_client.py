@@ -21,8 +21,20 @@ exhibition/{run_id}/visitor_XXXX.zip 하나의 서명 URL 만 보낸다.
   2xx + {"run_id": <같은 run_id>, "accepted": true}  → 성공
   그 외(타임아웃·네트워크·5xx·4xx·accepted≠true·run_id 불일치) → HandoffError
 
+── device_gateway 모드 ───────────────────────────────────────────────────────
+  EXHIBITION_HANDOFF_MODE=device_gateway 면 EXHIBITION_HANDOFF_URL 을 호출하지
+  않고, 같은 pet_asset 페이로드를 기존 Device Gateway(backend/services/device_gateway.py)
+  로 enqueue 한다 — beam-001 등 하드웨어 전시 기기로 보내는 경로다. 대상 device_id
+  는 새 환경변수 없이 기존 ETERNAL_BEAM_DEVICE_TOKENS(또는 ETERNAL_BEAM_DEVICE_ID/
+  _TOKEN)에서 고른다: 정확히 하나만 설정돼 있어야 하며, 0개나 2개 이상이면
+  (어느 걸 쓸지 안전하게 알 수 없으므로) HandoffError 로 실패하고 새 기기를
+  추측하지 않는다 — handoff_error_code 로 원인이 남는다.
+  enqueue 성공은 "Device Gateway 가 전달을 맡았다"만 의미한다 — http 모드의
+  2xx+accepted 와 같은 레벨이다. Pi 의 실제 ACK/디스플레이 여부는 기존
+  device_commands 테이블/WS ACK 로만 추적되며 이 핸드오프 상태표와는 별개다.
+
 ── 환경변수 ─────────────────────────────────────────────────────────────────
-  EXHIBITION_HANDOFF_MODE         mock | http | off
+  EXHIBITION_HANDOFF_MODE         mock | http | device_gateway | off
                                   (기본: URL 이 있으면 http, 없으면 off)
   EXHIBITION_HANDOFF_URL          외부 수신 엔드포인트 (http 모드 필수)
   EXHIBITION_HANDOFF_TOKEN        선택 — Bearer 토큰
@@ -33,6 +45,7 @@ exhibition/{run_id}/visitor_XXXX.zip 하나의 서명 URL 만 보낸다.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass, field
@@ -46,6 +59,7 @@ HANDOFF_EVENT = "pet_asset"
 
 MODE_MOCK = "mock"
 MODE_HTTP = "http"
+MODE_DEVICE_GATEWAY = "device_gateway"
 MODE_OFF = "off"
 
 #: row 의 ZIP 패키지 경로 컬럼 (exhibition_prep_service.process_run 이 쓴다).
@@ -70,13 +84,13 @@ class HandoffConfig:
 
     @property
     def enabled(self) -> bool:
-        return self.mode in (MODE_MOCK, MODE_HTTP)
+        return self.mode in (MODE_MOCK, MODE_HTTP, MODE_DEVICE_GATEWAY)
 
     @classmethod
     def from_env(cls) -> "HandoffConfig":
         url = (os.getenv("EXHIBITION_HANDOFF_URL") or "").strip() or None
         mode = (os.getenv("EXHIBITION_HANDOFF_MODE") or "").strip().lower()
-        if mode not in (MODE_MOCK, MODE_HTTP, MODE_OFF):
+        if mode not in (MODE_MOCK, MODE_HTTP, MODE_DEVICE_GATEWAY, MODE_OFF):
             mode = MODE_HTTP if url else MODE_OFF
         return cls(
             mode=mode,
@@ -168,6 +182,32 @@ def build_payload(row: dict[str, Any], artifacts: Any, *, url_ttl_sec: int) -> d
     }
 
 
+def resolve_single_device_id() -> str:
+    """device_gateway 모드가 보낼 단 하나의 device_id 를 고른다.
+
+    새 EXHIBITION_DEVICE_ID 류 설정을 추가하지 않고 기존
+    ETERNAL_BEAM_DEVICE_TOKENS(/_ID/_TOKEN)만 본다. 정확히 하나가 아니면
+    어느 쪽도 추측하지 않고 실패한다 — 운영자가 설정을 고쳐야 한다.
+    """
+    from . import device_gateway
+
+    devices = device_gateway.configured_devices()
+    if len(devices) == 1:
+        return next(iter(devices))
+    if not devices:
+        raise HandoffError(
+            "HANDOFF_DEVICE_GATEWAY_NO_DEVICE",
+            "No device is configured (ETERNAL_BEAM_DEVICE_TOKENS / ETERNAL_BEAM_DEVICE_ID+TOKEN is empty).",
+            retryable=False,
+        )
+    raise HandoffError(
+        "HANDOFF_DEVICE_GATEWAY_AMBIGUOUS_DEVICE",
+        f"{len(devices)} devices are configured ({sorted(devices)}); exhibition handoff cannot "
+        "guess which one to use. Configure exactly one device for device_gateway handoff mode.",
+        retryable=False,
+    )
+
+
 def redacted_payload(payload: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
     """DB 기록용 — 서명 URL(토큰 포함) 대신 저장 경로를 남긴다."""
     out = {k: v for k, v in payload.items() if k != "packed_url"}
@@ -201,6 +241,8 @@ class ExhibitionHandoffClient:
         if cfg.mode == MODE_MOCK:
             logger.info("exhibition handoff [mock] run_id=%s exhibition_id=%s", run_id, payload.get("exhibition_id"))
             return HandoffAck(run_id=run_id, accepted=True, raw={"run_id": run_id, "accepted": True, "mock": True})
+        if cfg.mode == MODE_DEVICE_GATEWAY:
+            return self._send_via_device_gateway(payload, run_id)
         if cfg.mode != MODE_HTTP or not cfg.url:
             raise HandoffError(
                 "HANDOFF_NOT_CONFIGURED",
@@ -220,3 +262,38 @@ class ExhibitionHandoffClient:
             raise HandoffError("HANDOFF_REJECTED", f"HTTP {status}: {text}"[:500], retryable=False,
                                http_status=status)
         return parse_ack(body, run_id)
+
+    def _send_via_device_gateway(self, payload: dict[str, Any], run_id: str) -> HandoffAck:
+        """같은 pet_asset 페이로드를 EXHIBITION_HANDOFF_URL 없이 Device Gateway 로 enqueue 한다.
+
+        enqueue 는 디바이스가 연결돼 있지 않아도 명령을 영속 저장하고 즉시
+        반환한다 (device_gateway.py 의 기존 offline-pending/reconnect-replay 그대로).
+        accepted=True 는 "Gateway 가 전달을 맡았다"까지다 — Pi 가 실제로 ACK 했는지는
+        여기서 보장하지 않는다(기존 device_commands 테이블/ACK 로만 추적된다).
+        """
+        from . import device_gateway
+
+        device_id = resolve_single_device_id()
+        try:
+            command = asyncio.run(device_gateway.enqueue(device_id, dict(payload)))
+        except HandoffError:
+            raise
+        except Exception as e:  # noqa: BLE001 — 게이트웨이 내부 오류를 핸드오프 실패로 환산
+            raise HandoffError(
+                "HANDOFF_DEVICE_GATEWAY_ERROR", f"{type(e).__name__}: {e}"[:500], retryable=True
+            ) from e
+        logger.info(
+            "exhibition handoff [device_gateway] run_id=%s device_id=%s command_id=%s",
+            run_id, device_id, command.get("command_id"),
+        )
+        return HandoffAck(
+            run_id=run_id,
+            accepted=True,
+            raw={
+                "run_id": run_id,
+                "accepted": True,
+                "device_gateway": True,
+                "device_id": device_id,
+                "command_id": command.get("command_id"),
+            },
+        )

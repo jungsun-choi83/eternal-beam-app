@@ -45,6 +45,18 @@ ceil(min_failed_ratio·표본 수)) 이상이면 실패 — 한 프레임만으�
 깊이 = 구멍 안 최대 "바깥까지 거리" ÷ 실루엣 최대값. 이때 바깥 = 바깥 배경 ∪ 자연 빈틈
 (다리 사이 빈틈을 몸으로 채워 깊이를 부풀리지 않는다). 자연 빈틈은 이 규칙 전에 빠진다 —
 다리 사이 빈틈은 폭과 무관하게 '얇은 바닥' 으로 가려지므로 깊이 임계가 그것을 지킬 필요가 없다.
+
+── 외곽 얇은 틈 필터 (contour_slit_filter, 기본 꺼짐 — 전시 실행만 켠다) ────────────
+말린 꼬리 속 틈, 목줄·목 사이 틈은 실제 알파 결함이 아니라 자연스러운 얇은 투명 띠다
+(전시 정지 사진). 위 자연 빈틈 필터는 '하체의 얇은 바닥' 을 요구해 이 둘을 못 거른다.
+켜면, 아래 셋을 **모두** 만족하는 구멍은 얇은 외곽 틈으로 보고 세지 않는다:
+  · 얇다: 구멍 안 최대 내접 반지름 ≤ contour_slit_max_halfwidth × 실루엣 높이 (패치·원형 구멍은 두껍다)
+  · 길쭉하다: 최소 외접 회전 사각형 긴 변/짧은 변 ≥ contour_slit_min_elongation
+  · 외곽 근처: 구멍에서 바깥 배경까지 최단 거리 ≤ contour_slit_max_wall × 실루엣 높이
+  · 상체: 구멍 위끝이 실루엣 높이의 natural_gap_min_rel_top 위 (꼬리 말림·목줄은 상체)
+    — 몸통·배를 가로지른 얇은 절단은 외곽에 가까워도 이 조건을 못 넘어 결함으로 남는다.
+점·털끝 같은 작은 구멍(실루엣의 contour_slit_min_fraction 미만)은 대상이 아니라 집계 규칙이 그대로다.
+머리·가슴·몸통의 패치형 구멍, 몸통을 가로지른 깊은 틈은 이 필터를 통과하지 못해 그대로 실패한다.
 """
 
 from __future__ import annotations
@@ -89,6 +101,12 @@ class HoleQaConfig:
     hard_min_fraction: float = 0.0025
     hard_upper_min_depth: float = 0.25
     hard_deep_min_depth: float = 0.45
+    # 외곽 얇은 틈 필터 (꼬리 말림·목줄 틈) — 기본 꺼짐 (from_env 는 켜지 않는다).
+    contour_slit_filter: bool = False
+    contour_slit_min_fraction: float = 0.002
+    contour_slit_max_halfwidth: float = 0.02
+    contour_slit_min_elongation: float = 2.5
+    contour_slit_max_wall: float = 0.07
 
     @classmethod
     def from_env(cls) -> "HoleQaConfig":
@@ -175,6 +193,47 @@ def _natural_gap_labels(
     return natural
 
 
+def _contour_slit_labels(
+    fg: np.ndarray,
+    labels: np.ndarray,
+    stats: np.ndarray,
+    exterior_ids: list[int],
+    hole_ids: list[int],
+    silhouette: int,
+    cfg: HoleQaConfig,
+) -> set[int]:
+    """꼬리 말림·목줄 같은 외곽 근처의 얇고 길쭉한 틈의 라벨 (모듈 독스트링 참고)."""
+    import cv2
+
+    rows = np.flatnonzero(fg.any(axis=1))
+    if not rows.size or silhouette <= 0:
+        return set()
+    height = int(rows[-1] - rows[0] + 1)
+    wall_dist = None
+    slits: set[int] = set()
+    for i in hole_ids:
+        x, y, bw, bh, area = (int(v) for v in stats[i])
+        if area < cfg.contour_slit_min_fraction * silhouette:
+            continue
+        if (y - int(rows[0])) / height >= cfg.natural_gap_min_rel_top:
+            continue
+        mask = np.pad(labels[y : y + bh, x : x + bw] == i, 1).astype(np.uint8)
+        halfwidth = float(cv2.distanceTransform(mask, cv2.DIST_L2, 5).max())
+        if halfwidth > cfg.contour_slit_max_halfwidth * height:
+            continue
+        ys, xs = np.nonzero(mask)
+        (_c, (rw, rh), _a) = cv2.minAreaRect(np.column_stack([xs, ys]).astype(np.float32))
+        if max(rw, rh) / max(1.0, min(rw, rh)) < cfg.contour_slit_min_elongation:
+            continue
+        if wall_dist is None:
+            outside = np.isin(labels, exterior_ids) & ~fg
+            wall_dist = cv2.distanceTransform((~outside).astype(np.uint8), cv2.DIST_L2, 5)
+        wall = float(wall_dist[labels == i].min())
+        if wall <= cfg.contour_slit_max_wall * height:
+            slits.add(i)
+    return slits
+
+
 def _protected_hard_defects(
     fg: np.ndarray,
     labels: np.ndarray,
@@ -253,8 +312,13 @@ def measure_frame(alpha: np.ndarray, cfg: HoleQaConfig) -> dict[str, Any]:
     if cfg.natural_gap_filter and candidates:
         pool = candidates if cfg.protected_hole_rule else [lb for lb, _a in sized]
         natural = _natural_gap_labels(fg, labels, stats, exterior_ids, pool, cfg)
+    slits: set[int] = set()
+    if cfg.contour_slit_filter and candidates:
+        pool = [lb for lb in candidates if lb not in natural]
+        slits = _contour_slit_labels(fg, labels, stats, exterior_ids, pool, silhouette, cfg)
+        natural = natural | slits
     kept = [area for label, area in sized if label not in natural]
-    ignored_natural = sum(1 for label, _a in sized if label in natural)
+    ignored_natural = sum(1 for label, _a in sized if label in natural and label not in slits)
     hard: list[dict[str, Any]] = []
     if cfg.protected_hole_rule and candidates and silhouette > 0:
         hard = _protected_hard_defects(fg, labels, stats, exterior_ids, natural, candidates, silhouette, cfg)
@@ -276,6 +340,8 @@ def measure_frame(alpha: np.ndarray, cfg: HoleQaConfig) -> dict[str, Any]:
     }
     if cfg.natural_gap_filter:
         out["ignored_natural_gaps"] = ignored_natural
+    if cfg.contour_slit_filter:
+        out["ignored_contour_slits"] = len(slits)
     if cfg.protected_hole_rule:
         out["protected_hard_defects"] = hard
     return out

@@ -167,6 +167,7 @@ def test_existing_good_cases_unchanged(shape):
     old, new = measure_frame(a, DEFAULT), measure_frame(a, EXHIBITION)
     assert new.pop("ignored_natural_gaps") == 0
     assert new.pop("protected_hard_defects") == []
+    assert new.pop("ignored_contour_slits") == 0
     assert new == old and old["failed"] is False
 
 
@@ -277,3 +278,80 @@ def test_normal_pipeline_evaluate_ignores_single_large_hole_as_before():
     qa = matte_hole_qa.evaluate([a] * 6, HoleQaConfig.from_env())
     assert qa["passed"] is True and qa["failed_frames"] == []
     assert all("protected_hard_defects" not in f for f in qa["frames"])
+
+
+# ── 외곽 얇은 틈 (말린 꼬리 속 틈 · 목줄 틈) → PASS ───────────────────────────────
+#
+# 실제 사례(시바 정지 사진, run edea429c): 말린 꼬리 속 틈(0.5%)과 목줄 틈(0.95%)이 둘러싸인
+# 구멍으로 잡혀 protected_hole_rule 이 즉시 실패시켰다. 둘 다 얇고 길쭉하며 외곽 가까이에 있다.
+
+NO_SLIT_FILTER = HoleQaConfig(natural_gap_filter=True, protected_hole_rule=True)
+
+
+def _with_tail(a: np.ndarray) -> np.ndarray:
+    cv2.circle(a, (600, 330), 90, 255, -1)  # 말린 꼬리 (몸통에 붙어 있다)
+    return a
+
+
+def tail_loop_gap() -> np.ndarray:
+    a = _with_tail(standing_frontal(front_gap=False, specks=False))
+    cv2.line(a, (560, 262), (620, 300), 0, 12)  # 꼬리 바깥 윤곽 가까이의 얇은 틈
+    return a
+
+
+def neck_collar_gap() -> np.ndarray:
+    a = standing_frontal(front_gap=False, specks=False)
+    cv2.line(a, (310, 262), (335, 316), 0, 12)  # 목 왼쪽 윤곽을 따라가는 얇은 틈
+    return a
+
+
+def tail_and_neck_gaps() -> np.ndarray:
+    a = tail_loop_gap()
+    cv2.line(a, (310, 262), (335, 316), 0, 12)
+    return a
+
+
+@pytest.mark.parametrize(
+    "shape, n",
+    [
+        pytest.param(tail_loop_gap, 1, id="tail_loop"),
+        pytest.param(neck_collar_gap, 1, id="neck_collar"),
+        pytest.param(tail_and_neck_gaps, 2, id="both"),
+    ],
+)
+def test_contour_slits_pass_but_failed_before(shape, n):
+    a = _alpha(shape())
+    old = measure_frame(a, NO_SLIT_FILTER)
+    assert old["failed"] is True, old  # 필터 전에는 보호 부위 큰 구멍으로 실패
+    new = measure_frame(a, EXHIBITION)
+    assert new["failed"] is False, new
+    assert new["ignored_contour_slits"] == n
+    assert new["protected_hard_defects"] == []
+
+
+@pytest.mark.parametrize(
+    "draw",
+    [
+        pytest.param(lambda a: cv2.circle(a, (350, 450), 30, 0, -1), id="chest_patch"),
+        pytest.param(lambda a: cv2.circle(a, (350, 180), 28, 0, -1), id="head_patch"),
+        pytest.param(lambda a: cv2.circle(a, (350, 470), 85, 0, -1), id="torso_patch_over_2pct"),
+        pytest.param(lambda a: a.__setitem__((slice(520, 532), slice(200, 500)), 0), id="torso_cut"),
+        pytest.param(lambda a: cv2.line(a, (300, 400), (400, 520), 0, 12), id="thin_chest_slash"),
+    ],
+)
+def test_real_defects_still_fail_alongside_contour_slits(draw):
+    a = tail_and_neck_gaps()
+    draw(a)
+    new = measure_frame(_alpha(a), EXHIBITION)
+    assert new["failed"] is True, new
+    assert new["ignored_contour_slits"] == 2  # 틈은 여전히 면제, 결함만 실패시킨다
+    assert new["protected_hard_defects"]
+
+
+def test_contour_slit_filter_is_exhibition_only():
+    assert HoleQaConfig().contour_slit_filter is False
+    assert HoleQaConfig.from_env().contour_slit_filter is False
+    assert EXHIBITION.contour_slit_filter is True
+    a = _alpha(tail_and_neck_gaps())
+    out = measure_frame(a, DEFAULT)
+    assert "ignored_contour_slits" not in out and "protected_hard_defects" not in out

@@ -5,13 +5,21 @@ AI 포즈 정규화 — NEEDS_AI_NORMALIZATION 판정일 때만 쓰는 전시 �
 포즈(전신, 서있거나 깔끔히 앉은 자세, 정면/약한 3/4 측면, 머리 또렷이 보임,
 깨끗한 실루엣, 무지 중립 배경)로 다시 생성한다.
 
-일반 파이프라인(정본·루마·키프레임·모션)과는 완전히 분리된 모듈이다 — 이 파일은
-그 어떤 일반 생성 모듈도 import 하지 않고, exhibition_prep_service.py 가 이미
-만든 manifest 만 읽는다. 실제 이미지 생성 호출(generate_fn)은 주입식이다 — 이
-파일 자체는 HTTP/외부 API 를 직접 걸지 않는다(그 역할은 exhibition_handoff_client.py
-하나로 고정돼 있다 — test_exhibition_prep_run.py 의 격리 테스트 참고). 실제
-생성기를 연결하려면 호출자가 generate_fn 을 주입한다; 기본값은 mock(원본을 그대로
-돌려줌) 또는 off(설정 안 됨 에러)뿐이다.
+일반 파이프라인(정본·루마·키프레임·모션)과는 완전히 분리된 모듈이다 — 정본 빌더·
+키프레임·QA·크레딧은 import 하지 않고, exhibition_pose_gate 가 만든 판정 레코드
+(subject_class 만 읽는다)만 받는다. 유일한 공유 지점은 프로바이더 어댑터
+canonical_image_providers.GptImageProvider (OpenAI /v1/images/edits, 원본 1장을
+레퍼런스로 동기 호출) — HTTP 는 그 어댑터 안에서만 일어난다 (test_exhibition_prep_run.py
+의 격리 테스트가 이 import 하나만 허용한다).
+
+  EXHIBITION_POSE_NORMALIZATION_MODE
+    gpt_image  GptImageProvider 로 1회 생성 (OPENAI_API_KEY / OPENAI_IMAGE_MODEL /
+               OPENAI_API_BASE / OPENAI_IMAGE_TIMEOUT_SEC — 정본 생성과 같은 설정)
+    mock       원본을 그대로 돌려줌 (오프라인 개발/테스트)
+    off        (기본) 설정 안 됨 → NORMALIZATION_NOT_CONFIGURED → 원본으로 진행
+
+process_run 은 PoseNormalizationError 를 잡아 원본 이미지로 안전하게 진행하고
+manifest.pose_suitability.normalization_error 에 코드를 남긴다 — 생성 실패가 실행을 막지 않는다.
 """
 
 from __future__ import annotations
@@ -22,8 +30,13 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+MODE_GPT_IMAGE = "gpt_image"
 MODE_MOCK = "mock"
 MODE_OFF = "off"
+MODES = (MODE_GPT_IMAGE, MODE_MOCK, MODE_OFF)
+
+#: 생성 출력 — GPT Image edits 의 정사각 기본값. 전시 패키지는 어차피 피사체 크롭이라 비율은 무관하다.
+OUTPUT_SPEC: dict[str, Any] = {"size": "1024x1024", "ratio": "1024:1024", "purpose": "exhibition_pose_normalization"}
 
 NORMALIZATION_PROMPT_TEMPLATE = (
     "Full-body studio portrait of the same {subject_class}, standing or neatly seated, "
@@ -36,9 +49,9 @@ NORMALIZATION_PROMPT_TEMPLATE = (
 )
 
 
-def build_normalization_prompt(manifest: dict[str, Any]) -> str:
-    """manifest 의 subject_class 만 반영한 고정 템플릿 (포즈/배경은 항상 동일)."""
-    subject_class = str(manifest.get("subject_class") or "pet").strip() or "pet"
+def build_normalization_prompt(context: dict[str, Any]) -> str:
+    """context(게이트 레코드)의 subject_class 만 반영한 고정 템플릿 (포즈/배경은 항상 동일)."""
+    subject_class = str(context.get("subject_class") or "pet").strip() or "pet"
     return NORMALIZATION_PROMPT_TEMPLATE.format(subject_class=subject_class)
 
 
@@ -51,23 +64,87 @@ class PoseNormalizationError(Exception):
         self.message = message
 
 
-def _mode_from_env() -> str:
+def mode_from_env() -> str:
     mode = (os.getenv("EXHIBITION_POSE_NORMALIZATION_MODE") or "").strip().lower()
-    return mode if mode in (MODE_MOCK, MODE_OFF) else MODE_OFF
+    return mode if mode in MODES else MODE_OFF
 
 
-def default_normalize(reference_png: bytes, manifest: dict[str, Any]) -> bytes:
-    """기본 생성기 — 실제 생성 API 연결 전까지의 자리. 운영에선 process_run(normalize_fn=...)
-    으로 진짜 생성기를 주입한다; 이 함수는 EXHIBITION_POSE_NORMALIZATION_MODE=mock 일 때만
-    (원본을 그대로 돌려줌, 오프라인 개발/테스트용) 동작하고, 그 외엔 설정 안 됨으로 실패한다.
+_mode_from_env = mode_from_env  # 하위 호환 (이전 이름)
+
+
+def _gpt_provider() -> Any:
+    """GptImageProvider 인스턴스 — 테스트는 이 함수를 monkeypatch 해 가짜 프로바이더를 넣는다."""
+    from .canonical_image_providers import GptImageProvider
+
+    return GptImageProvider()
+
+
+def generator_info() -> dict[str, Any]:
+    """manifest 기록용 — 어떤 생성기 설정으로 돌았는가 (호출 전에도 안전하게 읽을 수 있다)."""
+    mode = mode_from_env()
+    info: dict[str, Any] = {"mode": mode}
+    if mode == MODE_GPT_IMAGE:
+        try:
+            provider = _gpt_provider()
+            info.update(provider=provider.name, model=provider.model_name(), output_spec=dict(OUTPUT_SPEC))
+        except Exception as e:  # noqa: BLE001 — 기록용, 실패해도 실행을 막지 않는다
+            info["provider_error"] = type(e).__name__
+    return info
+
+
+def _normalize_with_gpt_image(reference_png: bytes, prompt: str, context: dict[str, Any]) -> bytes:
+    from .canonical_image_providers import CanonicalProviderError, CanonicalReference
+
+    provider = _gpt_provider()
+    if not provider.available():
+        raise PoseNormalizationError(
+            "NORMALIZATION_NOT_CONFIGURED",
+            "EXHIBITION_POSE_NORMALIZATION_MODE=gpt_image but OPENAI_API_KEY is not set.",
+        )
+    references = [
+        CanonicalReference(
+            reference_id="exhibition:source", role="PRIMARY_SOURCE", data=reference_png, mime_type="image/png"
+        )
+    ]
+    metadata = {
+        "purpose": "exhibition_pose_normalization",
+        "subject_class": str(context.get("subject_class") or ""),
+        "gate_decision": str(context.get("decision") or ""),
+        "gate_top_label": str(context.get("top_label") or ""),
+    }
+    try:
+        result = provider.generate(references, prompt, dict(OUTPUT_SPEC), metadata)
+    except CanonicalProviderError as e:
+        raise PoseNormalizationError(e.code, e.message) from e
+    except Exception as e:  # noqa: BLE001 — 어댑터 밖의 예외도 실행을 막지 않는다
+        raise PoseNormalizationError("NORMALIZATION_GENERATOR_ERROR", f"{type(e).__name__}: {e}") from e
+    image = getattr(result, "image_bytes", None)
+    if not image:
+        raise PoseNormalizationError("NORMALIZATION_EMPTY_RESULT", "Generator returned no image bytes.")
+    logger.info(
+        "exhibition pose normalization [gpt_image] provider=%s model=%s external_id=%s bytes=%d",
+        getattr(result, "provider", "?"), getattr(result, "model", "?"),
+        getattr(result, "external_job_id", None), len(image),
+    )
+    return image
+
+
+def default_normalize(reference_png: bytes, context: dict[str, Any]) -> bytes:
+    """기본 생성기 — EXHIBITION_POSE_NORMALIZATION_MODE 에 따라 1회 생성한다.
+
+    gpt_image: GptImageProvider(OpenAI images/edits), 원본 PNG 1장을 레퍼런스로.
+    mock:      원본을 그대로 돌려줌.   off(기본): NORMALIZATION_NOT_CONFIGURED.
+    실패는 전부 PoseNormalizationError — 호출자는 원본으로 진행한다.
     """
-    prompt = build_normalization_prompt(manifest)
-    mode = _mode_from_env()
+    prompt = build_normalization_prompt(context)
+    mode = mode_from_env()
+    if mode == MODE_GPT_IMAGE:
+        return _normalize_with_gpt_image(reference_png, prompt, context)
     if mode == MODE_MOCK:
         logger.info("exhibition pose normalization [mock] prompt=%r", prompt[:120])
         return reference_png
     raise PoseNormalizationError(
         "NORMALIZATION_NOT_CONFIGURED",
-        "No pose-normalization generator configured — set EXHIBITION_POSE_NORMALIZATION_MODE=mock "
-        "for a no-op placeholder, or pass process_run(normalize_fn=...) with a real generator.",
+        "No pose-normalization generator configured — set EXHIBITION_POSE_NORMALIZATION_MODE=gpt_image "
+        "(OpenAI) or mock (no-op placeholder), or pass process_run(normalize_fn=...).",
     )
