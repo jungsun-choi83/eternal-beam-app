@@ -18,6 +18,7 @@ import {
   OPS_PARTNERS_PATH,
   OPS_ROOT,
   OPS_SHAKER_PATH,
+  OPS_EXHIBITION_STAFF_PATH,
   isOpsPath,
   opsRouteFor,
   pathForRoute,
@@ -31,10 +32,10 @@ import {
 
 // ── 내비게이션 ───────────────────────────────────────────────────────────────
 
-test("사이드바는 네 항목뿐이다 — 검색은 항목이 아니다", () => {
+test("사이드바 항목 — 검색은 항목이 아니다", () => {
   assert.deepEqual(
     OPS_NAV.map((n) => n.route),
-    ["dashboard", "orders", "partners", "shaker"]
+    ["dashboard", "orders", "partners", "shaker", "exhibition"]
   );
   assert.ok(
     !OPS_NAV.some((n) => n.path.includes("search")),
@@ -51,6 +52,12 @@ test("각 경로가 자기 화면으로 간다", () => {
   assert.equal(opsRouteFor(OPS_ORDERS_PATH), "orders");
   assert.equal(opsRouteFor(OPS_PARTNERS_PATH), "partners");
   assert.equal(opsRouteFor(OPS_SHAKER_PATH), "shaker");
+  assert.equal(opsRouteFor(OPS_EXHIBITION_STAFF_PATH), "exhibition");
+});
+
+test("공개 전시 대기열은 운영 경로가 아니다", () => {
+  assert.equal(isOpsPath("/exhibition/queue"), false);
+  assert.equal(isOpsPath("/exhibition"), false);
 });
 
 test("예전 /ops/search 링크가 죽지 않는다 — 주문으로 접는다", () => {
