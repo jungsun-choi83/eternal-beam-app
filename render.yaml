@@ -176,7 +176,7 @@ services:
     plan: standard
     runtime: docker
     dockerfilePath: ./Dockerfile
-    dockerCommand: exec python -m backend.workers.pet_generation_worker
+    dockerCommand: python -m backend.workers.pet_generation_worker
     autoDeploy: true
     envVars:
       - key: PYTHONUNBUFFERED
