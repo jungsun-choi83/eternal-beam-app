@@ -14,16 +14,16 @@ export default defineConfig({
     host: true,
     proxy: {
       '/api': {
-        // 8000 에 죽은 핸들이 남아 바인딩이 막힐 때가 있어 로컬은 8001 사용
-        target: 'http://127.0.0.1:8001',
+        // The local backend and VITE_API_BASE_URL use the canonical port 8000.
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
       },
       '/outputs': {
-        target: 'http://127.0.0.1:8001',
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
       },
       '/output': {
-        target: 'http://127.0.0.1:8001',
+        target: 'http://127.0.0.1:8000',
         changeOrigin: true,
       },
     },

@@ -57,6 +57,23 @@ QUEUE_COLUMNS = (
 MAX_ATTEMPTS = 3
 
 
+def local_preview_requested() -> bool:
+    return (os.getenv("ENABLE_EXHIBITION_LOCAL_PREVIEW") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def local_preview_enabled() -> bool:
+    """Whether the explicitly isolated local Exhibition preview is active."""
+    enabled = local_preview_requested()
+    if not enabled:
+        return False
+    environment = (os.getenv("APP_ENV") or os.getenv("ENVIRONMENT") or "").strip().lower()
+    return environment in {"local", "development", "dev", "test"}
+
+
 def storage_prefix() -> str:
     return (os.getenv("EXHIBITION_STORAGE_PREFIX") or "exhibition").strip().strip("/") or "exhibition"
 
@@ -314,7 +331,24 @@ class InMemoryArtifactStore:
 # ── 기본 인스턴스 ─────────────────────────────────────────────────────────────
 
 
+_LOCAL_PREVIEW_STORES: Optional[tuple[RunStore, ArtifactStore]] = None
+_LOCAL_PREVIEW_STORES_LOCK = threading.Lock()
+
+
+def local_preview_stores() -> tuple[RunStore, ArtifactStore]:
+    global _LOCAL_PREVIEW_STORES
+    with _LOCAL_PREVIEW_STORES_LOCK:
+        if _LOCAL_PREVIEW_STORES is None:
+            _LOCAL_PREVIEW_STORES = InMemoryRunStore(), InMemoryArtifactStore()
+        return _LOCAL_PREVIEW_STORES
+
+
 def default_stores() -> tuple[RunStore, ArtifactStore]:
+    """Return the configured Supabase stores; never silently fall back to memory."""
+    if local_preview_requested():
+        raise RuntimeError(
+            "Exhibition local preview is active; the Supabase Exhibition store is disabled."
+        )
     """Supabase 가 설정돼 있어야 한다 — 없으면 조용히 메모리로 가지 않고 실패한다."""
     from .supabase_assets import get_client
 
