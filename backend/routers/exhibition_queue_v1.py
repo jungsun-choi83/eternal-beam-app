@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Respon
 from pydantic import BaseModel
 
 from ..auth import AuthedUser
-from ..services import exhibition_prep_service
+from ..services import exhibition_passport, exhibition_prep_service
 from ..services import exhibition_queue_service as queue
 from ..services.shaker_ops import require_ops
 from .exhibition_prep_v1 import get_stores
@@ -46,6 +46,7 @@ async def post_submission(
     file: UploadFile = File(...),
     pet_name: Optional[str] = Form(None),
     exhibition_id: Optional[str] = Form(None),
+    queue_number: Optional[int] = Form(None),
     ops: AuthedUser = Depends(require_ops),
     stores=Depends(get_stores),
 ):
@@ -53,24 +54,43 @@ async def post_submission(
     eid = _exhibition_id(exhibition_id)
     raw = await file.read()
     try:
-        row = await asyncio.to_thread(
-            queue.submit, raw, created_by=ops.user_id, store=store, artifacts=artifacts,
-            exhibition_id=eid, pet_name=pet_name,
-        )
+        if queue_number is None:
+            # Preserve the existing STAFF allocator path exactly when no
+            # Passport number is supplied.
+            row = await asyncio.to_thread(
+                queue.submit, raw, created_by=ops.user_id, store=store, artifacts=artifacts,
+                exhibition_id=eid, pet_name=pet_name,
+            )
+        else:
+            # A Passport number has its own explicit path. It must never be
+            # accepted by the legacy allocator, even if association fails.
+            passport_store = exhibition_passport.default_store()
+            row = await asyncio.to_thread(
+                exhibition_passport.submit_photo,
+                raw,
+                created_by=ops.user_id,
+                exhibition_id=eid,
+                queue_number=queue_number,
+                run_store=store,
+                artifacts=artifacts,
+                store=passport_store,
+            )
     except exhibition_prep_service.ExhibitionInputError as e:
         raise HTTPException(status_code=400, detail={"code": e.code, "message": e.message}) from e
+    except exhibition_passport.PassportError as e:
+        raise HTTPException(status_code=e.status, detail={"code": e.code, "message": e.message}) from e
     except Exception as e:  # noqa: BLE001
         logger.exception("exhibition staff submission failed")
         raise HTTPException(
             status_code=503, detail={"code": "EXHIBITION_SUBMISSION_FAILED", "message": "Could not submit photo."}
         ) from e
     return {
-        "run_id": row["id"],
+        "run_id": row.get("id") or row.get("run_id"),
         "exhibition_id": row["exhibition_id"],
-        "queue_number": row["queue_number"],
+        "queue_number": row.get("queue_number"),
         "pet_name": row.get("pet_name"),
         "created_at": row.get("created_at"),
-        "display_status": row["display_status"],
+        "display_status": row.get("display_status"),
         "processing_status": queue.processing_status(row),
     }
 
