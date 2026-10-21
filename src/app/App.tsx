@@ -12,7 +12,8 @@ import { ExhibitionStaffScreen } from '@/components/memorial/ops/exhibition-staf
 import { ExhibitionQueueScreen } from '@/components/exhibition/exhibition-queue-screen'
 import { isExhibitionQueueEntry } from '@/lib/exhibition-queue'
 import { ExhibitionPassportScreen } from '@/components/exhibition/exhibition-passport-screen'
-import { isExhibitionPassportEntry } from '@/lib/exhibition-passport-api'
+import { ExhibitionPassportViewScreen } from '@/components/exhibition/exhibition-passport-view-screen'
+import { isExhibitionPassportEntry, isExhibitionPassportViewEntry } from '@/lib/exhibition-passport-api'
 import { currentOpsRoute } from '@/lib/ops-nav'
 import { creditsReturnEntry, orderReturnEntry, themeReturnEntry } from '@/lib/app-entry'
 import { isSoulTraceImportEntry, peekSoulTraceHandoffState } from '@/lib/soul-trace-handoff'
@@ -67,6 +68,7 @@ export default function App() {
   // 공개 전시 대기열 — Shaker 처럼 고객 앱 바깥에서 끊는다 (관리 기능 없음).
   if (isExhibitionQueueEntry()) return <ExhibitionQueueScreen />
   // Public visitor route. It intentionally sits outside Ops/auth routing.
+  if (isExhibitionPassportViewEntry()) return <ExhibitionPassportViewScreen />
   if (isExhibitionPassportEntry()) return <ExhibitionPassportScreen />
 
   // ── 이메일 확인 탭에서 돌아온 경우 ────────────────────────────────────────

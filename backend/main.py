@@ -323,9 +323,10 @@ _exhibition_prep_enabled = os.getenv("ENABLE_EXHIBITION_PREP", "0").strip().lowe
     "yes",
 )
 if _exhibition_local_preview:
-    from .routers import exhibition_queue_v1
+    from .routers import exhibition_passport_v1, exhibition_queue_v1
 
     app.include_router(exhibition_queue_v1.router, prefix="/api", tags=["exhibition-queue"])
+    app.include_router(exhibition_passport_v1.router, prefix="/api", tags=["exhibition-passport-preview"])
 elif not _exhibition_prep_store.local_preview_requested() and _exhibition_prep_enabled:
     from .routers import exhibition_device_v1, exhibition_prep_v1, exhibition_queue_v1
 

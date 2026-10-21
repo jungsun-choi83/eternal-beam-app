@@ -43,3 +43,41 @@ test('does not attempt a download when the signed photo URL is absent', async ()
     /could not be downloaded/i,
   )
 })
+
+test('embeds both the approved template and the source photo in the downloaded SVG', async () => {
+  let downloaded: Blob | null = null
+  const originalCreateObjectUrl = URL.createObjectURL
+  URL.createObjectURL = ((value: Blob) => {
+    downloaded = value
+    return 'blob:passport-test'
+  }) as typeof URL.createObjectURL
+
+  const anchor = {
+    href: '',
+    download: '',
+    rel: '',
+    click() {},
+    remove() {},
+  }
+  const documentMock = {
+    body: { appendChild() {} },
+    createElement() { return anchor },
+  } as unknown as Document
+
+  try {
+    await downloadPetPassport(
+      {
+        exhibition_id: 'seoul-2026', queue_number: 42, pet_name: 'Momo',
+        photo_status: 'PHOTO_RECEIVED', photo_received_at: null, created_at: '2026-10-20T00:00:00Z',
+        photo_url: 'https://storage.example/signed-source.png',
+      },
+      async () => new Response(new Blob(['image']), { status: 200, headers: { 'content-type': 'image/png' } }),
+      documentMock,
+    )
+    const svg = await downloaded?.text()
+    assert.match(svg || '', /viewBox="0 0 1536 1024"/)
+    assert.equal((svg?.match(/data:image\/png;base64/g) || []).length, 3)
+  } finally {
+    URL.createObjectURL = originalCreateObjectUrl
+  }
+})
