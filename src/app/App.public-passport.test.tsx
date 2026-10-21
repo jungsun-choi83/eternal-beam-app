@@ -29,4 +29,11 @@ describe('public Passport entry isolation', () => {
     expect(screen.getByRole('button', { name: /Start Registration/i })).toBeTruthy()
     expect(screen.getByText('Get Your Pet ID')).toBeTruthy()
   })
+
+  it('routes the dedicated Passport view without evaluating Firebase', () => {
+    window.history.replaceState({}, '', '/exhibition/passport/view')
+    render(<App />)
+    expect(screen.getByRole('heading', { name: /Your Pet Passport/i })).toBeTruthy()
+    expect(screen.getByText(/Open your Pet ID first/i)).toBeTruthy()
+  })
 })

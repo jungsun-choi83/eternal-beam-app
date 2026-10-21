@@ -7,8 +7,10 @@ const retrievePetPassport = vi.fn()
 
 vi.mock('@/lib/exhibition-passport-api', () => ({
   createPassportToken: () => 'C'.repeat(43),
+  configuredExhibitionLocation: () => null,
   exhibitionPassportExhibitionId: () => 'seoul-2026',
   isExhibitionPassportEnabled: () => true,
+  isExhibitionPassportLocalPreview: () => false,
   registerPetPassport: (...args: unknown[]) => registerPetPassport(...args),
   retrievePetPassport: (...args: unknown[]) => retrievePetPassport(...args),
 }))
@@ -53,26 +55,27 @@ describe('ExhibitionPassportScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: /Create my Pet ID/i }))
     await waitFor(() => expect(screen.getByText('#042')).toBeTruthy())
     expect(screen.getByText('Waiting for staff photo')).toBeTruthy()
+    expect(screen.queryByRole('link', { name: /Discover Soul Trace/i })).toBeNull()
     expect(registerPetPassport).toHaveBeenCalledTimes(1)
     expect(registerPetPassport.mock.calls[0][0].passportToken).toHaveLength(43)
   })
 
-  it('renders the real photo and download action only after token retrieval reports PHOTO_RECEIVED', async () => {
+  it('keeps the completed Passport on its dedicated page', async () => {
     localStorage.setItem('eternal_beam_exhibition_passport_v1:seoul-2026', JSON.stringify({
       passportToken: 'C'.repeat(43), exhibitionId: 'seoul-2026', queueNumber: 42,
       petName: 'Momo', photoStatus: 'PHOTO_RECEIVED', createdAt: null,
     }))
     retrievePetPassport.mockResolvedValue({
       exhibition_id: 'seoul-2026', queue_number: 42, pet_name: 'Momo',
-      photo_status: 'PHOTO_RECEIVED', photo_received_at: '2026-10-19T00:00:00Z', created_at: null,
+      photo_status: 'PHOTO_RECEIVED', photo_received_at: '2026-10-19T00:00:00Z', created_at: '2026-10-20T00:00:00Z',
       photo_url: 'https://storage.example/signed-source.png', photo_access_error: null,
     })
 
     render(<ExhibitionPassportScreen />)
-    expect((await screen.findByRole('img', { name: /Exhibition portrait/i })).getAttribute('src')).toBe(
-      'https://storage.example/signed-source.png',
-    )
-    expect(screen.getByRole('button', { name: /Download Passport/i })).toBeTruthy()
+    expect(await screen.findByText('Your Passport is ready')).toBeTruthy()
+    expect(screen.getByRole('link', { name: /View My Passport/i }).getAttribute('href')).toBe('/exhibition/passport/view')
+    expect(screen.queryByTestId('passport-art')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Download Passport/i })).toBeNull()
     expect(screen.getByText('Momo')).toBeTruthy()
   })
 

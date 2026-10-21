@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import os
+import io
 import subprocess
 import sys
 
 import anyio
 from fastapi import FastAPI
+from PIL import Image
 
 from backend.auth import AuthedUser, require_user
-from backend.routers import exhibition_prep_v1, exhibition_queue_v1
+from backend.routers import exhibition_passport_v1, exhibition_prep_v1, exhibition_queue_v1
 from backend.services import exhibition_prep_store as st
 from backend.services import exhibition_passport
 from backend.services import identity_service
@@ -21,8 +23,15 @@ from backend.tests.conftest import ASGITestClient
 def _preview_app() -> ASGITestClient:
     app = FastAPI()
     app.include_router(exhibition_queue_v1.router, prefix="/api")
+    app.include_router(exhibition_passport_v1.router, prefix="/api")
     app.dependency_overrides[require_ops] = lambda: AuthedUser(user_id="local-ops")
     return ASGITestClient(app)
+
+
+def _jpeg_bytes() -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (32, 32), (216, 180, 106)).save(buf, format="JPEG")
+    return buf.getvalue()
 
 
 def test_preview_requires_local_environment(monkeypatch):
@@ -136,9 +145,79 @@ def test_passport_number_cannot_fall_back_to_staff_allocator(monkeypatch):
         files={"file": ("photo.jpg", b"not-an-image", "image/jpeg")},
         data={"exhibition_id": "local-preview", "queue_number": "7"},
     )
-    assert response.status_code == 503
-    assert response.json()["detail"]["code"] == "EXHIBITION_SUBMISSION_FAILED"
+    assert response.status_code == 404
+    assert response.json()["detail"]["code"] == "PASSPORT_NOT_FOUND"
     assert st.local_preview_stores()[0].rows == {}
+
+
+def test_local_preview_completes_passport_registration_photo_association_and_retrieval(monkeypatch):
+    monkeypatch.setenv("ENABLE_EXHIBITION_LOCAL_PREVIEW", "1")
+    monkeypatch.setenv("APP_ENV", "local")
+    monkeypatch.setenv("SUPABASE_URL", "https://production.invalid")
+    monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "must-not-be-used")
+    monkeypatch.setattr(st, "_LOCAL_PREVIEW_STORES", None)
+    monkeypatch.setattr(st, "_LOCAL_PREVIEW_PASSPORT_STORE", None)
+
+    def fail_if_supabase_is_used():
+        raise AssertionError("local Passport preview attempted a Supabase client")
+
+    monkeypatch.setattr("backend.services.supabase_assets.get_client", fail_if_supabase_is_used)
+    client = _preview_app()
+    token = "P" * 43
+
+    registered = client.post(
+        "/api/exhibition/passport/registrations",
+        json={
+            "exhibition_id": "local-preview",
+            "pet_name": "Nabi",
+            "email": "visitor@example.com",
+            "privacy_consent": True,
+            "idempotency_key": token,
+        },
+    )
+    assert registered.status_code == 200, registered.text
+    assert registered.json()["queue_number"] == 1
+    assert "email" not in registered.text
+
+    staff_submission = client.post(
+        "/api/exhibition/staff/submissions",
+        files={"file": ("nabi.jpg", _jpeg_bytes(), "image/jpeg")},
+        data={"exhibition_id": "local-preview", "queue_number": "1"},
+    )
+    assert staff_submission.status_code == 200, staff_submission.text
+    assert staff_submission.json()["queue_number"] == 1
+
+    retrieved = client.post(
+        "/api/exhibition/passport/retrieve",
+        json={"passport_token": token},
+    )
+    assert retrieved.status_code == 200, retrieved.text
+    body = retrieved.json()
+    assert body["photo_status"] == "PHOTO_RECEIVED"
+    assert body["photo_url"].startswith("data:image/png;base64,")
+    assert "email" not in retrieved.text
+    assert st.local_preview_stores()[0].rows
+
+
+def test_main_mounts_passport_routes_only_for_verified_local_preview():
+    code = """
+import os
+import sys
+sys.modules['rembg'] = None
+os.environ['ENABLE_EXHIBITION_LOCAL_PREVIEW'] = '1'
+os.environ['APP_ENV'] = 'local'
+import backend.main as main
+paths = {route.path for route in main.app.routes}
+print('/api/exhibition/passport/registrations' in paths)
+"""
+    env = os.environ.copy()
+    env["ENABLE_EXHIBITION_LOCAL_PREVIEW"] = "1"
+    env["APP_ENV"] = "local"
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, env=env, check=False
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert result.stdout.strip().splitlines()[-1] == "True"
 
 
 def test_main_mounts_only_queue_router_in_local_preview():
@@ -179,6 +258,7 @@ os.environ['APP_ENV'] = 'production'
 os.environ['ENABLE_EXHIBITION_PREP'] = '1'
 import backend.main as main
 print(any(route.path == '/api/exhibition/staff/queue' for route in main.app.routes))
+print(any(route.path == '/api/exhibition/passport/registrations' for route in main.app.routes))
 """
     env = os.environ.copy()
     env["ENABLE_EXHIBITION_LOCAL_PREVIEW"] = "1"
@@ -192,4 +272,4 @@ print(any(route.path == '/api/exhibition/staff/queue' for route in main.app.rout
         check=False,
     )
     assert result.returncode == 0, result.stderr[-2000:]
-    assert result.stdout.strip().splitlines()[-1] == "False"
+    assert result.stdout.strip().splitlines()[-2:] == ["False", "False"]

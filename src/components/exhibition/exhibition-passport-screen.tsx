@@ -5,7 +5,6 @@ import {
   Check,
   Clock3,
   Copy,
-  Download,
   KeyRound,
   Languages,
   LockKeyhole,
@@ -18,12 +17,12 @@ import {
   createPassportToken,
   exhibitionPassportExhibitionId,
   isExhibitionPassportEnabled,
+  isExhibitionPassportLocalPreview,
   registerPetPassport,
   retrievePetPassport,
   type PassportRecord,
   type RegistrationResponse,
 } from '@/lib/exhibition-passport-api'
-import { downloadPetPassport } from '@/lib/exhibition-passport-download'
 import { passportStage, type PassportStage } from '@/lib/exhibition-passport-flow'
 import {
   readPassportSession,
@@ -70,6 +69,7 @@ const copy = {
     secure: 'Your details stay private. We never display your email publicly.',
     disabled: 'Passport registration is in preview mode. Enable the local feature flag to submit a registration.',
     idTitle: 'Your Pet ID / Queue Number',
+    previewId: 'LOCAL PREVIEW ID',
     copyId: 'Copy ID',
     copied: 'Copied',
     idNote: 'This is your unique number. Keep this page on your phone and show it to exhibition staff for photo capture.',
@@ -118,6 +118,7 @@ const copy = {
     secure: '입력한 정보는 안전하게 보호됩니다. 이메일은 공개되지 않습니다.',
     disabled: 'Passport 등록은 미리보기 모드입니다. 로컬 기능 플래그를 켜면 등록할 수 있습니다.',
     idTitle: 'Pet ID / 대기번호',
+    previewId: '로컬 프리뷰 ID',
     idNote: '고유 번호입니다. 이 화면을 휴대폰에 보관하고 사진 촬영을 위해 전시팀에 보여주세요.',
     waitingTitle: '전시 사진을 기다리는 중',
     waitingBody: '등록이 저장되었습니다. 전시에 도착하면 Pet ID를 전시팀에 보여주고 반려동물 사진을 촬영해 주세요.',
@@ -180,6 +181,7 @@ export function ExhibitionPassportScreen() {
   const t = copy[language]
   const exhibitionId = exhibitionPassportExhibitionId()
   const featureEnabled = isExhibitionPassportEnabled()
+  const localPreview = isExhibitionPassportLocalPreview()
   const [session, setSession] = useState<PassportSession | null>(() => readPassportSession(undefined, exhibitionId))
   const [pendingRegistration] = useState(() => readPendingPassportRegistration(undefined, exhibitionId))
   const [record, setRecord] = useState<PassportRecord | null>(() => {
@@ -194,8 +196,6 @@ export function ExhibitionPassportScreen() {
   const [error, setError] = useState<string | null>(null)
   const [view, setView] = useState<PassportView>(() => (session || pendingRegistration ? 'register' : 'welcome'))
   const [copied, setCopied] = useState(false)
-  const [photoUnavailable, setPhotoUnavailable] = useState(false)
-  const [downloadBusy, setDownloadBusy] = useState(false)
 
   useEffect(() => {
     try {
@@ -213,7 +213,6 @@ export function ExhibitionPassportScreen() {
       .then((fresh) => {
         if (!active) return
         setRecord(fresh)
-        setPhotoUnavailable(false)
         setStage(passportStage(fresh))
         savePassportSession(fresh, session.passportToken, undefined, session.exhibitionId)
       })
@@ -301,7 +300,6 @@ export function ExhibitionPassportScreen() {
       } satisfies PassportSession
       setSession(nextSession)
       setRecord(response)
-      setPhotoUnavailable(false)
       setStage(passportStage(response))
     } catch (registrationError) {
       setError(friendlyError(registrationError, t))
@@ -318,25 +316,11 @@ export function ExhibitionPassportScreen() {
       const fresh = await retrievePetPassport(session.passportToken)
       savePassportSession(fresh, session.passportToken, undefined, session.exhibitionId)
       setRecord(fresh)
-      setPhotoUnavailable(false)
       setStage(passportStage(fresh))
     } catch (retrievalError) {
       setError(friendlyError(retrievalError, t))
     } finally {
       setBusy(false)
-    }
-  }
-
-  async function downloadPassport() {
-    if (!record?.photo_url || photoUnavailable || downloadBusy) return
-    setDownloadBusy(true)
-    setError(null)
-    try {
-      await downloadPetPassport(record)
-    } catch {
-      setError(t.downloadFailed)
-    } finally {
-      setDownloadBusy(false)
     }
   }
 
@@ -352,6 +336,8 @@ export function ExhibitionPassportScreen() {
     setConsent(false)
     setError(null)
   }
+
+  const passportViewHref = `${'/exhibition/passport/view'}${typeof window !== 'undefined' ? window.location.search : ''}`
 
   return (
     <main className="passport-page">
@@ -376,7 +362,7 @@ export function ExhibitionPassportScreen() {
           <p>{t.intro}</p>
         </div>
 
-        <div className="passport-experience-grid">
+        <div className={`passport-experience-grid ${stage === 'ready' ? 'is-passport-ready' : ''}`}>
         <section className="passport-journey" aria-labelledby="passport-journey-title">
           <div className="passport-section-heading">
             <span className="passport-overline" id="passport-journey-title">{t.journey}</span>
@@ -443,6 +429,7 @@ export function ExhibitionPassportScreen() {
           <section className="passport-card passport-status-card" aria-live="polite">
             <div className="passport-id-panel">
               <span className="passport-overline">{t.idTitle}</span>
+              {localPreview && <span className="passport-preview-badge">{t.previewId}</span>}
               <strong>{formatQueueNumber(record.queue_number)}</strong>
               <div className="passport-id-meta">
                 <span className="passport-id-pet">{record.pet_name}</span>
@@ -464,9 +451,9 @@ export function ExhibitionPassportScreen() {
                 <p>{t.waitingBody}</p>
                 <div className="passport-instruction"><Camera size={17} /><span>{t.idNote}</span></div>
                 <div className="passport-button-row">
-                  <button className="passport-primary-button" type="button" onClick={refreshPassport} disabled={busy}>
-                    {busy ? <RefreshCw className="passport-spin" size={17} /> : <ArrowRight size={17} />} {t.viewPassport}
-                  </button>
+                  <a className="passport-primary-button passport-link-button" href={passportViewHref}>
+                    <ArrowRight size={17} /> {t.viewPassport}
+                  </a>
                   <button className="passport-secondary-button" type="button" onClick={refreshPassport} disabled={busy}>
                     <RefreshCw size={16} /> {t.refresh}
                   </button>
@@ -474,32 +461,15 @@ export function ExhibitionPassportScreen() {
               </div>
             )}
             {stage === 'ready' && (
-              <div className="passport-status-content">
-                {record.photo_url && !photoUnavailable ? (
-                  <div className="passport-ready-photo">
-                    <img
-                      src={record.photo_url}
-                      alt={t.passportPhotoAlt}
-                      onError={() => setPhotoUnavailable(true)}
-                    />
-                  </div>
-                ) : (
-                  <div className="passport-photo-placeholder passport-photo-unavailable" aria-label={t.photoUnavailable}>
-                    <span className="passport-photo-placeholder-icon"><Camera size={28} /></span>
-                    <span className="passport-photo-placeholder-label">{t.eyebrow}</span>
-                    <small>{t.photoUnavailable}</small>
-                  </div>
-                )}
+              <div className="passport-ready-summary">
                 <div className="passport-status-icon ready"><Check size={23} /></div>
                 <span className="passport-overline">04 / 04</span>
                 <h2>{t.readyTitle}</h2>
-                <p>{record.photo_url && !photoUnavailable ? t.readyBody : t.photoUnavailable}</p>
+                <p>{record.photo_url ? t.readyBody : t.photoUnavailable}</p>
                 <div className="passport-button-row">
-                  {record.photo_url && !photoUnavailable && (
-                    <button className="passport-primary-button" type="button" onClick={downloadPassport} disabled={downloadBusy}>
-                      <Download size={17} /> {downloadBusy ? t.downloading : t.download}
-                    </button>
-                  )}
+                  <a className="passport-primary-button passport-link-button" href={passportViewHref}>
+                    <ArrowRight size={17} /> {t.viewPassport}
+                  </a>
                   <button className="passport-secondary-button" type="button" onClick={refreshPassport} disabled={busy}>
                     <RefreshCw size={16} /> {t.refresh}
                   </button>

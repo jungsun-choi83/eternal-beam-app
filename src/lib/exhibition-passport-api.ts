@@ -1,6 +1,7 @@
 import { currentExhibitionId } from './exhibition-queue.ts'
 
 export const EXHIBITION_PASSPORT_PATH = '/exhibition/passport'
+export const EXHIBITION_PASSPORT_VIEW_PATH = '/exhibition/passport/view'
 export const EXHIBITION_PASSPORT_REGISTRATION_PATH = '/api/exhibition/passport/registrations'
 export const EXHIBITION_PASSPORT_RETRIEVE_PATH = '/api/exhibition/passport/retrieve'
 export const EXHIBITION_PASSPORT_PRIVACY_POLICY_VERSION = 'v1'
@@ -59,13 +60,36 @@ export function isExhibitionPassportEnabled(): boolean {
   return featureFlag('VITE_ENABLE_EXHIBITION_PASSPORT') === '1' || featureFlag('VITE_ENABLE_EXHIBITION_PASSPORT') === 'true'
 }
 
+export function isExhibitionPassportLocalPreview(): boolean {
+  return featureFlag('VITE_ENABLE_EXHIBITION_LOCAL_PREVIEW') === '1' || featureFlag('VITE_ENABLE_EXHIBITION_LOCAL_PREVIEW') === 'true'
+}
+
+/** Optional event display configuration; never inferred from the exhibition ID. */
+export function configuredExhibitionLocation(): string | null {
+  try {
+    const value = String((import.meta as { env?: Record<string, string> }).env?.VITE_EXHIBITION_LOCATION || '').trim()
+    return value || null
+  } catch {
+    return null
+  }
+}
+
 export function isExhibitionPassportPath(pathname: string): boolean {
   return ((pathname || '').replace(/\/+$/, '') || '/') === EXHIBITION_PASSPORT_PATH
+}
+
+export function isExhibitionPassportViewPath(pathname: string): boolean {
+  return ((pathname || '').replace(/\/+$/, '') || '/') === EXHIBITION_PASSPORT_VIEW_PATH
 }
 
 export function isExhibitionPassportEntry(): boolean {
   if (typeof window === 'undefined') return false
   return isExhibitionPassportPath(window.location.pathname)
+}
+
+export function isExhibitionPassportViewEntry(): boolean {
+  if (typeof window === 'undefined') return false
+  return isExhibitionPassportViewPath(window.location.pathname)
 }
 
 export function exhibitionPassportExhibitionId(): string | null {

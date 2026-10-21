@@ -39,6 +39,8 @@ class AccessRequest(BaseModel):
 
 def get_store() -> passport.PassportStore:
     try:
+        if exhibition_prep_store.local_preview_enabled():
+            return exhibition_prep_store.local_preview_passport_store()
         return passport.default_store()
     except RuntimeError as exc:
         raise HTTPException(
@@ -50,6 +52,8 @@ def get_store() -> passport.PassportStore:
 def get_photo_access_stores():
     """Resolve private artifact access lazily; waiting Passports need no bucket."""
     try:
+        if exhibition_prep_store.local_preview_enabled():
+            return exhibition_prep_store.local_preview_stores()
         return exhibition_prep_store.default_stores()
     except RuntimeError:
         return None
@@ -107,6 +111,13 @@ async def post_retrieve(
                 run_store=run_store,
                 artifacts=artifacts,
             )
+            if (
+                result
+                and exhibition_prep_store.local_preview_enabled()
+                and result.get("photo_url")
+                and hasattr(artifacts, "data_url_for_signed_url")
+            ):
+                result["photo_url"] = artifacts.data_url_for_signed_url(result["photo_url"])
     except passport.PassportError as exc:
         # Do not distinguish malformed, missing, or unknown tokens.
         if exc.code == "INVALID_REGISTRATION_TOKEN":

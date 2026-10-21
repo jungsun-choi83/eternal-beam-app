@@ -20,7 +20,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Respon
 from pydantic import BaseModel
 
 from ..auth import AuthedUser
-from ..services import exhibition_passport, exhibition_prep_service
+from ..services import exhibition_passport, exhibition_prep_service, exhibition_prep_store
 from ..services import exhibition_queue_service as queue
 from ..services.shaker_ops import require_ops
 from .exhibition_prep_v1 import get_stores
@@ -64,7 +64,11 @@ async def post_submission(
         else:
             # A Passport number has its own explicit path. It must never be
             # accepted by the legacy allocator, even if association fails.
-            passport_store = exhibition_passport.default_store()
+            passport_store = (
+                exhibition_prep_store.local_preview_passport_store()
+                if exhibition_prep_store.local_preview_enabled()
+                else exhibition_passport.default_store()
+            )
             row = await asyncio.to_thread(
                 exhibition_passport.submit_photo,
                 raw,
