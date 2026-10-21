@@ -71,7 +71,7 @@ describe("ExhibitionStaffScreen", () => {
     expect(screen.getByText("#022")).toBeTruthy();
     expect(screen.getByText("PROCESSING")).toBeTruthy();
     const [url, init] = fetchFn.mock.calls[0];
-    expect(String(url)).toBe("/api/exhibition/staff/queue?exhibition_id=expo-1");
+    expect(String(url)).toMatch(/\/api\/exhibition\/staff\/queue\?exhibition_id=expo-1$/);
     expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer t");
   });
 
@@ -189,7 +189,7 @@ describe("ExhibitionQueueScreen (public)", () => {
     expect(screen.queryAllByRole("button")).toHaveLength(0);
     expect(screen.queryByText(/SHOW NEXT|READY|PREPARING/)).toBeNull();
     const [url, init] = fetchFn.mock.calls[0];
-    expect(String(url)).toBe("/api/exhibition/queue?exhibition_id=expo-1");
+    expect(String(url)).toMatch(/\/api\/exhibition\/queue\?exhibition_id=expo-1$/);
     expect(init?.headers).toBeUndefined();
   });
 

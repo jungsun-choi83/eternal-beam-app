@@ -56,6 +56,61 @@ export interface Submission {
   processing_status: string;
 }
 
+export type PassportQueueNumberValidation = {
+  value: number | null;
+  error: "required" | "invalid" | null;
+};
+
+/**
+ * Parse the number shown by a Passport visitor without changing its server
+ * authority. The server remains responsible for checking that the number
+ * belongs to this exhibition.
+ */
+export function validatePassportQueueNumber(input: string): PassportQueueNumberValidation {
+  const value = input.trim();
+  if (!value) return { value: null, error: "required" };
+  if (!/^\d+$/.test(value)) return { value: null, error: "invalid" };
+
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) return { value: null, error: "invalid" };
+  return { value: parsed, error: null };
+}
+
+export type StaffPhotoSubmissionMode = "LEGACY_STAFF" | "PASSPORT";
+
+/**
+ * A non-empty Passport number selects the explicit association request and
+ * must never fall through to the legacy allocator.
+ */
+export function staffPhotoSubmissionMode(queueNumberInput: string): StaffPhotoSubmissionMode {
+  return queueNumberInput.trim() ? "PASSPORT" : "LEGACY_STAFF";
+}
+
+export interface PassportPetPhotoSubmissionParams {
+  file: Blob;
+  petName: string;
+  exhibitionId: string | null;
+  queueNumber: number;
+}
+
+/**
+ * Build the explicit Passport photo-association payload. It is submitted only
+ * by submitPassportPetPhoto, never by the legacy STAFF request.
+ */
+export function preparePassportPetPhotoSubmission(params: PassportPetPhotoSubmissionParams): FormData {
+  if (!Number.isSafeInteger(params.queueNumber) || params.queueNumber <= 0) {
+    throw new RangeError("queueNumber must be a positive safe integer");
+  }
+
+  const form = new FormData();
+  const fileName = (params.file as File).name || "pet.jpg";
+  form.append("file", params.file, fileName);
+  if (params.petName.trim()) form.append("pet_name", params.petName.trim());
+  if (params.exhibitionId) form.append("exhibition_id", params.exhibitionId);
+  form.append("queue_number", String(params.queueNumber));
+  return form;
+}
+
 // ── 순수 헬퍼 ────────────────────────────────────────────────────────────────
 
 export function isExhibitionQueuePath(pathname: string): boolean {
@@ -169,6 +224,21 @@ export async function submitPetPhoto(
   form.append("file", params.file, (params.file as File).name || "pet.jpg");
   if (params.petName.trim()) form.append("pet_name", params.petName.trim());
   if (params.exhibitionId) form.append("exhibition_id", params.exhibitionId);
+  const res = await fetchImpl(`${apiBase()}/api/exhibition/staff/submissions`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  if (!res.ok) throw await readError(res);
+  return (await res.json()) as Submission;
+}
+
+export async function submitPassportPetPhoto(
+  token: string,
+  params: PassportPetPhotoSubmissionParams,
+  fetchImpl: FetchFn = fetch
+): Promise<Submission> {
+  const form = preparePassportPetPhotoSubmission(params);
   const res = await fetchImpl(`${apiBase()}/api/exhibition/staff/submissions`, {
     method: "POST",
     headers: { Authorization: `Bearer ${token}` },
