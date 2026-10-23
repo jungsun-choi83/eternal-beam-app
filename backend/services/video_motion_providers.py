@@ -43,10 +43,11 @@ MODEL_WAN_2_2_TURBO = "wan_2_2_turbo"
 MODEL_WAN_2_1_FLF = "wan_2_1_flf"
 MODEL_WAN_3_MOTION_REFERENCE = "wan_3_motion_reference"
 MODEL_MINIMAX_H3_MAX_TURBO = "minimax_h3_max_turbo"
+MODEL_GROK_IMAGINE_LITE = "grok_imagine_lite"
 
-VENDOR_RUNWAY = "runway"
 VENDOR_FAL = "fal"
 VENDOR_BYTEPLUS = "byteplus"
+VENDOR_RUNWAY = "runway"
 VENDOR_KLING = "kling"
 VENDOR_DIRECT = "direct"  # Wan 3 future direct binding id.
 VENDOR_MOCK = "mock"
@@ -59,6 +60,14 @@ class VideoProviderError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+@dataclass(frozen=True)
+class MotionVideoKeyframe:
+    """An image pinned to a timestamp within the generated video."""
+
+    image_url: str
+    timestamp_sec: float
 
 
 @dataclass(frozen=True)
@@ -80,6 +89,8 @@ class MotionVideoRequest:
     #: 메타데이터만 박제하는 가짜 지원 금지.
     motion_reference_url: Optional[str] = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    #: Intermediate pinned frames, separate from the start/end frame contract.
+    keyframes: tuple[MotionVideoKeyframe, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -100,6 +111,7 @@ class VideoGenerationProvider:
     adapter_id: str = "VideoGenerationProvider"
     supports_durable_jobs: bool = False
     supports_end_frame: bool = False
+    supports_keyframes: bool = False
     supports_motion_reference: bool = False
     #: 신원 레퍼런스 이미지 예산 (시작/끝 프레임 제외).
     reference_budget: int = 0
@@ -128,6 +140,14 @@ class VideoGenerationProvider:
 
     def generate(self, request: MotionVideoRequest) -> MotionVideoResult:  # pragma: no cover
         raise NotImplementedError
+
+
+def validate_keyframe_capability(provider: Any, request: MotionVideoRequest) -> None:
+    """Reject intermediate frames before submission if they would be discarded."""
+    if request.keyframes and not getattr(provider, "supports_keyframes", False):
+        raise VideoProviderError(
+            "KEYFRAMES_UNSUPPORTED", f"{provider.name} does not support keyframes."
+        )
 
 
 def provider_identity(provider: Any) -> dict[str, str]:
@@ -302,6 +322,7 @@ class SeedanceProvider(VideoGenerationProvider):
     def generate(self, request: MotionVideoRequest) -> MotionVideoResult:
         import httpx
 
+        validate_keyframe_capability(self, request)
         if not self.available():
             raise VideoProviderError("PROVIDER_NOT_CONFIGURED", "SEEDANCE_API_KEY 가 없습니다.")
         if not request.start_image_url:
@@ -420,6 +441,7 @@ class KlingProvider(VideoGenerationProvider):
     def generate(self, request: MotionVideoRequest) -> MotionVideoResult:
         import httpx
 
+        validate_keyframe_capability(self, request)
         if not self.available():
             raise VideoProviderError("PROVIDER_NOT_CONFIGURED", "KLING_ACCESS/SECRET_KEY 가 없습니다.")
         if not request.start_image_url:
@@ -635,6 +657,7 @@ class FalVideoProvider(VideoGenerationProvider):
 
         import httpx
 
+        validate_keyframe_capability(self, request)
         if not request.start_image_url:
             raise VideoProviderError("NO_START_IMAGE", "시작 키프레임 URL 이 없습니다.")
         if request.end_image_url and not self.supports_end_frame:
@@ -1045,6 +1068,68 @@ class FalMinimaxH3MaxTurboProvider(FalVideoProvider):
         return strip_audio_track(video_bytes)
 
 
+class FalGrokImagineLiteProvider(FalVideoProvider):
+   
+    name = MODEL_GROK_IMAGINE_LITE
+    logical_model_id = MODEL_GROK_IMAGINE_LITE
+    adapter_id = "FalGrokImagineLiteProvider"
+    supports_durable_jobs = True
+    supports_end_frame = False
+    model_env = "FAL_GROK_IMAGINE_LITE_MODEL"
+    default_model = "xai/grok-imagine-video/v1.5/lite/image-to-video"
+
+    MIN_DURATION_SEC = 1
+    MAX_DURATION_SEC = 15
+    ALLOWED_RESOLUTIONS = ("480p", "720p", "1080p")
+    #: 라이트 티어 정가, USD / 초 (+ 입력 이미지당 $0.01).
+    PRICE_PER_SEC_USD = {"480p": 0.02, "720p": 0.03, "1080p": 0.14}
+    PRICE_PER_INPUT_IMAGE_USD = 0.01
+
+    def build_payload(self, request: MotionVideoRequest) -> dict[str, Any]:
+        spec = request.output_spec
+        resolution = str(spec.get("resolution") or "").strip().lower()
+        if resolution not in self.ALLOWED_RESOLUTIONS:
+            raise VideoProviderError(
+                "PROVIDER_CONTRACT",
+                f"Grok Imagine Lite resolution 은 {'/'.join(self.ALLOWED_RESOLUTIONS)} "
+                f"만 지원합니다: {spec.get('resolution')!r}",
+            )
+        raw_duration = spec.get("duration_sec")
+        try:
+            duration = float(raw_duration)
+        except (TypeError, ValueError) as exc:
+            raise VideoProviderError(
+                "PROVIDER_CONTRACT",
+                f"Grok Imagine Lite duration_sec 이 필요합니다: {raw_duration!r}",
+            ) from exc
+        if (
+            not duration.is_integer()
+            or not self.MIN_DURATION_SEC <= duration <= self.MAX_DURATION_SEC
+        ):
+            raise VideoProviderError(
+                "PROVIDER_CONTRACT",
+                f"Grok Imagine Lite duration 은 {self.MIN_DURATION_SEC}..{self.MAX_DURATION_SEC} "
+                f"정수여야 합니다: {raw_duration!r}",
+            )
+        # aspect_ratio 파라미터 없음 — 기하는 시작 이미지가 결정한다.
+        return {
+            "prompt": request.prompt,
+            "image_url": request.start_image_url,
+            "duration": int(duration),
+            "resolution": resolution,
+        }
+
+    def estimate_cost_usd(self, payload: dict[str, Any]) -> Optional[float]:
+        rate = self.PRICE_PER_SEC_USD.get(str(payload.get("resolution")))
+        duration = payload.get("duration")
+        if rate is None or not isinstance(duration, (int, float)) or isinstance(duration, bool):
+            return None
+        return round(rate * float(duration) + self.PRICE_PER_INPUT_IMAGE_USD, 4)
+
+    def normalize_output(self, video_bytes: bytes) -> tuple[bytes, dict[str, Any]]:
+        return strip_audio_track(video_bytes)
+
+
 class FalWanProvider(FalVideoProvider):
     """
     Wan 2.2 A14B turbo I2V (fal) — **저비용 프롬프트 반복 실험 전용**.
@@ -1215,6 +1300,7 @@ class RunwayVideoProvider(VideoGenerationProvider):
 
         import httpx
 
+        validate_keyframe_capability(self, request)
         if not request.start_image_url:
             raise VideoProviderError("NO_START_IMAGE", "시작 키프레임 URL 이 없습니다.")
         # 페이로드는 HTTP 이전에 만든다 — 계약 위반은 로컬에서, 과금 전에.
@@ -1552,6 +1638,7 @@ class MockVideoProvider(VideoGenerationProvider):
         return "mock"
 
     def generate(self, request: MotionVideoRequest) -> MotionVideoResult:
+        validate_keyframe_capability(self, request)
         if not request.start_image_bytes:
             raise VideoProviderError("NO_START_IMAGE", "mock: 시작 키프레임 바이트가 없습니다.")
         return MotionVideoResult(
@@ -1585,6 +1672,7 @@ _MODEL_VENDOR_ADAPTERS: dict[str, dict[str, VideoGenerationProvider]] = {
     MODEL_WAN_2_2_TURBO: {VENDOR_FAL: FalWanProvider()},
     MODEL_WAN_2_1_FLF: {VENDOR_FAL: FalWanFlfProvider()},
     MODEL_MINIMAX_H3_MAX_TURBO: {VENDOR_FAL: FalMinimaxH3MaxTurboProvider()},
+    MODEL_GROK_IMAGINE_LITE: {VENDOR_FAL: FalGrokImagineLiteProvider()},
 }
 
 _MODEL_ALIASES: dict[str, str] = {
@@ -1598,6 +1686,7 @@ _MODEL_VENDOR_ENV: dict[str, str] = {
     PROVIDER_KLING_3: "MOTION_VENDOR_KLING_3",
     PROVIDER_WAN_3_STANDARD: "MOTION_VENDOR_WAN_3_STANDARD",
     MODEL_MINIMAX_H3_MAX_TURBO: "MOTION_VENDOR_MINIMAX_H3_MAX_TURBO",
+    MODEL_GROK_IMAGINE_LITE: "MOTION_VENDOR_GROK_IMAGINE_LITE",
 }
 _LEGACY_TRANSPORT_ENV: dict[str, str] = {
     PROVIDER_SEEDANCE: "SEEDANCE_TRANSPORT",
@@ -1611,6 +1700,7 @@ _ALLOWED_VENDORS: dict[str, tuple[str, ...]] = {
     MODEL_WAN_2_2_TURBO: (VENDOR_FAL,),
     MODEL_WAN_2_1_FLF: (VENDOR_FAL,),
     MODEL_MINIMAX_H3_MAX_TURBO: (VENDOR_FAL,),
+    MODEL_GROK_IMAGINE_LITE: (VENDOR_FAL,),
 }
 _AUTO_VENDOR_ORDER: dict[str, tuple[str, ...]] = {
     PROVIDER_SEEDANCE: (VENDOR_RUNWAY, VENDOR_FAL, VENDOR_BYTEPLUS),
@@ -1619,6 +1709,7 @@ _AUTO_VENDOR_ORDER: dict[str, tuple[str, ...]] = {
     MODEL_WAN_2_2_TURBO: (VENDOR_FAL,),
     MODEL_WAN_2_1_FLF: (VENDOR_FAL,),
     MODEL_MINIMAX_H3_MAX_TURBO: (VENDOR_FAL,),
+    MODEL_GROK_IMAGINE_LITE: (VENDOR_FAL,),
 }
 _MOCK = MockVideoProvider()
 

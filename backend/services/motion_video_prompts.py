@@ -14,7 +14,8 @@ from typing import Any
 
 # v2 (2026-09-17): 그림자 금지 절 추가. I2V 는 정지 그림자를 **움직이는**
 # 그림자로 살려내고, packed-alpha 매트가 그것을 전경으로 삼킨다.
-MOTION_VIDEO_PROMPT_VERSION = "motion-video-prompt-v2"
+# v3: unsupported conditioning is expressed in the prompt of the assigned model.
+MOTION_VIDEO_PROMPT_VERSION = "motion-video-prompt-v3"
 GAIT = {
     "dog": {
         "prompt": "runs naturally straight toward the camera in a short, energetic burst",
@@ -63,15 +64,24 @@ def _micro(spec_contract: dict[str, Any], description: str) -> str:
 
 
 def _transition(spec_contract: dict[str, Any], description: str) -> str:
+    endpoint_fallback = "supports_end_frame" in (spec_contract.get("conditioning_fallbacks") or [])
     return "\n".join(
         [
             _IDENTITY_LOCK,
-            "The first supplied frame is the exact starting pose and the second "
-            "supplied frame is the exact ending pose.",
+            (
+                "The supplied image is the exact starting pose. Complete the described ending pose."
+                if endpoint_fallback else
+                "The first supplied frame is the exact starting pose and the second "
+                "supplied frame is the exact ending pose."
+            ),
             f"The pet naturally performs this transition between them: {description}.",
             "Preserve identity and anatomy throughout the movement. The motion is "
             "smooth and physically plausible, with no intermediate teleporting.",
-            "End exactly in the supplied target pose and hold it briefly.",
+            (
+                "End in the described target pose and hold it briefly."
+                if endpoint_fallback else
+                "End exactly in the supplied target pose and hold it briefly."
+            ),
         ]
     )
 
@@ -119,5 +129,42 @@ _BUILDERS = {
 
 def build_motion_video_prompt(spec_contract: dict[str, Any], description: str) -> str:
     """Phase 5.1 계약 + 모션 서술 → 클래스별 프롬프트 (버전 MOTION_VIDEO_PROMPT_VERSION)."""
+    fallbacks = spec_contract.get("conditioning_fallbacks") or []
+    if "supports_end_frame" in fallbacks:
+        # Descriptions may refer to a target image that this model cannot receive.
+        description = description.replace("shown in the second frame", "described below")
     builder = _BUILDERS.get(str(spec_contract.get("motion_class") or "").upper(), _micro)
-    return builder(spec_contract, description)
+    parts = [builder(spec_contract, description)]
+    if "supports_end_frame" in fallbacks:
+        if spec_contract.get("loop_same_start_end"):
+            parts.append(
+                "Use the starting image as the final-pose guide. Keep the described idle "
+                "motion gentle and in place with a fixed camera. By the final frame, return "
+                "to the exact starting pose, position, home distance, framing and scale, "
+                "then settle briefly so the loop joins smoothly."
+            )
+        elif spec_contract.get("motion_id") == "RETURN_HOME":
+            parts.append(
+                "Begin at the close position in the supplied starting image. Naturally "
+                "walk away to the original home distance, becoming gradually smaller through "
+                "physical movement. Restore the original home framing and centered full-body "
+                "scale with comfortable space around the pet. Turn to face the fixed camera "
+                "and finish in a calm, balanced standing pose with all four paws grounded. "
+                "Hold this home pose at the end. Keep the camera fixed; never zoom, slide, "
+                "teleport, or shrink the body in place."
+            )
+        else:
+            from .action_keyframe_spec import KEYFRAME_ROLES
+
+            role = (spec_contract.get("target_keyframe") or {}).get("role")
+            target = KEYFRAME_ROLES.get(role)
+            if target:
+                parts.append(f"Finish in this target pose: {target.required_pose}. Hold it briefly.")
+    if "supports_motion_reference" in fallbacks:
+        parts.append(
+            "Perform the complete motion described above using natural, continuous limb "
+            "timing appropriate to this pet. Clearly show the intended direction and pace, "
+            "then settle into the described final pose. Preserve identity, anatomy and the "
+            "fixed camera throughout."
+        )
+    return "\n".join(parts)

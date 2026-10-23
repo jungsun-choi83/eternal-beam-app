@@ -89,7 +89,17 @@ PACKAGEABLE_MOTIONS: tuple[str, ...] = (
     "LOOK_UP",
     # 자세 전이 3종 (2026-09-08). DB CHECK 는 migration 20261025.
     "LIE_DOWN", "STAND_UP", "LIE_IDLE",
+    # RETURN_HOME (2026-10-22) — COME_CLOSER 의 시스템 소유 무료 동반 복귀 모션.
+    # 포장/배송은 되지만 **상용 이행 대상이 아니다**: SYSTEM_MOTIONS 에 들어
+    # PREMIUM_MOTIONS 에서 빠진다(아래). DB CHECK 는 migration 이 넓힌다.
+    "RETURN_HOME",
 )
+
+#: 무료·시스템 소유 모션 — 포장/배송/생성은 되지만 판매되지 않는다(크레딧 0,
+#: product_catalog 행 없음, Behavior Library 비노출). BREATHING(홈)과 RETURN_HOME
+#: (COME_CLOSER 동반 복귀)이 여기 속한다. PREMIUM_MOTIONS 는 PACKAGEABLE 에서 이
+#: 집합을 뺀 것이다 — "포장 가능"과 "상용 이행 가능"을 가르는 유일한 축이다.
+SYSTEM_MOTIONS: tuple[str, ...] = (BREATHING, "RETURN_HOME")
 
 # --- 그림자 거부 (v3) ---------------------------------------------------------
 #: 끄면 v2 거동(그림자도 전경)으로 되돌아간다.

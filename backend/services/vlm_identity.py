@@ -693,8 +693,16 @@ def _targeted_qa_calls(
     task_specs: dict[str, tuple[dict[str, Any], str]],
     params: dict[str, Any],
     cache_mode: Optional[str],
+    task_images: Optional[dict[str, Sequence[tuple[bytes, str]]]] = None,
 ) -> Optional[dict[str, Any]]:
-    """Run and merge independent narrow calls while retaining each raw answer."""
+    """Run and merge independent narrow calls while retaining each raw answer.
+
+    ``images`` is the default payload sent to every task. ``task_images`` may
+    override the payload for named tasks — e.g. MOTION stage sends generated
+    video frames only to MOTION_VLM while appending reference keyframes for the
+    identity/anatomy tasks. The per-task payload is what the cache key hashes,
+    so a task that sees different images is cached independently.
+    """
 
     called: list[str] = []
     evidence: dict[str, dict[str, Any]] = {}
@@ -705,7 +713,8 @@ def _targeted_qa_calls(
         if spec is None:
             continue
         schema, prompt = spec
-        content = [_image_block(data, mime) for data, mime in images]
+        imgs = list((task_images or {}).get(task, images))
+        content = [_image_block(data, mime) for data, mime in imgs]
         content.append({"type": "text", "text": prompt})
 
         def _call(
@@ -722,7 +731,7 @@ def _targeted_qa_calls(
         result = _cached_qa_call(
             kind=f"{KIND_TARGETED_QA}:{stage.lower()}:{task.lower()}",
             version=f"{VLM_TARGETED_QA_VERSION}:{stage.lower()}:{task.lower()}",
-            images=images,
+            images=imgs,
             params={
                 **params,
                 "prompt": prompt,
@@ -1455,10 +1464,9 @@ MOTION_QA_SCHEMA: dict[str, Any] = {
 }
 
 _MOTION_QA_PROMPT_TEMPLATE = (
-    "You are judging a GENERATED pet motion video via {n} frames sampled in "
-    "chronological order at fractions {fractions} of its duration. The LAST "
-    "supplied image (after the sampled frames) is the pet's reference keyframe"
-    "{target_note}.\n"
+    "You are judging a GENERATED pet motion video via the FIRST {n} supplied "
+    "images, which are frames sampled in chronological order at fractions "
+    "{fractions} of its duration. {reference_note}\n"
     "Requested motion: {motion_description}\nMotion class: {motion_class}\n"
     "Expected direction/travel: {expected_direction}\n"
     "Interaction type: {interaction_type}\n"
@@ -1490,6 +1498,22 @@ _MOTION_QA_PROMPT_TEMPLATE = (
 )
 
 
+def _motion_reference_consuming_tasks() -> frozenset[str]:
+    """Targeted MOTION tasks that receive the reference keyframes appended after
+    the video frames. MOTION_VLM is deliberately excluded — it judges the
+    generated motion from video frames only, so an appended START keyframe can
+    never be read as the final generated frame."""
+    from . import vlm_escalation
+
+    return frozenset(
+        {
+            vlm_escalation.IDENTITY_VLM,
+            vlm_escalation.ANATOMY_VLM,
+            vlm_escalation.IDENTITY_ANATOMY_VLM,
+        }
+    )
+
+
 def _motion_targeted_specs(
     *,
     questions: Sequence[str],
@@ -1499,8 +1523,27 @@ def _motion_targeted_specs(
     interaction_type: Optional[str],
     allow_generated_hand: bool,
     has_target: bool,
+    has_reference: bool = True,
 ) -> dict[str, tuple[dict[str, Any], str]]:
     from . import vlm_escalation
+
+    # Reference keyframes (START, optionally TARGET) are appended AFTER the
+    # chronological video frames for the identity/anatomy tasks only, and are
+    # explicitly labelled here so they are never mistaken for the final video
+    # frame. MOTION_VLM receives video frames only (no reference note).
+    if has_reference and has_target:
+        ref_note = (
+            " The final two supplied images are reference keyframes, not video frames: "
+            "the second-to-last is the pet's approved START reference pose and the last "
+            "is the TARGET pose keyframe. Do not treat either as a video frame."
+        )
+    elif has_reference:
+        ref_note = (
+            " The final supplied image is the pet's approved START reference keyframe, "
+            "not a video frame. Do not treat it as the final or any video frame."
+        )
+    else:
+        ref_note = ""
 
     props = MOTION_QA_SCHEMA["properties"]
     identity_schema = _schema(
@@ -1548,15 +1591,16 @@ def _motion_targeted_specs(
             identity_schema,
             common
             + "IDENTITY_VLM only. Decide whether the same individual pet persists across "
-            "the frames. Do not judge anatomy, pose, motion correctness, camera, color, "
-            "or presentation. Use unknown when sampled frames are insufficient.",
+            "the video frames. Do not judge anatomy, pose, motion correctness, camera, color, "
+            "or presentation. Use unknown when sampled frames are insufficient." + ref_note,
         ),
         vlm_escalation.ANATOMY_VLM: (
             anatomy_schema,
             common
             + "ANATOMY_VLM only. Check severe limb/joint/body corruption, pet duplication, "
-            "and forbidden human contamination across frames. Do not judge identity, pose, "
-            "requested motion, camera, color, or presentation. Use unknown when insufficient.",
+            "and forbidden human contamination across the video frames. Do not judge identity, "
+            "pose, requested motion, camera, color, or presentation. Use unknown when "
+            "insufficient." + ref_note,
         ),
         vlm_escalation.IDENTITY_ANATOMY_VLM: (
             _schema(
@@ -1573,18 +1617,23 @@ def _motion_targeted_specs(
                 }
             ),
             common
-            + "IDENTITY_ANATOMY_VLM only. The last supplied image is the approved "
-            "reference keyframe of the pet. Answer two things across the chronological "
-            "frames: (1) whether the same individual pet persists in every frame, and "
+            + "IDENTITY_ANATOMY_VLM only. Answer two things across the chronological "
+            "video frames: (1) whether the same individual pet persists in every frame, and "
             "(2) whether anatomy stays plausible — no severe limb/joint/body corruption, "
             "no pet duplication, no forbidden human contamination. Do not judge whether "
             "the requested motion occurs, motion size, camera, color, or presentation. "
-            "Use unknown when the sampled frames are insufficient.",
+            "Use unknown when the sampled frames are insufficient." + (
+                ref_note or " The final supplied image is the approved reference keyframe "
+                "of the pet, not a video frame."
+            ),
         ),
         vlm_escalation.MOTION_VLM: (
             motion_schema,
             common
-            + f"MOTION_VLM only. Resolve only: {list(questions)}. Expected direction: "
+            + "MOTION_VLM only. Every supplied image is a generated video frame in "
+            "chronological order; no reference or keyframe image is included, so the last "
+            "image is the final generated frame. "
+            + f"Resolve only: {list(questions)}. Expected direction: "
             f"{expected_direction or 'as requested'}. Interaction: "
             f"{interaction_type or 'not applicable'}. Human/hand allowed: "
             f"{bool(allow_generated_hand)}. Do not reassess pet identity or anatomy. For "
@@ -1617,19 +1666,43 @@ def qa_motion_video(
     # v1 truncated to six frames. That aliases a roughly two-cycle/5-second
     # BREATHING clip and can omit both intermediate phases and the true last
     # frame. Nine v2 samples fit within the provider's image-input contract.
-    supplied_frames = list(frame_images[:12])
-    images: list[tuple[bytes, str]] = [
-        (data, (mime or "image/png")) for data, mime in supplied_frames if data
+    #
+    # Video frames and their fraction labels travel as explicit pairs so a frame
+    # that failed to decode (empty bytes) drops together with its fraction —
+    # later frames never inherit an earlier frame's label, and the true 1.0
+    # frame stays labelled 1.0 whenever it decoded.
+    paired = [
+        ((data, (mime or "image/png")), float(frac))
+        for (data, mime), frac in zip(frame_images[:12], list(sample_fractions)[:12])
+        if data
     ]
-    for extra in (reference_image, target_image):
-        if extra and extra[0]:
-            images.append((extra[0], (extra[1] or "image/png")))
-    if not images:
+    video_images: list[tuple[bytes, str]] = [img for img, _ in paired]
+    video_fractions: list[float] = [frac for _, frac in paired]
+    if not video_images:
         return None
+    # Reference keyframes are kept SEPARATE from the chronological video frames.
+    # They are appended only for the identity/anatomy tasks (and the combined
+    # template call), never for MOTION_VLM — otherwise the appended START pose
+    # (a distant standing keyframe) gets read as the final generated frame.
+    reference_images: list[tuple[bytes, str]] = []
+    if reference_image and reference_image[0]:
+        reference_images.append((reference_image[0], (reference_image[1] or "image/png")))
+    if target_image and target_image[0]:
+        reference_images.append((target_image[0], (target_image[1] or "image/png")))
+    has_reference = bool(reference_image and reference_image[0])
+    has_target = bool(target_image and target_image[0])
     if tasks is not None:
+        reference_tasks = _motion_reference_consuming_tasks()
+        with_references = video_images + reference_images
+        task_images = (
+            {task: with_references for task in reference_tasks}
+            if reference_images
+            else None
+        )
         return _targeted_qa_calls(
             stage="MOTION",
-            images=images,
+            images=video_images,
+            task_images=task_images,
             tasks=tasks,
             questions=unresolved_questions,
             task_specs=_motion_targeted_specs(
@@ -1639,7 +1712,8 @@ def qa_motion_video(
                 expected_direction=expected_direction,
                 interaction_type=interaction_type,
                 allow_generated_hand=allow_generated_hand,
-                has_target=bool(target_image and target_image[0]),
+                has_target=has_target,
+                has_reference=has_reference,
             ),
             params={
                 "motion_description": motion_description,
@@ -1647,20 +1721,34 @@ def qa_motion_video(
                 "expected_direction": expected_direction,
                 "interaction_type": interaction_type,
                 "allow_generated_hand": bool(allow_generated_hand),
-                "sample_fractions": [float(f) for f in sample_fractions[: len(supplied_frames)]],
-                "frame_count": len(supplied_frames),
-                "has_reference": bool(reference_image and reference_image[0]),
-                "has_target": bool(target_image and target_image[0]),
+                "sample_fractions": video_fractions,
+                "frame_count": len(video_images),
+                "has_reference": has_reference,
+                "has_target": has_target,
                 "evidence_context": dict(evidence_context or {}),
             },
             cache_mode=cache_mode,
         )
-    target_note = (
-        "; the very last image is the TARGET pose keyframe" if target_image else ""
-    )
+    # Combined template call judges identity/anatomy too, so it keeps the
+    # reference keyframes appended AFTER the video frames and labels them
+    # unambiguously (which trailing image is the reference vs. the target).
+    images = video_images + reference_images
+    if has_reference and has_target:
+        reference_note = (
+            "The final two supplied images are reference keyframes, NOT video frames: "
+            "the second-to-last is the pet's reference keyframe and the last is the "
+            "TARGET pose keyframe."
+        )
+    elif has_reference:
+        reference_note = (
+            "The last supplied image (after the sampled frames) is the pet's reference "
+            "keyframe, NOT a video frame."
+        )
+    else:
+        reference_note = "No reference image is supplied; every image is a video frame."
     prompt = _MOTION_QA_PROMPT_TEMPLATE.format(
-        n=len(supplied_frames),
-        fractions=list(sample_fractions[: len(supplied_frames)]),
+        n=len(video_images),
+        fractions=list(video_fractions),
         motion_description=motion_description,
         motion_class=motion_class,
         expected_direction=(expected_direction or "as described by the requested motion"),
@@ -1670,8 +1758,8 @@ def qa_motion_video(
             if allow_generated_hand
             else "no human or hand is allowed"
         ),
-        target_note=target_note,
-        target_note2=(" (last image)" if target_image else ""),
+        reference_note=reference_note,
+        target_note2=(" (last image)" if has_target else ""),
     )
     content: list[dict[str, Any]] = [_image_block(data, mime) for data, mime in images]
     content.append({"type": "text", "text": prompt})
@@ -1693,10 +1781,10 @@ def qa_motion_video(
             "expected_direction": expected_direction,
             "interaction_type": interaction_type,
             "allow_generated_hand": bool(allow_generated_hand),
-            "sample_fractions": [float(f) for f in sample_fractions[: len(supplied_frames)]],
-            "frame_count": len(supplied_frames),
-            "has_reference": bool(reference_image and reference_image[0]),
-            "has_target": bool(target_image and target_image[0]),
+            "sample_fractions": list(video_fractions),
+            "frame_count": len(video_images),
+            "has_reference": has_reference,
+            "has_target": has_target,
         },
         call=_call,
         cache_mode=cache_mode,

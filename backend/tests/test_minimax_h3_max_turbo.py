@@ -61,8 +61,11 @@ def _request(spec=None, **overrides) -> MotionVideoRequest:
 # ── routing ───────────────────────────────────────────────────────────────
 
 
-def test_breathing_routes_to_minimax_by_default(monkeypatch):
+def test_breathing_routes_to_minimax_when_configured(monkeypatch):
+    # BREATHING now defaults to Grok Imagine Lite; MiniMax stays selectable as an
+    # opt-in first choice via config, proving config-driven routing lands on it.
     monkeypatch.setenv("FAL_KEY", "fal")
+    monkeypatch.setenv("MOTION_MODEL_BREATHING", "minimax_h3_max_turbo")
     providers = vp.resolve_provider_order(ms.provider_order_for_motion("BREATHING"))
     assert isinstance(providers[0], FalMinimaxH3MaxTurboProvider)
     assert vp.provider_identity(providers[0]) == {
@@ -71,7 +74,7 @@ def test_breathing_routes_to_minimax_by_default(monkeypatch):
         "adapter": "FalMinimaxH3MaxTurboProvider",
         "vendor_model": "minimax/h3-max-turbo/image-to-video",
     }
-    assert [p.name for p in providers] == ["minimax_h3_max_turbo", "seedance"]
+    assert [p.name for p in providers] == ["minimax_h3_max_turbo"]
 
 
 def test_breathing_routes_to_wan_when_config_says_so(monkeypatch):
@@ -79,11 +82,11 @@ def test_breathing_routes_to_wan_when_config_says_so(monkeypatch):
     monkeypatch.setenv("MOTION_MODEL_BREATHING", "wan_3_standard")
     providers = vp.resolve_provider_order(ms.provider_order_for_motion("BREATHING"))
     assert isinstance(providers[0], FalWan3StandardProvider)
-    assert [p.name for p in providers] == ["wan_3_standard", "seedance"]
+    assert [p.name for p in providers] == ["wan_3_standard"]
 
 
 def test_other_micro_motions_keep_class_order():
-    assert ms.provider_order_for_motion("BLINKING") == ("wan_3_standard", "seedance")
+    assert ms.provider_order_for_motion("BLINKING") == ("wan_3_standard",)
 
 
 def test_unknown_model_fails_with_clear_error(monkeypatch):

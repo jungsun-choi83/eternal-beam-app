@@ -255,6 +255,10 @@ function MemorialDevicePlayScreenInner({
   const lookUpSource = eligibility.isEligible("LOOK_UP")
     ? (premiumAssets?.readyAssets?.LOOK_UP?.url ?? null)
     : null;
+  // RETURN_HOME (2026-10-22) — COME_CLOSER 의 무료 시스템 복귀 동반 모션. 구매/적격성
+  // 게이트가 없다(무료·시스템 소유). 소스가 있으면 COME_CLOSER.chainTo 가 끝에서
+  // 체인하고, 없으면 chainFrom 이 hold-and-dissolve 로 폴백한다 (idle-loop-video).
+  const returnHomeSource = premiumAssets?.readyAssets?.RETURN_HOME?.url ?? null;
   // 자세 전이 3종 — 같은 발견 계약 + 같은 적격성. 셋 중 하나라도 빠지면 체인이
   // 끊기므로(runtime 은 소스 없는 체인 대상에서 BREATH 로 폴백) 개별 게이트로
   // 충분하다 — 세트 강제는 상품/구매 UX 의 일이지 재생 게이트의 일이 아니다.
@@ -559,7 +563,7 @@ function MemorialDevicePlayScreenInner({
                 comeCloserVideoUrl={comeCloserSource}
                 petHeadVideoUrl={petHeadSource}
                 lookUpVideoUrl={lookUpSource}
-                extraEventSources={poseTransitionSources}
+                extraEventSources={{ ...poseTransitionSources, RETURN_HOME: returnHomeSource }}
                 idleEventSources={eligibleIdleEventSources}
                 eventDeliveryFormats={eventDeliveryFormats}
                 actionTriggerRef={comeCloserTriggerRef}
@@ -587,7 +591,7 @@ function MemorialDevicePlayScreenInner({
                 comeCloserVideoUrl={comeCloserSource}
                 petHeadVideoUrl={petHeadSource}
                 lookUpVideoUrl={lookUpSource}
-                extraEventSources={poseTransitionSources}
+                extraEventSources={{ ...poseTransitionSources, RETURN_HOME: returnHomeSource }}
                 // 적격한 것만 넘긴다 — 소스가 없으면 런타임이 자기 규칙(no-source)으로
                 // 거절하므로, 수동 트리거가 남아 있어도 OFF 는 재생되지 않는다.
                 idleEventSources={eligibleIdleEventSources}

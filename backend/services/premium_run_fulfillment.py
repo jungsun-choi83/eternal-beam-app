@@ -23,13 +23,73 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Optional
+from typing import Any, Optional
 
 from . import owned_assets
 from . import pet_generation_run_service as runs
 from .premium_motion_finalization import PREMIUM_MOTIONS
 
 logger = logging.getLogger(__name__)
+
+
+#: 유료 액션 → 무료 시스템 동반 모션. 유료 접근(COME_CLOSER)을 만든 펫에게는 그
+#: 접근을 홈으로 되돌리는 복귀(RETURN_HOME)도 필요하다. 동반 모션은 시스템 소유라
+#: 크레딧 0·구매 불가(REQUEST_FREE_HOME 경로)로 생성되고, 시작 이미지는 COME_CLOSER
+#: 영상에서 파생한 CLOSE_POSITION 이다(close_position_service → start_image_override).
+#:
+#: ⚠️ 의존성 규칙: 동반은 **제출 시점이 아니라 유료 액션이 QA 를 통과해 실제
+#: 생성물로 발행된 뒤에만** 큐에 들어간다(pet_generation_run_service 의
+#: _maybe_enqueue_system_companion, DELIVERED_GENERATED 경로). 그래서 COME_CLOSER 가
+#: 실패/폴백이면 RETURN_HOME 은 애초에 만들어지지 않고, RETURN_HOME 이 실패해도 이미
+#: 발행된 COME_CLOSER 는 그대로다(별개 실행).
+SYSTEM_COMPANIONS: dict[str, str] = {"COME_CLOSER": "RETURN_HOME"}
+
+
+async def ensure_system_companion(
+    *,
+    user_id: str,
+    pet_id: str,
+    action_id: str,
+    source_run_id: str,
+    start_image_override: Optional[dict[str, Any]] = None,
+) -> Optional[str]:
+    """이 액션에 무료 시스템 동반 모션이 있으면 그 생성 실행을 보장한다 (run_id).
+
+    멱등: 펫+동반모션+원본 실행 열쇠. 같은 원본의 재시도는 재사용하지만,
+    새 COME_CLOSER 실행은 새 CLOSE_POSITION 을 쓰는 별개 동반 실행을 만든다.
+    동반 모션이 없으면 None. 과금 없음(credits_reserved=0, product_key 없음).
+    start_image_override(RETURN_HOME 의 런별 파생 CLOSE_POSITION)는 실행 생성 시점에
+    provider_state 로 박혀, 모션 단계가 그것을 시작 이미지로 쓴다.
+
+    **호출 시점**: 유료 액션이 QA 통과·발행된 직후에만 부른다(의존성 규칙)."""
+    companion = SYSTEM_COMPANIONS.get((action_id or "").strip().upper())
+    if not companion:
+        return None
+    source_run_id = (source_run_id or "").strip()
+    if not source_run_id:
+        raise ValueError("A source generation run is required for a system companion")
+    provider_state_extra = (
+        {"close_position_override": dict(start_image_override)} if start_image_override else None
+    )
+    run = await runs.start_generation_run(
+        user_id=user_id,
+        pet_id=pet_id,
+        motion_id=companion,
+        request_kind=runs.REQUEST_FREE_HOME,
+        idempotency_key=f"system-companion:{companion}:{pet_id}:{source_run_id}",
+        credits_reserved=0,
+        provider_state_extra=provider_state_extra,
+    )
+    if (
+        run.status == runs.STATUS_FAILED
+        and (run.last_error or {}).get("code") == "DERIVED_START_MISSING"
+        and start_image_override
+    ):
+        run = await runs.retry_generation_run(
+            user_id=user_id, run_id=run.id,
+            close_position_override=start_image_override,
+        )
+    return run.id
 
 
 class PremiumRunSubmitError(Exception):
