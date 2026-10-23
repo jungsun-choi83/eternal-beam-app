@@ -1,5 +1,5 @@
 """
-9:16 비디오 앵커 (Phase 6 라이브 계약) 테스트.
+비디오 앵커 (Phase 6 라이브 계약) 테스트 — 기본 종횡비 16:9 (테스트 단계).
 
 계약: 펫 픽셀 무변형 보존 · 결정론적 중앙 배치 · 테두리색 패딩 · 정확한 종횡비.
 """
@@ -32,13 +32,13 @@ def test_needs_anchor():
 
 
 def test_anchor_geometry_for_1024_square_keyframe():
-    """라이브 NEUTRAL_IDLE 키프레임 (1024×1024) → 1026×1824 캔버스, 중앙 배치."""
+    """라이브 NEUTRAL_IDLE 키프레임 (1024×1024) → 1824×1026 캔버스(16:9), 중앙 배치."""
     anchor, meta = va.build_anchor_image(_png(1024, 1024))
-    assert meta["canvas_size"] == [1026, 1824]  # k=57: 18k × 32k — 정확한 9:16, 양변 짝수
-    assert meta["canvas_size"][0] * 16 == meta["canvas_size"][1] * 9
-    assert meta["offset"] == [1, 400]
+    assert meta["canvas_size"] == [1824, 1026]  # k=57: 32k × 18k — 정확한 16:9, 양변 짝수
+    assert meta["canvas_size"][0] * 9 == meta["canvas_size"][1] * 16
+    assert meta["offset"] == [400, 1]
     with Image.open(io.BytesIO(anchor)) as im:
-        assert im.size == (1026, 1824)
+        assert im.size == (1824, 1026)
 
 
 def test_anchor_preserves_source_pixels_exactly():
@@ -71,7 +71,7 @@ def test_anchor_padding_uses_border_median_color():
 def test_tall_source_fits_by_height():
     anchor, meta = va.build_anchor_image(_png(100, 400))
     cw, ch = meta["canvas_size"]
-    assert cw * 16 == ch * 9
+    assert cw * 9 == ch * 16  # 16:9 캔버스
     assert cw >= 100 and ch >= 400  # 원본이 통째로 들어간다
 
 
