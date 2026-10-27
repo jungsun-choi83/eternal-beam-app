@@ -194,7 +194,7 @@ def test_registry_owns_motion_check_authority_and_applicability():
     assert micro["domains"]["motion_correctness"]["required_checks"] == [
         "breathing_motion_correctness"
     ]
-    assert micro["check_authority"]["vlm_motion"] == "DIAGNOSTIC_ONLY"
+    assert micro["check_authority"]["vlm_motion"] == "INTEGRITY_HARD"
     assert micro["check_authority"]["temporal_breathing"] == "DIAGNOSTIC_ONLY"
     assert micro["check_authority"]["breathing_global_motion_integrity"] == "QUALITY_ADVISORY"
     assert (

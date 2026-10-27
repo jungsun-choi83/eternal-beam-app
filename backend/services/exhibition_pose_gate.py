@@ -4,14 +4,17 @@
   원본 → YOLO 동물 bbox (vitmatte_service 와 같은 모델·캐시) → 크롭 축소
        → CLIP 제로샷 (고정 프롬프트 9개: GOOD 4 / BAD 5) → 판정
 
-  GOOD_FOR_DEFORMATION    원본 그대로 기존 EXHIBITION_PREP_RUN
-  NEEDS_AI_NORMALIZATION  exhibition_pose_normalizer 로 고정 포즈 재생성 후 EXHIBITION_PREP_RUN
+  GOOD_FOR_DEFORMATION    입력 포즈가 적합함을 기록
+  NEEDS_AI_NORMALIZATION  입력 포즈가 부적합함을 기록
+
+두 결과 모두 exhibition_pose_normalizer 를 한 번 거친다. 이 모듈은 생성 여부를
+결정하지 않고, 입력 분석 결과를 manifest 진단으로 남기기만 한다.
 
 ── 판정 규칙 ────────────────────────────────────────────────────────────────
 softmax 확률에서 best_good = GOOD 프롬프트 중 최대, best_bad = BAD 프롬프트 중 최대.
   NEEDS_AI_NORMALIZATION  ⇔ best_bad ≥ BAD_MIN_PROB  그리고  best_bad − best_good ≥ BAD_MARGIN
   그 외 전부(GOOD 우세, 근소한 차이, 점수 없음, 검출 실패, 모델 오류, mode=off) → GOOD
-불확실하면 **생성(과금)을 트리거하지 않는다** — 원본으로 진행하고 사유를 기록한다.
+불확실하면 GOOD 으로 기록하지만, 표준화 생성은 그대로 실행한다.
 
 ── 캐시 ────────────────────────────────────────────────────────────────────
 CLIP 모델/프로세서와 프롬프트 텍스트 임베딩(피사체 클래스별)은 프로세스 캐시다 —

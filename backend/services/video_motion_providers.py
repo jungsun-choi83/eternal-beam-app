@@ -1796,6 +1796,20 @@ def _mock_enabled() -> bool:
     return os.getenv("VIDEO_GENERATION_MOCK", "0").strip().lower() in ("1", "true", "yes")
 
 
+def pinned_provider(identity: dict[str, str]) -> VideoGenerationProvider:
+    """Bind a recorded adapter without consulting model/vendor routing settings."""
+    from copy import copy
+
+    adapter = _MODEL_VENDOR_ADAPTERS.get(identity.get("logical_model"), {}).get(identity.get("vendor"))
+    if adapter is None or provider_identity(adapter)["adapter"] != identity.get("adapter"):
+        raise VideoProviderError("MOTION_RESUME_ADAPTER_UNAVAILABLE", "The pinned motion adapter is unavailable.")
+    adapter = copy(adapter)
+    adapter.model_name = lambda: identity["vendor_model"]
+    if not adapter.supports_durable_jobs or not adapter.available():
+        raise VideoProviderError("MOTION_RESUME_ADAPTER_UNAVAILABLE", "The pinned adapter is not configured for durable work.")
+    return adapter
+
+
 def get_provider(name: Optional[str]) -> Optional[VideoGenerationProvider]:
     if not name:
         return None

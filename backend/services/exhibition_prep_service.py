@@ -1,13 +1,15 @@
 """
 EXHIBITION_PREP_RUN — 전시용 리깅 입력 패키지 생성 (일반 펫 생성과 분리).
 
-  QUEUED → RUNNING[(GATE) → CUTOUT → MAPS → PACKAGE] → READY | NEEDS_REVIEW | FAILED
+  QUEUED → RUNNING[GATE → NORMALIZE → CUTOUT → MAPS → PACKAGE]
+         → READY | NEEDS_REVIEW | FAILED
   READY(= PACKAGE_READY) → handoff_status: HANDOFF_SENDING → HANDOFF_CONFIRMED | HANDOFF_FAILED
 
   GATE    : exhibition_pose_gate (로컬: YOLO 동물 bbox 크롭 → CLIP 제로샷, 외부 API 없음).
-            CUTOUT **전에** 시점/포즈를 판정한다 — GOOD 이면 원본, NEEDS_AI_NORMALIZATION
-            이면 exhibition_pose_normalizer 로 재생성한 이미지로 아래 단계를 **한 번만** 돈다.
-            불확실하면 GOOD(생성 과금 없음). 실루엣 신호(classify_suitability)는 진단으로만 남는다.
+            CUTOUT **전에** 시점/포즈를 분석해 manifest 진단으로 남긴다.
+            결과와 관계없이 모든 업로드를 exhibition_pose_normalizer 로 **한 번**
+            표준 3/4 포즈로 생성하고, 생성본만 아래 단계에 넘긴다. 실루엣 신호
+            (classify_suitability)는 생성 트리거가 아니라 진단으로만 남는다.
   CUTOUT  : vitmatte_service.matte_foreground_with_meta() 를 **파이썬으로 직접**
             호출한다. /api/matting/cutout 을 거치지 않는 이유: 그 라우터는
             저장 시 user_assets 행과 pet_references 파생 행(cutout_vitmatte)을
@@ -102,8 +104,8 @@ MatteFn = Callable[[bytes], tuple[bytes, dict]]
 NormalizeFn = Callable[[bytes, dict], bytes]
 PoseGateFn = Callable[[bytes], dict]
 
-#: 변형(호흡) 적합성 판정 — 1 장 업로드에서 리테이크 없이 자동으로 결정한다.
-#: 판정은 **CUTOUT 전에** exhibition_pose_gate(YOLO 크롭 → 로컬 CLIP 제로샷)가 내린다.
+#: 입력 포즈 적합성 진단 — CUTOUT 전에 exhibition_pose_gate
+#: (YOLO 크롭 → 로컬 CLIP 제로샷)가 내리지만 생성 여부는 결정하지 않는다.
 SUITABILITY_GOOD = gate_mod.DECISION_GOOD
 SUITABILITY_NEEDS_NORMALIZATION = gate_mod.DECISION_NEEDS_NORMALIZATION
 #: 몸통 면적이 실루엣 대비 이보다 작으면 호흡 영역을 안전하게 추정할 수 없다고 본다
@@ -116,8 +118,8 @@ def classify_suitability(manifest: dict[str, Any]) -> str:
     """build_package() 가 이미 만든 manifest(머리 등급/신뢰도, 몸통 면적, 테두리 접촉,
     구조 QA)만으로 실루엣이 변형에 쓸 만한지 판정한다 — 새 모델 추론 없음.
 
-    **진단 전용** (manifest.pose_suitability.silhouette_check). 생성(과금)을 트리거하지
-    않는다 — 그 결정은 CUTOUT 전에 exhibition_pose_gate 가 시점/포즈로 내린다. 실루엣
+    **진단 전용** (manifest.pose_suitability.silhouette_check). 생성 여부를 바꾸지
+    않는다 — 생성은 입력 판정과 관계없이 항상 한 번 실행된다. 실루엣
     신호는 위에서 본 사진이나 등 돌린 사진도 깨끗이 통과시키므로 시점 판정에 쓸 수 없다.
     신호가 없으면(결측) NEEDS_AI_NORMALIZATION 으로 기록한다.
     """
@@ -378,10 +380,10 @@ def process_run(
 ) -> dict[str, Any]:
     """클레임된 실행 1건을 끝까지 처리하고 최종 필드를 반환한다. 예외를 올리지 않는다.
 
-      원본 → pose_gate(로컬) ─ GOOD  → build_package(원본)
-                            └ NEEDS → normalize_fn(생성) → build_package(생성본)
-                                       (생성 실패/미설정 → build_package(원본))
-    build_package(CUTOUT→MAPS→PACKAGE)는 어느 경로든 **정확히 한 번** 돈다.
+      원본 → pose_gate(로컬 분석) → normalize_fn(생성, 항상 1회)
+           → build_package(생성본; CUTOUT→MAPS→PACKAGE 정확히 1회)
+
+    생성 실패/미설정은 FAILED 로 마친다. 원본을 대신 패키징하지 않는다.
     """
     from .cutout_errors import CutoutError
 
@@ -401,45 +403,39 @@ def process_run(
 
     try:
         source_png = artifacts.get(run["source_path"])
-        hint = (run.get("head_hint") or {}).get("xy_in_source")
         queue_number = run.get("queue_number")
 
-        # ── 포즈/시점 게이트 (로컬, CUTOUT 전): 리테이크/추가 사진 없음 — 여기서 바로 결정한다.
+        # ── 포즈/시점 입력 분석 (로컬, CUTOUT 전).
+        # 결과는 감사/진단용이며 생성 여부를 바꾸지 않는다.
         gate = (pose_gate_fn or gate_mod.assess_pose)(source_png)
         pose_suitability = (
             SUITABILITY_NEEDS_NORMALIZATION
             if gate.get("decision") == SUITABILITY_NEEDS_NORMALIZATION
             else SUITABILITY_GOOD
         )
-        pose_record: dict[str, Any] = {"decision": pose_suitability, "source_used": "original", "gate": gate}
-        package_source, package_info = source_png, run.get("source_info") or {}
-        package_hint = tuple(hint) if hint else None
-        normalized_source_path = None
-        if pose_suitability == SUITABILITY_NEEDS_NORMALIZATION:
-            normalize = normalize_fn or pose_mod.default_normalize
-            prompt = pose_mod.build_normalization_prompt(gate)
-            try:
-                normalized_png = normalize(source_png, gate)
-            except pose_mod.PoseNormalizationError as e:
-                logger.info(
-                    "exhibition run %s: pose normalization skipped (%s) — continuing with original image",
-                    run_id, e.code,
-                )
-                pose_record["normalization_error"] = e.code
-            else:
-                normalized_source_bytes, normalized_info = normalize_source(normalized_png)
-                normalized_source_path = run_object_path(run_id, "source_normalized.png")
-                artifacts.put(normalized_source_path, normalized_source_bytes, "image/png")
-                # 생성본은 원본과 좌표계가 다르다 — 운영자 머리 힌트는 원본 전용이라 넘기지 않는다.
-                package_source, package_info, package_hint = normalized_source_bytes, normalized_info, None
-                pose_record.update(
-                    source_used="ai_normalized",
-                    original_source_path=run["source_path"],
-                    normalized_source_path=normalized_source_path,
-                    prompt=prompt,
-                )
-                if normalize_fn is None:
-                    pose_record["generator"] = pose_mod.generator_info()
+        pose_record: dict[str, Any] = {
+            "decision": pose_suitability,
+            "generation_policy": "always",
+            "source_used": "ai_normalized",
+            "gate": gate,
+        }
+        normalize = normalize_fn or pose_mod.default_normalize
+        prompt = pose_mod.build_normalization_prompt(gate)
+        normalized_png = normalize(source_png, gate)
+        normalized_source_bytes, normalized_info = normalize_source(normalized_png)
+        normalized_source_path = run_object_path(run_id, "source_normalized.png")
+        artifacts.put(normalized_source_path, normalized_source_bytes, "image/png")
+        pose_record.update(
+            original_source_path=run["source_path"],
+            normalized_source_path=normalized_source_path,
+            prompt=prompt,
+        )
+        if normalize_fn is None:
+            pose_record["generator"] = pose_mod.generator_info()
+
+        # 생성본은 원본과 좌표계가 다르다. 운영자 머리 힌트는 원본 전용이므로
+        # 표준화 생성본에는 적용하지 않는다.
+        package_source, package_info, package_hint = normalized_source_bytes, normalized_info, None
 
         status, reasons, files, manifest = build_package(
             run_id,
@@ -483,6 +479,9 @@ def process_run(
             "error_code": None,
             "error_message": None,
         })
+    except pose_mod.PoseNormalizationError as e:
+        logger.warning("exhibition run %s pose normalization failed: %s %s", run_id, e.code, e.message)
+        return _finish({"status": STATUS_FAILED, "error_code": e.code, "error_message": e.message[:2000]})
     except CutoutError as e:
         logger.warning("exhibition run %s cutout rejected: %s %s", run_id, e.code, e.message)
         return _finish({"status": STATUS_FAILED, "error_code": e.code, "error_message": e.message[:2000]})

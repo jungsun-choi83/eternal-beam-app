@@ -92,8 +92,11 @@ VLM_MV_OK = {
     "camera_stable": "yes",
     "background_neutral": "yes",
     "ends_in_target_pose": "yes",
+    "severe_motion_defect": "no",
+    "critical_state_violation": "no",
+    "final_position_verified": "yes",
     "notes": "",
-    "source": vlm_identity.VLM_MOTION_QA_VERSION,
+    "source": vlm_identity.VLM_MOTION_ACCEPTANCE_QA_VERSION,
     "model": "test-stub",
 }
 
@@ -842,29 +845,57 @@ def test_two_hard_qa_failures_stop_paid_generation_and_request_fallback(storage,
 
 def test_cosmetic_review_stops_after_one_and_persists_both_decisions(storage, monkeypatch):
     h, _ = _prepare_pipeline(monkeypatch, storage)
-    install_mv_vlm(monkeypatch, None)  # legacy REVIEW → deliver with advisory
+    install_mv_vlm(monkeypatch, {**VLM_MV_OK, "locomotion_form_correct": "no"})
     monkeypatch.setenv("PHASE6_MAX_PRIMARY", "2")
     monkeypatch.setenv("PHASE6_MAX_FALLBACK", "1")
     primary = FakeVideoProvider("seedance", [GOOD()] * 10)
     fallback = FakeVideoProvider("kling", [GOOD()] * 10)
 
-    v = _build_motion(h, "BREATHING", [primary, fallback])
+    v = _build_motion(h, "COME_CLOSER", [primary, fallback])
     assert primary.calls == 1 and fallback.calls == 0
     assert v.status == mv.STATUS_COMPLETE and v.selected_candidate_id is not None
-    assert v.candidates[0].decision == "REVIEW"
+    assert v.candidates[0].decision == "FAIL"
+    assert v.candidates[0].qa_result["business_qa"]["legacy_decision"] == "FAIL"
+    assert v.candidates[0].qa_result["business_qa"]["delivery_action"] == "DELIVER_WITH_ADVISORY"
+    assert mv.candidate_is_publishable(v.candidates[0])
     assert v.candidates[0].qa_result["business_qa"]["retry_action"] == "STOP"
     # 후보는 QA 이전에 저장된다 — raw 가 전부 스토리지에 있다.
     for c in v.candidates:
         assert c.raw_video_path in storage
 
 
-def test_breathing_temporal_pass_stops_after_candidate_one_despite_vlm_motion_no(
+def test_acceptance_uncertainty_publishes_review_after_generation_and_never_retries(storage, monkeypatch):
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+    provider = FakeVideoProvider("seedance", [GOOD()] * 3)
+    calls = []
+
+    def unavailable_qa(*args, **kwargs):
+        assert provider.calls == 1
+        candidates = list(mv._MOCK_CANDIDATES)
+        assert len(candidates) == 1
+        assert candidates[0]["raw_video_path"] in storage
+        calls.append(kwargs)
+        return None
+
+    monkeypatch.setattr(vlm_identity, "qa_motion_video", unavailable_qa)
+    result = _build_motion(h, "COME_CLOSER", [provider])
+    assert provider.calls == 1 and len(calls) == 1
+    assert calls[0]["acceptance_spec"] == ms.MOTIONS["COME_CLOSER"].qa_acceptance_spec
+    assert result.status == mv.STATUS_COMPLETE
+    assert result.selected_candidate_id == result.candidates[0].id
+    assert result.candidates[0].decision == "REVIEW"
+    assert result.candidates[0].qa_result["business_qa"]["retry_action"] == "STOP"
+    assert result.candidates[0].qa_result["business_qa"]["delivery_action"] == "DELIVER_WITH_ADVISORY"
+    assert mv.candidate_is_publishable(result.candidates[0])
+
+
+def test_breathing_temporal_pass_resolves_uncertain_subtle_motion_without_regeneration(
     storage, monkeypatch
 ):
     h, _ = _prepare_pipeline(monkeypatch, storage)
     install_mv_vlm(
         monkeypatch,
-        {**VLM_MV_OK, "requested_motion_occurs": "no"},
+        {**VLM_MV_OK, "requested_motion_occurs": "unknown"},
     )
 
     async def temporal_pass(motion_id, video_bytes, start_rgb, frames):
@@ -888,15 +919,13 @@ def test_breathing_temporal_pass_stops_after_candidate_one_despite_vlm_motion_no
     assert version.status == mv.STATUS_COMPLETE
     candidate = version.candidates[0]
     assert candidate.selected is True
-    # Temporal authority settles the motion question; the VLM is still asked
-    # the combined identity+anatomy question. Its motion "no" stays advisory:
-    # the legacy decision records it, Business QA delivers.
-    assert candidate.decision == "FAIL"
+    # Positive temporal evidence can resolve uncertain subtle breathing; a
+    # demonstrated violation would still fail under the acceptance contract.
+    assert candidate.decision == "PASS"
     assert candidate.qa_result["vlm_escalation"]["decision"] == "CALL"
-    assert candidate.qa_result["vlm_escalation"]["requested_tasks"] == ["IDENTITY_ANATOMY_VLM"]
+    assert set(candidate.qa_result["vlm_escalation"]["requested_tasks"]) == {"IDENTITY_ANATOMY_VLM", "MOTION_VLM"}
     assert candidate.qa_result["vlm_escalation"]["reason_codes"] == [
-        "breathing_temporal_authority_clear",
-        "breathing_identity_anatomy_required",
+        "motion_acceptance_requires_semantic_evidence",
     ]
     assert candidate.qa_result["business_qa"]["integrity_status"] == "PASS"
     assert candidate.qa_result["business_qa"]["authority_profile"] == "breathing-v2"
@@ -1546,6 +1575,7 @@ def test_versioned_qa_rerun_reuses_asset_and_is_idempotent(storage, monkeypatch)
     provider = FakeVideoProvider("seedance", [GOOD()])
     version = _build_motion(h, "BREATHING", [provider])
     assert version.status == mv.STATUS_COMPLETE
+    assert version.selected_candidate_id == version.candidates[0].id
     assert version.candidates[0].decision == "REVIEW"
     candidate = version.candidates[0]
 

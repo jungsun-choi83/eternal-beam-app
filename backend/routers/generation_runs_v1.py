@@ -138,6 +138,11 @@ async def start_generation_run(
     user: AuthedUser = Depends(require_user),
 ):
     """Create/reuse one logical run; a separate worker performs all generation."""
+    if body.motion_id.strip().upper() == "RETURN_HOME":
+        raise HTTPException(status_code=422, detail={
+            "code": "INTERNAL_MOTION_ONLY",
+            "message": "RETURN_HOME is created automatically after COME_CLOSER.",
+        })
     try:
         run = await service.start_generation_run(
             user_id=user.user_id,

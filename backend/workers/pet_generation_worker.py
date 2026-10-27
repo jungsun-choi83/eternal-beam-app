@@ -14,6 +14,8 @@ import socket
 
 from dotenv import load_dotenv
 
+from ..services.generation_worker_contract import WORKER_CONTRACT_VERSION
+
 logging.basicConfig(
     level=os.getenv("PET_GENERATION_WORKER_LOG_LEVEL", "INFO"),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -58,7 +60,12 @@ def _stop(signum, frame) -> None:  # noqa: ARG001
 async def run_once(worker_id: str):
     from ..services import pet_generation_run_service
 
-    return await pet_generation_run_service.process_next_generation_run(worker_id=worker_id)
+    return await pet_generation_run_service.process_next_generation_run(
+        worker_id=worker_id,
+        worker_hostname=socket.gethostname(),
+        worker_pid=os.getpid(),
+        worker_version=WORKER_CONTRACT_VERSION,
+    )
 
 
 async def _run() -> None:
@@ -81,10 +88,13 @@ async def _run() -> None:
 
     heartbeat_every = max(1, int(os.getenv("PET_GENERATION_WORKER_HEARTBEAT_TICKS", "30")))
     logger.info(
-        "Phase 7D worker started: worker_id=%s pid=%s poll_sec=%s lease_sec=%s "
+        "Phase 7D worker started: worker_id=%s hostname=%s pid=%s worker_version=%s "
+        "poll_sec=%s lease_sec=%s "
         "generation_mock=%s luma_mock=%s business_qa_user_test=%s cohort_pets=%s",
         worker_id,
+        socket.gethostname(),
         os.getpid(),
+        WORKER_CONTRACT_VERSION,
         poll_seconds,
         os.getenv("GENERATION_RUN_LEASE_SECONDS", "300"),
         os.getenv("GENERATION_MOCK", "0"),

@@ -43,6 +43,7 @@ VLM_ANALYZER_VERSION = "vlm-identity-v1"
 VLM_CLASSIFIER_VERSION = "vlm-view-pose-v1"
 VLM_CANONICAL_QA_VERSION = "vlm-canonical-qa-v2"
 VLM_TARGETED_QA_VERSION = "vlm-targeted-qa-v1"
+VLM_MOTION_ACCEPTANCE_QA_VERSION = "vlm-motion-acceptance-v1"
 
 _ENABLED_ENV = "PET_VLM_IDENTITY_ENABLED"
 _MODEL_ENV = "PET_VLM_MODEL"
@@ -694,6 +695,7 @@ def _targeted_qa_calls(
     params: dict[str, Any],
     cache_mode: Optional[str],
     task_images: Optional[dict[str, Sequence[tuple[bytes, str]]]] = None,
+    evaluator_version: str = VLM_TARGETED_QA_VERSION,
 ) -> Optional[dict[str, Any]]:
     """Run and merge independent narrow calls while retaining each raw answer.
 
@@ -724,13 +726,13 @@ def _targeted_qa_calls(
         ) -> Optional[dict[str, Any]]:
             result = _structured_qa_call(content, schema, label=f"{stage} {task}")
             if result is not None:
-                result["source"] = VLM_TARGETED_QA_VERSION
+                result["source"] = evaluator_version
                 result["task"] = task
             return result
 
         result = _cached_qa_call(
             kind=f"{KIND_TARGETED_QA}:{stage.lower()}:{task.lower()}",
-            version=f"{VLM_TARGETED_QA_VERSION}:{stage.lower()}:{task.lower()}",
+            version=f"{evaluator_version}:{stage.lower()}:{task.lower()}",
             images=imgs,
             params={
                 **params,
@@ -756,7 +758,7 @@ def _targeted_qa_calls(
         return None
     return {
         **merged,
-        "source": VLM_TARGETED_QA_VERSION,
+        "source": evaluator_version,
         "model": models[0] if models else model_name(),
         "called_tasks": called,
         "targeted_vlm_evidence": evidence,
@@ -1514,6 +1516,28 @@ def _motion_reference_consuming_tasks() -> frozenset[str]:
     )
 
 
+def _acceptance_prompt(acceptance: Optional[dict[str, Any]]) -> str:
+    if not acceptance or acceptance.get("review_policy") not in {
+        "hold_without_regeneration", "publish_with_advisory"
+    }:
+        return ""
+    return (
+        "\nMOTION ACCEPTANCE CONTRACT (independent of generation instructions):\n"
+        + json.dumps(acceptance, ensure_ascii=False, sort_keys=True)
+        + "\nJudge required behavior against this acceptance contract only. A FAIL/no for a mandatory positive "
+        "check requires a clearly demonstrated violation. Use unknown when important evidence is insufficient. "
+        "Unobservable foot-ground contact in sparse frames is not evidence of sliding, floating or missing limbs. "
+        "Uneven stride timing and brief partial paw cropping are minor imperfections. Do not require a complete "
+        "visible gait cycle. A severe motion defect requires clearly visible sustained sliding/floating, anatomical "
+        "breakage, teleportation or major discontinuity; do not infer it solely from sparse frames. "
+        "severe_motion_defect: yes only for such demonstrated severe defects, no when absent, unknown when uncertain. "
+        "critical_state_violation: yes only for a demonstrated CRITICAL violation of the stated start/end behavior "
+        "or loop continuity; no when absent, unknown when important compatibility cannot be verified. "
+        "final_position_verified: yes/no/unknown for the ideal endpoint; this is a quality observation, "
+        "not the mandatory behavior verdict. Report minor defects and uncertainty in notes."
+    )
+
+
 def _motion_targeted_specs(
     *,
     questions: Sequence[str],
@@ -1524,6 +1548,7 @@ def _motion_targeted_specs(
     allow_generated_hand: bool,
     has_target: bool,
     has_reference: bool = True,
+    acceptance_spec: Optional[dict[str, Any]] = None,
 ) -> dict[str, tuple[dict[str, Any], str]]:
     from . import vlm_escalation
 
@@ -1545,20 +1570,36 @@ def _motion_targeted_specs(
     else:
         ref_note = ""
 
-    props = MOTION_QA_SCHEMA["properties"]
+    props = dict(MOTION_QA_SCHEMA["properties"])
+    acceptance_prompt = _acceptance_prompt(acceptance_spec)
+    if acceptance_prompt:
+        props.update({key: _YNU for key in (
+            "severe_motion_defect", "critical_state_violation", "final_position_verified"
+        )})
+        motion_description = str(acceptance_spec["description"])
+    reference_state = bool(acceptance_prompt and acceptance_spec.get("endpoint_reference_required"))
+    state_keys = {"critical_state_violation": _YNU} if reference_state else {}
+    state_instruction = (
+        " Additionally assess critical_state_violation by comparing the first/last VIDEO frames with the "
+        "explicitly labeled START/TARGET references. Only a significant incompatibility affecting the "
+        "required continuity is a violation; small pose, scale or framing differences are advisory. "
+        "If the required TARGET reference is absent or compatibility cannot be judged, answer unknown. "
+        if reference_state else ""
+    )
     identity_schema = _schema(
         {key: props[key] for key in ("same_pet_all_frames", "notes")}
     )
     anatomy_schema = _schema(
         {
-            key: props[key]
+            **state_keys,
+            **{key: props[key]
             for key in (
                 "anatomy_plausible_all_frames",
                 "single_pet",
                 "duplicated_pet",
                 "human_present",
                 "notes",
-            )
+            )},
         }
     )
     full = "full_stage_review" in questions
@@ -1581,10 +1622,15 @@ def _motion_targeted_specs(
                 "background_neutral",
             }
         )
+    if acceptance_prompt:
+        motion_keys.update({"severe_motion_defect", "critical_state_violation", "final_position_verified"})
+        if reference_state:
+            motion_keys.discard("critical_state_violation")
     motion_schema = _schema({key: props[key] for key in props if key in motion_keys})
     common = (
         f"The supplied generated-video frames are chronological. Requested motion: "
         f"{motion_description}. Motion class: {motion_class}. "
+        + acceptance_prompt
     )
     return {
         vlm_escalation.IDENTITY_VLM: (
@@ -1599,13 +1645,15 @@ def _motion_targeted_specs(
             common
             + "ANATOMY_VLM only. Check severe limb/joint/body corruption, pet duplication, "
             "and forbidden human contamination across the video frames. Do not judge identity, "
-            "pose, requested motion, camera, color, or presentation. Use unknown when "
-            "insufficient." + ref_note,
+            + ("ordinary pose differences, " if reference_state else "pose, ")
+            + "requested motion, camera, color, or presentation. Use unknown when "
+            "insufficient." + state_instruction + ref_note,
         ),
         vlm_escalation.IDENTITY_ANATOMY_VLM: (
             _schema(
                 {
-                    key: props[key]
+                    **state_keys,
+                    **{key: props[key]
                     for key in (
                         "same_pet_all_frames",
                         "anatomy_plausible_all_frames",
@@ -1613,7 +1661,7 @@ def _motion_targeted_specs(
                         "duplicated_pet",
                         "human_present",
                         "notes",
-                    )
+                    )},
                 }
             ),
             common
@@ -1622,7 +1670,7 @@ def _motion_targeted_specs(
             "(2) whether anatomy stays plausible — no severe limb/joint/body corruption, "
             "no pet duplication, no forbidden human contamination. Do not judge whether "
             "the requested motion occurs, motion size, camera, color, or presentation. "
-            "Use unknown when the sampled frames are insufficient." + (
+            "Use unknown when the sampled frames are insufficient." + state_instruction + (
                 ref_note or " The final supplied image is the approved reference keyframe "
                 "of the pet, not a video frame."
             ),
@@ -1636,9 +1684,10 @@ def _motion_targeted_specs(
             + f"Resolve only: {list(questions)}. Expected direction: "
             f"{expected_direction or 'as requested'}. Interaction: "
             f"{interaction_type or 'not applicable'}. Human/hand allowed: "
-            f"{bool(allow_generated_hand)}. Do not reassess pet identity or anatomy. For "
-            "BREATHING, deterministic temporal QA owns breathing correctness; do not "
-            "override it. Use unknown where the sampled sequence is insufficient.",
+            f"{bool(allow_generated_hand)}. Do not reassess pet identity or anatomy. "
+            + ("Use the acceptance behavior even for subtle living motion. " if acceptance_prompt else
+               "For BREATHING, deterministic temporal QA owns breathing correctness; do not override it. ")
+            + "Use unknown where the sampled sequence is insufficient.",
         ),
     }
 
@@ -1658,10 +1707,16 @@ def qa_motion_video(
     tasks: Optional[Sequence[str]] = None,
     unresolved_questions: Sequence[str] = (),
     evidence_context: Optional[dict[str, Any]] = None,
+    acceptance_spec: Optional[dict[str, Any]] = None,
 ) -> Optional[dict[str, Any]]:
     """샘플 프레임들 + 레퍼런스 → 구조화 모션 QA. 실패/비활성은 None."""
     if not is_enabled() or not frame_images:
         return None
+
+    acceptance_prompt = _acceptance_prompt(acceptance_spec)
+    evaluator_version = VLM_MOTION_ACCEPTANCE_QA_VERSION if acceptance_prompt else VLM_TARGETED_QA_VERSION
+    if acceptance_spec:
+        motion_description = str(acceptance_spec.get("description") or motion_description)
 
     # v1 truncated to six frames. That aliases a roughly two-cycle/5-second
     # BREATHING clip and can omit both intermediate phases and the true last
@@ -1714,6 +1769,7 @@ def qa_motion_video(
                 allow_generated_hand=allow_generated_hand,
                 has_target=has_target,
                 has_reference=has_reference,
+                acceptance_spec=acceptance_spec,
             ),
             params={
                 "motion_description": motion_description,
@@ -1726,8 +1782,10 @@ def qa_motion_video(
                 "has_reference": has_reference,
                 "has_target": has_target,
                 "evidence_context": dict(evidence_context or {}),
+                "acceptance_spec": acceptance_spec,
             },
             cache_mode=cache_mode,
+            evaluator_version=evaluator_version,
         )
     # Combined template call judges identity/anatomy too, so it keeps the
     # reference keyframes appended AFTER the video frames and labels them
@@ -1762,17 +1820,25 @@ def qa_motion_video(
         target_note2=(" (last image)" if has_target else ""),
     )
     content: list[dict[str, Any]] = [_image_block(data, mime) for data, mime in images]
+    if acceptance_prompt:
+        prompt += acceptance_prompt
+    schema = copy.deepcopy(MOTION_QA_SCHEMA) if acceptance_prompt else MOTION_QA_SCHEMA
+    if acceptance_prompt:
+        for key in ("severe_motion_defect", "critical_state_violation", "final_position_verified"):
+            schema["properties"][key] = _YNU
+            schema["required"].append(key)
+    combined_version = VLM_MOTION_ACCEPTANCE_QA_VERSION if acceptance_prompt else VLM_MOTION_QA_VERSION
     content.append({"type": "text", "text": prompt})
 
     def _call() -> Optional[dict[str, Any]]:
-        result = _structured_qa_call(content, MOTION_QA_SCHEMA, label="모션 QA")
+        result = _structured_qa_call(content, schema, label="모션 QA")
         if result is not None:
-            result["source"] = VLM_MOTION_QA_VERSION
+            result["source"] = combined_version
         return result
 
     return _cached_qa_call(
         kind=KIND_MOTION_QA,
-        version=VLM_MOTION_QA_VERSION,
+        version=combined_version,
         images=images,
         params={
             "prompt": prompt,

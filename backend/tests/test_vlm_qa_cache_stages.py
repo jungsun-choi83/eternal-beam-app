@@ -379,7 +379,8 @@ def test_motion_rerun_with_clean_plate_sends_a_different_reference_than_the_buil
     calls = install_fake_anthropic(monkeypatch)
     v = _build_motion(h, "BREATHING", [FakeVideoProvider("seedance", [GOOD()])])
     assert v.status == mv.STATUS_COMPLETE and len(_targeted_calls(calls, "MOTION_VLM")) == 1
-    build_ref = [b for b in calls[-1]["messages"][0]["content"] if b["type"] == "image"][-1]["source"]["data"]
+    identity_call = _targeted_calls(calls, "IDENTITY_ANATOMY_VLM")[-1]
+    build_ref = [b for b in identity_call["messages"][0]["content"] if b["type"] == "image"][-1]["source"]["data"]
 
     monkeypatch.setenv(motion_video_qa.MOTION_VIDEO_QA_RULESET_ENV, "v10")
     _run(mv.reevaluate_motion_candidate(
@@ -388,7 +389,8 @@ def test_motion_rerun_with_clean_plate_sends_a_different_reference_than_the_buil
         frame_sampler=sampler_identical, conformance_fn=conformance_ok,
     ))
     assert len(_targeted_calls(calls, "MOTION_VLM")) == 2
-    rerun_ref = [b for b in calls[-1]["messages"][0]["content"] if b["type"] == "image"][-1]["source"]["data"]
+    identity_call = _targeted_calls(calls, "IDENTITY_ANATOMY_VLM")[-1]
+    rerun_ref = [b for b in identity_call["messages"][0]["content"] if b["type"] == "image"][-1]["source"]["data"]
     assert rerun_ref != build_ref, "miss 의 원인은 레퍼런스 이미지(plate vs raw) 차이다"
 
 

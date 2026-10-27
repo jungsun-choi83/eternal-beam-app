@@ -27,6 +27,7 @@ from .test_motion_video_generation import (
     _prepare_pipeline,
     conformance_ok,
     sampler_identical,
+    VLM_MV_OK,
     storage,  # noqa: F401  (fixture)
 )
 from .test_pet_reference_sets import PET, USER
@@ -230,3 +231,41 @@ def test_unrelated_motions_unchanged():
     assert "BREATHING" in mds.SYSTEM_MOTIONS  # 기존 무료 홈 모션 그대로
     # COME_CLOSER 는 여전히 상용(판매) 모션이다.
     assert "COME_CLOSER" in pmf.PREMIUM_MOTIONS
+
+
+def test_return_home_qa_rerun_reuses_derived_input_and_preserves_history(monkeypatch, storage):
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+    path = f"{USER}/{PET[4:]}/derived/close_position_existing.png"
+    storage[path] = _png_bytes()
+    contract = _run(ms.resolve_video_generation_spec(
+        user_id=USER, pet_id=PET, motion_id="RETURN_HOME",
+        start_image_override={"bucket": supabase_assets.BUCKET, "object_path": path},
+    ))
+
+    def fetch(ref):
+        return storage.get(getattr(ref, "object_path", None)) or h.kf_fetch(ref)
+
+    provider = FakeVideoProvider("kling", [_png_bytes()], end_frame=True)
+    version = _run(mv.build_motion_video(
+        user_id=USER, pet_id=PET, motion_id="RETURN_HOME", fetch_bytes=fetch,
+        providers=[provider], frame_sampler=sampler_identical, conformance_fn=conformance_ok,
+        precomputed_contract=contract,
+    ))
+    candidate = version.candidates[0]
+    calls = []
+    def new_qa(*args, **kwargs):
+        calls.append(kwargs)
+        assert kwargs["reference_image"][0] == storage[path]
+        assert kwargs["target_image"] is not None
+        return VLM_MV_OK
+
+    refreshed = _run(mv.reevaluate_motion_candidate(
+        user_id=USER, pet_id=PET, motion_id="RETURN_HOME", motion_version_id=version.id,
+        candidate_id=candidate.id, video_bytes=_png_bytes(), fetch_bytes=fetch,
+        frame_sampler=sampler_identical, conformance_fn=conformance_ok,
+        vlm_qa_fn=new_qa, vlm_cache_mode="refresh",
+    ))
+    assert provider.calls == 1 and len(calls) == 1
+    assert refreshed.id == version.id and refreshed.candidates[0].id == candidate.id
+    assert refreshed.candidates[0].generation_metadata["qa_history"][0]["qa_result"] == candidate.qa_result
+    assert refreshed.candidates[0].raw_video_path == candidate.raw_video_path

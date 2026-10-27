@@ -305,7 +305,8 @@ def test_second_hard_failure_authorizes_fallback_and_never_candidate_three():
 
 
 def _motion_result(motion_id, checks, *, signals=None, decision="REVIEW"):
-    result = _legacy(checks, decision=decision)
+    required = motion_spec.MOTIONS[motion_id].qa_acceptance_spec.get("required_checks", [])
+    result = _legacy({**dict.fromkeys(required, "PASS"), **checks}, decision=decision)
     result["motion_business_contract"] = dict(
         motion_spec.MOTIONS[motion_id].requirements["qa"]["business"]
     )
@@ -354,7 +355,7 @@ def test_motion_class_true_integrity_failures_can_regenerate():
         assert result["retry_action"] == "REGENERATE", motion_id
 
 
-def test_breathing_vlm_motion_no_and_global_pulse_are_advisory_but_catastrophic_is_hard():
+def test_breathing_broken_behavior_and_catastrophe_are_hard_but_minor_global_motion_is_advisory():
     vlm_only = qa.build_business_result(
         _motion_result(
             "BREATHING",
@@ -402,9 +403,9 @@ def test_breathing_vlm_motion_no_and_global_pulse_are_advisory_but_catastrophic_
     )
 
     assert vlm_only["authority_profile"] == qa.BREATHING_AUTHORITY_VERSION == "breathing-v2"
-    assert vlm_only["integrity_status"] == "PASS"
-    assert vlm_only["delivery_action"] == "DELIVER"
-    assert vlm_only["retry_action"] == "STOP"
+    assert vlm_only["integrity_status"] == "FAIL"
+    assert vlm_only["delivery_action"] == "BLOCK"
+    assert vlm_only["retry_action"] == "REGENERATE"
     assert global_pulse["integrity_status"] == "PASS"
     assert global_pulse["delivery_action"] == "DELIVER_WITH_ADVISORY"
     assert global_pulse["retry_action"] == "STOP"

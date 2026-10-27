@@ -1591,6 +1591,9 @@ JUDGEMENT_CHECKS = frozenset(
         "vlm_direction_travel",
         "vlm_interaction",
         "vlm_human_hand_policy",
+        "vlm_motion_integrity",
+        "vlm_critical_state",
+        "vlm_final_position",
         "temporal_breathing",
     }
 )
@@ -1837,6 +1840,19 @@ def apply_judgement(
         elif v("single_pet") != "yes":
             composition = "unknown"
         checks["vlm_composition"] = composition
+
+        acceptance = (((spec_contract.get("requirements") or {}).get("qa") or {}).get("business") or {}).get("acceptance") or {}
+        if acceptance.get("review_policy") in {
+            "hold_without_regeneration", "publish_with_advisory"
+        }:
+            for name, key in (("vlm_motion_integrity", "severe_motion_defect"),
+                              ("vlm_critical_state", "critical_state_violation")):
+                val = v(key)
+                checks[name] = FAIL if val == "yes" else PASS if val == "no" else UNKNOWN
+                if val == "yes":
+                    reasons.append(f"vlm:{key}=yes")
+            val = v("final_position_verified")
+            checks["vlm_final_position"] = PASS if val == "yes" else REVIEW
 
         if motion_class == "TRANSITION":
             val = v("ends_in_target_pose")
