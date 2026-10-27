@@ -4,11 +4,14 @@
 ── 파이프라인 ──────────────────────────────────────────────────────────────
 resolve_video_generation_spec (Phase 5.1 — 승인 키프레임 게이트 포함) →
   1. motion_spec 의 모션별 프로바이더 순서를 adapter registry 로 해석.
-     START_END_FRAME 인데 프로바이더가 end frame 을 못 받으면 **라우팅 실패**다 —
-     start-only 로 조용히 강등하지 않는다.
+     The selected logical model is authoritative. Unsupported controls use prompt
+     conditioning within that model; target images remain available to QA.
   2. 라이브 안전 게이트 (mock / allowlist / all) — 과금 전, 행 기록 전.
-  3. 명시적 출력 사양: 9:16 · 720p · 스펙 duration 범위 중앙값 · audio off ·
-     camera fixed. 프로바이더 기본값에 기대지 않는다 (Wan 16:9 사고 재발 방지).
+  3. 명시적 출력 사양: 종횡비(PHASE6_ASPECT_RATIO, 기본 16:9) · 해상도(프로파일
+     /PHASE6_RESOLUTION) · 스펙 duration 범위 중앙값 · audio off · camera fixed.
+     프로바이더 기본값에 기대지 않는다 — 요청 기하를 시작/끝 이미지(앵커)로 강제한다.
+     ⚠️ 테스트 단계(2026-10-22): render.yaml 이 PHASE6_ASPECT_RATIO=16:9 ·
+        PHASE6_RESOLUTION=480p(854×480) 로 전역 고정. 테스트 후 720p/HD 로 되돌린다.
   4. Phase 4/5 후보 생명주기: 버전 행 먼저 → 후보 raw 저장 → QA → 판정.
   5. 프레임 샘플링 QA (0/12.5/.../87.5/true-last) + VLM 확언. FAIL 은 절대 승격 불가.
   6. 선택 → 대장 기록(role='generated', kind motion_raw) → 불변 버전.
@@ -26,6 +29,7 @@ import logging
 import os
 import time
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -155,7 +159,9 @@ def candidate_policy(motion_class: Optional[str] = None) -> dict[str, int]:
 #   production  최종 프로덕션 설정 자리 — 현재는 benchmark 와 동일 (아직 미조정)
 # 길이는 절대 모션 스펙 최소 아래로 내려가지 않는다: 프로파일 목표가 스펙
 # 최소보다 짧으면 최소를 유지하고 경고로 보고한다 (예: BREATHING 최소 4s).
-# 종횡비(9:16)·오디오 off·카메라 고정은 프로파일과 무관하게 불변이다.
+# 종횡비(PHASE6_ASPECT_RATIO, 기본 16:9)·오디오 off·카메라 고정은 프로파일과
+# 무관하게 불변이다. 해상도는 프로파일이 정하되 PHASE6_RESOLUTION 환경변수가
+# 우선한다 (테스트 단계엔 render.yaml 에서 480p 로 전역 오버라이드).
 GENERATION_PROFILES: dict[str, dict[str, Any]] = {
     "test": {
         "resolution": "480p",
@@ -205,7 +211,9 @@ def build_output_spec(
 
     return (
         {
-            "aspect_ratio": os.getenv("PHASE6_ASPECT_RATIO", "16:9"),  # 프로파일 불변
+            # 프로파일 불변. 테스트 단계 전역값 16:9 (854×480) — render.yaml 이 env 로
+            # 고정하고, 코드 기본값도 16:9 다. 포트레이트로 되돌리려면 이 기본값/ env 를 9:16 으로.
+            "aspect_ratio": os.getenv("PHASE6_ASPECT_RATIO", "16:9"),
             # 명시적 env 가 프로파일보다 우선한다 (운영자 오버라이드).
             "resolution": os.getenv("PHASE6_RESOLUTION") or profile["resolution"],
             "duration_sec": duration,
@@ -274,99 +282,27 @@ QA_ONLY_VERSION_KEYS = (
 
 def generation_versions(stamp: Optional[dict[str, Any]]) -> dict[str, Any]:
     """스탬프에서 **생성 결과를 바꾸는** 부분만 남긴다."""
-    return {k: v for k, v in (stamp or {}).items() if k not in QA_ONLY_VERSION_KEYS}
-
-
-def _capability_enabled(provider: Any, capability: str) -> bool:
-    value = getattr(provider, str(capability), None)
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return float(value) > 0.0
-    return bool(value)
-
-
-def _required_capabilities(requirements: Optional[dict[str, Any]]) -> list[str]:
-    req = requirements or {}
-    return [str(c) for c in (req.get("required_all") or []) if str(c).strip()]
-
-
-def _degrade_permitted(requirements: Optional[dict[str, Any]]) -> bool:
-    """
-    레지스트리가 **명시적으로** 강등을 허용했는가.
-
-    두 가지가 모두 있어야 한다: `degrade_allowed` 플래그와, 무엇으로 내려갈지
-    말하는 `degrade_to_strategy`. 플래그만 있고 목적지가 없으면 그것은 허가가
-    아니라 미기재다 — 무엇으로 내려갈지 모르는 채 내려가면 고객은 자기가
-    주문한 것과 다른 것을 받는다.
-    """
-    req = requirements or {}
-    if not bool(req.get("degrade_allowed")):
-        return False
-    return bool(str(req.get("degrade_to_strategy") or "").strip())
-
-
-def _apply_provider_capability_requirements(
-    providers: Sequence[Any],
-    requirements: Optional[dict[str, Any]],
-) -> list[Any]:
-    """
-    레지스트리 provider_capabilities 를 기존 라우팅 순서 위에 얹는다.
-
-    ── 무엇이 어긋나 있었나 ────────────────────────────────────────────────
-    `required_all` 을 아무도 만족하지 못하면 예전에는 **걸러지지 않은 원래
-    목록을 그대로 되돌렸다**(`filtered if filtered else indexed`). 요구사항을
-    통과한 프로바이더가 없다는 사실이 "요구사항이 없었다"와 같은 결과를 냈고,
-    그 다음 줄부터는 아무도 그 차이를 알 수 없었다 — 능력 없는 프로바이더가
-    유료 생성을 받아 갔다.
-
-    이제 능력 미달은 **빈 목록**이다. 호출자가 그것을 보고 ROUTING_UNSUPPORTED
-    로 거절한다. 되돌리는 경우는 레지스트리가 강등을 명시적으로 허용했을
-    때뿐이고, 그때도 원래 순서를 그대로 유지한다.
-    """
-    req = requirements or {}
-    required_all = _required_capabilities(req)
-    preferred_any = [str(c) for c in (req.get("preferred_any") or []) if str(c).strip()]
-    indexed = list(enumerate(list(providers)))
-
-    filtered = [
-        (idx, p)
-        for idx, p in indexed
-        if all(_capability_enabled(p, cap) for cap in required_all)
-    ]
-    if required_all and not filtered:
-        if not _degrade_permitted(req):
-            return []
-        ranked = indexed
-    else:
-        ranked = filtered
-    ranked = list(ranked)
-    ranked.sort(
-        key=lambda item: (
-            -sum(1 for cap in preferred_any if _capability_enabled(item[1], cap)),
-            item[0],
-        )
-    )
-    return [p for _, p in ranked]
+    return {k: v for k, v in (stamp or {}).items() if k not in QA_ONLY_VERSION_KEYS and k != DURABLE_CONTRACT_KEY}
 
 
 def _resolve_providers_for_contract(
     contract: dict[str, Any],
     providers: Optional[Sequence[Any]] = None,
 ) -> tuple[list[Any], list[Any], dict[str, Any]]:
-    """모션 계약 순서 → 사용 가능한 adapter → capability 필터.
+    """Resolve only the assigned model, before checking availability or controls.
 
-    반환값은 (필터 통과, 자격 증명 통과, capability 요구사항)이다. 두 목록을
-    분리해 호출자가 "설정 없음"과 "능력 불일치"를 기존처럼 구분할 수 있게 한다.
+    Explicitly injected providers select their first adapter (also used by durable
+    workers). Neither unavailable credentials nor capabilities select another model.
+    Truncate legacy contracts too, so old stored orders cannot restore fallback.
     """
     from . import video_motion_providers
 
     try:
         resolved = (
-            list(providers)
+            list(providers)[:1]
             if providers is not None
             else video_motion_providers.resolve_provider_order(
-                list(contract.get("provider_order") or [])
+                list(contract.get("provider_order") or [])[:1]
             )
         )
     except video_motion_providers.VideoProviderError as exc:
@@ -377,11 +313,7 @@ def _resolve_providers_for_contract(
         if isinstance(contract, dict)
         else {}
     )
-    return (
-        _apply_provider_capability_requirements(available, requirements),
-        available,
-        requirements,
-    )
+    return available, available, requirements
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -706,6 +638,76 @@ def _frames_to_jpeg(frames: Sequence[Optional[np.ndarray]]) -> list[tuple[bytes,
     return out
 
 
+def _frames_to_jpeg_pairs(
+    fractions: Sequence[float], frames: Sequence[Optional[np.ndarray]]
+) -> tuple[list[tuple[bytes, str]], tuple[float, ...]]:
+    """Encode sampled frames to JPEG while keeping each frame glued to its
+    fraction label. A frame that failed to decode (None) drops together with its
+    fraction, so a mid-sequence decode miss never shifts the labels of later
+    frames and the true 1.0 frame stays labelled 1.0 when it decoded.
+
+    Returns the kept ``(image, mime)`` list and the parallel kept fractions —
+    same length, index-aligned — ready to hand straight to ``qa_motion_video``.
+    """
+    from PIL import Image
+
+    images: list[tuple[bytes, str]] = []
+    kept: list[float] = []
+    for frac, f in zip(fractions, frames or []):
+        if f is None:
+            continue
+        buf = io.BytesIO()
+        Image.fromarray(f, mode="RGB").save(buf, format="JPEG", quality=90)
+        images.append((buf.getvalue(), "image/jpeg"))
+        kept.append(float(frac))
+    return images, tuple(kept)
+
+
+DURABLE_CONTRACT_KEY = "durable_generation_contract"
+
+
+async def submitted_motion_version(*, run_id: str, user_id: str, pet_id: str, motion_id: str,
+                                   replacement_source_id: str = ""):
+    """Recover the run's submission pin, including a crash before run-row pinning.
+
+    An ambiguous/legacy receipt must never become permission to buy a new video.
+    """
+    from . import durable_provider_jobs
+
+    jobs = [j for j in durable_provider_jobs.list_for_run(run_id)
+            if j.get("provider_operation") == durable_provider_jobs.OP_MOTION]
+    if not jobs:
+        return None
+    # The existing explicit REVIEW replacement is a separate authorized version,
+    # but inherits this run's model/contract. Its subsequent ticks resume that version.
+    replacement = bool(replacement_source_id) and all(
+        j.get("phase_version_id") == replacement_source_id for j in jobs)
+    if replacement_source_id and not replacement:
+        jobs = [j for j in jobs if j.get("phase_version_id") != replacement_source_id]
+    ids = {j.get("phase_version_id") for j in jobs}
+    rows = await _version_rows(pet_id, motion_id)
+    matches = [r for r in rows if r.get("id") in ids and r.get("user_id") == user_id]
+    if len(ids) != 1 or len(matches) != 1:
+        raise MotionVideoError("MOTION_RESUME_CONTRACT_INVALID", "Motion receipts do not identify one owned version.", status=409)
+    row = deepcopy(matches[0])
+    pin = (row.get("analyzer_versions") or {}).get(DURABLE_CONTRACT_KEY) or {}
+    identity = pin.get("provider_identity")
+    if (pin.get("run_id") != run_id or not identity or not pin.get("contract")
+            or pin["contract"].get("motion_id") != motion_id
+            or pin["contract"].get("motion_spec_version") != row.get("motion_spec_version")
+            or pin.get("motion_version_id") != row.get("id")):
+        raise MotionVideoError("MOTION_RESUME_CONTRACT_MISSING", "Submitted motion has no verified generation snapshot; operator recovery is required.", status=409)
+    for job in jobs:
+        actual = (job.get("result_metadata") or {}).get("provider_identity")
+        if (job.get("user_id") != user_id or job.get("pet_id") != pet_id
+                or job.get("provider") != identity["logical_model"]
+                or job.get("model") != identity["vendor_model"] or actual != identity):
+            raise MotionVideoError("MOTION_RESUME_CONTRACT_INVALID", "Provider receipt differs from the pinned generation contract.", status=409)
+    if replacement:
+        row["_authorized_replacement"] = True
+    return row
+
+
 async def build_motion_video(
     *,
     user_id: str,
@@ -718,6 +720,7 @@ async def build_motion_video(
     sign_url_fn: Optional[Callable[[Any], Optional[str]]] = None,
     skip_if_unchanged: bool = True,
     precomputed_contract: Optional[dict[str, Any]] = None,
+    resume_version: Optional[dict[str, Any]] = None,
 ) -> MotionVersion:
     from . import (
         business_qa,
@@ -746,8 +749,14 @@ async def build_motion_video(
     # 해석/검증해 뒀다면 여기서 다시 해석하지 않는다 — 계약 해석 자체가
     # 키프레임/신원/canonical/레퍼런스세트/형태/모션레퍼런스를 도합 여러 번
     # 읽는 무거운 작업이라, 같은 순간의 같은 입력을 두 번 계산할 이유가 없다.
-    if precomputed_contract is not None:
-        contract = precomputed_contract
+    frozen = deepcopy((resume_version or {}).get("analyzer_versions", {}).get(DURABLE_CONTRACT_KEY) or {})
+    if resume_version and (not frozen or resume_version.get("user_id") != uid
+                           or resume_version.get("pet_id") != pid or resume_version.get("motion_id") != motion_id):
+        raise MotionVideoError("MOTION_RESUME_CONTRACT_INVALID", "Invalid owned motion snapshot.", status=409)
+    if frozen:
+        contract = deepcopy(frozen["contract"])
+    elif precomputed_contract is not None:
+        contract = dict(precomputed_contract)
     else:
         try:
             contract = await motion_spec.resolve_video_generation_spec(
@@ -758,38 +767,18 @@ async def build_motion_video(
 
     spec = motion_spec.get_motion(motion_id)
     motion_class = contract["motion_class"]
+    motion_description = frozen["motion_description"] if frozen else spec.description
 
     # ── 라우팅 + 능력 검증 ────────────────────────────────────────────────
-    resolved, available, provider_requirements = _resolve_providers_for_contract(
+    resolved, _available, _provider_requirements = _resolve_providers_for_contract(
         contract, providers
     )
     if not resolved:
-        if available:
-            # 프로바이더는 있는데 레지스트리가 요구한 능력이 없다 — 설정 누락이
-            # 아니라 **라우팅 실패**다. 두 경우를 같은 코드로 말하면, 능력 없는
-            # 생성을 조용히 허용하던 예전 동작으로 되돌아갈 자리가 생긴다.
-            raise MotionVideoError(
-                "ROUTING_UNSUPPORTED",
-                "레지스트리가 요구한 프로바이더 능력("
-                + ", ".join(_required_capabilities(provider_requirements))
-                + ")을 가진 프로바이더가 없습니다 — 강등이 허용되지 않은 모션입니다.",
-                status=503,
-            )
         raise MotionVideoError(
             "PROVIDER_NOT_CONFIGURED", "비디오 프로바이더가 설정되지 않았습니다.", status=503
         )
-    if contract["video_strategy"] == "START_END_FRAME":
-        capable = [p for p in resolved if p.supports_end_frame]
-        if not capable:
-            # start-only 강등은 없다 — 명시적 라우팅 실패 (요구 3).
-            raise MotionVideoError(
-                "ROUTING_UNSUPPORTED",
-                "START_END_FRAME 전략을 지원하는 프로바이더가 없습니다 — "
-                "목표 프레임을 버린 생성은 등가물이 아니다.",
-                status=503,
-            )
-        resolved = capable
-
+    if frozen and video_motion_providers.provider_identity(resolved[0]) != frozen["provider_identity"]:
+        raise MotionVideoError("MOTION_RESUME_CONTRACT_INVALID", "Resume adapter differs from the submission pin.", status=409)
     fetch = fetch_bytes or pet_identity_service._default_fetch_bytes
     sign = sign_url_fn or canonical_pet_service._default_sign_url
 
@@ -800,28 +789,19 @@ async def build_motion_video(
     # 박제한 채 레퍼런스 조건부라고 표기하지 않는다.
     strategy = contract["video_strategy"]
     extra_warnings: list[str] = []
+    conditioning_fallbacks = list(contract.get("conditioning_fallbacks") or [])
+    provider = resolved[0]
+    if not frozen and strategy == motion_spec.STRATEGY_START_END and not provider.supports_end_frame:
+        strategy = motion_spec.STRATEGY_I2V
+        conditioning_fallbacks.append("supports_end_frame")
+        extra_warnings.append(
+            f"{provider.name}: end-frame conditioning unsupported — "
+            "using start-only IMAGE_TO_VIDEO with endpoint prompt conditioning"
+        )
     motion_reference_url: Optional[str] = None
     _mr = contract.get("motion_reference") or {}
     if strategy == motion_spec.STRATEGY_I2V_MOTION_REF:
-        capable = [p for p in resolved if getattr(p, "supports_motion_reference", False)]
-        if not capable and providers is None:
-            capable = [
-                p for p in video_motion_providers.reference_capable_providers() if p.available()
-            ]
-        capable = _apply_provider_capability_requirements(capable, provider_requirements)
-        if not capable and "supports_motion_reference" in _required_capabilities(
-            provider_requirements
-        ):
-            # 레퍼런스가 **필수**인 모션인데 레퍼런스를 먹일 프로바이더가 없다.
-            # 레지스트리가 강등을 명시적으로 허용하지 않았다면 여기서 멈춘다 —
-            # 아래 IMAGE_TO_VIDEO 강등은 등가물이 아니다.
-            if not _degrade_permitted(provider_requirements):
-                raise MotionVideoError(
-                    "ROUTING_UNSUPPORTED",
-                    "모션 레퍼런스를 소비할 수 있는 프로바이더가 없습니다 — "
-                    "레퍼런스 없는 생성은 등가물이 아니다.",
-                    status=503,
-                )
+        reference_capable = bool(getattr(provider, "supports_motion_reference", False))
         asset = _mr.get("asset") or {}
         ref_obj = (
             SimpleNamespace(
@@ -837,14 +817,11 @@ async def build_motion_video(
             ref_dur is not None
             and float(ref_dur) > video_motion_providers.RUNWAY_WAN_MAX_REFERENCE_SEC
         )
-        if capable and ref_obj and not too_long:
+        if reference_capable and ref_obj and not too_long:
             motion_reference_url = sign(ref_obj)
-        if motion_reference_url:
-            # 레퍼런스 조건부 경로 — 단일 프로바이더, 교차 전략 폴백 없음.
-            resolved = capable[:1]
-        else:
+        if not motion_reference_url:
             degrade_reason = (
-                "no reference-capable provider" if not capable
+                "assigned model does not support motion references" if not reference_capable
                 else "reference asset missing" if not ref_obj
                 else "reference exceeds provider limit "
                      f"({ref_dur}s > {video_motion_providers.RUNWAY_WAN_MAX_REFERENCE_SEC}s)" if too_long
@@ -855,6 +832,28 @@ async def build_motion_video(
                 "degraded to IMAGE_TO_VIDEO"
             )
             strategy = motion_spec.STRATEGY_I2V
+            conditioning_fallbacks.append("supports_motion_reference")
+
+    # ── 루프 same-start-end 승격 (provider 능력 의존) ────────────────────
+    # Use the same start/end only if the assigned model supports that control.
+    # Otherwise express the loop endpoint in the prompt without changing models.
+    if not frozen and contract.get("loop_same_start_end") and strategy != motion_spec.STRATEGY_START_END:
+        if provider.supports_end_frame:
+            strategy = motion_spec.STRATEGY_START_END
+            contract["video_strategy"] = motion_spec.STRATEGY_START_END
+            # 끝 = 시작 역할 키프레임 그대로. 하류(플레이트/앵커/프로바이더 입력/QA
+            # 끝점)는 전부 contract["video_strategy"]==START_END 로 분기하므로
+            # 같은 키프레임이 start·end 양쪽에 실린다.
+            contract["target_keyframe"] = contract["start_keyframe"]
+        else:
+            conditioning_fallbacks.append("supports_end_frame")
+            extra_warnings.append(
+                "loop same-start-end unsupported by routed providers — "
+                "kept single-start IMAGE_TO_VIDEO"
+            )
+
+    contract["video_strategy"] = strategy
+    contract["conditioning_fallbacks"] = list(dict.fromkeys(conditioning_fallbacks))
 
     # ── 라이브 안전 게이트 — 과금 전, 행 기록 전 ─────────────────────────
     allowed, reason = video_motion_providers.live_generation_allowed(pid, resolved)
@@ -877,11 +876,11 @@ async def build_motion_video(
 
     start_obj = _obj(contract["start_keyframe"])
     target_obj = _obj(contract.get("target_keyframe"))
-    versions_stamp = analyzer_versions(resolved)
+    versions_stamp = deepcopy(resume_version["analyzer_versions"]) if frozen else analyzer_versions(resolved)
 
     # ── 멱등 — 바이트를 한 장도 내려받기 전에 먼저 체크한다. 재개/재시도에서
     # 아무것도 안 바뀌었으면 raw 든 클린 플레이트든 전혀 다운로드하지 않는다.
-    if skip_if_unchanged:
+    if skip_if_unchanged and not frozen:
         rows = await _version_rows(pid, contract["motion_id"])
         if rows:
             latest = rows[-1]
@@ -895,11 +894,14 @@ async def build_motion_video(
             ):
                 return _to_version(latest, await _candidate_rows(str(latest["id"])), deduplicated=True)
 
-    output_spec, profile_warnings = build_output_spec(
-        duration_range=contract.get("duration_range_sec") or [],
-        motion_class=motion_class,
-    )
-    prompt = motion_video_prompts.build_motion_video_prompt(contract, spec.description)
+    if frozen:
+        output_spec, profile_warnings = deepcopy(resume_version["output_spec"]), []
+    else:
+        output_spec, profile_warnings = build_output_spec(
+            duration_range=contract.get("duration_range_sec") or [],
+            motion_class=motion_class,
+        )
+    prompt = resume_version["prompt"] if frozen else motion_video_prompts.build_motion_video_prompt(contract, motion_description)
     warnings = list(contract.get("warnings") or []) + profile_warnings + extra_warnings
 
     cid = pid[4:] if pid.startswith("pet_") else pid
@@ -963,18 +965,33 @@ async def build_motion_video(
     start_bytes: Optional[bytes] = None
     target_bytes: Optional[bytes] = None
     keyframe_inputs: dict[str, Any] = {}
-    if clean_plate_service.plate_enabled():
+    if frozen:
+        start_obj = SimpleNamespace(**frozen["inputs"]["start"])
+        target_obj = SimpleNamespace(**frozen["inputs"]["target"]) if frozen["inputs"].get("target") else None
+        start_bytes = fetch(start_obj)
+        target_bytes = fetch(target_obj) if target_obj else None
+        keyframe_inputs = deepcopy(frozen["keyframe_inputs"])
+    elif clean_plate_service.plate_enabled():
         for label, payload, obj_ref in (
             ("start", contract["start_keyframe"], start_obj),
             (
                 "target",
-                contract.get("target_keyframe")
-                if contract["video_strategy"] == "START_END_FRAME"
-                else None,
+                # Keep the target for QA even when the model only accepts start.
+                contract.get("target_keyframe"),
                 target_obj,
             ),
         ):
             if not payload:
+                continue
+            if label == "start" and payload.get("derived"):
+                # 파생 CLOSE_POSITION(COME_CLOSER 종단 프레임)은 누끼/클린 플레이트가
+                # 아니라 평평한 비디오 프레임이다 — 플레이트 파이프라인을 건너뛰고
+                # 그 프레임을 **그대로** 시작 이미지로 쓴다(raw = 파생 object_path).
+                start_bytes = fetch(obj_ref) if obj_ref else None
+                keyframe_inputs[label] = {
+                    "kind": "derived_frame",
+                    "object_path": (payload.get("raw") or {}).get("object_path"),
+                }
                 continue
             data, obj, lineage = await _plate_input(payload, label)
             keyframe_inputs[label] = lineage
@@ -1025,8 +1042,8 @@ async def build_motion_video(
         if target_obj and contract["video_strategy"] == "START_END_FRAME"
         else None
     )
-    anchor_meta: dict[str, Any] = {}
-    if video_anchor.anchor_enabled():
+    anchor_meta: dict[str, Any] = deepcopy(frozen.get("anchor_meta") or {})
+    if not frozen and video_anchor.anchor_enabled():
         # fetch_bytes/sign_url_fn 을 넘기면 결정론적 object_path 에 이미 같은
         # 앵커가 있는지 먼저 확인하고, 있으면 재빌드/재업로드 없이 그대로
         # 재사용한다 (source_path+aspect_ratio 가 같으면 같은 경로다).
@@ -1050,14 +1067,20 @@ async def build_motion_video(
                 target_bytes, target_image_url = t.bytes, t.url
                 anchor_meta["target"] = {"object_path": t.object_path, **t.meta}
 
-    policy = candidate_policy(motion_class)
+    policy = deepcopy(frozen["candidate_policy"]) if frozen else candidate_policy(motion_class)
     rows = await _version_rows(pid, contract["motion_id"])
     durable_execution = any(getattr(provider, "durable_execution", False) for provider in resolved)
-    resumable = rows[-1] if rows else None
-    if not (
+    resumable = (None if (resume_version or {}).get("_authorized_replacement")
+                 else resume_version or (rows[-1] if rows else None))
+    if not frozen and not (
         durable_execution
         and resumable
         and resumable.get("status") == STATUS_BUILDING
+        and (
+            not getattr(resolved[0], "run_id", None)
+            or ((resumable.get("analyzer_versions") or {}).get(DURABLE_CONTRACT_KEY) or {}).get("run_id")
+            == resolved[0].run_id
+        )
         and str(resumable.get("start_keyframe_id") or "")
         == str(contract["start_keyframe"]["keyframe_id"])
         and resumable.get("start_keyframe_version") == contract["start_keyframe"]["version"]
@@ -1093,13 +1116,30 @@ async def build_motion_video(
             "video_strategy": strategy,
             "output_spec": output_spec,
             "prompt": prompt,
-            "prompt_version": motion_video_prompts.MOTION_VIDEO_PROMPT_VERSION,
+            "prompt_version": resume_version["prompt_version"] if frozen else motion_video_prompts.MOTION_VIDEO_PROMPT_VERSION,
             "qa_summary": {},
             "analyzer_versions": versions_stamp,
             "warnings": warnings,
             "created_at": _now_iso(),
             "completed_at": None,
         }
+        if durable_execution:
+            def saved_input(obj, label):
+                if not obj:
+                    return None
+                return {"bucket": getattr(obj, "bucket", None) or supabase_assets.BUCKET,
+                        "object_path": (anchor_meta.get(label) or {}).get("object_path") or obj.object_path,
+                        "mime_type": "image/png"}
+            version_row["analyzer_versions"][DURABLE_CONTRACT_KEY] = {
+                "version": "durable-motion-contract-v1",
+                "run_id": getattr(resolved[0], "run_id", None),
+                "motion_version_id": version_row["id"],
+                "provider_identity": video_motion_providers.provider_identity(resolved[0]),
+                "contract": deepcopy(contract), "motion_description": motion_description,
+                "candidate_policy": deepcopy(policy),
+                "inputs": {"start": saved_input(start_obj, "start"), "target": saved_input(target_obj, "target")},
+                "keyframe_inputs": deepcopy(keyframe_inputs), "anchor_meta": deepcopy(anchor_meta),
+            }
         if not await canonical_pet_service._insert(_versions_table(), _MOCK_VERSIONS, version_row):
             raise MotionVideoError("MOTIONS_UNAVAILABLE", "모션 버전을 기록하지 못했습니다.", status=503)
     version_id = str(version_row["id"])
@@ -1127,6 +1167,10 @@ async def build_motion_video(
             )
             motion_reference_snapshot["sent_version"] = _mr.get("version")
 
+    if contract["start_keyframe"].get("derived"):
+        keyframe_inputs["start"] = {
+            "kind": "derived_frame", **dict(contract["start_keyframe"].get("raw") or {})
+        }
     input_references = [
         {
             "kind": "start_keyframe",
@@ -1138,9 +1182,10 @@ async def build_motion_video(
             [{
                 "kind": "target_keyframe",
                 "keyframe_id": contract["target_keyframe"]["keyframe_id"],
+                "conditioning_sent": strategy == "START_END_FRAME",
                 **(
                     {"sent_input": keyframe_inputs["target"]}
-                    if keyframe_inputs.get("target")
+                    if keyframe_inputs.get("target") and strategy == "START_END_FRAME"
                     else {}
                 ),
             }]
@@ -1233,13 +1278,14 @@ async def build_motion_video(
                 "raw_bucket": None,
                 "raw_video_path": None,
                 "derived_video_path": None,
-                "prompt_version": motion_video_prompts.MOTION_VIDEO_PROMPT_VERSION,
+                "prompt_version": version_row["prompt_version"],
                 "input_references": input_references,
                 "generation_metadata": {
                     "tier": tier,
                     "provider_identity": provider_identity,
                     "output_spec": output_spec,
                     "motion_reference": motion_reference_snapshot,
+                    "conditioning_fallbacks": contract["conditioning_fallbacks"],
                     **({"video_anchor": anchor_meta} if anchor_meta else {}),
                 },
                 "qa_result": {},
@@ -1378,7 +1424,7 @@ async def build_motion_video(
                 video_bytes=result.video_bytes,
                 contract=contract,
                 output_spec=output_spec,
-                motion_description=spec.description,
+                motion_description=motion_description,
                 motion_class=motion_class,
                 start_rgb=start_rgb,
                 target_rgb=target_rgb,
@@ -1435,9 +1481,6 @@ async def build_motion_video(
                 passes += 1
 
     await run_provider(resolved[0], policy["max_primary"], "primary")
-    # 계약 위반은 우리 어댑터 잘못이다 — 폴백 프로바이더 과금으로 가리지 않는다.
-    if passes == 0 and len(resolved) > 1 and not contract_violation:
-        await run_provider(resolved[1], policy["max_fallback"], "fallback")
 
     from . import motion_video_qa as qa_mod
 
@@ -1697,14 +1740,20 @@ async def _evaluate_candidate_qa(
         should_call = escalation["decision"] == vlm_escalation.CALL
         # Failure classes of VLM calls that return nothing are persisted on the
         # escalation receipt (to_thread copies this context to the worker).
+        # Keep each frame glued to its fraction: a decode miss drops the pair, so
+        # the VLM never sees a frame mislabelled with a neighbour's fraction.
+        vlm_images, vlm_frame_fractions = _frames_to_jpeg_pairs(vlm_fractions, vlm_frames)
         with vlm_identity.capture_call_failures() as vlm_failures:
             vlm_qa = (
                 await asyncio.to_thread(
                     vlm_qa_fn,
-                    _frames_to_jpeg(vlm_frames),
+                    vlm_images,
                     motion_description=motion_description,
+                    acceptance_spec=(contract.get("qa_context") or {}).get("acceptance") or (
+                        (((contract.get("requirements") or {}).get("qa") or {}).get("business") or {}).get("acceptance")
+                    ),
                     motion_class=motion_class,
-                    sample_fractions=vlm_fractions,
+                    sample_fractions=vlm_frame_fractions,
                     reference_image=(start_bytes, "image/png"),
                     target_image=((target_bytes, "image/png") if target_bytes else None),
                     expected_direction=(contract.get("qa_context") or {}).get("expected_direction"),
@@ -1780,6 +1829,44 @@ async def _evaluate_candidate_qa(
     return qa
 
 
+def candidate_qa_is_current(qa_result: Optional[Mapping[str, Any]], motion_id: str) -> bool:
+    """Shared freshness gate for stored QA, independent of generation idempotency.
+
+    Missing version/acceptance evidence is stale. Only the existing, explicitly
+    versioned VLM SKIP compatibility path may omit an evaluator result.
+    """
+    from . import business_qa, motion_spec, motion_video_qa, vlm_identity, vlm_escalation
+
+    previous_qa = dict(qa_result or {})
+    previous_vlm = dict(previous_qa.get("vlm") or {})
+    current_spec = motion_spec.get_motion(motion_id)
+    current_acceptance = current_spec.qa_acceptance_spec if current_spec else {}
+    return bool(
+        current_spec
+        and not business_qa.has_obsolete_review_block(previous_qa)
+        and previous_qa.get("qa_version") == motion_video_qa.active_qa_version()
+        and previous_qa.get("sampling_version") == motion_video_qa.FRAME_SAMPLING_VERSION
+        and (
+            previous_vlm.get("source")
+            in {vlm_identity.VLM_MOTION_QA_VERSION, vlm_identity.VLM_TARGETED_QA_VERSION,
+                vlm_identity.VLM_MOTION_ACCEPTANCE_QA_VERSION}
+            or (
+                (previous_qa.get("vlm_escalation") or {}).get("version")
+                == vlm_escalation.VLM_ESCALATION_VERSION
+                and (previous_qa.get("vlm_escalation") or {}).get("decision") == "SKIP"
+            )
+        )
+        and (previous_qa.get("motion_business_contract") or {}).get("version")
+        == motion_spec.MOTION_QA_CONTRACT_VERSION
+        and business_qa.receipt(previous_qa) is not None
+        and (previous_qa.get("motion_business_contract") or {}).get("acceptance") == current_acceptance
+        and (
+            current_acceptance.get("version") != motion_spec.MOTION_ACCEPTANCE_VERSION
+            or previous_vlm.get("source") == vlm_identity.VLM_MOTION_ACCEPTANCE_QA_VERSION
+        )
+    )
+
+
 async def reevaluate_motion_candidate(
     *,
     user_id: str,
@@ -1814,7 +1901,6 @@ async def reevaluate_motion_candidate(
         pet_identity_service,
         supabase_assets,
         vlm_identity,
-        vlm_escalation,
     )
 
     uid = (user_id or "").strip()
@@ -1850,33 +1936,43 @@ async def reevaluate_motion_candidate(
         raise MotionVideoError("CANDIDATE_ASSET_MISSING", "재평가할 원본 비디오가 없습니다.", status=409)
 
     previous_qa = dict(candidate.get("qa_result") or {})
-    previous_vlm = dict(previous_qa.get("vlm") or {})
+    current_spec = motion_spec.get_motion(mid)
     force_refresh = vlm_identity.qa_cache_mode(vlm_cache_mode) == vlm_identity.QA_CACHE_REFRESH
-    if (
-        previous_qa.get("qa_version") == motion_video_qa.active_qa_version()
-        and previous_qa.get("sampling_version") == motion_video_qa.FRAME_SAMPLING_VERSION
-        and (
-            previous_vlm.get("source")
-            in {vlm_identity.VLM_MOTION_QA_VERSION, vlm_identity.VLM_TARGETED_QA_VERSION}
-            or (
-                (previous_qa.get("vlm_escalation") or {}).get("version")
-                == vlm_escalation.VLM_ESCALATION_VERSION
-                and (previous_qa.get("vlm_escalation") or {}).get("decision") == "SKIP"
-            )
-        )
-        and (previous_qa.get("motion_business_contract") or {}).get("version")
-        == motion_spec.MOTION_QA_CONTRACT_VERSION
-        and business_qa.receipt(previous_qa) is not None
-        and not force_refresh
-    ):
+    if candidate_qa_is_current(previous_qa, mid) and not force_refresh:
         return _to_version(version_row, candidates, deduplicated=True)
 
     try:
+        # Derived-start motions have no role keyframe to look up. Reuse the
+        # candidate's recorded input; never derive a new frame or generate here.
+        resolve_options = {}
+        if current_spec and current_spec.start_from_derived:
+            start_reference = next(
+                (ref for ref in candidate.get("input_references") or [] if ref.get("kind") == "start_keyframe"), {}
+            )
+            sent_input = start_reference.get("sent_input") or {}
+            if sent_input.get("kind") != "derived_frame" or not sent_input.get("object_path"):
+                raise MotionVideoError("QA_RERUN_REFERENCE_MISSING", "저장된 파생 시작 프레임을 확인하지 못했습니다.", status=409)
+            resolve_options["start_image_override"] = {
+                "object_path": sent_input["object_path"],
+                "bucket": sent_input.get("bucket") or candidate.get("raw_bucket") or asset_url_refresh.default_bucket(),
+                "reference_id": version_row.get("start_keyframe_id"),
+                "version": version_row.get("start_keyframe_version"),
+                "canonical_version_id": version_row.get("canonical_version_id"),
+            }
         contract = await motion_spec.resolve_video_generation_spec(
-            user_id=uid, pet_id=pid, motion_id=mid
+            user_id=uid, pet_id=pid, motion_id=mid, **resolve_options
         )
     except motion_spec.MotionSpecError as exc:
         raise MotionVideoError(exc.code, exc.message, status=exc.status) from exc
+    # The builder pins the same start frame as the end for loopable home idles.
+    # Restore that stored endpoint for QA; the role resolver alone has no target.
+    if (
+        contract.get("loop_same_start_end")
+        and version_row.get("target_keyframe_id")
+        and version_row["target_keyframe_id"] == (contract.get("start_keyframe") or {}).get("keyframe_id")
+    ):
+        contract["target_keyframe"] = dict(contract["start_keyframe"])
+        contract["video_strategy"] = version_row.get("video_strategy")
     if (
         str(version_row.get("motion_spec_version") or "")
         != str(contract.get("motion_spec_version") or "")
@@ -1884,6 +1980,8 @@ async def reevaluate_motion_candidate(
         != str((contract.get("start_keyframe") or {}).get("keyframe_id") or "")
         or str(version_row.get("canonical_version_id") or "")
         != str(contract.get("canonical_version_id") or "")
+        or str(version_row.get("target_keyframe_id") or "")
+        != str((contract.get("target_keyframe") or {}).get("keyframe_id") or "")
     ):
         raise MotionVideoError(
             "QA_RERUN_LINEAGE_CHANGED",
@@ -2028,6 +2126,7 @@ async def reevaluate_motion_candidate(
     versions = dict(version_row.get("analyzer_versions") or {})
     versions.update(
         {
+            "motion_qa_contract": motion_spec.MOTION_QA_CONTRACT_VERSION,
             "qa": motion_video_qa.active_qa_version(),
             "sampling": motion_video_qa.FRAME_SAMPLING_VERSION,
             "vlm_motion_qa": vlm_identity.VLM_MOTION_QA_VERSION,

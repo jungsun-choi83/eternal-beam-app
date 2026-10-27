@@ -95,7 +95,10 @@ def test_full_body_run_is_ready_with_complete_package(stores):
     assert final["review_reasons"] == []
     assert final["stage"] == st.STAGE_PACKAGE
     rid = final["id"]
-    expected = {"subject_rgba.png", "breathing_weight.png", "locked_mask.png", "preview_overlay.png", "manifest.json"}
+    expected = {
+        "subject_rgba.png", "breathing_weight.png", "locked_mask.png", "preview_overlay.png",
+        "manifest.json", "source_normalized.png",
+    }
     assert set(final["outputs_json"]) == expected
     # 모든 산출물이 exhibition/{run_id}/ 아래에만 있다 (+ 원본).
     assert set(artifacts.objects) == {f"exhibition/{rid}/{n}" for n in expected | {"source.png"}}
@@ -167,12 +170,12 @@ def test_no_head_review_manifest_reports_tier(stores):
     assert hp["xy"] is None and hp["tier"] == "NO_PLAUSIBLE_HEAD" and hp["method"] == "none"
 
 
-def test_operator_head_hint_resolves_review(stores):
-    # round_blob 의 (250, 120) 은 원본 좌표로 offset (140, 80) 만큼 이동.
+def test_original_space_head_hint_is_not_applied_to_generated_image(stores):
+    # 생성본은 원본과 좌표계가 다르므로 원본 머리 힌트를 적용하지 않는다.
     final = _run(stores, _jpeg(800, 800), fake_matte(round_blob), head_hint_xy=(390.0, 200.0))
-    assert final["status"] == st.STATUS_READY
+    assert final["status"] == st.STATUS_NEEDS_REVIEW
     hp = final["manifest_json"]["anchors"]["head_point"]
-    assert hp["source"] == "operator" and hp["confidence"] == 1.0
+    assert hp["source"] != "operator"
 
 
 def test_subject_touching_frame_edge_needs_review(stores):
@@ -205,11 +208,13 @@ def test_large_input_is_capped_and_crop_maps_back_to_source(stores, monkeypatch)
     final = _run(stores, _jpeg(2000, 1600), matte)
     assert matte.calls == [(1000, 800)]
     m = final["manifest_json"]
-    assert m["source"]["processing_scale"] == 0.5
-    assert m["source"]["source_wh"] == [2000, 1600]
+    # 원본은 생성 전 0.5로 제한되고, manifest 좌표는 생성본(1000×800) 기준이다.
+    assert stores[0].get(final["id"])["source_info"]["processing_scale"] == 0.5
+    assert m["source"]["processing_scale"] == 1.0
+    assert m["source"]["source_wh"] == [1000, 800]
     x1, y1, x2, y2 = m["crop_rect_in_source"]
     cw, ch = m["normalization"]["crop_wh"]
-    assert (x2 - x1, y2 - y1) == (cw * 2, ch * 2)
+    assert (x2 - x1, y2 - y1) == (cw, ch)
     assert m["canvas_wh"] == [1024, 1024]
 
 

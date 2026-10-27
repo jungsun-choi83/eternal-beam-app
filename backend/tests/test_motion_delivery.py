@@ -157,6 +157,13 @@ def test_packaging_stores_derived_and_keeps_raw_immutable():
     assert cand["delivery_format"] == "packed_alpha"
     assert cand["decision"] == "PASS"  # 절대 변경 금지
     assert cand["generation_metadata"]["delivery"]["format"] == "packed_alpha"
+    assert cand["generation_metadata"]["delivery"]["packaging_version"] == delivery.PACKAGING_VERSION
+    assert cand["generation_metadata"]["delivery"]["output_dimensions"] == {
+        "width": 854,
+        "height": 960,
+        "rgb_width": 854,
+        "rgb_height": 480,
+    }
     assert cand["generation_metadata"]["delivery"]["source_raw_video_path"] == RAW_PATH
     # 파생 객체가 (mock) 스토리지에 존재한다.
     assert PACKED_PATH in delivery._MOCK_DELIVERY_OBJECTS
@@ -185,6 +192,48 @@ def test_packed_frames_match_browser_contract():
     # 프리멀티플라이 + 배경 오염 제거: 배경 픽셀은 0 에 가깝고 펫 픽셀은 원본색.
     assert int(top[5, 5].max()) < 8
     assert np.abs(top[55, 32].astype(int) - PET_COLOR.astype(int)).max() < 12
+
+
+def test_packed_normalization_letterboxes_grok_size_and_keeps_alpha_aligned():
+    """Grok 736x400 halves become 854x480 without crop/stretch or RGB/matte drift."""
+    source_w, source_h = 736, 400
+    top = np.full((source_h, source_w, 3), 255, dtype=np.uint8)
+    matte = np.full_like(top, 255)
+
+    normalized = delivery.normalize_packed_frame(np.vstack([top, matte]))
+
+    assert normalized.shape == (
+        delivery.DELIVERY_PACKED_HEIGHT,
+        delivery.DELIVERY_PACKED_WIDTH,
+        3,
+    )
+    out_top = normalized[: delivery.DELIVERY_RGB_HEIGHT]
+    out_matte = normalized[delivery.DELIVERY_RGB_HEIGHT :]
+    # 736x400 fits as 854x464, centered with 8 transparent rows above/below.
+    assert not out_matte[:8].any()
+    assert not out_matte[472:].any()
+    assert np.all(out_matte[8:472, :, 0] == 255)
+    assert (854 / 464) == pytest.approx(source_w / source_h, rel=0.001)
+    np.testing.assert_array_equal(out_top[:, :, 0], out_matte[:, :, 0])
+    assert delivery._avg_chroma(out_matte) == 0.0
+
+
+def test_packed_normalization_is_pixel_noop_at_canonical_size():
+    rng = np.random.default_rng(7)
+    top = rng.integers(
+        0,
+        256,
+        (delivery.DELIVERY_RGB_HEIGHT, delivery.DELIVERY_RGB_WIDTH, 3),
+        dtype=np.uint8,
+    )
+    alpha = rng.integers(
+        0,
+        256,
+        (delivery.DELIVERY_RGB_HEIGHT, delivery.DELIVERY_RGB_WIDTH, 1),
+        dtype=np.uint8,
+    )
+    packed = np.vstack([top, np.repeat(alpha, 3, axis=2)])
+    np.testing.assert_array_equal(delivery.normalize_packed_frame(packed), packed)
 
 
 def test_theme_composition_a_b_c_no_gray_no_halo():
@@ -318,6 +367,27 @@ def test_packaging_is_idempotent_and_force_repackages():
     assert third.deduplicated is False
     assert third.derived_video_path == first.derived_video_path  # 결정론 경로
     assert "packed" in captured
+
+
+def test_previous_packaging_version_is_repacked_at_same_derived_path():
+    """Existing 736x800 v3 assets are not mistaken for canonical v4 outputs."""
+    _seed()
+    candidate = motions._MOCK_CANDIDATES[0]
+    candidate["derived_video_path"] = PACKED_PATH
+    candidate["delivery_format"] = "packed_alpha"
+    candidate["generation_metadata"] = {
+        "delivery": {"format": "packed_alpha", "packaging_version": "motion-delivery-v3"}
+    }
+    delivery._MOCK_DELIVERY_OBJECTS.add(PACKED_PATH)
+
+    result, captured = _package()
+
+    assert result.deduplicated is False
+    assert result.derived_video_path == PACKED_PATH
+    assert "packed" in captured
+    assert candidate["generation_metadata"]["delivery"]["packaging_version"] == (
+        delivery.PACKAGING_VERSION
+    )
 
 
 def test_fail_candidate_is_not_packageable():
@@ -466,6 +536,42 @@ def _has_ffmpeg() -> bool:
 
 
 @pytest.mark.skipif(not _has_ffmpeg(), reason="ffmpeg/ffprobe 필요")
+@pytest.mark.parametrize(
+    ("motion_id", "source_w", "source_h", "fps"),
+    [
+        ("BREATHING", 854, 480, 30.0),
+        ("COME_CLOSER", 736, 400, 24.0),
+        ("RETURN_HOME", 854, 480, 30.0),
+    ],
+)
+def test_real_packed_encoder_normalizes_all_motion_dimensions(
+    motion_id, source_w, source_h, fps
+):
+    """Provider-native geometry never leaks into the packed delivery contract."""
+    top = np.zeros((source_h, source_w, 3), dtype=np.uint8)
+    matte = np.zeros_like(top)
+    y0, y1 = source_h // 4, (source_h * 3) // 4
+    x0, x1 = source_w // 3, (source_w * 2) // 3
+    top[y0:y1, x0:x1] = PET_COLOR
+    matte[y0:y1, x0:x1] = 255
+    packed_source = np.vstack([top, matte])
+
+    encoded = delivery.encode_packed_video([packed_source] * 3, fps)
+    decoded, decoded_fps = delivery.decode_video(encoded)
+
+    assert motion_id in delivery.PACKAGEABLE_MOTIONS
+    assert len(decoded) == 3
+    assert decoded[0].shape == (
+        delivery.DELIVERY_PACKED_HEIGHT,
+        delivery.DELIVERY_PACKED_WIDTH,
+        3,
+    )
+    assert decoded_fps == pytest.approx(fps, abs=0.01)
+    half = delivery.DELIVERY_RGB_HEIGHT
+    assert delivery._avg_chroma(decoded[1][half:]) < delivery.ALPHA_MATTE_MAX_CHROMA
+
+
+@pytest.mark.skipif(not _has_ffmpeg(), reason="ffmpeg/ffprobe 필요")
 def test_real_ffmpeg_roundtrip_produces_browser_detectable_packed():
     """합성 회색 배경 클립 → 실제 인코딩 → 디코드 후 브라우저 임계값 재검증."""
     _seed()
@@ -481,11 +587,16 @@ def test_real_ffmpeg_roundtrip_produces_browser_detectable_packed():
     assert frames, "packed mp4 디코딩 실패"
     assert abs(fps - FPS) < 0.5
     mid = frames[len(frames) // 2]
-    assert mid.shape == (2 * H, W, 3)
+    assert mid.shape == (
+        delivery.DELIVERY_PACKED_HEIGHT,
+        delivery.DELIVERY_PACKED_WIDTH,
+        3,
+    )
 
     # H.264 압축 후에도 브라우저 판정(packed-alpha-canvas.ts)과 같은 방향이어야
     # 한다: 매트 절반 chroma < 6.0, 컬러 절반은 그보다 2배 이상.
-    top, bottom = mid[:H], mid[H:]
+    half = delivery.DELIVERY_RGB_HEIGHT
+    top, bottom = mid[:half], mid[half:]
     bottom_chroma = delivery._avg_chroma(bottom)
     top_chroma = delivery._avg_chroma(top)
     assert bottom_chroma < delivery.ALPHA_MATTE_MAX_CHROMA
@@ -493,7 +604,7 @@ def test_real_ffmpeg_roundtrip_produces_browser_detectable_packed():
 
     # 알파/RGB 동기: 압축을 거친 뒤에도 펫 내부 알파는 높고 배경은 낮다.
     alpha = bottom[:, :, 0]
-    assert alpha[55, 32] > 200
+    assert alpha[275, 427] > 200
     assert alpha[5, 5] < 30
 
 
@@ -515,7 +626,7 @@ def test_streamed_vitmatte_pack_matches_batch_pixels_and_codec_contract(tmp_path
     batch_alphas, batch_diag = delivery.stabilize_alpha(batch_alphas)
     batch_packed = delivery.build_packed_frames(decoded, batch_alphas)
     batch_warnings = delivery.validate_packed_frames(batch_packed)
-    batch_bytes = delivery.encode_video(batch_packed, fps)
+    batch_bytes = delivery.encode_packed_video(batch_packed, fps)
 
     streamed_path = tmp_path / "streamed.mp4"
     streamed = delivery.stream_vitmatte_to_packed_file(
@@ -527,7 +638,8 @@ def test_streamed_vitmatte_pack_matches_batch_pixels_and_codec_contract(tmp_path
     batch_frames, batch_fps = delivery.decode_video(batch_bytes)
 
     assert streamed.frame_count == len(decoded) == 10
-    assert streamed.width == W and streamed.height == 2 * H
+    assert streamed.width == delivery.DELIVERY_PACKED_WIDTH
+    assert streamed.height == delivery.DELIVERY_PACKED_HEIGHT
     assert streamed.fps == pytest.approx(fps)
     assert streamed_fps == pytest.approx(batch_fps)
     assert streamed.stabilization == batch_diag
@@ -573,7 +685,12 @@ def test_package_uses_streaming_only_for_uninjected_vitmatte(monkeypatch):
     assert uploaded["path"] == PACKED_PATH
     assert uploaded["local_path"].endswith("out.mp4")
     packed, fps = delivery.decode_video(uploaded["data"])
-    assert len(packed) == 5 and packed[0].shape == (2 * H, W, 3)
+    assert len(packed) == 5
+    assert packed[0].shape == (
+        delivery.DELIVERY_PACKED_HEIGHT,
+        delivery.DELIVERY_PACKED_WIDTH,
+        3,
+    )
     assert fps == pytest.approx(FPS)
 
 

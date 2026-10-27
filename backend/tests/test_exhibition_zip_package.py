@@ -126,6 +126,7 @@ def test_rgba_weight_and_locked_assets_are_unchanged_by_zip_packaging():
 
     expected_outputs = {
         "subject_rgba.png", "breathing_weight.png", "locked_mask.png", "preview_overlay.png", "manifest.json",
+        "source_normalized.png",
     }
     assert set(run["outputs_json"]) == expected_outputs  # zip 은 outputs_json 에 섞이지 않는다
 

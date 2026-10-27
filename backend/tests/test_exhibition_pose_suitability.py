@@ -2,10 +2,9 @@
 EXHIBITION 포즈 적합성 게이트 — 1 장 업로드, 리테이크 없음.
 
   원본 → pose_gate(로컬 YOLO 크롭 → CLIP 제로샷; 여기서는 주입) → 판정
-    GOOD_FOR_DEFORMATION      → 원본 그대로 EXHIBITION_PREP_RUN (build_package **1회**)
-    NEEDS_AI_NORMALIZATION    → normalize_fn 으로 고정 포즈 재생성
+    GOOD/BAD 모두             → normalize_fn 으로 표준 3/4 포즈 재생성
                                 → 그 결과로 build_package **1회**
-                                → 생성기 미설정/실패 시 원본으로 안전 복귀 (REVIEW 로직 불변)
+                                → 생성기 미설정/실패 시 FAILED (CUTOUT 안 함)
 
 게이트는 CUTOUT **전에** 돈다 — 누끼/맵은 어느 경로든 한 번만 돈다.
 ViTMatte 는 목업한다(matte_fn 주입) — test_exhibition_prep_run.py 와 같은 픽스처.
@@ -86,20 +85,21 @@ def _spy_normalizer(generated_png: bytes):
 # ── 1. 적합한 이미지 → 원본 그대로 사용 ───────────────────────────────────────
 
 
-def test_suitable_image_uses_the_original(stores):
+def test_suitable_image_is_still_normalized(stores):
     normalize = _spy_normalizer(_normalized_jpeg())
     matte = fake_matte(frontal_dog)
     final = _run(stores, _jpeg(800, 800), matte, normalize_fn=normalize, pose_gate_fn=_good_gate())
 
     assert final["status"] == st.STATUS_READY
     ps = final["manifest_json"]["pose_suitability"]
-    assert ps["decision"] == svc.SUITABILITY_GOOD and ps["source_used"] == "original"
+    assert ps["decision"] == svc.SUITABILITY_GOOD and ps["source_used"] == "ai_normalized"
+    assert ps["generation_policy"] == "always"
     assert ps["gate"]["decision"] == svc.SUITABILITY_GOOD
     assert ps["silhouette_check"] == svc.SUITABILITY_GOOD
-    assert "normalization_error" not in ps and "prompt" not in ps
-    assert normalize.calls == []  # 적합하면 생성기를 호출조차 하지 않는다
-    assert matte.calls == [(800, 800)]  # 누끼는 원본으로 정확히 1회
-    assert "source_normalized.png" not in final["outputs_json"]
+    assert "normalization_error" not in ps and "prompt" in ps
+    assert len(normalize.calls) == 1
+    assert matte.calls == [(900, 900)]  # 누끼는 생성본으로 정확히 1회
+    assert "source_normalized.png" in final["outputs_json"]
 
 
 # ── 2. 부적합한 포즈 → AI 정규화 트리거 ────────────────────────────────────────
@@ -123,15 +123,11 @@ def test_unsuitable_pose_triggers_ai_normalization(stores):
     assert final["status"] == st.STATUS_READY
 
 
-@pytest.mark.parametrize(
-    "gate_factory, expected_calls",
-    [(_good_gate, 0), (_bad_gate, 1)],
-    ids=["GOOD→no generation", "BAD→one generation"],
-)
-def test_generator_is_called_only_on_bad(stores, gate_factory, expected_calls):
+@pytest.mark.parametrize("gate_factory", [_good_gate, _bad_gate], ids=["GOOD", "BAD"])
+def test_generator_is_called_once_for_every_gate_result(stores, gate_factory):
     normalize = _spy_normalizer(_normalized_jpeg())
     _run(stores, _jpeg(800, 800), fake_matte(frontal_dog), normalize_fn=normalize, pose_gate_fn=gate_factory())
-    assert len(normalize.calls) == expected_calls
+    assert len(normalize.calls) == 1
 
 
 # ── 3. 기존 EXHIBITION_PREP_RUN 은 어느 경로든 정확히 한 번 ──────────────────────
@@ -139,8 +135,10 @@ def test_generator_is_called_only_on_bad(stores, gate_factory, expected_calls):
 
 def test_exhibition_prep_runs_once_on_the_good_path(stores):
     matte = fake_matte(frontal_dog)
-    _run(stores, _jpeg(800, 800), matte, pose_gate_fn=_good_gate())
-    assert matte.calls == [(800, 800)]
+    normalize = _spy_normalizer(_normalized_jpeg())
+    _run(stores, _jpeg(800, 800), matte, normalize_fn=normalize, pose_gate_fn=_good_gate())
+    assert len(normalize.calls) == 1
+    assert matte.calls == [(900, 900)]
 
 
 def test_exhibition_prep_runs_once_on_the_bad_path_and_only_on_the_generated_image(stores):
@@ -161,8 +159,16 @@ def test_gate_runs_before_cutout(stores):
         return inner(image_bytes)
 
     _matte_logged.calls = inner.calls
-    _run(stores, _jpeg(800, 800), _matte_logged, pose_gate_fn=_good_gate(log=order))
-    assert order == ["gate", "matte"]
+
+    def _normalize_logged(_source, _context):
+        order.append("normalize")
+        return _normalized_jpeg()
+
+    _run(
+        stores, _jpeg(800, 800), _matte_logged,
+        normalize_fn=_normalize_logged, pose_gate_fn=_good_gate(log=order),
+    )
+    assert order == ["gate", "normalize", "matte"]
 
 
 def test_normalized_result_enters_the_existing_prep_pipeline(stores):
@@ -201,49 +207,45 @@ def test_original_image_is_preserved_for_audit(stores):
     assert final["outputs_json"]["source_normalized.png"] == normalized_path
 
 
-def test_original_image_preserved_even_when_normalization_is_not_configured(stores):
-    """생성기가 없어도(기본값) 원본은 항상 보존되고, 실행은 원본으로 안전하게 진행된다."""
+def test_original_image_preserved_when_normalization_is_not_configured(stores, monkeypatch):
+    """생성기가 없으면 FAILED 이지만 원본은 감사용으로 보존된다."""
+    monkeypatch.setenv("EXHIBITION_POSE_NORMALIZATION_MODE", "off")
     store, artifacts = stores
     matte = fake_matte(frontal_dog)
     final = _run(stores, _jpeg(800, 800), matte, pose_gate_fn=_bad_gate())  # normalize_fn 주입 없음
     rid = final["id"]
 
     assert f"exhibition/{rid}/source.png" in artifacts.objects
-    ps = final["manifest_json"]["pose_suitability"]
-    assert ps["decision"] == svc.SUITABILITY_NEEDS_NORMALIZATION
-    assert ps["source_used"] == "original"
-    assert ps["normalization_error"] == "NORMALIZATION_NOT_CONFIGURED"
-    assert "source_normalized.png" not in final["outputs_json"]
-    assert matte.calls == [(800, 800)]  # 원본으로 1회
-    # 리뷰 로직 자체는 그대로다 — 게이트가 기존 READY/NEEDS_REVIEW 판정을 바꾸지 않는다.
-    assert final["status"] == st.STATUS_READY
+    assert final["status"] == st.STATUS_FAILED
+    assert final["error_code"] == "NORMALIZATION_NOT_CONFIGURED"
+    assert not final.get("outputs_json")
+    assert matte.calls == []
 
 
-def test_normalization_failure_falls_back_to_original_safely(stores):
+def test_normalization_failure_stops_before_cutout(stores):
     def _boom(reference_png, context):
         raise pose_mod.PoseNormalizationError("NORMALIZATION_HTTP_ERROR", "simulated failure")
 
     matte = fake_matte(frontal_dog)
     final = _run(stores, _jpeg(800, 800), matte, normalize_fn=_boom, pose_gate_fn=_bad_gate())
-    assert final["manifest_json"]["pose_suitability"]["source_used"] == "original"
-    assert final["manifest_json"]["pose_suitability"]["normalization_error"] == "NORMALIZATION_HTTP_ERROR"
-    assert matte.calls == [(800, 800)]
-    assert final["status"] == st.STATUS_READY
+    assert final["status"] == st.STATUS_FAILED
+    assert final["error_code"] == "NORMALIZATION_HTTP_ERROR"
+    assert not final.get("manifest_json")
+    assert matte.calls == []
 
 
 # ── 5. 실루엣 신호는 생성을 트리거하지 않는다 (진단만) ───────────────────────────
 
 
-def test_silhouette_flags_never_trigger_generation(stores):
-    """머리를 못 찾는 실루엣(round_blob)이라도 게이트가 GOOD 이면 생성하지 않는다 —
-    기존 NEEDS_REVIEW 로직은 그대로, silhouette_check 는 진단으로만 남는다."""
+def test_silhouette_flags_do_not_control_generation(stores):
+    """생성은 항상 하고 silhouette_check 는 기존 패키지 진단으로만 남는다."""
     normalize = _spy_normalizer(_normalized_jpeg())
     final = _run(stores, _jpeg(800, 800), fake_matte(round_blob), normalize_fn=normalize, pose_gate_fn=_good_gate())
-    assert normalize.calls == []
+    assert len(normalize.calls) == 1
     assert final["status"] == st.STATUS_NEEDS_REVIEW
     assert "head_low_confidence" in final["review_reasons"]
     ps = final["manifest_json"]["pose_suitability"]
-    assert ps["decision"] == svc.SUITABILITY_GOOD and ps["source_used"] == "original"
+    assert ps["decision"] == svc.SUITABILITY_GOOD and ps["source_used"] == "ai_normalized"
     assert ps["silhouette_check"] == svc.SUITABILITY_NEEDS_NORMALIZATION
 
 
@@ -254,7 +256,7 @@ def test_default_gate_in_tests_is_off_and_answers_good(stores):
     ps = final["manifest_json"]["pose_suitability"]
     assert ps["decision"] == svc.SUITABILITY_GOOD
     assert ps["gate"]["reason"] == "gate_off" and ps["gate"]["version"] == gate_mod.GATE_VERSION
-    assert normalize.calls == []
+    assert len(normalize.calls) == 1
 
 
 # ── 6. 리테이크 경로가 없다 ───────────────────────────────────────────────────
@@ -275,7 +277,7 @@ def test_no_retake_path_exists():
     }
 
 
-def test_needs_normalization_does_not_block_or_require_a_second_photo(stores):
+def test_every_upload_completes_without_requiring_a_second_photo(stores):
     """부적합 포즈라도 실행은 끝까지 자동으로 끝난다 — 추가 입력 요구 없음."""
     final = _run(stores, _jpeg(800, 800), fake_matte(frontal_dog), pose_gate_fn=_bad_gate())
     assert final["status"] in (st.STATUS_READY, st.STATUS_NEEDS_REVIEW)
@@ -315,7 +317,7 @@ def test_normal_pipeline_untouched_cutout_and_maps_logic_unchanged(stores):
     stores2 = (st.InMemoryRunStore(), st.InMemoryArtifactStore())
     with_normalizer_available = _run(
         stores2, _jpeg(800, 800), fake_matte(frontal_dog),
-        normalize_fn=_spy_normalizer(_normalized_jpeg()), pose_gate_fn=_good_gate(),
+        normalize_fn=_spy_normalizer(_jpeg(800, 800)), pose_gate_fn=_good_gate(),
     )
 
     for key in ("canvas_wh", "map_method", "anchors", "flags", "diagnostics", "subject_class"):

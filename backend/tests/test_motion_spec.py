@@ -86,7 +86,10 @@ def test_authoritative_registry_requirements_exist_for_each_motion():
         assert m.motion_type
         req = m.requirements
         assert req["registry_contract_version"] == ms.MOTION_REGISTRY_CONTRACT_VERSION
-        assert req["roles"]["required_start_roles"] == [m.start_keyframe_role]
+        # start_from_derived 모션(RETURN_HOME)은 역할 시작 키프레임이 없다 → 빈 목록.
+        assert req["roles"]["required_start_roles"] == (
+            [m.start_keyframe_role] if m.start_keyframe_role else []
+        )
         if m.requires_target_keyframe:
             assert req["roles"]["required_end_roles"] == [m.target_keyframe_role]
         else:
@@ -99,12 +102,12 @@ def test_authoritative_registry_requirements_exist_for_each_motion():
         assert "qa" in req and "motion_specific" in req["qa"], mid
 
 
-def test_provider_capability_requirements_are_backward_compatible():
-    # START_END_FRAME 는 end-frame capability 가 필수, 강등 없음.
+def test_endpoint_capability_allows_same_model_prompt_conditioning():
     lie_down = ms.MOTIONS["LIE_DOWN"].requirements["provider_capabilities"]
-    assert "supports_end_frame" in lie_down["required_all"]
-    assert lie_down["degrade_allowed"] is False
-    assert lie_down["degrade_to_strategy"] is None
+    assert lie_down["required_all"] == []
+    assert "supports_end_frame" in lie_down["preferred_any"]
+    assert lie_down["degrade_allowed"] is True
+    assert lie_down["degrade_to_strategy"] == ms.STRATEGY_I2V
 
     # motion-ref 선호 모션은 소비 capability 를 선호로 요구하고 I2V 폴백을 유지.
     run = ms.MOTIONS["RUN"].requirements["provider_capabilities"]
@@ -191,7 +194,7 @@ def test_registry_owns_motion_check_authority_and_applicability():
     assert micro["domains"]["motion_correctness"]["required_checks"] == [
         "breathing_motion_correctness"
     ]
-    assert micro["check_authority"]["vlm_motion"] == "DIAGNOSTIC_ONLY"
+    assert micro["check_authority"]["vlm_motion"] == "INTEGRITY_HARD"
     assert micro["check_authority"]["temporal_breathing"] == "DIAGNOSTIC_ONLY"
     assert micro["check_authority"]["breathing_global_motion_integrity"] == "QUALITY_ADVISORY"
     assert (
@@ -262,7 +265,12 @@ def test_existing_runtime_registry_integrity():
 
 def test_all_roles_exist_and_keyframes_are_reused():
     for m in ms.MOTIONS.values():
-        assert m.start_keyframe_role in kf_spec.KEYFRAME_ROLES
+        # start_from_derived 모션(RETURN_HOME)은 역할 시작 키프레임이 없다 — 시작이
+        # 런별 파생 CLOSE_POSITION 이다. 그 외는 반드시 실재하는 시작 역할을 쓴다.
+        if m.start_from_derived:
+            assert m.start_keyframe_role is None
+        else:
+            assert m.start_keyframe_role in kf_spec.KEYFRAME_ROLES
         if m.target_keyframe_role:
             assert m.target_keyframe_role in kf_spec.KEYFRAME_ROLES
     # 하나의 키프레임이 여러 모션을 감당한다 — 불필요한 스틸 생성 방지.
@@ -323,12 +331,40 @@ def test_interaction_does_not_require_human_in_keyframe():
 
 
 def test_locomotion_exposes_motion_reference_metadata():
-    for mid in ("COME_CLOSER", "RUN"):
+    # COME_CLOSER 는 2026-10-22 부터 모션 레퍼런스를 일시 제거해 단일 시작 I2V 다 —
+    # 레퍼런스 메타데이터는 아직 레퍼런스를 쓰는 로코모션들로만 확인한다.
+    for mid in ("RUN", "WALK"):
         spec = ms.MOTIONS[mid]
         assert spec.motion_class == ms.CLASS_LOCOMOTION
         assert spec.motion_reference_id
         assert spec.motion_reference_policy == ms.REF_PREFERRED
         assert spec.fallback_video_strategy == ms.STRATEGY_I2V
+
+
+def test_come_closer_is_single_start_i2v_without_motion_reference():
+    """TEMP (2026-10-22): COME_CLOSER = 단일 시작 I2V. 시작 이미지만(STAND_READY),
+    엔드 이미지 없음, 모션 레퍼런스 없음. 레지스트리 요구도 모션 레퍼런스를 소비하지
+    않는다. (RETURN_HOME·CLOSE_POSITION·QA·프로바이더 순서는 건드리지 않는다.)"""
+    spec = ms.MOTIONS["COME_CLOSER"]
+    assert spec.motion_class == ms.CLASS_LOCOMOTION
+    # 단일 시작 I2V, 폴백/모션 레퍼런스 없음.
+    assert spec.preferred_video_strategy == ms.STRATEGY_I2V
+    assert spec.fallback_video_strategy is None
+    assert spec.motion_reference_id is None
+    assert spec.motion_reference_policy == ms.REF_NONE
+    # 시작 이미지 = STAND_READY, 엔드 이미지 없음.
+    assert spec.start_keyframe_role == "STAND_READY"
+    assert spec.target_keyframe_role is None
+    assert spec.requires_target_keyframe is False
+    # 프롬프트는 그대로 유지한다.
+    assert "runs naturally toward its owner" in spec.description
+    # 레지스트리 요구: 모션 레퍼런스 소비/강등 전략 없음, 레퍼런스 정책 none.
+    caps = spec.requirements["provider_capabilities"]
+    assert "supports_motion_reference" not in caps["required_all"]
+    assert "supports_motion_reference" not in caps["preferred_any"]
+    assert caps["degrade_to_strategy"] is None
+    assert spec.requirements["reference"]["policy"] == ms.REF_NONE
+    assert spec.requirements["reference"]["reference_id"] is None
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -384,8 +420,9 @@ def test_home_family_and_standing_actions_start_from_stand_ready():
     assert set(ms.motions_for_keyframe_role("NEUTRAL_IDLE")) == {
         "SIT_TO_STAND", "STAND_TO_SIT", "SIT_DOWN",
     }
-    assert ms.MOTIONS["BREATHING"].description == "Calm, natural resting breathing only."
-    assert ms.MOTION_SPEC_VERSION == "motion-spec-v16"
+    assert "standing pose" in ms.MOTIONS["BREATHING"].description
+    assert "breathing" in ms.MOTIONS["BREATHING"].description
+    assert ms.MOTION_SPEC_VERSION == "motion-spec-v17"
 
 
 def test_one_stand_ready_keyframe_serves_home_idles_and_come_closer(storage, monkeypatch):
@@ -449,15 +486,29 @@ def test_advisory_review_keyframe_is_business_deliverable(storage, monkeypatch):
 
 
 def test_locomotion_falls_back_with_warning(storage, monkeypatch):
+    # COME_CLOSER 가 레퍼런스를 떼면서 폴백 경로 커버리지는 RUN(DOG_RUN) 으로 옮긴다.
     _prepare_keyframes(monkeypatch, storage, roles=("STAND_READY",))  # Phase 4: 이동은 서기 시작
-    spec = _resolve("COME_CLOSER")
+    spec = _resolve("RUN")
     # 라이브러리 미해석 시 v1 형태 유지 (Phase 6.6: resolution 표시 추가).
     mr = spec["motion_reference"]
-    assert mr["id"] == "DOG_APPROACH" and mr["policy"] == "preferred" and mr["asset"] is None
+    assert mr["id"] == "DOG_RUN" and mr["policy"] == "preferred" and mr["asset"] is None
     assert mr["resolution"] == "unresolved"
     assert spec["video_strategy"] == ms.STRATEGY_I2V  # 호환 레퍼런스 없음 → 폴백
-    assert any("DOG_APPROACH" in w for w in spec["warnings"])
+    assert any("DOG_RUN" in w for w in spec["warnings"])
     assert spec["pet_motion_profile"]["profile_version"]  # Phase 6.6 프로필 동봉
+
+
+def test_come_closer_resolves_to_single_start_i2v(storage, monkeypatch):
+    """TEMP (2026-10-22): resolved 계약에서도 COME_CLOSER 는 모션 레퍼런스 없이 단일
+    시작 I2V 다 — motion_reference 는 None, 시작 키프레임만, target_keyframe 없음."""
+    _prepare_keyframes(monkeypatch, storage, roles=("STAND_READY",))
+    spec = _resolve("COME_CLOSER")
+    assert spec["motion_reference"] is None
+    assert spec["video_strategy"] == ms.STRATEGY_I2V
+    assert spec["start_keyframe"]["keyframe_id"]
+    assert spec["target_keyframe"] is None
+    # 모션 레퍼런스를 아예 해석하지 않으므로 레퍼런스 경고도 없다.
+    assert not any("DOG_APPROACH" in w for w in spec["warnings"])
 
 
 def test_unknown_motion_rejected(storage, monkeypatch):
@@ -478,9 +529,10 @@ def test_resolver_is_deterministic_and_versioned(storage, monkeypatch):
 
 
 def test_resolver_exposes_registry_requirements_without_changing_strategy(storage, monkeypatch):
+    # 레퍼런스를 쓰는 로코모션(RUN)으로 확인한다 — COME_CLOSER 는 레퍼런스를 뗐다.
     _prepare_keyframes(monkeypatch, storage, roles=("STAND_READY",))
-    spec = _resolve("COME_CLOSER")
-    assert spec["motion_type"] == ms.MOTIONS["COME_CLOSER"].motion_type
+    spec = _resolve("RUN")
+    assert spec["motion_type"] == ms.MOTIONS["RUN"].motion_type
     assert spec["requirements"]["provider_capabilities"]["degrade_to_strategy"] == ms.STRATEGY_I2V
     # 기존 동작 보존: 레퍼런스 미해석 시 폴백 전략은 그대로 I2V.
     assert spec["video_strategy"] == ms.STRATEGY_I2V
