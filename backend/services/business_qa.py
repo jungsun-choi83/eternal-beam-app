@@ -467,6 +467,15 @@ def build_business_result(
     """Normalize legacy evidence without modifying its legacy decision."""
 
     checks = _flatten_checks(qa_result, request_kind=request_kind)
+    motion_contract = qa_result.get("motion_business_contract") or {}
+    acceptance = motion_contract.get("acceptance") or {}
+    acceptance_active = (
+        str(request_kind or "").upper() in MOTION_REQUEST_KINDS
+        and bool(acceptance.get("review_policy"))
+    )
+    if acceptance_active:
+        for name in acceptance.get("required_checks") or []:
+            checks.setdefault(name, UNKNOWN)
     authorities = {
         name: authority_for_check(name, status)
         for name, status in checks.items()
@@ -510,6 +519,33 @@ def build_business_result(
         and not any(reason == "vlm_composition_contaminated" for reason in legacy_reasons)
     ):
         authorities["vlm_composition"] = AuthorityClass.QUALITY_ADVISORY
+    if acceptance_active:
+        # Required acceptance evidence cannot be made diagnostic just because a
+        # targeted call was skipped/unanswered. Preserve the registry's declared
+        # authority; required means the evidence must be present, not that a
+        # non-failing REVIEW becomes a hard publication failure.
+        declared = motion_contract.get("check_authority") or {}
+        for name, status in checks.items():
+            if name in (acceptance.get("required_checks") or []):
+                try:
+                    authorities[name] = AuthorityClass(str(declared[name]))
+                except (KeyError, ValueError):
+                    authorities[name] = authority_for_check(name, status)
+            elif name not in CHECK_AUTHORITIES and name not in declared:
+                authorities[name] = AuthorityClass.INTEGRITY_HARD
+        # Composition REVIEW covers framing/motion-size uncertainty. Only an
+        # explicit composition FAIL (contamination, duplication, scene cut)
+        # has integrity authority.
+        composition_is_quality = (
+            checks.get("vlm_composition") not in (None, FAIL)
+            or (
+                checks.get("vlm_composition") == FAIL
+                and any(reason.startswith("vlm_unintended_large_motion") for reason in legacy_reasons)
+                and not any(reason == "vlm_composition_contaminated" for reason in legacy_reasons)
+            )
+        )
+        if composition_is_quality:
+            authorities["vlm_composition"] = AuthorityClass.QUALITY_ADVISORY
     hard_values = [
         status
         for name, status in checks.items()
@@ -532,7 +568,6 @@ def build_business_result(
         request_kind=request_kind,
         fallback_available=fallback_available,
     )
-
     evidence: dict[str, dict[str, str]] = {
         authority.value: {} for authority in AuthorityClass
     }
@@ -567,7 +602,9 @@ def build_business_result(
         **action,
         "reasons": reasons,
         "authority_evidence": evidence,
-        "legacy_decision": qa_result.get("decision"),
+        "legacy_decision": qa_result.get("legacy_decision", qa_result.get("decision")),
+        **({"acceptance_decision": integrity_status, "acceptance_version": acceptance.get("version")}
+           if acceptance_active else {}),
         "attempt_number": max(1, int(attempt_number or 1)),
         "request_kind": str(request_kind or "UNKNOWN"),
         "fallback_available": bool(fallback_available),
@@ -596,6 +633,25 @@ def receipt(qa_result: Optional[Mapping[str, Any]]) -> Optional[dict[str, Any]]:
     if not isinstance(value, dict) or value.get("version") != BUSINESS_QA_VERSION:
         return None
     return value
+
+
+def has_obsolete_review_block(qa_result: Optional[Mapping[str, Any]]) -> bool:
+    """Recognize receipts written by the regressed acceptance REVIEW policy.
+
+    Safe defaults and any genuine integrity FAIL remain blocking. This marker
+    lets Retry re-evaluate only the affected stored video without invalidating
+    provider state or submitting another generation job.
+    """
+
+    current = receipt(qa_result)
+    return bool(
+        current
+        and not current.get("safe_default")
+        and _status((qa_result or {}).get("decision")) == REVIEW
+        and current.get("integrity_status") != FAIL
+        and current.get("delivery_action") == DeliveryAction.BLOCK.value
+        and current.get("retry_action") == RetryAction.STOP.value
+    )
 
 
 def is_deliverable(

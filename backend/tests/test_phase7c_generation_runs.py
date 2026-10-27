@@ -96,6 +96,9 @@ class PipelineHarness:
         keyframe_status="complete",
         fail_reference_once=False,
     ):
+        # This harness simulates completed QA as well as generation. Real stored
+        # QA freshness/persistence is covered by test_motion_qa_retry.
+        monkeypatch.setattr(motion_video_service, "candidate_qa_is_current", lambda qa, mid: True)
         self.calls = []
         self.expose_latest = False
         #: keyframe_build 로 넘어간 kwargs 전부 — allow_canonical_reuse 같은
@@ -721,7 +724,9 @@ def test_new_run_reuses_valid_existing_provider_outputs(storage, monkeypatch):
     assert second.motion_version_id == first.motion_version_id
     assert harness.counts["canonical_build"] == 1
     assert harness.counts["keyframe_build"] == 1
-    assert harness.counts["motion_build"] == 1
+    # The builder now validates generation stamps before reusing a completed
+    # version; entering this mocked builder is not a provider submission.
+    assert harness.counts["motion_build"] == 2
 
 
 @pytest.mark.parametrize(

@@ -6,6 +6,7 @@ No network: the anthropic client is replaced by an in-process fake.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import sys
 import types
@@ -20,7 +21,14 @@ from backend.services import qa_shadow_telemetry
 from backend.services import vlm_escalation
 from backend.services import vlm_identity
 
-_CONTRACT = motion_spec.motion_snapshot(motion_spec.MOTIONS["BREATHING"])
+# Preserve pre-acceptance stored-receipt behavior, including its one-call
+# escalation policy. New beta mandatory checks are tested separately.
+_CONTRACT = copy.deepcopy(motion_spec.motion_snapshot(motion_spec.MOTIONS["BREATHING"]))
+_BUSINESS = _CONTRACT["requirements"]["qa"]["business"]
+_BUSINESS["version"] = "motion-qa-contract-v2"
+_BUSINESS.pop("acceptance")
+_BUSINESS["domains"].pop("acceptance")
+_BUSINESS["check_authority"].update(vlm_motion="DIAGNOSTIC_ONLY", vlm_composition="QUALITY_ADVISORY")
 _THRESHOLDS = qa._default_temporal_thresholds()
 _CALM = {
     "scale_range": 0.0061, "scale_oscillation": 0.0054, "scale_trend": 0.0025,

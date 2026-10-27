@@ -48,6 +48,7 @@ const LD = 'LIE_DOWN'
 const SU = 'STAND_UP'
 const LI = 'LIE_IDLE'
 const STS = 'SIT_TO_STAND'
+const RH = 'RETURN_HOME'
 const BLINK = 'BLINKING'
 const EAR = 'EAR_TWITCHING'
 const TILT = 'HEAD_TILTING'
@@ -64,7 +65,7 @@ test('1) COME_CLOSER 는 ACTION 으로 분류된다', () => {
   assert.ok(isPetAction(CC))
   assert.ok(!isIdleEvent(CC), 'COME_CLOSER 가 아이들 이벤트로 새면 안 된다')
   assert.equal(RUNTIME_EVENTS[CC]?.kind, 'ACTION')
-  assert.deepEqual([...PET_ACTION_IDS], [CC, PH, LU, LD, SU, LI, STS])
+  assert.deepEqual([...PET_ACTION_IDS], [CC, PH, LU, LD, SU, LI, STS, RH])
 })
 
 // ── 2) 아이들 이벤트는 분류되지만 아직 등록되지 않았다 ────────────────────────
@@ -87,7 +88,7 @@ test('8) 선언된 아이들 이벤트 4종이 모두 등록됐다 (Phase 4 완�
   }
   // 등록표는 정확히 액션 2종(COME_CLOSER + PET_HEAD) + 아이들 4종.
   assert.deepEqual(
-    Object.keys(RUNTIME_EVENTS).sort(), [CC, PH, LU, LD, SU, LI, STS, ...ALL_IDLE].sort())
+    Object.keys(RUNTIME_EVENTS).sort(), [CC, PH, LU, LD, SU, LI, STS, RH, ...ALL_IDLE].sort())
 })
 
 test('8b) 미선언 id 는 여전히 트리거되지 않는다 (오타·미래 이벤트)', () => {
@@ -213,14 +214,14 @@ test('6) registeredIdleEvents() 는 COME_CLOSER 를 절대 포함하지 않는�
   // Phase 2 — BLINKING + EAR_TWITCHING 이 등록돼 있다.
   assert.deepEqual(idle.map((e) => e.id).sort(), [...REGISTERED_IDLE].sort())
   assert.deepEqual(
-    registeredActions().map((e) => e.id).sort(), [CC, PH, LU, LD, SU, LI, STS].sort())
+    registeredActions().map((e) => e.id).sort(), [CC, PH, LU, LD, SU, LI, STS, RH].sort())
 })
 
 test('6b) 아이들 이벤트는 실제로 등록돼 있어 주입 없이 열거된다', () => {
   assert.deepEqual(registeredIdleEvents().map((e) => e.id).sort(), [...REGISTERED_IDLE].sort())
   assert.deepEqual(
     registeredActions().map((e) => e.id).sort(),
-    [CC, PH, LU, LD, SU, LI, STS].sort(), '액션 목록이 오염됐다')
+    [CC, PH, LU, LD, SU, LI, STS, RH].sort(), '액션 목록이 오염됐다')
 })
 
 test('6c) 등록된 어떤 것도 COME_CLOSER 보다 우선순위가 높지 않다', () => {
@@ -436,7 +437,7 @@ test('P2-10) COME_CLOSER 는 Phase 2 로 인해 바뀌지 않았다', () => {
   assert.equal(def.interruptible, false)
   assert.equal(def.preload, 'auto')
   assert.deepEqual(
-    registeredActions().map((e) => e.id).sort(), [CC, PH, LU, LD, SU, LI, STS].sort())
+    registeredActions().map((e) => e.id).sort(), [CC, PH, LU, LD, SU, LI, STS, RH].sort())
 })
 
 test('P2-11) 모든 아이들 이벤트가 같은 우선순위를 공유한다', () => {
@@ -530,7 +531,7 @@ test('P4) COME_CLOSER 는 Phase 4 로 인해 바뀌지 않았다', () => {
   assert.equal(def.interruptible, false)
   assert.equal(def.preload, 'auto')
   assert.deepEqual(
-    registeredActions().map((e) => e.id).sort(), [CC, PH, LU, LD, SU, LI, STS].sort())
+    registeredActions().map((e) => e.id).sort(), [CC, PH, LU, LD, SU, LI, STS, RH].sort())
 })
 
 
@@ -755,7 +756,9 @@ test('BR-3) 브리지 소스가 없으면 직행 — 서 있는 홈 펫·기존 
       hasSource: true, ...extra,
     })
     assert.equal(d.accepted && d.event.id, CC)
-    assert.equal(d.accepted && d.event.chainTo, undefined)
+    // 2026-10-22: COME_CLOSER 는 이제 RETURN_HOME 으로 체인한다. 소스가 없으면
+    // idle-loop-video 의 chainFrom 이 hold-and-dissolve 로 폴백한다(런타임 판정).
+    assert.equal(d.accepted && d.event.chainTo, RH)
   }
 })
 

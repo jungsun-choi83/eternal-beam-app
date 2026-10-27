@@ -60,6 +60,7 @@ MOTION_OK = {
     "unintended_large_motion": "no", "single_pet": "yes", "duplicated_pet": "no", "human_present": "no",
     "scene_cut": "no", "major_flicker": "no", "camera_stable": "yes", "background_neutral": "yes",
     "ends_in_target_pose": "unknown", "notes": "",
+    "severe_motion_defect": "no", "critical_state_violation": "no", "final_position_verified": "yes",
 }
 
 

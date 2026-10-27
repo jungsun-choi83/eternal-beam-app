@@ -329,7 +329,11 @@ class _DurableProviderBase:
         self.adapter_id = identity["adapter"]
         self.vendor_model_id = identity["vendor_model"]
         self.name = self.logical_model_id
+        self.supports_start_image = getattr(delegate, "supports_start_image", True)
+        self.supports_reference_images = getattr(delegate, "supports_reference_images", False)
+        self.supports_multiple_references = getattr(delegate, "supports_multiple_references", False)
         self.supports_end_frame = getattr(delegate, "supports_end_frame", False)
+        self.supports_keyframes = getattr(delegate, "supports_keyframes", False)
         self.supports_motion_reference = getattr(delegate, "supports_motion_reference", False)
         self.reference_budget = getattr(delegate, "reference_budget", 0)
         self.max_prompt_chars = getattr(delegate, "max_prompt_chars", None)
@@ -616,8 +620,9 @@ class DurableImageProvider(_DurableProviderBase):
 
 class DurableVideoProvider(_DurableProviderBase):
     def generate(self, request):
-        from .video_motion_providers import VideoProviderError
+        from .video_motion_providers import VideoProviderError, validate_keyframe_capability
 
+        validate_keyframe_capability(self, request)
         phase_id = str(request.metadata.get("motion_version_id") or "")
         if not phase_id:
             raise VideoProviderError(
@@ -635,6 +640,15 @@ class DurableVideoProvider(_DurableProviderBase):
                 "start_keyframe_id": request.metadata.get("start_keyframe_id"),
                 "target_keyframe_id": request.metadata.get("target_keyframe_id"),
                 "motion_reference_id": request.metadata.get("motion_reference_id"),
+                # Preserve existing request fingerprints for other adapters.
+                # Changing reference content/order must not reuse a paid job.
+                **({"reference_urls": list(request.reference_urls)} if self.supports_reference_images else {}),
+                # Optional future conditioning must affect resume identity, but
+                # must not invalidate fingerprints of existing frame-only jobs.
+                **({"keyframes": [
+                    {"image_url": frame.image_url, "timestamp_sec": frame.timestamp_sec}
+                    for frame in request.keyframes
+                ]} if request.keyframes else {}),
             }
         )
         result, check = self._execute(

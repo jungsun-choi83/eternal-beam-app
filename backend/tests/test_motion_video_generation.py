@@ -92,8 +92,11 @@ VLM_MV_OK = {
     "camera_stable": "yes",
     "background_neutral": "yes",
     "ends_in_target_pose": "yes",
+    "severe_motion_defect": "no",
+    "critical_state_violation": "no",
+    "final_position_verified": "yes",
     "notes": "",
-    "source": vlm_identity.VLM_MOTION_QA_VERSION,
+    "source": vlm_identity.VLM_MOTION_ACCEPTANCE_QA_VERSION,
     "model": "test-stub",
 }
 
@@ -171,7 +174,9 @@ def conformance_ok(video_bytes, output_spec):
         "status": "PASS",
         "checks": {"aspect_ratio": "PASS", "resolution": "PASS", "duration": "PASS", "audio_disabled": "PASS"},
         "reasons": [],
-        "probe": {"width": 720, "height": 1280, "duration": 5.0, "has_audio": False},
+        # 테스트 단계 전역 출력 16:9 · 480p → 854×480 (가로). status/checks 는
+        # 스텁이 항상 PASS 로 둔다; 실제 종횡비 판정은 verify_output_conformance 단위 테스트가 덮는다.
+        "probe": {"width": 854, "height": 480, "duration": 5.0, "has_audio": False},
     }
 
 
@@ -388,16 +393,20 @@ def test_micro_breathing_success(storage, monkeypatch):
 
     v = _build_motion(h, "BREATHING", [primary, fallback])
     assert v.status == mv.STATUS_COMPLETE and v.version == 1
-    assert v.motion_class == "MICRO" and v.video_strategy == "IMAGE_TO_VIDEO"
+    # BREATHING(루프 MICRO 아이들)은 end-frame 지원 provider 에서 same-start-end 로
+    # 생성된다 — 시작 역할 키프레임(STAND_READY)을 양끝에 건다.
+    assert v.motion_class == "MICRO" and v.video_strategy == "START_END_FRAME"
     assert v.motion_spec_version == __import__("backend.services.motion_spec", fromlist=["x"]).MOTION_SPEC_VERSION
     assert fallback.calls == 0
     assert primary.calls == 1  # stop_after_passes 기본 1 — 비디오는 비싸다
 
-    # 계약 소비: 시작 키프레임만, end 프레임 없음.
+    # 계약 소비: 같은 키프레임이 시작·끝 양쪽에 실린다 (same-start-end).
     req = primary.requests[0]
-    assert req.start_image_bytes and req.end_image_bytes is None
-    # 명시적 출력 사양 — 프로바이더 기본값에 기대지 않는다.
-    assert req.output_spec["aspect_ratio"] == "9:16"
+    assert req.start_image_bytes and req.end_image_bytes is not None
+    assert req.end_image_bytes == req.start_image_bytes
+    # 명시적 출력 사양 — 프로바이더 기본값에 기대지 않는다. (테스트 단계 전역 16:9;
+    # 해상도 기본값은 프로파일 benchmark 720p 로 유지되고 배포는 render.yaml env 로 480p.)
+    assert req.output_spec["aspect_ratio"] == "16:9"
     assert req.output_spec["resolution"] == "720p"
     assert 4 <= req.output_spec["duration_sec"] <= 6
     assert req.output_spec["audio"] is False
@@ -437,12 +446,12 @@ def test_prompts_by_class_and_no_themes(storage, monkeypatch):
     breath = _build_motion(h, "BREATHING", [FakeVideoProvider("seedance", [GOOD()])])
     lie = _build_motion(h, "LIE_DOWN", [FakeVideoProvider("kling", [GOOD()])])
 
-    assert "returned to exactly the starting pose" in breath.prompt
+    assert "final frame closely matches the starting pose" in breath.prompt.lower()
     assert "End exactly in the supplied target pose" in lie.prompt
-    assert breath.prompt_version == "motion-video-prompt-v2"
+    assert breath.prompt_version == "motion-video-prompt-v3"
     for p_ in (breath.prompt, lie.prompt):
-        assert "no contact shadow under the pet" in p_
-        assert "no cast shadow on the background" in p_
+        assert "free of shadows" in p_
+        assert "shadowless studio lighting" in p_
     for p in (breath.prompt, lie.prompt):
         low = p.lower()
         for key in ALL_THEME_KEYS:
@@ -514,14 +523,17 @@ def test_transition_sends_both_frames(storage, monkeypatch):
     assert sel.qa_result["checks"]["reaches_target_pose"] == "PASS"
 
 
-def test_transition_without_end_capable_provider_fails_safely(storage, monkeypatch):
+def test_transition_without_end_control_uses_prompt_and_preserves_qa(storage, monkeypatch):
     h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY", "LIE"))
     incapable = FakeVideoProvider("seedance", [GOOD()], end_frame=False)
 
-    with pytest.raises(mv.MotionVideoError) as e:
-        _build_motion(h, "LIE_DOWN", [incapable])
-    assert e.value.code == "ROUTING_UNSUPPORTED" and e.value.status == 503
-    assert incapable.calls == 0  # start-only 강등 시도조차 없다
+    v = _build_motion(h, "LIE_DOWN", [incapable])
+    assert incapable.calls == 1
+    assert v.video_strategy == "IMAGE_TO_VIDEO"
+    assert incapable.requests[0].end_image_bytes is None
+    assert "second frame" not in incapable.requests[0].prompt
+    assert "Finish in this target pose" in incapable.requests[0].prompt
+    assert v.candidates[0].qa_result["checks"]["reaches_target_pose"] == "PASS"
 
 
 def test_transition_missing_target_keyframe_safe(storage, monkeypatch):
@@ -538,14 +550,26 @@ def test_transition_missing_target_keyframe_safe(storage, monkeypatch):
 
 
 def test_locomotion_fallback_warning_persisted(storage, monkeypatch):
-    # Phase 4: 이동은 STAND_READY 시작.
+    # COME_CLOSER 가 레퍼런스를 떼면서(2026-10-22) 폴백 경고 커버리지는 RUN 으로 옮긴다.
+    h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY",))
+    v = _build_motion(h, "RUN", [FakeVideoProvider("seedance", [GOOD()])])
+    assert v.status == mv.STATUS_COMPLETE
+    assert v.video_strategy == "IMAGE_TO_VIDEO"  # 레퍼런스 라이브러리 없음 → 선언된 폴백
+    assert any("DOG_RUN" in w for w in v.warnings)
+    sel = next(c for c in v.candidates if c.selected)
+    assert sel.motion_reference_id == "DOG_RUN"  # 메타데이터는 보존된다
+
+
+def test_come_closer_builds_single_start_i2v_without_reference(storage, monkeypatch):
+    # TEMP (2026-10-22): COME_CLOSER = 단일 시작 I2V — 시작 이미지만(STAND_READY),
+    # 모션 레퍼런스 없음, 레퍼런스 폴백 경고 없음, 후보 메타데이터에도 레퍼런스 없음.
     h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY",))
     v = _build_motion(h, "COME_CLOSER", [FakeVideoProvider("seedance", [GOOD()])])
     assert v.status == mv.STATUS_COMPLETE
-    assert v.video_strategy == "IMAGE_TO_VIDEO"  # 레퍼런스 라이브러리 없음 → 선언된 폴백
-    assert any("DOG_APPROACH" in w for w in v.warnings)
+    assert v.video_strategy == "IMAGE_TO_VIDEO"
+    assert not any("DOG_APPROACH" in w for w in v.warnings)
     sel = next(c for c in v.candidates if c.selected)
-    assert sel.motion_reference_id == "DOG_APPROACH"  # 메타데이터는 보존된다
+    assert sel.motion_reference_id is None
 
 
 def test_interaction_pet_head(storage, monkeypatch):
@@ -594,19 +618,20 @@ def test_live_safety_blocks_before_any_row(storage, monkeypatch):
 # ══════════════════════════════════════════════════════════════════════════
 
 
-def test_provider_error_vs_qa_failure_and_fallback(storage, monkeypatch):
+def test_provider_error_never_switches_logical_model(storage, monkeypatch):
     h, _ = _prepare_pipeline(monkeypatch, storage)
     err = VideoProviderError("PROVIDER_FAILED", "boom")
     primary = FakeVideoProvider("seedance", [err, err, err])
     fallback = FakeVideoProvider("kling", [GOOD()])
 
     v = _build_motion(h, "BREATHING", [primary, fallback])
-    assert v.status == mv.STATUS_COMPLETE
+    assert v.status == mv.STATUS_FAILED
     errors = [c for c in v.candidates if c.provider == "seedance"]
-    # 클래스 인지 상한: BREATHING(MICRO) PRIMARY 기본 2 — 실패가 이어져도 그 이상
-    # 과금하지 않고 폴백으로 넘어간다.
-    assert len(errors) == 2 and all(c.decision == "ERROR" and c.error for c in errors)
-    assert next(c for c in v.candidates if c.selected).provider == "kling"
+    # Retries stay within the assigned model and its existing attempt limit.
+    assert len(errors) == mv.candidate_policy("MICRO")["max_primary"]
+    assert all(c.decision == "ERROR" and c.error for c in errors)
+    assert fallback.calls == 0
+    assert v.selected_candidate_id is None
 
 
 def test_contract_violation_consumes_no_retries_and_no_fallback(storage, monkeypatch):
@@ -630,7 +655,8 @@ def test_contract_violation_consumes_no_retries_and_no_fallback(storage, monkeyp
 
 
 def test_video_anchor_applied_for_non_916_keyframe(storage, monkeypatch):
-    """1:1 키프레임 → 결정론적 9:16 DERIVED 앵커가 프로바이더 시작 이미지가 된다."""
+    """1:1 키프레임 → 결정론적 16:9 DERIVED 앵커가 프로바이더 시작 이미지가 된다
+    (테스트 단계 전역 출력 16:9)."""
     import io as _io
 
     from PIL import Image
@@ -658,8 +684,8 @@ def test_video_anchor_applied_for_non_916_keyframe(storage, monkeypatch):
     req = primary.requests[0]
     with Image.open(_io.BytesIO(req.start_image_bytes)) as im:
         w, hh = im.size
-    assert w * 16 == hh * 9  # 시작 이미지가 정확한 9:16 앵커다
-    assert req.start_image_url and req.start_image_url.endswith("_anchor9x16.png")
+    assert w * 9 == hh * 16  # 시작 이미지가 정확한 16:9 앵커다
+    assert req.start_image_url and req.start_image_url.endswith("_anchor16x9.png")
 
     # 앵커는 DERIVED 로 대장에 기록된다 (원본 키프레임 근거 포함).
     anchors = [
@@ -670,9 +696,9 @@ def test_video_anchor_applied_for_non_916_keyframe(storage, monkeypatch):
 
     sel = next(c for c in v.candidates if c.selected)
     anchor_meta = sel.generation_metadata["video_anchor"]["start"]
-    assert anchor_meta["canvas_size"][0] * 16 == anchor_meta["canvas_size"][1] * 9
+    assert anchor_meta["canvas_size"][0] * 9 == anchor_meta["canvas_size"][1] * 16
     assert any(r["kind"] == "video_anchor_start" for r in sel.input_references)
-    assert any(p.endswith("_anchor9x16.png") for p in storage)
+    assert any(p.endswith("_anchor16x9.png") for p in storage)
 
 
 def test_clean_plate_available_skips_raw_keyframe_download(storage, monkeypatch):
@@ -756,6 +782,7 @@ def test_progressive_generation_qa_gates_each_next_attempt(storage, monkeypatch)
     "3개를 만들어 놓고 평가"가 아니라 시도마다 QA 판정이 다음 제출을 게이트한다 —
     제출·QA 의 인터리브 순서를 실제로 기록해 검증한다.
     """
+    monkeypatch.setenv("PHASE6_MAX_PRIMARY_MICRO", "2")
     h, _ = _prepare_pipeline(monkeypatch, storage)
     order: list[str] = []
 
@@ -789,6 +816,7 @@ def test_progressive_generation_qa_gates_each_next_attempt(storage, monkeypatch)
 
 
 def test_two_hard_qa_failures_stop_paid_generation_and_request_fallback(storage, monkeypatch):
+    monkeypatch.setenv("PHASE6_MAX_PRIMARY_MICRO", "2")
     h, _ = _prepare_pipeline(monkeypatch, storage)
 
     calls = {"n": 0}
@@ -817,29 +845,57 @@ def test_two_hard_qa_failures_stop_paid_generation_and_request_fallback(storage,
 
 def test_cosmetic_review_stops_after_one_and_persists_both_decisions(storage, monkeypatch):
     h, _ = _prepare_pipeline(monkeypatch, storage)
-    install_mv_vlm(monkeypatch, None)  # legacy REVIEW → deliver with advisory
+    install_mv_vlm(monkeypatch, {**VLM_MV_OK, "locomotion_form_correct": "no"})
     monkeypatch.setenv("PHASE6_MAX_PRIMARY", "2")
     monkeypatch.setenv("PHASE6_MAX_FALLBACK", "1")
     primary = FakeVideoProvider("seedance", [GOOD()] * 10)
     fallback = FakeVideoProvider("kling", [GOOD()] * 10)
 
-    v = _build_motion(h, "BREATHING", [primary, fallback])
+    v = _build_motion(h, "COME_CLOSER", [primary, fallback])
     assert primary.calls == 1 and fallback.calls == 0
     assert v.status == mv.STATUS_COMPLETE and v.selected_candidate_id is not None
-    assert v.candidates[0].decision == "REVIEW"
+    assert v.candidates[0].decision == "FAIL"
+    assert v.candidates[0].qa_result["business_qa"]["legacy_decision"] == "FAIL"
+    assert v.candidates[0].qa_result["business_qa"]["delivery_action"] == "DELIVER_WITH_ADVISORY"
+    assert mv.candidate_is_publishable(v.candidates[0])
     assert v.candidates[0].qa_result["business_qa"]["retry_action"] == "STOP"
     # 후보는 QA 이전에 저장된다 — raw 가 전부 스토리지에 있다.
     for c in v.candidates:
         assert c.raw_video_path in storage
 
 
-def test_breathing_temporal_pass_stops_after_candidate_one_despite_vlm_motion_no(
+def test_acceptance_uncertainty_publishes_review_after_generation_and_never_retries(storage, monkeypatch):
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+    provider = FakeVideoProvider("seedance", [GOOD()] * 3)
+    calls = []
+
+    def unavailable_qa(*args, **kwargs):
+        assert provider.calls == 1
+        candidates = list(mv._MOCK_CANDIDATES)
+        assert len(candidates) == 1
+        assert candidates[0]["raw_video_path"] in storage
+        calls.append(kwargs)
+        return None
+
+    monkeypatch.setattr(vlm_identity, "qa_motion_video", unavailable_qa)
+    result = _build_motion(h, "COME_CLOSER", [provider])
+    assert provider.calls == 1 and len(calls) == 1
+    assert calls[0]["acceptance_spec"] == ms.MOTIONS["COME_CLOSER"].qa_acceptance_spec
+    assert result.status == mv.STATUS_COMPLETE
+    assert result.selected_candidate_id == result.candidates[0].id
+    assert result.candidates[0].decision == "REVIEW"
+    assert result.candidates[0].qa_result["business_qa"]["retry_action"] == "STOP"
+    assert result.candidates[0].qa_result["business_qa"]["delivery_action"] == "DELIVER_WITH_ADVISORY"
+    assert mv.candidate_is_publishable(result.candidates[0])
+
+
+def test_breathing_temporal_pass_resolves_uncertain_subtle_motion_without_regeneration(
     storage, monkeypatch
 ):
     h, _ = _prepare_pipeline(monkeypatch, storage)
     install_mv_vlm(
         monkeypatch,
-        {**VLM_MV_OK, "requested_motion_occurs": "no"},
+        {**VLM_MV_OK, "requested_motion_occurs": "unknown"},
     )
 
     async def temporal_pass(motion_id, video_bytes, start_rgb, frames):
@@ -863,15 +919,13 @@ def test_breathing_temporal_pass_stops_after_candidate_one_despite_vlm_motion_no
     assert version.status == mv.STATUS_COMPLETE
     candidate = version.candidates[0]
     assert candidate.selected is True
-    # Temporal authority settles the motion question; the VLM is still asked
-    # the combined identity+anatomy question. Its motion "no" stays advisory:
-    # the legacy decision records it, Business QA delivers.
-    assert candidate.decision == "FAIL"
+    # Positive temporal evidence can resolve uncertain subtle breathing; a
+    # demonstrated violation would still fail under the acceptance contract.
+    assert candidate.decision == "PASS"
     assert candidate.qa_result["vlm_escalation"]["decision"] == "CALL"
-    assert candidate.qa_result["vlm_escalation"]["requested_tasks"] == ["IDENTITY_ANATOMY_VLM"]
+    assert set(candidate.qa_result["vlm_escalation"]["requested_tasks"]) == {"IDENTITY_ANATOMY_VLM", "MOTION_VLM"}
     assert candidate.qa_result["vlm_escalation"]["reason_codes"] == [
-        "breathing_temporal_authority_clear",
-        "breathing_identity_anatomy_required",
+        "motion_acceptance_requires_semantic_evidence",
     ]
     assert candidate.qa_result["business_qa"]["integrity_status"] == "PASS"
     assert candidate.qa_result["business_qa"]["authority_profile"] == "breathing-v2"
@@ -1521,6 +1575,7 @@ def test_versioned_qa_rerun_reuses_asset_and_is_idempotent(storage, monkeypatch)
     provider = FakeVideoProvider("seedance", [GOOD()])
     version = _build_motion(h, "BREATHING", [provider])
     assert version.status == mv.STATUS_COMPLETE
+    assert version.selected_candidate_id == version.candidates[0].id
     assert version.candidates[0].decision == "REVIEW"
     candidate = version.candidates[0]
 

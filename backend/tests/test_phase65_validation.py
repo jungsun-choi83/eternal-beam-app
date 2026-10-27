@@ -1,9 +1,10 @@
 """
 Phase 6.5 — 출력 규격 검증 + QA 캘리브레이션 준비 테스트.
 
-정본 종횡비 판정: 펫 전용 모션 자산은 9:16 (wan_service 의 세로 전제 + device
-renderer 720×1280), 1280×720 은 **장면 합성** 캔버스(scene-export.ts)다.
-여기서는 "요청은 명시했고, 출력이 어기면 FAIL" 계약을 검증한다.
+종횡비 판정 (테스트 단계 2026-10-22): 생성 모션 자산 전역값은 16:9 · 480p
+(854×480) — render.yaml 의 PHASE6_ASPECT_RATIO/PHASE6_RESOLUTION 로 고정. 테스트
+후 포트레이트 HD 로 되돌린다. 여기서는 "요청은 명시했고, 출력이 어기면 FAIL"
+계약(종횡비 불일치 → FAIL)을 검증한다 — 지금 요청은 16:9 라 세로 출력이 FAIL 이다.
 """
 
 from __future__ import annotations
@@ -31,7 +32,7 @@ from .test_motion_video_generation import (
 )
 from .test_pet_reference_sets import PET, USER
 
-SPEC = {"aspect_ratio": "9:16", "resolution": "720p", "duration_sec": 5, "audio": False}
+SPEC = {"aspect_ratio": "16:9", "resolution": "480p", "duration_sec": 5, "audio": False}
 
 
 @pytest.fixture(autouse=True)
@@ -74,32 +75,34 @@ def _verify(probe):
     return qa_mod.verify_output_conformance(b"video", SPEC, probe=probe)
 
 
-def test_conformance_pass_on_correct_portrait_output():
-    r = _verify({"width": 720, "height": 1280, "duration": 5.0, "has_audio": False})
+def test_conformance_pass_on_correct_landscape_output():
+    # 테스트 단계 전역 16:9 · 480p → 854×480 가 규격 준수.
+    r = _verify({"width": 854, "height": 480, "duration": 5.0, "has_audio": False})
     assert r["status"] == "PASS"
     assert r["checks"] == {
         "aspect_ratio": "PASS", "resolution": "PASS", "duration": "PASS", "audio_disabled": "PASS",
     }
 
 
-def test_conformance_fails_on_landscape_despite_portrait_request():
-    """Wan 16:9 사고의 재발 방지 — 요청은 9:16 인데 출력이 1280×720 이면 FAIL."""
-    r = _verify({"width": 1280, "height": 720, "duration": 5.0, "has_audio": False})
+def test_conformance_fails_on_portrait_despite_landscape_request():
+    """종횡비 계약 — 요청은 16:9 인데 출력이 720×1280(세로)이면 FAIL."""
+    r = _verify({"width": 720, "height": 1280, "duration": 5.0, "has_audio": False})
     assert r["checks"]["aspect_ratio"] == "FAIL"
     assert r["status"] == "FAIL"
     assert any("aspect_mismatch" in reason for reason in r["reasons"])
 
 
 def test_conformance_fails_on_audio_stream():
-    r = _verify({"width": 720, "height": 1280, "duration": 5.0, "has_audio": True})
+    r = _verify({"width": 854, "height": 480, "duration": 5.0, "has_audio": True})
     assert r["checks"]["audio_disabled"] == "FAIL"
     assert r["status"] == "FAIL"
 
 
 def test_conformance_review_on_low_resolution_or_duration():
-    r = _verify({"width": 360, "height": 640, "duration": 5.0, "has_audio": False})
+    # 저해상도도 16:9 를 유지(426×240)해야 종횡비 FAIL 없이 해상도 REVIEW 만 잡힌다.
+    r = _verify({"width": 426, "height": 240, "duration": 5.0, "has_audio": False})
     assert r["checks"]["resolution"] == "REVIEW" and r["status"] == "REVIEW"
-    r = _verify({"width": 720, "height": 1280, "duration": 10.5, "has_audio": False})
+    r = _verify({"width": 854, "height": 480, "duration": 10.5, "has_audio": False})
     assert r["checks"]["duration"] == "REVIEW" and r["status"] == "REVIEW"
 
 
@@ -118,10 +121,11 @@ def test_conformance_unknown_when_probe_unavailable():
 def test_wrong_aspect_output_downgrades_candidate_to_fail(storage, monkeypatch):
     h, _ = _prepare_pipeline(monkeypatch, storage)
 
-    def landscape_conformance(video_bytes, output_spec):
+    def portrait_conformance(video_bytes, output_spec):
+        # 테스트 단계 요청은 16:9 라 세로(720×1280) 출력이 종횡비 FAIL 이다.
         return qa_mod.verify_output_conformance(
             video_bytes, output_spec,
-            probe={"width": 1280, "height": 720, "duration": 5.0, "has_audio": False},
+            probe={"width": 720, "height": 1280, "duration": 5.0, "has_audio": False},
         )
 
     primary = FakeVideoProvider("seedance", [GOOD()] * 3)
@@ -134,10 +138,10 @@ def test_wrong_aspect_output_downgrades_candidate_to_fail(storage, monkeypatch):
         # kling 은 준수" 를 유지한다 — 호출 횟수가 아니라 상한을 기준으로 센다.
         calls["n"] += 1
         if calls["n"] <= mv.candidate_policy("MICRO")["max_primary"]:
-            return landscape_conformance(video_bytes, output_spec)
+            return portrait_conformance(video_bytes, output_spec)
         return qa_mod.verify_output_conformance(
             video_bytes, output_spec,
-            probe={"width": 720, "height": 1280, "duration": 5.0, "has_audio": False},
+            probe={"width": 854, "height": 480, "duration": 5.0, "has_audio": False},
         )
 
     v = _build_motion(h, "BREATHING", [primary, fallback], conformance=mixed_conformance)
@@ -156,7 +160,7 @@ def test_conformance_recorded_on_passing_candidate(storage, monkeypatch):
     v = _build_motion(h, "BREATHING", [FakeVideoProvider("seedance", [GOOD()])])
     sel = next(c for c in v.candidates if c.selected)
     assert sel.qa_result["output_conformance"]["status"] == "PASS"
-    assert sel.qa_result["output_conformance"]["probe"]["width"] == 720
+    assert sel.qa_result["output_conformance"]["probe"]["width"] == 854
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -215,8 +219,10 @@ def test_smoke_preflight_reports_missing_credentials(monkeypatch, capsys):
     assert "PHASE6_LIVE_MODE" in out
 
 
-def test_authoritative_aspect_ratio_is_portrait_by_default(monkeypatch):
+def test_authoritative_aspect_ratio_is_landscape_by_default(monkeypatch):
+    # 테스트 단계(2026-10-22): env 없이도 코드 기본값이 16:9 (가로). 포트레이트로
+    # 되돌리려면 build_output_spec 기본값과 render.yaml env 를 9:16 으로.
     monkeypatch.delenv("PHASE6_ASPECT_RATIO", raising=False)
     spec = mv.default_output_spec([3.0, 6.0])
-    assert spec["aspect_ratio"] == "9:16"  # 펫 전용 자산 정본 (장면 캔버스 1280×720 과 별개)
+    assert spec["aspect_ratio"] == "16:9"
     assert spec["audio"] is False

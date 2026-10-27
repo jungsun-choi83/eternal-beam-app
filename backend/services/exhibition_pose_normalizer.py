@@ -1,9 +1,9 @@
 """
-AI 포즈 정규화 — NEEDS_AI_NORMALIZATION 판정일 때만 쓰는 전시 전용 생성 호출.
+AI 포즈 정규화 — 모든 전시 업로드에 한 번씩 실행하는 전시 전용 생성 호출.
 
-같은 펫 신원(코트 색상·무늬·귀·얼굴형·몸통 비례)은 보존하면서, 전시용 고정
-포즈(전신, 서있거나 깔끔히 앉은 자세, 정면/약한 3/4 측면, 머리 또렷이 보임,
-깨끗한 실루엣, 무지 중립 배경)로 다시 생성한다.
+같은 펫 신원(코트 색상·무늬·털·귀·얼굴형·몸통 비례)은 보존하면서, 전시용 고정
+포즈(전신, 자연스럽게 서 있음, 몸은 카메라에서 30–45°, 머리는 카메라를 봄,
+고정된 프레이밍·지면선, 무지 중립 배경)로 다시 생성한다.
 
 일반 파이프라인(정본·루마·키프레임·모션)과는 완전히 분리된 모듈이다 — 정본 빌더·
 키프레임·QA·크레딧은 import 하지 않고, exhibition_pose_gate 가 만든 판정 레코드
@@ -12,14 +12,18 @@ canonical_image_providers.GptImageProvider (OpenAI /v1/images/edits, 원본 1장
 레퍼런스로 동기 호출) — HTTP 는 그 어댑터 안에서만 일어난다 (test_exhibition_prep_run.py
 의 격리 테스트가 이 import 하나만 허용한다).
 
+YOLO + CLIP 포즈 게이트 결과는 입력 분석/감사 기록으로만 쓰고, 생성 여부를
+결정하지 않는다. 생성본에 대한 신원·포즈·VLM QA는 없다. 성공한 생성본은
+기존 CUTOUT → MAPS → PACKAGE 경로로 바로 넘어간다.
+
   EXHIBITION_POSE_NORMALIZATION_MODE
     gpt_image  GptImageProvider 로 1회 생성 (OPENAI_API_KEY / OPENAI_IMAGE_MODEL /
                OPENAI_API_BASE / OPENAI_IMAGE_TIMEOUT_SEC — 정본 생성과 같은 설정)
     mock       원본을 그대로 돌려줌 (오프라인 개발/테스트)
-    off        (기본) 설정 안 됨 → NORMALIZATION_NOT_CONFIGURED → 원본으로 진행
+    off        (기본) 설정 안 됨 → NORMALIZATION_NOT_CONFIGURED (실행 FAILED)
 
-process_run 은 PoseNormalizationError 를 잡아 원본 이미지로 안전하게 진행하고
-manifest.pose_suitability.normalization_error 에 코드를 남긴다 — 생성 실패가 실행을 막지 않는다.
+process_run 은 PoseNormalizationError 를 FAILED 로 기록하고 CUTOUT 을 시작하지 않는다.
+원본을 대신 패키징하지 않아 모든 READY 패키지가 표준화 생성본을 거치게 한다.
 """
 
 from __future__ import annotations
@@ -39,13 +43,22 @@ MODES = (MODE_GPT_IMAGE, MODE_MOCK, MODE_OFF)
 OUTPUT_SPEC: dict[str, Any] = {"size": "1024x1024", "ratio": "1024:1024", "purpose": "exhibition_pose_normalization"}
 
 NORMALIZATION_PROMPT_TEMPLATE = (
-    "Full-body studio portrait of the same {subject_class}, standing or neatly seated, "
-    "facing forward or at a slight three-quarter angle, head clearly visible and upright, "
-    "clean sharp silhouette with no cropped limbs, plain neutral solid-color background, "
-    "even soft lighting, no props, no people, no text. "
-    "Preserve the exact same individual: identical coat colors and markings, ear shape, "
-    "face shape, and body proportions as the reference photo. Do not invent a different "
-    "pose, breed, or markings — this is a pose/orientation correction, not a redesign."
+    "Create a full-body studio portrait of the exact same {subject_class} in a standardized "
+    "STAND_READY pose. STAND_READY means a natural, static standing pose with balanced weight "
+    "and the body held at a clear three-quarter orientation, approximately 30–45 degrees from "
+    "the camera. For dogs and cats, all four paws must be visible and firmly grounded on the same "
+    "level ground plane, with the legs naturally extended, the head upright, and the eyes looking "
+    "toward the camera. For any other pet, preserve its species-appropriate natural standing stance "
+    "and anatomy while keeping the head upright and directed toward the camera. "
+    "Keep the entire pet visible from ear tips to paws and tail, with no cropped body parts. "
+    "Use a consistent eye-level camera, centered framing, consistent subject scale, feet aligned "
+    "on one horizontal ground line, a plain neutral light-gray solid-color background, even soft "
+    "studio lighting, a natural contact shadow only, no props, no people, and no text. "
+    "Preserve the exact individual identity from the reference photo: original coat colors, exact "
+    "marking shapes and positions, fur length and texture, ear shape, face shape, muzzle, eyes, tail, "
+    "body build, body proportions, and species-specific anatomy. Do not idealize the breed, alter "
+    "anatomy, add markings, or redesign the pet. Do not depict the pet sitting, lying down, walking, "
+    "running, jumping, or in an exaggerated action pose. Do not lift any paw for dogs or cats."
 )
 
 
@@ -56,7 +69,7 @@ def build_normalization_prompt(context: dict[str, Any]) -> str:
 
 
 class PoseNormalizationError(Exception):
-    """생성 실패/미설정 — process_run 은 이걸 잡아 원본 이미지로 안전하게 되돌아간다."""
+    """생성 실패/미설정 — process_run 은 실행을 FAILED 로 마친다."""
 
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
@@ -116,7 +129,7 @@ def _normalize_with_gpt_image(reference_png: bytes, prompt: str, context: dict[s
         result = provider.generate(references, prompt, dict(OUTPUT_SPEC), metadata)
     except CanonicalProviderError as e:
         raise PoseNormalizationError(e.code, e.message) from e
-    except Exception as e:  # noqa: BLE001 — 어댑터 밖의 예외도 실행을 막지 않는다
+    except Exception as e:  # noqa: BLE001 — 어댑터 밖의 예외도 일관된 도메인 오류로 바꾼다
         raise PoseNormalizationError("NORMALIZATION_GENERATOR_ERROR", f"{type(e).__name__}: {e}") from e
     image = getattr(result, "image_bytes", None)
     if not image:
@@ -134,7 +147,7 @@ def default_normalize(reference_png: bytes, context: dict[str, Any]) -> bytes:
 
     gpt_image: GptImageProvider(OpenAI images/edits), 원본 PNG 1장을 레퍼런스로.
     mock:      원본을 그대로 돌려줌.   off(기본): NORMALIZATION_NOT_CONFIGURED.
-    실패는 전부 PoseNormalizationError — 호출자는 원본으로 진행한다.
+    실패는 전부 PoseNormalizationError — 호출자는 패키징 전에 실행을 중단한다.
     """
     prompt = build_normalization_prompt(context)
     mode = mode_from_env()

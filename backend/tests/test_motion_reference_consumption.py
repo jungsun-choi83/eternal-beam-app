@@ -261,18 +261,18 @@ def test_unresolved_reference_keeps_existing_degraded_path(storage, monkeypatch)
     assert any("unavailable" in w for w in v.warnings)
 
 
-def test_provider_capability_ranking_prefers_motion_reference_support(storage, monkeypatch):
+def test_reference_capability_does_not_replace_assigned_model(storage, monkeypatch):
     h, _ = _prepare_pipeline(monkeypatch, storage, roles=("STAND_READY",))
     _install_resolved_reference(monkeypatch)
 
-    # 라우팅 첫 순위가 소비 불가여도 registry preferred_any(supports_motion_reference)
-    # 기반 재정렬로 소비 가능 프로바이더를 우선 선택한다.
+    # Unsupported reference control is replaced by a prompt, never another model.
     primary = RefCapableNoCap("seedance", [GOOD()])
     fallback = RefCapableFake("wan", [GOOD()])
     v = _build_run(h, [primary, fallback])
 
     assert v.status == mv.STATUS_COMPLETE
-    assert v.video_strategy == "IMAGE_TO_VIDEO_WITH_MOTION_REF"
-    assert primary.calls == 0
-    assert fallback.calls == 1
-    assert fallback.requests[0].motion_reference_url is not None
+    assert v.video_strategy == "IMAGE_TO_VIDEO"
+    assert primary.calls == 1
+    assert fallback.calls == 0
+    assert primary.requests[0].motion_reference_url is None
+    assert "continuous limb timing" in primary.requests[0].prompt

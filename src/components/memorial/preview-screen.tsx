@@ -491,12 +491,16 @@ function PreviewScreenInner({
     pipeline,
     enabled: hasIdle,
   });
+  // Internal companion: discovered like device playback, never purchased here.
+  const returnHomeSource = premiumAssetsForDiscovery?.readyAssets?.RETURN_HOME?.url ?? null;
   // 이벤트별 전달 포맷 (Phase 7I.1) — devicePlay 와 같은 배선.
   const eventDeliveryFormats = useMemo(
     () => ({
       ...idleEventFormats,
       COME_CLOSER:
         premiumAssetsForDiscovery?.readyAssets?.COME_CLOSER?.deliveryFormat ?? null,
+      RETURN_HOME:
+        premiumAssetsForDiscovery?.readyAssets?.RETURN_HOME?.deliveryFormat ?? null,
     }),
     [idleEventFormats, premiumAssetsForDiscovery]
   );
@@ -1349,6 +1353,7 @@ function PreviewScreenInner({
                     : null
                 }
                 idleEventSources={eligibleIdleEventSources}
+                extraEventSources={{ RETURN_HOME: returnHomeSource }}
                 eventDeliveryFormats={eventDeliveryFormats}
                 actionTriggerRef={comeCloserTriggerRef}
                 onActionStateChange={onPlaybackStateChange}
@@ -1408,7 +1413,8 @@ function PreviewScreenInner({
                     }
                     // 적격한 것만 넘긴다 — 소스가 없으면 런타임이 no-source 로 거절한다.
                     idleEventSources={eligibleIdleEventSources}
-                eventDeliveryFormats={eventDeliveryFormats}
+                    extraEventSources={{ RETURN_HOME: returnHomeSource }}
+                    eventDeliveryFormats={eventDeliveryFormats}
                     actionTriggerRef={comeCloserTriggerRef}
                     // 스케줄러가 "지금 뭔가 재생 중인가"를 아는 유일한 신호다.
                     onActionStateChange={onPlaybackStateChange}

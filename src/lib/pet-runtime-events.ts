@@ -56,7 +56,11 @@ export type PetAction =
   | "LIE_IDLE"
   // 진입 브리지 (2026-09-10) — 직접 트리거되는 액션이 아니라, 앉은 홈에서
   // STAND_READY 시작 모션으로 갈 때 decideTrigger 가 끼워 넣는 전이다.
-  | "SIT_TO_STAND";
+  | "SIT_TO_STAND"
+  // 시스템 소유 복귀 모션 (2026-10-22) — 직접 트리거/구매되지 않는다. COME_CLOSER
+  // 가 끝에서 chainTo 로 이어 붙여 홈으로 걸어 돌아간 뒤 BREATHING 으로 복귀한다.
+  // 소스가 아직 없으면 COME_CLOSER 가 기존 디졸브(hold-and-dissolve)로 폴백한다.
+  | "RETURN_HOME";
 
 /**
  * 펫의 자세 상태 (2026-09-08, 전이 모션 도입).
@@ -135,8 +139,8 @@ export interface RuntimeEventDef {
   /**
    * 이 이벤트 <video> 의 preload 정책.
    *
-   * COME_CLOSER 만 "auto" 다 — 더블탭 즉시 재생돼야 하고, 지금까지도 그렇게
-   * 동작해 왔다. **새로 등록하는 것은 기본이 "none"** 이어야 한다. 이벤트가
+   * COME_CLOSER 와 동반 RETURN_HOME 은 "auto" — 즉시 시작/체인할 수 있어야 한다.
+   * **새로 등록하는 것은 기본이 "none"** 이어야 한다. 이벤트가
    * 늘어날 때마다 디코더와 대역폭이 같이 늘어나기 때문이다.
    */
   preload: "none" | "metadata" | "auto";
@@ -194,6 +198,7 @@ export const PET_ACTION_IDS: readonly PetAction[] = [
   "STAND_UP",
   "LIE_IDLE",
   "SIT_TO_STAND",
+  "RETURN_HOME",
 ];
 
 /**
@@ -228,6 +233,11 @@ export const RUNTIME_EVENTS: Readonly<Partial<Record<RuntimeEventId, RuntimeEven
     preload: "auto",
     // Phase 4: STAND_READY 포즈에서 시작한다 — 앉은 홈이면 SIT_TO_STAND 로 진입.
     entryBridge: "SIT_TO_STAND",
+    // 복귀 (2026-10-22): 끝에서 RETURN_HOME 으로 이어 홈으로 걸어 돌아간다.
+    // RETURN_HOME 소스가 있을 때만 체인되고, 없으면 chainFrom 이 returnPolicy
+    // (hold-and-dissolve)로 폴백한다 — "RETURN_HOME 이 준비되면 디졸브 땜빵을 쓰지
+    // 않는다"가 소스 유무로 자동 성립한다.
+    chainTo: "RETURN_HOME",
   },
 
   // PET_HEAD (2026-09-08) — 첫 INTERACTION 액션. TOUCH(웹에서는 싱글탭)가
@@ -333,6 +343,26 @@ export const RUNTIME_EVENTS: Readonly<Partial<Record<RuntimeEventId, RuntimeEven
     themeIndependent: true,
     preload: "none",
     requiredPose: "LYING",
+    endPose: "STANDING",
+  },
+
+  // ── 시스템 소유 복귀 모션 (2026-10-22) — COME_CLOSER 의 동반 복귀 ──────────
+  // 직접 트리거되지 않는다: COME_CLOSER.chainTo 가 끝에서 이 모션으로 이어 붙는다
+  // (런별 파생 CLOSE_POSITION → STAND_READY). 시작 포즈 = COME_CLOSER 의 끝 포즈라
+  // 체인이 깨끗하고, STAND_READY(홈)에서 끝나므로 returnToIdle=true + seam-aligned
+  // 로 BREATHING 에 매끈하게 붙는다. priority 100 = COME_CLOSER 와 같게(체인이 나르는
+  // 최고 우선 액션) + 중단 불가 = 복귀는 끝까지 간다. 구매/스케줄링 대상이 아니다.
+  RETURN_HOME: {
+    id: "RETURN_HOME",
+    kind: "ACTION",
+    priority: 100,
+    interruptible: false,
+    returnToIdle: true,
+    entryPolicy: "immediate",
+    returnPolicy: "seam-aligned",
+    themeIndependent: true,
+    preload: "auto",
+    requiredPose: "STANDING",
     endPose: "STANDING",
   },
 

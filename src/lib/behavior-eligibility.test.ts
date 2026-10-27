@@ -309,8 +309,8 @@ test('생성이 없어도 언젠가는 다시 확인한다 — 열어 둔 화면
   const code = strip(PROVIDER)
   assert.match(code, /ENTITLEMENT_REFRESH_MS/, '유휴 상태 재확인 주기가 없다')
   // 타이머는 하나이고 주기만 달라져야 한다 — 두 개면 유휴 탭이 두 배로 조회한다.
-  const intervals = code.match(/setInterval\(/g) ?? []
-  assert.equal(intervals.length, 1, `setInterval 이 ${intervals.length} 개다`)
+  const timers = code.match(/set(?:Interval|Timeout)\(/g) ?? []
+  assert.equal(timers.length, 1, `refresh timers: ${timers.length}`)
   assert.match(code, /generating \? PREMIUM_ASSETS_POLL_MS : ENTITLEMENT_REFRESH_MS/)
 })
 

@@ -30,6 +30,14 @@ services:
         value: allowlist
       - key: PHASE6_LIVE_ALLOWLIST
         sync: false
+      # 테스트 단계 출력 기하(2026-10-22): 전역 16:9 · 480p(854×480). 생성 자산만
+      # 바뀐다 — 모션/QA/라우팅/상거래/런타임 불변. 테스트 후 720p/HD 로 되돌릴 땐
+      # 이 두 값만 바꾼다 (web + generation-worker 둘 다 같이). 비우면 코드 기본값
+      # (16:9 / 프로파일 720p)으로 돌아간다.
+      - key: PHASE6_ASPECT_RATIO
+        value: "16:9"
+      - key: PHASE6_RESOLUTION
+        value: 480p
       - key: BUSINESS_QA_SHADOW_TELEMETRY
         value: "1"
       - key: PET_VLM_IDENTITY_ENABLED
@@ -220,6 +228,12 @@ services:
         value: allowlist
       - key: PHASE6_LIVE_ALLOWLIST
         sync: false
+      # 테스트 단계 출력 기하(2026-10-22): web 서비스와 **반드시 동일하게** 유지.
+      # 전역 16:9 · 480p(854×480). 테스트 후 720p/HD 로 되돌릴 땐 두 서비스 같이 바꾼다.
+      - key: PHASE6_ASPECT_RATIO
+        value: "16:9"
+      - key: PHASE6_RESOLUTION
+        value: 480p
       - key: BUSINESS_QA_USER_TEST_MODE
         value: allowlist
       - key: BUSINESS_QA_USER_TEST_PET_IDS
@@ -228,8 +242,6 @@ services:
         value: "1"
       - key: PET_VLM_IDENTITY_ENABLED
         value: "1"
-      - key: MOTION_DELIVERY_MATTE_BACKEND
-        value: "vitmatte"
       # 아래부터는 웹 서비스와 동일하게 맞춘 생성 파이프라인 설정.
       # 값이 갈라지면(예: 한쪽만 GENERATION_MOCK=1) 웹이 큐에 넣은 run 을
       # 워커가 다른 프로바이더 모드로 처리해버리는 불일치가 생긴다 — 값을
@@ -309,7 +321,10 @@ services:
       - key: EXHIBITION_POSE_GATE_MODE
         value: "clip"
 
-      # Needed only if real GPT pose normalization is enabled
+      # Every Exhibition upload is standardized once before cutout/maps.
+      - key: EXHIBITION_POSE_NORMALIZATION_MODE
+        value: "gpt_image"
+
       - key: OPENAI_API_KEY
         sync: false
 

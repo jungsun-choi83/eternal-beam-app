@@ -1,11 +1,15 @@
 """
-9:16 비디오 앵커 (Phase 6) — 승인 키프레임을 I2V 프로바이더 기하 계약에 맞춘다.
+비디오 앵커 (Phase 6) — 승인 키프레임을 I2V 프로바이더 기하 계약에 맞춘다.
+기본 종횡비는 호출부가 넘기는 output_spec["aspect_ratio"] 다 (테스트 단계 전역값
+16:9 · 854×480; 직접 호출 시 함수 기본값도 16:9). 테스트 후 포트레이트로 되돌릴 땐
+output_spec 종횡비(PHASE6_ASPECT_RATIO)와 이 함수 기본값을 9:16 으로 바꾼다.
 
 ── 왜 필요한가 (라이브 검증) ───────────────────────────────────────────────
 Seedance 2.5 I2V 는 aspect_ratio 가 항상 "auto" 다: 출력 기하를 **입력 이미지**가
-결정한다. Kling V3 I2V 에도 aspect_ratio 파라미터가 없다. 그래서 요청 종횡비
-(9:16)는 파라미터가 아니라 시작/끝 이미지 자체로 강제한다 — 1:1 키프레임을
-그대로 보내면 1:1 영상이 나온다 (BREATHING V2 의 1440×1440 사고).
+결정한다. Kling V3 I2V 에도 aspect_ratio 파라미터가 없다. 그래서 요청 종횡비는
+파라미터가 아니라 시작/끝 이미지 자체로 강제한다 — 1:1 키프레임을 그대로 보내면
+1:1 영상이 나온다 (BREATHING V2 의 1440×1440 사고). 테스트 단계엔 16:9 앵커가
+프로바이더에 들어가 16:9(854×480) 영상이 나온다.
 
 ── 계약 ────────────────────────────────────────────────────────────────────
   * 승인된 펫 픽셀을 **그대로** 보존한다 — 리샘플링/재생성 없음, 패딩만.
@@ -64,7 +68,7 @@ def _border_median_rgb(rgb: np.ndarray) -> tuple[int, int, int]:
     return (int(med[0]), int(med[1]), int(med[2]))
 
 
-def build_anchor_image(image_bytes: bytes, *, aspect_ratio: str = "9:16") -> tuple[bytes, dict[str, Any]]:
+def build_anchor_image(image_bytes: bytes, *, aspect_ratio: str = "16:9") -> tuple[bytes, dict[str, Any]]:
     """
     결정론적 9:16 앵커: 원본 픽셀 무변형 페이스트 + 테두리색 패딩.
 

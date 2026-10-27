@@ -1,5 +1,5 @@
 """
-exhibition_pose_normalizer — NEEDS_AI_NORMALIZATION 일 때 GptImageProvider 로 1회 생성.
+exhibition_pose_normalizer — 모든 전시 업로드를 GptImageProvider 로 1회 생성.
 
 프로바이더는 _gpt_provider() 를 monkeypatch 해 가짜로 바꾼다. 실 OpenAI 어댑터의
 요청 모양은 httpx.post 를 가로채 확인한다 — 실제 네트워크/과금은 절대 없다.
@@ -84,14 +84,22 @@ def test_gpt_image_mode_calls_provider_once_with_the_original_as_reference(gpt_m
     assert call["metadata"]["subject_class"] == "dog" and call["metadata"]["gate_top_label"] == "top_down"
 
 
-def test_prompt_asks_for_a_deformation_friendly_pose_and_identity_preservation():
+def test_prompt_requires_stand_ready_pose_and_identity_preservation():
     prompt = pose_mod.build_normalization_prompt({"subject_class": "cat"})
     for phrase in (
-        "Full-body", "same cat", "standing or neatly seated", "facing forward or at a slight three-quarter angle",
-        "head clearly visible and upright", "clean sharp silhouette", "plain neutral solid-color background",
-        "identical coat colors and markings, ear shape, face shape, and body proportions",
+        "full-body", "exact same cat", "standardized STAND_READY pose",
+        "natural, static standing pose", "approximately 30–45 degrees",
+        "all four paws must be visible and firmly grounded", "head upright",
+        "eyes looking toward the camera", "entire pet visible",
+        "consistent eye-level camera", "feet aligned on one horizontal ground line",
+        "plain neutral light-gray solid-color background", "original coat colors",
+        "exact marking shapes and positions", "fur length and texture", "body proportions",
+        "species-specific anatomy", "Do not lift any paw",
     ):
         assert phrase in prompt
+    negative_pose_clause = prompt.split("Do not depict the pet ", 1)[1]
+    for forbidden_pose in ("sitting", "lying down", "walking", "running", "jumping", "exaggerated action pose"):
+        assert forbidden_pose in negative_pose_clause
 
 
 def test_gpt_image_mode_without_api_key_is_not_configured(gpt_mode, monkeypatch):
@@ -201,7 +209,7 @@ def test_real_gpt_image_provider_http_rejection_becomes_safe_error(gpt_mode, mon
     assert e.value.code == "PROVIDER_REJECTED"
 
 
-# ── process_run 끝까지: GOOD 은 호출 없음, BAD 는 1회, 실패는 원본 ─────────────────
+# ── process_run 끝까지: GOOD/BAD 모두 1회, 실패는 CUTOUT 전 FAILED ────────────
 
 
 @pytest.fixture
@@ -217,14 +225,16 @@ def _run(stores, matte, *, pose_gate_fn):
     return store.get(row["id"])
 
 
-def test_good_pose_never_calls_the_generator(gpt_mode, monkeypatch, stores):
-    provider = _use(monkeypatch, FakeGptProvider())
+def test_good_pose_also_generates_once(gpt_mode, monkeypatch, stores):
+    provider = _use(monkeypatch, FakeGptProvider(result=_jpeg(900, 900)))
     matte = fake_matte(frontal_dog)
     final = _run(stores, matte, pose_gate_fn=_good_gate())
-    assert provider.calls == []
-    assert matte.calls == [(800, 800)]
-    assert final["manifest_json"]["pose_suitability"]["source_used"] == "original"
-    assert "generator" not in final["manifest_json"]["pose_suitability"]
+    assert len(provider.calls) == 1
+    assert matte.calls == [(900, 900)]
+    ps = final["manifest_json"]["pose_suitability"]
+    assert ps["source_used"] == "ai_normalized"
+    assert ps["generation_policy"] == "always"
+    assert ps["generator"]["model"] == "gpt-image-fake"
 
 
 def test_bad_pose_generates_once_and_preps_only_the_generated_image(gpt_mode, monkeypatch, stores):
@@ -247,25 +257,21 @@ def test_bad_pose_generates_once_and_preps_only_the_generated_image(gpt_mode, mo
     assert final["status"] == st.STATUS_READY
 
 
-def test_generation_failure_continues_with_the_original_and_records_the_error(gpt_mode, monkeypatch, stores):
+def test_generation_failure_stops_before_cutout_and_records_the_error(gpt_mode, monkeypatch, stores):
     store, artifacts = stores
     provider = _use(monkeypatch, FakeGptProvider(error=CanonicalProviderError("PROVIDER_TRANSPORT", "timeout")))
     matte = fake_matte(frontal_dog)
     final = _run(stores, matte, pose_gate_fn=_bad_gate())
-    rid = final["id"]
-
     assert len(provider.calls) == 1  # 재시도 없음
-    assert matte.calls == [(800, 800)]  # 원본으로 1회
-    ps = final["manifest_json"]["pose_suitability"]
-    assert ps["decision"] == svc.SUITABILITY_NEEDS_NORMALIZATION and ps["source_used"] == "original"
-    assert ps["normalization_error"] == "PROVIDER_TRANSPORT"
-    assert "source_normalized.png" not in final["outputs_json"]
-    assert f"exhibition/{rid}/source.png" in artifacts.objects
-    assert final["status"] == st.STATUS_READY
+    assert matte.calls == []
+    assert final["status"] == st.STATUS_FAILED
+    assert final["error_code"] == "PROVIDER_TRANSPORT"
+    assert not final.get("outputs_json")
+    assert f"exhibition/{final['id']}/source.png" in artifacts.objects
 
 
-def test_no_api_key_continues_with_the_original(gpt_mode, monkeypatch, stores):
+def test_no_api_key_fails_before_cutout(gpt_mode, monkeypatch, stores):
     _use(monkeypatch, FakeGptProvider(available=False))
     final = _run(stores, fake_matte(frontal_dog), pose_gate_fn=_bad_gate())
-    ps = final["manifest_json"]["pose_suitability"]
-    assert ps["source_used"] == "original" and ps["normalization_error"] == "NORMALIZATION_NOT_CONFIGURED"
+    assert final["status"] == st.STATUS_FAILED
+    assert final["error_code"] == "NORMALIZATION_NOT_CONFIGURED"
