@@ -19,12 +19,16 @@ from __future__ import annotations
 import contextvars
 import logging
 import os
-import resource
 import sys
 import threading
 import time
 import uuid
 from typing import Any, Optional
+
+try:
+    import resource as _resource
+except ImportError:  # Windows does not provide Python's resource module.
+    _resource = None
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +57,11 @@ def read_rss_mb() -> Optional[float]:
 def read_maxrss_mb() -> Optional[float]:
     """프로세스 수명 최대 RSS(MB). Linux 는 kB, macOS 는 bytes 단위."""
     try:
-        raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        if _resource is None:
+            # Windows has no resource.ru_maxrss.  Keep tracing useful with the
+            # current RSS fallback already used by read_rss_mb().
+            return read_rss_mb()
+        raw = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
     except Exception:  # noqa: BLE001
         return None
     return round(raw / 2**20, 1) if sys.platform == "darwin" else round(raw / 1024.0, 1)

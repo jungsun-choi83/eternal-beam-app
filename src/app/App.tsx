@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react'
 import { ThemePurchaseReturnScreen } from '@/components/memorial/theme-purchase-return-screen'
 import { CreditPurchaseReturnScreen } from '@/components/memorial/credit-purchase-return-screen'
 import { SoulTraceImportScreen } from '@/components/memorial/soul-trace-import-screen'
@@ -10,10 +11,19 @@ import { OpsShakerScreen } from '@/components/memorial/ops/ops-shaker-screen'
 import { ExhibitionStaffScreen } from '@/components/memorial/ops/exhibition-staff-screen'
 import { ExhibitionQueueScreen } from '@/components/exhibition/exhibition-queue-screen'
 import { isExhibitionQueueEntry } from '@/lib/exhibition-queue'
+import { ExhibitionPassportScreen } from '@/components/exhibition/exhibition-passport-screen'
+import { ExhibitionPassportViewScreen } from '@/components/exhibition/exhibition-passport-view-screen'
+import { isExhibitionPassportEntry, isExhibitionPassportViewEntry } from '@/lib/exhibition-passport-api'
 import { currentOpsRoute } from '@/lib/ops-nav'
 import { creditsReturnEntry, orderReturnEntry, themeReturnEntry } from '@/lib/app-entry'
 import { isSoulTraceImportEntry, peekSoulTraceHandoffState } from '@/lib/soul-trace-handoff'
-import { EternalBeamApp } from './EternalBeamApp'
+
+// Keep the authenticated Eternal Beam graph out of the public entry bundle's
+// evaluation path. It includes NFC/Firebase services that initialize eagerly;
+// Passport must be renderable before those protected modules are needed.
+const EternalBeamApp = lazy(() =>
+  import('./EternalBeamApp').then(({ EternalBeamApp: Screen }) => ({ default: Screen })),
+)
 
 /**
  * 세 갈래 진입 — 소유 모델을 그대로 반영한다.
@@ -57,6 +67,9 @@ export default function App() {
   if (isShakerEntry()) return <ShakerScreen />
   // 공개 전시 대기열 — Shaker 처럼 고객 앱 바깥에서 끊는다 (관리 기능 없음).
   if (isExhibitionQueueEntry()) return <ExhibitionQueueScreen />
+  // Public visitor route. It intentionally sits outside Ops/auth routing.
+  if (isExhibitionPassportViewEntry()) return <ExhibitionPassportViewScreen />
+  if (isExhibitionPassportEntry()) return <ExhibitionPassportScreen />
 
   // ── 이메일 확인 탭에서 돌아온 경우 ────────────────────────────────────────
   // 가입 확인 링크는 **새 탭**에서 열리고, 그 탭이 어디에 떨어질지는 Supabase 의
@@ -82,5 +95,9 @@ export default function App() {
   if (!orderReturnEntry() && peekSoulTraceHandoffState() !== 'none')
     return <SoulTraceImportScreen />
 
-  return <EternalBeamApp />
+  return (
+    <Suspense fallback={<div className="eb-boot">Loading…</div>}>
+      <EternalBeamApp />
+    </Suspense>
+  )
 }
