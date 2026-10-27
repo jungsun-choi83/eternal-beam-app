@@ -321,7 +321,10 @@ services:
       - key: EXHIBITION_POSE_GATE_MODE
         value: "clip"
 
-      # Needed only if real GPT pose normalization is enabled
+      # Every Exhibition upload is standardized once before cutout/maps.
+      - key: EXHIBITION_POSE_NORMALIZATION_MODE
+        value: "gpt_image"
+
       - key: OPENAI_API_KEY
         sync: false
 

@@ -152,3 +152,53 @@ def test_concurrent_revival_keeps_one_row_and_one_retry(storage, monkeypatch):
     assert len(runs._MOCK_RUNS) == 1
     row = _run(runs._row_by_id(rid))
     assert row["status"] == runs.STATUS_QUEUED and row["retry_count"] == 1
+
+
+def test_return_home_is_internal_only_at_public_submission_api(storage, monkeypatch):
+    from fastapi import FastAPI
+    from backend.routers import generation_runs_v1
+    from .conftest import ASGITestClient
+    monkeypatch.setenv("ALLOW_INSECURE_TEST_AUTH", "1")
+    app = FastAPI()
+    app.include_router(generation_runs_v1.router, prefix="/api")
+    client = ASGITestClient(app)
+    for kind in (runs.REQUEST_FREE_HOME, runs.REQUEST_PREMIUM_PRODUCT):
+        response = client.post("/api/v1/pet/generation-runs", headers={"Authorization": f"Bearer test:{USER}"},
+                               json={"pet_id": PET, "motion_id": "RETURN_HOME", "request_kind": kind,
+                                     "idempotency_key": "direct-return-home"})
+        assert response.status_code == 422
+        assert response.json()["detail"]["code"] == "INTERNAL_MOTION_ONLY"
+    assert runs._MOCK_RUNS == []
+    assert runs._validate_request("RETURN_HOME", runs.REQUEST_FREE_HOME, "internal") == (
+        "RETURN_HOME", runs.REQUEST_FREE_HOME, "internal")
+    with pytest.raises(runs.PetGenerationRunError) as exc:
+        runs._validate_request("RETURN_HOME", runs.REQUEST_PREMIUM_PRODUCT, "purchase")
+    assert exc.value.code == "UNSUPPORTED_MOTION"
+
+
+@pytest.mark.parametrize("mismatch", ["source", "reference", "ambiguous"])
+def test_submitted_job_recovery_rejects_unverified_frame(monkeypatch, mismatch):
+    from types import SimpleNamespace
+    from backend.services import durable_provider_jobs, motion_video_service, pet_reference_service
+    run = SimpleNamespace(id="return-run", pet_id=PET, user_id=USER, motion_id="RETURN_HOME",
+                          idempotency_key=f"system-companion:RETURN_HOME:{PET}:source")
+    ref = SimpleNamespace(id="ref", derived_kind="close_position", object_path="frame.png",
+                          diagnostics={"close_position": {"come_closer_run_id": "source", "frame": "final"}})
+    refs = [ref]
+    if mismatch == "source":
+        ref.diagnostics["close_position"]["come_closer_run_id"] = "another-source"
+    elif mismatch == "reference":
+        ref.id = "different-ref"
+    else:
+        refs.append(ref)
+    async def versions(*args):
+        return [{"id": "version", "user_id": USER, "start_keyframe_id": "ref"}]
+    async def references(**kwargs):
+        return refs
+    monkeypatch.setattr(durable_provider_jobs, "list_for_run", lambda rid: [
+        {"provider_operation": durable_provider_jobs.OP_MOTION, "phase_version_id": "version"}])
+    monkeypatch.setattr(motion_video_service, "_version_rows", versions)
+    monkeypatch.setattr(pet_reference_service, "list_references", references)
+    with pytest.raises(runs.PetGenerationRunError) as exc:
+        _run(runs._recover_submitted_companion_start(run))
+    assert exc.value.code == "DERIVED_START_MISSING"

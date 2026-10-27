@@ -95,6 +95,17 @@ def _exhibition_pose_gate_off(monkeypatch: pytest.MonkeyPatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _exhibition_pose_generation_mock(monkeypatch: pytest.MonkeyPatch):
+    """Exhibition prep always generates once; default tests use the no-cost passthrough provider.
+
+    Tests for the GPT adapter explicitly switch this to ``gpt_image`` and inject/fake HTTP.
+    This guard makes it impossible for an ordinary Exhibition unit test to make a paid call.
+    """
+    monkeypatch.setenv("EXHIBITION_POSE_NORMALIZATION_MODE", "mock")
+    yield
+
+
 class ASGITestClient:
     """
     최소한의 동기 테스트 클라이언트.

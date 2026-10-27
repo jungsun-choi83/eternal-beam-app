@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import socket
 import threading
 import time
 import uuid
@@ -29,6 +30,7 @@ from . import (
     canonical_pet_service,
     customer_fallback_service,
     durable_provider_jobs,
+    generation_worker_contract,
     motion_delivery_service,
     motion_publication_service,
     motion_spec,
@@ -549,28 +551,42 @@ def _recovery_exhausted(run: PetGenerationRun) -> bool:
     return run.lease_recoveries > _max_lease_recoveries()
 
 
-async def _claim_next(worker_id: str) -> Optional[PetGenerationRun]:
+async def _claim_next(
+    worker_id: str,
+    *,
+    worker_hostname: Optional[str] = None,
+    worker_pid: Optional[int] = None,
+    worker_version: Optional[str] = None,
+) -> Optional[PetGenerationRun]:
+    hostname = (worker_hostname or socket.gethostname()).strip()
+    pid = int(worker_pid or os.getpid())
+    version = (worker_version or generation_worker_contract.WORKER_CONTRACT_VERSION).strip()
+    if version != generation_worker_contract.WORKER_CONTRACT_VERSION:
+        raise PetGenerationRunError(
+            "WORKER_VERSION_MISMATCH",
+            "현재 generation worker contract 와 일치하지 않아 queue 를 점유할 수 없습니다.",
+            status=409,
+            details={
+                "expected": generation_worker_contract.WORKER_CONTRACT_VERSION,
+                "actual": version,
+            },
+        )
     client = _supabase() if _use_db() else None
     if client:
         try:
             pet_allowlist = business_qa_user_test.claim_pet_allowlist()
             params = {
                 "p_worker_id": worker_id,
+                "p_worker_hostname": hostname,
+                "p_worker_pid": pid,
+                "p_worker_version": version,
                 "p_lease_seconds": _lease_seconds(),
                 "p_max_lease_recoveries": _max_lease_recoveries(),
                 "p_pet_allowlist": pet_allowlist,
             }
-            try:
-                result = client.rpc("claim_next_pet_generation_run", params).execute()
-            except Exception:
-                # Deployment-order compatibility only while Phase 12 is OFF:
-                # the old 3-argument claim RPC remains safe because no cohort
-                # isolation was requested. Active allowlist mode never falls
-                # back to an unfiltered claim.
-                if pet_allowlist is not None:
-                    raise
-                params.pop("p_pet_allowlist")
-                result = client.rpc("claim_next_pet_generation_run", params).execute()
+            # Deliberately no legacy-signature fallback: falling back would let
+            # an outdated binary bypass the database's worker-version fence.
+            result = client.rpc("claim_next_pet_generation_run", params).execute()
             data = getattr(result, "data", None) or {}
             if isinstance(data, list):
                 data = data[0] if data else {}
@@ -1291,6 +1307,16 @@ def _motion_matches(run: PetGenerationRun, motion: Any) -> bool:
     spec = motion_spec.get_motion(run.motion_id)
     start_role = spec.start_keyframe_role if spec else "NEUTRAL_IDLE"
     start_keyframe = run.keyframes.get(start_role) or {}
+    canonical_id = run.canonical_version_id
+    if spec and spec.start_from_derived:
+        override = dict(run.provider_state.get("close_position_override") or {})
+        start_keyframe = {
+            "id": override.get("reference_id") or f"derived:{spec.start_from_derived}",
+            "version": override.get("version"),
+        }
+        canonical_id = override.get("canonical_version_id")
+        if not override.get("object_path"):
+            return False
     return bool(
         motion
         and motion.pet_id == run.pet_id
@@ -1299,11 +1325,23 @@ def _motion_matches(run: PetGenerationRun, motion: Any) -> bool:
         and motion.motion_spec_version == run.motion_spec_version
         and str(motion.start_keyframe_id or "") == str(start_keyframe.get("id") or "")
         and motion.start_keyframe_version == start_keyframe.get("version")
-        and str(motion.canonical_version_id or "") == str(run.canonical_version_id or "")
+        and str(motion.canonical_version_id or "") == str(canonical_id or "")
+        and (
+            not (spec and spec.start_from_derived)
+            or str(motion.target_keyframe_id or "")
+            == str((run.keyframes.get(spec.target_keyframe_role) or {}).get("id") or "")
+        )
     )
 
 
-async def _motion(run: PetGenerationRun, contract: Optional[dict[str, Any]] = None):
+async def _submitted_motion_version(run: PetGenerationRun):
+    replacement = ((run.provider_state or {}).get("_operator") or {}).get("replacement_request") or {}
+    return await motion_video_service.submitted_motion_version(
+        run_id=run.id, user_id=run.user_id, pet_id=run.pet_id, motion_id=run.motion_id,
+        replacement_source_id=str(replacement.get("source_motion_version_id") or ""))
+
+
+async def _motion(run: PetGenerationRun, contract: Optional[dict[str, Any]] = None, resume_version=None):
     if run.motion_version_id:
         motion = await motion_video_service.get_motion_version(
             user_id=run.user_id,
@@ -1315,18 +1353,25 @@ async def _motion(run: PetGenerationRun, contract: Optional[dict[str, Any]] = No
             raise PetGenerationRunError("RUN_LINEAGE_INVALID", "저장된 모션 버전을 찾지 못했습니다.", status=409)
         return motion, run
 
+    resume_version = resume_version or await _submitted_motion_version(run)
+    if resume_version:
+        pin = resume_version["analyzer_versions"][motion_video_service.DURABLE_CONTRACT_KEY]
+        provider = video_motion_providers.pinned_provider(pin["provider_identity"])
+        providers = durable_provider_jobs.durable_video_providers(
+            [provider], run_id=run.id, user_id=run.user_id, pet_id=run.pet_id)
+        motion = await motion_video_service.build_motion_video(
+            user_id=run.user_id, pet_id=run.pet_id, motion_id=run.motion_id,
+            providers=providers, resume_version=resume_version, skip_if_unchanged=False)
+        return motion, run
+
     latest = await motion_video_service.get_motion_version(
         user_id=run.user_id, pet_id=run.pet_id, motion_id=run.motion_id
     )
     operator_state = dict(run.provider_state.get("_operator") or {})
     replacement = dict(operator_state.get("replacement_request") or {})
     replacement_source = str(replacement.get("source_motion_version_id") or "")
-    if latest and _motion_matches(run, latest):
-        # A REVIEW replacement request deliberately refuses to reuse its source
-        # version. Once the worker has created the next building version, normal
-        # durable resume takes over and the existing external job ID is reused.
-        if latest.id != replacement_source and latest.status != motion_video_service.STATUS_BUILDING:
-            return latest, run
+    # New runs use the builder's generation-stamp cache check, which includes
+    # model/vendor identity. Lineage alone cannot reuse a differently routed video.
     spec = motion_spec.get_motion(run.motion_id)
     if not spec:
         raise PetGenerationRunError("UNSUPPORTED_MOTION", "BREATHING 모션 스펙이 없습니다.", status=422)
@@ -1339,6 +1384,57 @@ async def _motion(run: PetGenerationRun, contract: Optional[dict[str, Any]] = No
         precomputed_contract=contract,
     )
     return motion, run
+
+
+async def _refresh_stale_motion_qa(
+    run: PetGenerationRun, motion: motion_video_service.MotionVersion
+) -> motion_video_service.MotionVersion:
+    """Requalify stored videos under the worker's existing claim/heartbeat.
+
+    Retry preserves the motion pin and provider jobs. The durable run claim,
+    active-run exclusion and lease heartbeater serialize duplicate retries;
+    reevaluate_motion_candidate rereads persisted QA and deduplicates again.
+    No generation builder or provider is called here.
+    """
+    # New durable runs retain their submitted acceptance contract. Legacy runs
+    # still use the existing freshness migration; explicit QA-only reevaluation
+    # remains available independently of generation.
+    pin = (getattr(motion, "analyzer_versions", None) or {}).get(motion_video_service.DURABLE_CONTRACT_KEY) or {}
+    acceptance = (((pin.get("contract") or {}).get("requirements") or {}).get("qa") or {}).get("business")
+    for candidate in motion.candidates:
+        # A provider failure with no output has nothing to reevaluate. Keep its
+        # existing failure/recovery handling instead of trying to buy a video.
+        if (
+            getattr(candidate, "decision", None) == "ERROR"
+            and not getattr(candidate, "raw_video_path", None)
+        ):
+            continue
+        obsolete_review_block = business_qa.has_obsolete_review_block(
+            getattr(candidate, "qa_result", None)
+        )
+        if (not obsolete_review_block and pin.get("run_id") == run.id and acceptance
+                and (candidate.qa_result or {}).get("motion_business_contract") == {**acceptance, "motion_id": run.motion_id}
+                and business_qa.receipt(candidate.qa_result) is not None):
+            continue
+        if motion_video_service.candidate_qa_is_current(
+            getattr(candidate, "qa_result", None), run.motion_id
+        ):
+            continue
+        await _heartbeat(run)  # Validate ownership before starting QA work.
+        logger.info(
+            "Refreshing stale motion QA: run=%s motion_version=%s candidate=%s",
+            run.id, motion.id, candidate.id,
+        )
+        motion = await motion_video_service.reevaluate_motion_candidate(
+            user_id=run.user_id,
+            pet_id=run.pet_id,
+            motion_id=run.motion_id,
+            motion_version_id=motion.id,
+            candidate_id=candidate.id,
+            vlm_cache_mode="on",
+        )
+        await _heartbeat(run)
+    return motion
 
 
 def _require_status(actual: str, expected: str, code: str, message: str) -> None:
@@ -1613,16 +1709,11 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
             )
 
         spec = motion_spec.get_motion(run.motion_id)
-        # 시스템 소유 무료 모션(BREATHING/RETURN_HOME) + 상용 모션 = 포장 가능 전체.
-        supported = (
-            motion_delivery_service.SYSTEM_MOTIONS + premium_motion_finalization.PREMIUM_MOTIONS
-        )
-        if not spec or run.motion_id not in supported:
-            raise PetGenerationRunError(
-                "UNSUPPORTED_MOTION",
-                "지원하는 모션은 시스템 모션(BREATHING/RETURN_HOME) + 상용 모션입니다.",
-                status=422,
-            )
+        # Use the same internal/commercial admission rules on submission and
+        # every durable resume. RETURN_HOME is FREE_HOME, never a paid action.
+        _validate_request(run.motion_id, run.request_kind, run.idempotency_key)
+        if not spec:
+            raise PetGenerationRunError("UNSUPPORTED_MOTION", "모션 스펙이 없습니다.", status=422)
 
         # start_from_derived 모션(RETURN_HOME): 시작이 역할 키프레임이 아니라 런별 파생
         # 이미지(CLOSE_POSITION)다. provider_state 에 enqueue 시점에 박혀 있다.
@@ -1681,7 +1772,12 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
         # 뒀으므로 동일하다.
         start_kf_pin = dict(run.keyframes.get(spec.start_keyframe_role) or {}) if spec.start_keyframe_role else {}
 
-        if resume_from <= _stage_index(STAGE_MOTION_SPEC) or not run.motion_spec_version:
+        resume_version = None
+        if not run.motion_version_id:
+            resume_version = await _submitted_motion_version(run)
+        if resume_version:
+            contract = resume_version["analyzer_versions"][motion_video_service.DURABLE_CONTRACT_KEY]["contract"]
+        elif resume_from <= _stage_index(STAGE_MOTION_SPEC) or not run.motion_spec_version:
             stage = STAGE_MOTION_SPEC
             run = await _progress(run, {"current_stage": stage})
             run = await _heartbeat(run)
@@ -1726,13 +1822,10 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
         stage = STAGE_MOTION_GENERATION
         run = await _progress(run, {"current_stage": stage})
         run = await _heartbeat(run)
-        motion, run = await _motion(run, contract)
-        qa_shadow_telemetry.record_candidates(
-            run,
-            stage="MOTION",
-            parent_id=motion.id,
-            candidates=motion.candidates,
-        )
+        if resume_version:
+            motion, run = await _motion(run, contract, resume_version=resume_version)
+        else:
+            motion, run = await _motion(run, contract)
         provider_state = _provider_state(run)
         operator_state = dict(provider_state.get("_operator") or {})
         replacement = dict(operator_state.get("replacement_request") or {})
@@ -1758,6 +1851,14 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
 
         stage = STAGE_QA
         run = await _progress(run, {"current_stage": stage})
+        motion = await _refresh_stale_motion_qa(run, motion)
+        run = await _progress(run, {"selected_candidate_id": motion.selected_candidate_id})
+        qa_shadow_telemetry.record_candidates(
+            run,
+            stage="MOTION",
+            parent_id=motion.id,
+            candidates=motion.candidates,
+        )
         selected = None
         # BREATHING with legacy authority retired: the selected candidate's
         # receipt alone decides. Version status, the legacy decision and the
@@ -2058,16 +2159,38 @@ async def _latest_with_our_lease(run: PetGenerationRun) -> PetGenerationRun:
     return replace(_to_run(latest_row), execution_token=run.execution_token)
 
 
-async def process_next_generation_run(*, worker_id: str) -> Optional[PetGenerationRun]:
+async def process_next_generation_run(
+    *,
+    worker_id: str,
+    worker_hostname: Optional[str] = None,
+    worker_pid: Optional[int] = None,
+    worker_version: Optional[str] = None,
+) -> Optional[PetGenerationRun]:
     """Claim and advance at most one run; intended for the durable worker only."""
     wid = (worker_id or "").strip()
     if not wid:
         raise PetGenerationRunError("WORKER_ID_REQUIRED", "worker_id 가 필요합니다.", status=422)
     claim_started = time.perf_counter()
-    run = await _claim_next(wid)
+    hostname = (worker_hostname or socket.gethostname()).strip()
+    pid = int(worker_pid or os.getpid())
+    version = (worker_version or generation_worker_contract.WORKER_CONTRACT_VERSION).strip()
+    run = await _claim_next(
+        wid,
+        worker_hostname=hostname,
+        worker_pid=pid,
+        worker_version=version,
+    )
     claim_time_ms = (time.perf_counter() - claim_started) * 1000.0
     if not run:
         return None
+    logger.info(
+        "generation run claimed: run_id=%s worker_id=%s hostname=%s pid=%s worker_version=%s",
+        run.id,
+        wid,
+        hostname,
+        pid,
+        version,
+    )
     qa_shadow_telemetry.mark_claimed(run, claim_time_ms=claim_time_ms)
     if _recovery_exhausted(run):
         # claim 이 상한을 넘겨 한 번 더 건네준 실행 — 워커가 이 실행 위에서
@@ -2336,11 +2459,45 @@ async def _join_other_active_run(run: PetGenerationRun) -> Optional[PetGeneratio
     return None
 
 
+async def _recover_submitted_companion_start(run: PetGenerationRun) -> dict[str, Any]:
+    """Read the original frame ledger after an old worker dropped the override.
+
+    Require the submitted version's reference ID and the source-run lineage to
+    agree. Never extract a replacement frame or clear a provider/version pin.
+    """
+    prefix = f"system-companion:RETURN_HOME:{run.pet_id}:"
+    source_id = run.idempotency_key.removeprefix(prefix) if run.idempotency_key.startswith(prefix) else ""
+    operations = [j for j in durable_provider_jobs.list_for_run(run.id)
+                  if j.get("provider_operation") == durable_provider_jobs.OP_MOTION]
+    versions = await motion_video_service._version_rows(run.pet_id, run.motion_id)
+    submitted = [v for v in versions if v.get("user_id") == run.user_id
+                 and any(j.get("phase_version_id") == v.get("id") for j in operations)]
+    refs = await pet_reference_service.list_references(user_id=run.user_id, pet_id=run.pet_id)
+    matches = [ref for ref in refs
+               if ref.derived_kind == "close_position" and ref.object_path
+               and source_id and (ref.diagnostics or {}).get("close_position", {}).get("come_closer_run_id") == source_id
+               and (ref.diagnostics or {}).get("close_position", {}).get("frame") == "final"
+               and any(v.get("start_keyframe_id") == ref.id for v in submitted)]
+    if len(matches) != 1:
+        raise PetGenerationRunError(
+            "DERIVED_START_MISSING", "제출된 RETURN_HOME 작업의 원본 CLOSE_POSITION 을 확인하지 못했습니다.", status=409
+        )
+    ref = matches[0]
+    return {"bucket": ref.bucket, "object_path": ref.object_path, "reference_id": ref.id}
+
+
 async def retry_generation_run(
     *, user_id: str, run_id: str,
     close_position_override: Optional[dict[str, Any]] = None,
 ) -> PetGenerationRun:
     run = await get_generation_run(user_id=user_id, run_id=run_id)
+    if (
+        run.motion_id == "RETURN_HOME" and run.request_kind == REQUEST_FREE_HOME
+        and run.status == STATUS_FAILED
+        and (run.last_error or {}).get("code") == "UNSUPPORTED_MOTION"
+        and not (run.provider_state.get("close_position_override") or {}).get("object_path")
+    ):
+        close_position_override = await _recover_submitted_companion_start(run)
     repairing_derived_start = close_position_override is not None
     if repairing_derived_start:
         # Automatic companion recovery is deliberately restricted to the known
@@ -2350,7 +2507,7 @@ async def retry_generation_run(
             run.motion_id == "RETURN_HOME"
             and run.request_kind == REQUEST_FREE_HOME
             and run.status == STATUS_FAILED
-            and (run.last_error or {}).get("code") == "DERIVED_START_MISSING"
+            and (run.last_error or {}).get("code") in {"DERIVED_START_MISSING", "UNSUPPORTED_MOTION"}
         ):
             return run
         saved_override = run.provider_state.get("close_position_override")

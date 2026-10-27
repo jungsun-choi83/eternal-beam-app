@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field, replace
+from copy import deepcopy
 from types import SimpleNamespace
 from typing import Any, Optional
 
@@ -107,7 +108,9 @@ PHASE6_CONTRACT_VERSION = "phase6-contract-v3"
 MOTION_REGISTRY_CONTRACT_VERSION = "motion-registry-v1"
 # QA-only contract version.  Unlike MOTION_SPEC_VERSION, changing this must not
 # invalidate or repurchase an already generated video.
-MOTION_QA_CONTRACT_VERSION = "motion-qa-contract-v2"
+MOTION_QA_CONTRACT_VERSION = "motion-qa-contract-v3"
+MOTION_ACCEPTANCE_VERSION = "motion-acceptance-v1"
+MOTION_REVIEW_POLICY = "publish_with_advisory"
 
 CLASS_MICRO = "MICRO"
 CLASS_TRANSITION = "TRANSITION"
@@ -173,7 +176,7 @@ class MotionSpecError(Exception):
 class MotionSpec:
     motion_id: str
     motion_class: str
-    #: 사람이 읽는 모션 서술 (Phase 6 프롬프트의 씨앗이 아니라 문서다).
+    #: Generation description. Retain this name for stored contracts/callers.
     description: str
     #: 역할 기반 시작 키프레임. start_from_derived 가 설정된 모션(RETURN_HOME)은
     #: 역할 키프레임이 아니라 **런별 파생 이미지**에서 시작하므로 None 이다.
@@ -201,6 +204,8 @@ class MotionSpec:
     motion_type: str = "GENERIC"
     #: authoritative motion registry 요구사항 (Phase 4).
     requirements: dict[str, Any] = field(default_factory=dict)
+    #: Independent acceptance criteria; legacy motions retain their old QA text.
+    qa_acceptance_spec: dict[str, Any] = field(default_factory=dict)
 
 
 #: MICRO 는 클래스 전체가 **고정 4.0s** 다 (v6). 프로바이더 최소(Runway
@@ -336,7 +341,7 @@ MOTIONS: dict[str, MotionSpec] = {
         # STRATEGY_I2V_MOTION_REF, fallback_video_strategy=STRATEGY_I2V 를 복원하면 된다.
         # RETURN_HOME·파생 CLOSE_POSITION·QA·프로바이더 순서는 영향받지 않는다.
         preferred_video_strategy=STRATEGY_I2V,
-        duration_range_sec=(3.0, 6.0),
+        duration_range_sec=(5.0, 7.0),
         video_compat={"returns_to_start_pose": False, "motion_scale": "locomotion"},
         preferred_camera_view="FRONT",
         preferred_travel_direction="TOWARD_CAMERA",
@@ -352,11 +357,26 @@ MOTIONS: dict[str, MotionSpec] = {
     "RETURN_HOME": MotionSpec(
         motion_id="RETURN_HOME", motion_class=CLASS_LOCOMOTION,
         description=(
-            "The same pet starts close to the camera as shown in the supplied start image. The camera stays completely still."
-            "0-1.5s: The pet turns away from the camera."
-            "1.5-5.5s: The pet walks straight away from the camera with a natural grounded gait, becoming gradually smaller while staying centered."
-            "5.5-6.5s: The pet stops at that location and rotates in place to face the camera. It does not move toward the camera"
-            "6.5-8s: The pet stands calmly in the exact pose and framing of the final reference image."
+            "The same pet performs RETURN_HOME in one continuous shot. "
+            "The camera remains completely stationary. "
+
+            "The pet begins at CLOSE_POSITION, near the camera, exactly as shown "
+            "in the supplied starting image. "
+
+            "The pet turns away from the camera and walks naturally toward HOME_IDLE. "
+            "It continues moving away without reversing direction. "
+            "As it retreats, it gradually becomes smaller while remaining centered. "
+
+            "Upon reaching its HOME_IDLE position, the pet stops walking. "
+            "It then turns in place to face the camera, without stepping forward "
+            "or changing its distance from the camera. "
+
+            "The final pose must be compatible with the supplied HOME_IDLE reference "
+            "and transition naturally into BREATHING. "
+            "The pet must remain at its home location after arriving. "
+
+            "There must be no second approach toward the camera, "
+            "no return to CLOSE_POSITION, and no forward movement after retreat. "
         ),
         start_from_derived="close_position",
         target_keyframe_role="STAND_READY",
@@ -802,8 +822,14 @@ def _class_business_qa(spec: MotionSpec) -> dict[str, Any]:
             }
         )
 
+    acceptance = spec.qa_acceptance_spec
+    if acceptance.get("version") == MOTION_ACCEPTANCE_VERSION:
+        authority.update(acceptance["check_authority"])
+        domains["acceptance"] = {"required_checks": acceptance["required_checks"]}
+
     return {
         "version": MOTION_QA_CONTRACT_VERSION,
+        "acceptance": deepcopy(acceptance),
         "authority_profile": (
             BREATHING_AUTHORITY_VERSION
             if spec.motion_id == BREATHING_HOME_STATE
@@ -923,6 +949,93 @@ def _requirements_for(spec: MotionSpec) -> dict[str, Any]:
     }
 
 
+# Only these beta motions change behavior. Other entries get an explicit legacy
+# acceptance snapshot, preserving their prompts, authority and delivery policy.
+_BETA_ACCEPTANCE = {
+    "BREATHING": {
+        "description": "The pet remains at HOME_IDLE with subtle, believable living motion.",
+        "expected_start_state": "HOME_IDLE: the approved home standing pose.",
+        "expected_end_state": "HOME_IDLE: compatible with repeating this idle loop.",
+        "blocking_criteria": [
+            "Clearly broken idle behavior, significant positional drift, or an unusable loop discontinuity.",
+            "Do not require exaggerated chest movement or a perfectly periodic breathing cycle.",
+        ],
+        "advisory_criteria": [
+            "Small rhythm variations, minor fur movement, subtle posture adjustments, slight asymmetry and minor temporal imperfections.",
+        ],
+        "check_authority": {"vlm_motion": AUTHORITY_INTEGRITY_HARD},
+    },
+    "COME_CLOSER": {
+        "description": (
+            "The pet visibly approaches the viewer. Walking, trotting, running or short bounding approaches are acceptable. "
+            "Turning before approaching and standing still after arrival are acceptable. "
+            "requested_motion_occurs assesses meaningful approach, not a running gait."
+        ),
+        "expected_start_state": "HOME_IDLE: the pet starts at its home position.",
+        "expected_end_state": (
+            "CLOSE_POSITION: ideally visibly closer than at the beginning. Meaningful approach with uncertain final distance "
+            "is advisory; it is not proof of failed motion or a critical state violation."
+        ),
+        "blocking_criteria": ["Clearly no meaningful approach or clearly incorrect travel direction."],
+        "advisory_criteria": [
+            "Imperfect gait, unidentifiable footfalls, short reorientation, minor speed changes, brief partial paw cropping, "
+            "slightly irregular scale progression, uncertain final distance, and a stationary final pose.",
+        ],
+        "check_authority": {"vlm_locomotion_form": AUTHORITY_QUALITY_ADVISORY},
+    },
+    "RETURN_HOME": {
+        "description": "The pet moves back toward its home location and settles into a pose compatible with BREATHING.",
+        "endpoint_reference_required": True,
+        "expected_start_state": "CLOSE_POSITION: the usable terminal frame of the successful COME_CLOSER clip.",
+        "expected_end_state": (
+            "HOME_IDLE: a calm home pose compatible with BREATHING. Exact pixel, framing or pose matching is not required. "
+            "A demonstrably significant endpoint mismatch that disrupts idle continuity is a critical state violation; "
+            "insufficient evidence of compatibility is unknown, not a demonstrated violation."
+        ),
+        "blocking_criteria": ["Clearly absent return movement or clearly incorrect return direction."],
+        "advisory_criteria": ["Minor gait/speed variations, small framing or endpoint discrepancies, and minor settling movement."],
+        "check_authority": {
+            "vlm_locomotion_form": AUTHORITY_QUALITY_ADVISORY,
+            # Pixel similarity is evidence, not proof of endpoint incompatibility.
+            "starts_at_start_pose": AUTHORITY_QUALITY_ADVISORY,
+            "reaches_target_pose": AUTHORITY_QUALITY_ADVISORY,
+            "vlm_target_pose": AUTHORITY_QUALITY_ADVISORY,
+        },
+    },
+}
+
+
+def _acceptance_for(spec: MotionSpec) -> dict[str, Any]:
+    beta = _BETA_ACCEPTANCE.get(spec.motion_id)
+    if beta is None:
+        return {"version": "motion-acceptance-legacy-v1", "motion_id": spec.motion_id,
+                "description": spec.description}
+    contract = deepcopy(beta)
+    required = ["vlm_same_pet", "vlm_anatomy", "vlm_composition", "vlm_motion",
+                "vlm_motion_integrity", "vlm_critical_state", "motion_temporal_integrity"]
+    if spec.motion_class == CLASS_LOCOMOTION:
+        required.append("vlm_direction_travel")
+    contract.update({
+        "version": MOTION_ACCEPTANCE_VERSION,
+        "motion_id": spec.motion_id,
+        "required_checks": required,
+        "review_policy": MOTION_REVIEW_POLICY,
+        "blocking_criteria": [
+            "Significant identity inconsistency; severe anatomy deformation or demonstrably missing/broken body parts.",
+            "Obvious teleportation, major temporal discontinuities, clearly sustained sliding/floating, or unusable output.",
+            *contract["blocking_criteria"],
+        ],
+        "check_authority": {
+            **dict.fromkeys(required, AUTHORITY_INTEGRITY_HARD),
+            "vlm_final_position": AUTHORITY_QUALITY_ADVISORY,
+            **contract["check_authority"],
+        },
+    })
+    return contract
+
+
+MOTIONS = {mid: replace(spec, qa_acceptance_spec=_acceptance_for(spec)) for mid, spec in MOTIONS.items()}
+
 # authoritative registry 확장: 기존 모션 시스템을 유지하고 항목별 요구사항만 주입.
 MOTIONS = {
     motion_id: replace(
@@ -1013,6 +1126,7 @@ def motion_snapshot(spec: MotionSpec) -> dict[str, Any]:
         "motion_class": spec.motion_class,
         "motion_type": spec.motion_type,
         "description": spec.description,
+        "qa_acceptance_spec": deepcopy(spec.qa_acceptance_spec),
         "start_keyframe_role": spec.start_keyframe_role,
         "target_keyframe_role": spec.target_keyframe_role,
         "requires_target_keyframe": spec.requires_target_keyframe,
@@ -1430,6 +1544,7 @@ async def resolve_video_generation_spec(
         "provider_order": list(provider_order_for_motion(spec.motion_id)),
         "requirements": dict(spec.requirements),
         "qa_context": {
+            "acceptance": deepcopy(spec.qa_acceptance_spec),
             "expected_direction": direction or spec.preferred_travel_direction,
             "interaction_type": spec.video_compat.get("interaction"),
             "allow_generated_hand": bool(spec.video_compat.get("allow_generated_hand")),

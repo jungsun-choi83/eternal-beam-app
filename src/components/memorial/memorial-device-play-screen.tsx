@@ -227,6 +227,7 @@ function MemorialDevicePlayScreenInner({
     () => ({
       ...idleEventFormats,
       COME_CLOSER: premiumAssets?.readyAssets?.COME_CLOSER?.deliveryFormat ?? null,
+      RETURN_HOME: premiumAssets?.readyAssets?.RETURN_HOME?.deliveryFormat ?? null,
       PET_HEAD: premiumAssets?.readyAssets?.PET_HEAD?.deliveryFormat ?? null,
       LOOK_UP: premiumAssets?.readyAssets?.LOOK_UP?.deliveryFormat ?? null,
       LIE_DOWN: premiumAssets?.readyAssets?.LIE_DOWN?.deliveryFormat ?? null,

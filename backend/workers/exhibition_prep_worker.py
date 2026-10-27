@@ -12,8 +12,8 @@ pet_generation_worker 와는 프로세스·테이블·큐 모두 별개다.
   EXHIBITION_PREP_POLL_INTERVAL_SEC  기본 "5"
   EXHIBITION_PREP_STALE_MINUTES      기본 "20"
   EXHIBITION_MAX_INPUT_SIDE          기본 "2048" (전시 실행에서만 입력 긴 변 상한)
-  EXHIBITION_POSE_GATE_MODE          clip (기본) | off — 로컬 포즈/시점 게이트 (exhibition_pose_gate)
-  EXHIBITION_POSE_NORMALIZATION_MODE gpt_image | mock | off(기본) — 게이트가 NEEDS 일 때의 1회 생성
+  EXHIBITION_POSE_GATE_MODE          clip (기본) | off — 로컬 포즈/시점 입력 분석 (exhibition_pose_gate)
+  EXHIBITION_POSE_NORMALIZATION_MODE gpt_image | mock | off(기본) — 모든 업로드의 1회 생성
                                      (gpt_image 는 OPENAI_API_KEY 등 정본 생성과 같은 OpenAI 설정을 쓴다)
 
 READY 가 되면 이 워커는 아무것도 보내지 않고 멈춘다 — 패키지가 준비됐다는 뜻만

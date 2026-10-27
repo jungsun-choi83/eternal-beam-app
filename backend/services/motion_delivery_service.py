@@ -22,7 +22,8 @@ video_anchor 계약). 브라우저 재생기(idle-loop-video)는 세 모드만 �
 
 ── packed-alpha 계약 (packed-alpha-canvas.ts 와 일치) ───────────────────────
   * 세로 스택: 상단 = RGB(알파 프리멀티플라이), 하단 = 그레이스케일 알파.
-  * 높이는 원본의 2배(항상 짝수). 종횡비 h/w ≥ 1 유지(720x1280 → 720x2560).
+  * 공급자 원본 크기와 무관하게 각 절반을 854×480 contain+pad 하고, 최종
+    854×960으로 고정한다. 크롭/비율 왜곡 없이 RGB와 알파에 같은 변환을 쓴다.
   * 매트 절반 평균 chroma ≈ 0 (H.264 후 ~4; 브라우저 임계 6.0 미만).
   * 파일명은 `_packed.mp4` 로 끝난다 — isLikelyPackedAlphaSource 빠른 양성.
   * 프리멀티플라이는 배경 오염 제거를 겸한다: out = I − (1−α)·B.
@@ -68,8 +69,18 @@ DELIVERY_PACKED_ALPHA = "packed_alpha"
 # v3: 그림자 거부 — 거리 키잉은 접지/투영 그림자를 **완전 불투명 전경**으로
 #     만들었다(배경 대비 거리가 크니까). 그림자는 배경의 감광 버전이라
 #     색조가 배경과 같다는 사실로만 걸러낸다. 지울 양이 과하면 포기한다.
-PACKAGING_VERSION = "motion-delivery-v3"
+PACKAGING_VERSION = "motion-delivery-v4"
 BREATHING = "BREATHING"
+
+#: Browser/device delivery canvas. Providers interpret "480p" differently
+#: (for example WAN returns 854x480 while Grok Imagine Lite can return
+#: 736x400), but packed-alpha is a transport format and must be stable.
+#: Each half is letterboxed independently with the same geometry; the final
+#: vstack is therefore always 854x960 without stretching or cropping.
+DELIVERY_RGB_WIDTH = 854
+DELIVERY_RGB_HEIGHT = 480
+DELIVERY_PACKED_WIDTH = DELIVERY_RGB_WIDTH
+DELIVERY_PACKED_HEIGHT = DELIVERY_RGB_HEIGHT * 2
 
 #: 포장 대상 모션 (Phase 7H 확장). BREATHING + 기존 상용 5종 — 전부 Phase 6 의
 #: 중립 회색 배경 산출물이라 같은 packed-alpha 계약으로 포장된다. 새 모션
@@ -542,6 +553,29 @@ class _StreamingVideoEncoder:
             self.proc.stderr.close()
 
 
+def encode_packed_video(frames: list[np.ndarray], fps: float) -> bytes:
+    """Normalize packed frames and encode them without duplicating the clip in RAM."""
+    if not frames:
+        raise MotionDeliveryError("DELIVERY_ENCODE_FAILED", "인코딩할 프레임이 없습니다.")
+    with tempfile.TemporaryDirectory(prefix="eb_delivery_packed_enc_") as td:
+        out_path = os.path.join(td, "out.mp4")
+        encoder = _StreamingVideoEncoder(
+            out_path,
+            width=DELIVERY_PACKED_WIDTH,
+            height=DELIVERY_PACKED_HEIGHT,
+            fps=fps,
+        )
+        try:
+            for frame in frames:
+                encoder.write(normalize_packed_frame(frame))
+            encoder.finish()
+        except Exception:
+            encoder.abort()
+            raise
+        with open(out_path, "rb") as f:
+            return f.read()
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # 매트 추출
 # ══════════════════════════════════════════════════════════════════════════
@@ -919,6 +953,56 @@ def build_packed_frames(
     return packed
 
 
+def normalize_packed_frame(frame: np.ndarray) -> np.ndarray:
+    """Letterbox one packed frame to the canonical 854x960 delivery canvas.
+
+    Resampling happens after premultiplication, which is the halo-safe order for
+    RGB+alpha. The RGB and matte halves use the exact same contain geometry and
+    Lanczos kernel, so fur edges remain registered. Padding is transparent
+    black in both halves.
+    """
+    if frame.ndim != 3 or frame.shape[2] != 3 or frame.shape[0] % 2:
+        raise MotionDeliveryError(
+            "PACKED_INVALID", f"packed frame shape is invalid: {frame.shape}"
+        )
+    source_h = frame.shape[0] // 2
+    source_w = frame.shape[1]
+    if source_w <= 0 or source_h <= 0:
+        raise MotionDeliveryError("PACKED_INVALID", "packed frame is empty")
+    if source_w == DELIVERY_RGB_WIDTH and source_h == DELIVERY_RGB_HEIGHT:
+        return np.ascontiguousarray(frame, dtype=np.uint8)
+
+    scale = min(DELIVERY_RGB_WIDTH / source_w, DELIVERY_RGB_HEIGHT / source_h)
+    resized_w = max(1, min(DELIVERY_RGB_WIDTH, int(round(source_w * scale))))
+    resized_h = max(1, min(DELIVERY_RGB_HEIGHT, int(round(source_h * scale))))
+    offset_x = (DELIVERY_RGB_WIDTH - resized_w) // 2
+    offset_y = (DELIVERY_RGB_HEIGHT - resized_h) // 2
+
+    try:
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover - required backend dependency
+        raise MotionDeliveryError(
+            "DELIVERY_TOOLING_UNAVAILABLE", "Pillow is required for packed normalization.", status=503
+        ) from exc
+
+    top = Image.fromarray(frame[:source_h], "RGB").resize(
+        (resized_w, resized_h), Image.Resampling.LANCZOS
+    )
+    # The matte is grayscale by contract. Resize one channel once, then repeat
+    # it so chroma remains exactly zero before H.264 encoding.
+    matte = Image.fromarray(frame[source_h:, :, 0], "L").resize(
+        (resized_w, resized_h), Image.Resampling.LANCZOS
+    )
+    top_canvas = np.zeros((DELIVERY_RGB_HEIGHT, DELIVERY_RGB_WIDTH, 3), dtype=np.uint8)
+    matte_canvas = np.zeros_like(top_canvas)
+    ys = slice(offset_y, offset_y + resized_h)
+    xs = slice(offset_x, offset_x + resized_w)
+    top_canvas[ys, xs] = np.asarray(top, dtype=np.uint8)
+    matte_resized = np.asarray(matte, dtype=np.uint8)
+    matte_canvas[ys, xs] = matte_resized[:, :, None]
+    return np.vstack([top_canvas, matte_canvas])
+
+
 def _avg_chroma(rgb: np.ndarray) -> float:
     """packed-alpha-canvas.ts averageChroma 의 서버측 거울."""
     f = rgb.astype(np.float32)
@@ -1006,12 +1090,13 @@ def stream_vitmatte_to_packed_file(
     encoder: Optional[_StreamingVideoEncoder] = None
     chroma_samples: list[tuple[float, float]] = []
     decoded_count = 0
-    width = height = 0
+    output_width = output_height = 0
     fps = 0.0
 
     def emit(frame: np.ndarray, alpha: np.ndarray) -> None:
-        nonlocal encoder
-        packed = build_packed_frames([frame], [alpha])[0]
+        nonlocal encoder, output_width, output_height
+        packed = normalize_packed_frame(build_packed_frames([frame], [alpha])[0])
+        output_height, output_width = packed.shape[:2]
         half = packed.shape[0] // 2
         chroma_samples.append((_avg_chroma(packed[:half]), _avg_chroma(packed[half:])))
         if encoder is None:
@@ -1029,7 +1114,7 @@ def stream_vitmatte_to_packed_file(
         ):
             decoded_count += 1
             if decoded_count == 1:
-                fps, width, height = frame_fps, frame_w, frame_h
+                fps = frame_fps
             alpha = matter(frame)
             if tuple(alpha.shape[:2]) != tuple(frame.shape[:2]):
                 raise MotionDeliveryError(
@@ -1055,15 +1140,15 @@ def stream_vitmatte_to_packed_file(
             f"디코드/인코드 프레임 수가 다릅니다 ({decoded_count}/{encoder.frame_count}).",
         )
     warnings = _validate_streamed_packed(
-        width=width,
-        packed_height=height * 2,
+        width=output_width,
+        packed_height=output_height,
         chroma_samples=chroma_samples,
     )
     return StreamingPackResult(
         frame_count=decoded_count,
         fps=fps,
-        width=width,
-        height=height * 2,
+        width=output_width,
+        height=output_height,
         matte={"backend": "vitmatte"},
         stabilization=stabilizer.diagnostics(),
         warnings=warnings,
@@ -1215,9 +1300,11 @@ async def package_breathing_for_delivery(
     derived_path = _derived_path_for(raw_path)
 
     # ── 멱등 지름길 ────────────────────────────────────────────────────────
+    existing_delivery = dict((candidate.get("generation_metadata") or {}).get("delivery") or {})
     already = (
         candidate_delivery_format(candidate) == DELIVERY_PACKED_ALPHA
         and str(candidate.get("derived_video_path") or "") == derived_path
+        and existing_delivery.get("packaging_version") == PACKAGING_VERSION
     )
     if already and not force and _derived_exists(bucket, derived_path):
         meta = dict(candidate.get("generation_metadata") or {})
@@ -1337,7 +1424,7 @@ async def package_breathing_for_delivery(
             packed = build_packed_frames(frames, alphas)
             warnings = validate_packed_frames(packed)
 
-            packed_bytes = (encode_fn or encode_video)(packed, fps)
+            packed_bytes = (encode_fn or encode_packed_video)(packed, fps)
             if upload_fn is not None:
                 await _maybe_await(upload_fn(derived_path, packed_bytes))
             else:
@@ -1369,6 +1456,12 @@ async def package_breathing_for_delivery(
         "stabilization": stab_diag,
         "fps": round(float(fps), 4),
         "frame_count": frame_count,
+        "output_dimensions": {
+            "width": DELIVERY_PACKED_WIDTH,
+            "height": DELIVERY_PACKED_HEIGHT,
+            "rgb_width": DELIVERY_RGB_WIDTH,
+            "rgb_height": DELIVERY_RGB_HEIGHT,
+        },
         "source_raw_video_path": raw_path,
         "warnings": warnings,
         "packaged_at": _now_iso(),
