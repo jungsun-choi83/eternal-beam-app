@@ -499,6 +499,18 @@ async def build_canonical(
     profile = await pet_identity_service.get_profile(
         user_id=uid, pet_id=pid, version=refset.identity_profile_version
     )
+    # 형태 프로필 — 세트가 고정한 버전. 프롬프트의 VLM 문자열 관측(눈/주둥이/발/
+    # 꼬리 묘사)에만 쓰인다. 읽지 못해도 빌드는 막지 않는다 — 사실 줄이 빠질 뿐이다.
+    morphology = None
+    if getattr(refset, "morphology_profile_version", None):
+        try:
+            from . import pet_morphology_service
+
+            morphology = await pet_morphology_service.get_profile(
+                user_id=uid, pet_id=pid, version=int(refset.morphology_profile_version)
+            )
+        except Exception:
+            logger.warning("정본 프롬프트용 형태 프로필 조회 실패 (pet=%s)", pid, exc_info=True)
 
     versions_stamp = analyzer_versions() if providers is None else {
         **analyzer_versions(),
@@ -653,11 +665,18 @@ async def build_canonical(
         "background": canonical_prompt.background_spec_text(background_tone),
     }
 
+    # 사진별 기여 가이드 — picks 와 같은 순서라 프로바이더 입력 순서와 프롬프트의
+    # "Reference N" 설명이 구조적으로 일치한다. 재개 중인 버전은 같은 고정 세트에서
+    # 결정론적으로 다시 계산된다(프롬프트와 같은 취급).
+    reference_guide = canonical_reference_selector.reference_guide(refset, picks)
+
     prompt = canonical_prompt.build_canonical_prompt(
         visual_identity=(profile.visual_identity if profile else {}),
         structural_identity=(profile.structural_identity if profile else {}),
         reference_roles=[p["role"] for p in picks],
         background_tone=background_tone,
+        reference_guide=reference_guide,
+        morphology_profile=morphology,
     )
 
     cid = pid[4:] if pid.startswith("pet_") else pid
@@ -686,6 +705,9 @@ async def build_canonical(
                 # 선택된 배경(RGB/label/선택기 버전/근거) — 하류가 재사용하는 정본.
                 "background_selection": background,
                 "input_references": picks,
+                # 프롬프트가 사진마다 무엇을 근거로 삼으라고 했는지 — 감사용 (v3).
+                "reference_guide": reference_guide,
+                "morphology_profile_version": getattr(refset, "morphology_profile_version", None),
                 **({"selection": selection} if selection else {}),
             },
             "selected_candidate_id": None,
@@ -725,6 +747,8 @@ async def build_canonical(
                 visual_identity=(profile.visual_identity if profile else {}),
                 max_chars=limit,
                 background_tone=background_tone,
+                reference_guide=reference_guide,
+                morphology_profile=morphology,
             )
         except ValueError as exc:
             # compact 베이스 자체가 provider 상한보다 클 수 있다(max_chars=100 같은

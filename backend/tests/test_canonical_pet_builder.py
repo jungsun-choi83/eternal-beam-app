@@ -705,7 +705,7 @@ def test_prompt_uses_known_traits_and_never_invents_unknowns(uploads, monkeypatc
     v = _build(h, [FakeProvider("runway", [GOOD(), GOOD()])])
 
     prompt = v.prompt or ""
-    assert v.prompt_version == "canonical-prompt-v2"
+    assert v.prompt_version == "canonical-prompt-v3.2"
     # 그림자 금지는 프롬프트의 계약이다 (알파 억제와 짝을 이룬다).
     assert "No contact shadow under the pet" in prompt
     assert "no cast shadow on the background" in prompt

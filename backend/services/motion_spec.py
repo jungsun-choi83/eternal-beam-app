@@ -145,7 +145,7 @@ MOTION_PROVIDER_ORDER_OVERRIDES: dict[str, tuple[str, ...]] = {}
 # 예: MOTION_MODEL_BREATHING=wan_3_standard → (wan_3_standard, seedance)
 MOTION_MODEL_ENV_PREFIX = "MOTION_MODEL_"
 MOTION_MODEL_DEFAULTS: dict[str, str] = {
-    BREATHING_HOME_STATE: PROVIDER_MINIMAX_H3_MAX_TURBO,
+    BREATHING_HOME_STATE: PROVIDER_WAN_3_STANDARD,
 }
 
 REF_NONE = "none"
@@ -214,18 +214,22 @@ MOTIONS: dict[str, MotionSpec] = {
     # ── MICRO — 기존 런타임 모션 id 그대로 ──────────────────────────────
     BREATHING_HOME_STATE: _micro(
         BREATHING_HOME_STATE,
-        "Calm, natural resting breathing only.",
+        "The pet is calm and relaxed, quietly alive in its natural standing pose. "
+        "Slow, soft resting breathing creates a very subtle natural movement through "
+        "the whole body, with the chest, shoulders, neck, head and fur all responding "
+        "gently and together. During the idle, occasional small natural signs of life "
+        "occur: a gentle blink, a tiny ear movement, and, if the pet has a tail, a slow, "
+        "relaxed tail sway once or twice, never a fast wag. These micro-movements are "
+        "sparse, unhurried and never happen all at once or repeat mechanically. The gaze "
+        "remains calm and stable. The mouth, jaw and tongue remain exactly as they "
+        "appear in the starting image",
         "STAND_READY", loopable=True,
     ),
     "BLINKING": _micro("BLINKING", "자연스러운 눈 깜빡임 1~2회", "STAND_READY"),
     "EAR_TWITCHING": _micro("EAR_TWITCHING", "귀 움찔거림", "STAND_READY"),
     "HEAD_TILTING": _micro("HEAD_TILTING", "호기심 어린 고개 갸웃", "STAND_READY"),
     "TAIL_WAGGING": _micro("TAIL_WAGGING", "부드러운 꼬리 흔들기", "STAND_READY"),
-    # ── MICRO — 새 모션 (기존 어디에도 없던 것만 새 id) ─────────────────
-    # v9: 상용화하며 전용 LOOK_UP 스틸 대신 홈 키프레임을 재사용 — 홈 자세에서
-    # 올려다보고 되돌아오는 모션이다(키프레임 재사용 원칙, 추가 생성 비용 0).
-    # v16 부터 그 홈 키프레임은 STAND_READY 다. 서술은 PET_HEAD v8 과 같은
-    # 긍정형 영어 장면 묘사.
+
     "LOOK_UP": _micro(
         "LOOK_UP",
         "The pet lifts its head and looks up attentively, as if hearing a "
@@ -255,16 +259,7 @@ MOTIONS: dict[str, MotionSpec] = {
         duration_range_sec=(2.5, 5.0), loopable=False,
         video_compat={"returns_to_start_pose": False, "motion_scale": "body"},
     ),
-    # ── 앉은 홈 ↔ STAND_READY 브리지 (Phase 4 이음매 수리) ──────────────
-    # NEUTRAL_IDLE 은 keyframe-spec-v2 부터 정본 자세를 물려받아 앉아 있을 수
-    # 있다. 그때 STAND_READY 시작 모션(COME_CLOSER/LIE_DOWN 등)으로의 하드 컷은
-    # 자세 점프가 보인다 — 이 두 브리지가 그 사이를 잇는다. START_END 라 양 끝이
-    # 실제 키프레임 이미지와 일치한다: 진입 컷은 홈 포즈끼리, 체인 컷은
-    # STAND_READY 포즈끼리 맞아 어떤 디졸브보다 깨끗하다. **수요 기반**이다:
-    # 홈이 이미 서 있는 펫은 생성할 이유가 없고(자산 없음 = 런타임이 직행),
-    # 생성 여부 결정이 곧 "브리지를 틀 것인가"의 신호다.
-    # v16: 홈이 항상 STAND_READY 라 두 브리지는 수요가 없다(자산 없음 = 런타임
-    # 직행). 정의는 바이트 단위로 그대로 둔다 — 앉은 자세 홈을 다시 들일 때 쓴다.
+
     "SIT_TO_STAND": MotionSpec(
         motion_id="SIT_TO_STAND", motion_class=CLASS_TRANSITION,
         description="From its current relaxed neutral pose, the pet smoothly "
@@ -314,7 +309,20 @@ MOTIONS: dict[str, MotionSpec] = {
     # ── LOCOMOTION ──────────────────────────────────────────────────────
     "COME_CLOSER": MotionSpec(
         motion_id="COME_CLOSER", motion_class=CLASS_LOCOMOTION,
-        description="카메라 쪽으로 다가오기 (기존 프리미엄 액션)",
+        description=(
+            "Starting from the supplied standing pose, the pet turns to face the camera and "
+            "{gait_text}, with a real, anatomically correct gait appropriate to this "
+            "individual pet's body proportions and leg length. The approach is caused only by "
+            "the pet physically moving closer; the camera stays completely fixed. "
+            "Natural small movements of the ears, fur and tail caused by moving are allowed, "
+            "but no exaggerated expression or unrelated behavior. "
+            "The pet grows only modestly in the frame, at most about 25% taller from start to "
+            "end, and in every frame from first to last the entire head, ears, body, tail, "
+            "legs and paws stay inside the frame with clear empty space above the head and "
+            "below the paws. The pet slows smoothly and comes to a calm, balanced stop, "
+            "front-facing, with generous empty space around it."
+
+        ),
         start_keyframe_role="STAND_READY",
         motion_reference_id="DOG_APPROACH", motion_reference_policy=REF_PREFERRED,
         preferred_video_strategy=STRATEGY_I2V_MOTION_REF,
