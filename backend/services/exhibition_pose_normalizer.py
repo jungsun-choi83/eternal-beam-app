@@ -43,18 +43,22 @@ MODES = (MODE_GPT_IMAGE, MODE_MOCK, MODE_OFF)
 OUTPUT_SPEC: dict[str, Any] = {"size": "1024x1024", "ratio": "1024:1024", "purpose": "exhibition_pose_normalization"}
 
 NORMALIZATION_PROMPT_TEMPLATE = (
-    "Full-body studio portrait of the exact same {subject_class}. "
-    "The pet is standing naturally on all visible legs on a level ground plane. "
-    "Pose the body at a clear three-quarter angle, approximately 30–45 degrees from the camera, "
-    "with the head turned toward and looking at the camera. "
+    "Create a full-body studio portrait of the exact same {subject_class} in a standardized "
+    "STAND_READY pose. STAND_READY means a natural, static standing pose with balanced weight "
+    "and the body held at a clear three-quarter orientation, approximately 30–45 degrees from "
+    "the camera. For dogs and cats, all four paws must be visible and firmly grounded on the same "
+    "level ground plane, with the legs naturally extended, the head upright, and the eyes looking "
+    "toward the camera. For any other pet, preserve its species-appropriate natural standing stance "
+    "and anatomy while keeping the head upright and directed toward the camera. "
     "Keep the entire pet visible from ear tips to paws and tail, with no cropped body parts. "
     "Use a consistent eye-level camera, centered framing, consistent subject scale, feet aligned "
     "on one horizontal ground line, a plain neutral light-gray solid-color background, even soft "
     "studio lighting, a natural contact shadow only, no props, no people, and no text. "
     "Preserve the exact individual identity from the reference photo: original coat colors, exact "
     "marking shapes and positions, fur length and texture, ear shape, face shape, muzzle, eyes, tail, "
-    "body build, and body proportions. Do not idealize the breed, alter anatomy, add markings, or "
-    "redesign the pet."
+    "body build, body proportions, and species-specific anatomy. Do not idealize the breed, alter "
+    "anatomy, add markings, or redesign the pet. Do not depict the pet sitting, lying down, walking, "
+    "running, jumping, or in an exaggerated action pose. Do not lift any paw for dogs or cats."
 )
 
 
