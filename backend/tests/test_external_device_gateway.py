@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -327,6 +328,67 @@ def test_pet_command_uses_published_signed_asset(monkeypatch):
     assert command["packed_url"] == published.url
     assert command["delivery_format"] == "packed_alpha"
     assert "spawn_vfx" not in command
+
+
+def test_paw_hello_device_command_requires_and_uses_owned_playable_publication(monkeypatch):
+    async def fake_library(**kwargs):
+        assert kwargs == {"user_id": "user-1", "pet_id": "pet-1"}
+        return SimpleNamespace(motions=[SimpleNamespace(
+            pet_id="pet-1",
+            motion_id="PAW_HELLO",
+            url="https://signed.example/paw_packed.mp4?token=fresh",
+            delivery_format="packed_alpha",
+            access=SimpleNamespace(state="playable"),
+        )])
+
+    monkeypatch.setattr(device_ws_v1.library_service, "get_library", fake_library)
+    response = _client(monkeypatch).post(
+        "/api/v1/device/commands",
+        json={
+            "device_id": "beam-test",
+            "event": "pet_asset",
+            "pet_id": "pet-1",
+            "motion_id": "PAW_HELLO",
+        },
+    )
+    assert response.status_code == 200, response.text
+    command = asyncio.run(device_gateway.pending("beam-test"))[0]
+    assert command["motion_id"] == "PAW_HELLO"
+    assert command["video_url"].endswith("token=fresh")
+    assert command["packed_url"] == command["video_url"]
+
+
+def test_paw_hello_device_command_rejects_unowned_or_unpublished_asset(monkeypatch):
+    async def empty_library(**_kwargs):
+        return SimpleNamespace(motions=[])
+
+    monkeypatch.setattr(device_ws_v1.library_service, "get_library", empty_library)
+    response = _client(monkeypatch).post(
+        "/api/v1/device/commands",
+        json={
+            "device_id": "beam-test",
+            "event": "pet_asset",
+            "pet_id": "pet-1",
+            "motion_id": "PAW_HELLO",
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "PUBLISHED_ASSET_REQUIRED"
+    assert asyncio.run(device_gateway.pending("beam-test")) == []
+
+
+def test_device_command_does_not_repurpose_existing_touch_or_approach_motions(monkeypatch):
+    response = _client(monkeypatch).post(
+        "/api/v1/device/commands",
+        json={
+            "device_id": "beam-test",
+            "event": "pet_asset",
+            "pet_id": "pet-1",
+            "motion_id": "PET_HEAD",
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "PUBLISHED_ASSET_REQUIRED"
 
 
 def test_pet_command_forwards_spawn_vfx_selector(monkeypatch):

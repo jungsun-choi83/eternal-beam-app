@@ -243,7 +243,7 @@ def test_roles_map_only_existing_action_ids():
     # spec-v4: 홈/아이들/터치·보이스 반응과 서기 시작(이동/눕기 전이)이 전부
     # STAND_READY(HOME) 하나로 흡수된다 (다대일 재사용). LIE 시작은 LIE.
     for aid in (
-        "BREATHING", "BLINKING", "TOUCH", "IDLE_BREATH", "PET_HEAD", "LOOK_UP",
+        "BREATHING", "BLINKING", "TOUCH", "IDLE_BREATH", "PET_HEAD", "PAW_HELLO", "LOOK_UP",
         "COME_CLOSER", "LIE_DOWN",
     ):
         assert spec_mod.role_for_action(aid) == "STAND_READY"
@@ -479,10 +479,11 @@ def test_phase4_four_pose_roles_and_lazy_generation_contract():
     """Phase 4: 포즈 역할 4종 + 지연 생성 계약 (스펙 수준).
 
     신규 펫의 최소 생성물은 Canonical + STAND_READY(HOME) 이다 — 기본 모션
-    (BREATHING/아이들 4종/PET_HEAD/LOOK_UP)이 전부 STAND_READY 시작이고 목표
-    키프레임이 없기 때문에, 런 오케스트레이션(KEYFRAMES 스테이지는 스펙이
-    가리키는 역할만 만든다)이 다른 역할을 만들 이유가 없다. LIE/SLEEP 은 그
-    역할을 시작(또는 목표)으로 요구하는 모션이 요청될 때만 생긴다.
+    (BREATHING/아이들 4종/PET_HEAD/LOOK_UP)이 전부 STAND_READY 만 사용하기
+    때문에, 런 오케스트레이션(KEYFRAMES 스테이지는 스펙이 가리키는 역할만
+    만든다)이 다른 역할을 만들 이유가 없다. PET_HEAD 는 같은 STAND_READY 를
+    시작/끝에 재사용한다. LIE/SLEEP 은 그 역할을 시작(또는 목표)으로 요구하는
+    모션이 요청될 때만 생긴다.
     """
     from backend.services import motion_spec as ms
 
@@ -503,11 +504,14 @@ def test_phase4_four_pose_roles_and_lazy_generation_contract():
 
     # 신규 펫 기본 모션은 STAND_READY 하나만 요구한다 — 지연 생성의 근거.
     basic = ("BREATHING", "BLINKING", "EAR_TWITCHING", "HEAD_TILTING",
-             "TAIL_WAGGING", "PET_HEAD", "LOOK_UP")
+             "TAIL_WAGGING", "PET_HEAD", "PAW_HELLO", "LOOK_UP")
     for mid in basic:
         m = ms.MOTIONS[mid]
         assert m.start_keyframe_role == "STAND_READY", mid
-        assert not m.requires_target_keyframe and m.target_keyframe_role is None, mid
+        assert not m.requires_target_keyframe, mid
+        assert m.target_keyframe_role == (
+            "STAND_READY" if mid in {"PET_HEAD", "PAW_HELLO"} else None
+        ), mid
 
     # 역할별 수요 모션 — 해당 모션이 요청될 때만 그 역할이 필요해진다.
     assert {"COME_CLOSER", "RUN", "WALK", "LIE_DOWN"} <= set(

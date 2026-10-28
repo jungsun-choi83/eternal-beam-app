@@ -180,6 +180,7 @@ def test_mock_seed_matches_the_migration_seed():
         MIGRATION.parent / "20261023000000_pet_head_premium.sql",
         MIGRATION.parent / "20261024000000_look_up_premium.sql",
         MIGRATION.parent / "20261025000000_pose_transitions_premium.sql",
+        MIGRATION.parent / "20261109000000_paw_hello_premium.sql",
     ):
         text = path.read_text(encoding="utf-8")
         for chunk in re.split(r"insert into public\.digital_products", text)[1:]:

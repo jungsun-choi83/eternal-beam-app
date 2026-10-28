@@ -135,7 +135,7 @@ PROVIDER_GROK_IMAGINE_LITE = "grok_imagine_lite"
 
 MOTION_PROVIDER_ORDER_BY_CLASS: dict[str, tuple[str, ...]] = {
     CLASS_MICRO: (PROVIDER_WAN_3_STANDARD, PROVIDER_SEEDANCE),
-    CLASS_INTERACTION: (PROVIDER_SEEDANCE, PROVIDER_KLING_3),
+    CLASS_INTERACTION: (PROVIDER_WAN_3_STANDARD, PROVIDER_KLING_3),
     CLASS_LOCOMOTION: (PROVIDER_WAN_3_STANDARD, PROVIDER_KLING_3),
     CLASS_TRANSITION: (PROVIDER_KLING_3, PROVIDER_WAN_3_STANDARD),
 }
@@ -239,10 +239,46 @@ MOTIONS: dict[str, MotionSpec] = {
         "appear in the starting image",
         "STAND_READY", loopable=True,
     ),
-    "BLINKING": _micro("BLINKING", "자연스러운 눈 깜빡임 1~2회", "STAND_READY"),
-    "EAR_TWITCHING": _micro("EAR_TWITCHING", "귀 움찔거림", "STAND_READY"),
-    "HEAD_TILTING": _micro("HEAD_TILTING", "호기심 어린 고개 갸웃", "STAND_READY"),
-    "TAIL_WAGGING": _micro("TAIL_WAGGING", "부드러운 꼬리 흔들기", "STAND_READY"),
+    "BLINKING": _micro(
+        "BLINKING",
+        "The only clearly visible intentional action is one complete, natural bilateral "
+        "blink. From the starting open-eyed gaze, both visible eyelids close fully "
+        "together, pause only for an instant, then reopen fully to the same gaze and "
+        "remain open. Preserve natural eye shape, iris color, facial identity and source "
+        "occlusion; do not substitute a wink, squint, facial twitch or head movement",
+        "STAND_READY",
+    ),
+    "EAR_TWITCHING": _micro(
+        "EAR_TWITCHING",
+        "The dominant action is one clearly visible, small, quick ear twitch. One "
+        "anatomically visible ear tip or ear body flicks briefly away from its resting "
+        "orientation and returns; both visible ears may twitch only when that is natural "
+        "for this pet. Preserve the source ear shape, size, fold, set and occlusion; do "
+        "not straighten, perk up, enlarge, invent or duplicate an ear, and do not "
+        "substitute a head shake or body shudder",
+        "STAND_READY",
+    ),
+    "HEAD_TILTING": _micro(
+        "HEAD_TILTING",
+        "The dominant action is one clearly visible, gentle sideways roll of the head, "
+        "roughly 10 to 20 degrees. One ear becomes slightly lower than the other while "
+        "the muzzle and gaze keep pointing in the same direction; this is not a left or "
+        "right turn, profile rotation or nod. The neck and upper chest may follow with "
+        "small connected secondary motion. The head then returns smoothly to its "
+        "original upright orientation. Preserve ear and neck anatomy while the tail, "
+        "paws and lower body remain calm",
+        "STAND_READY",
+    ),
+    "TAIL_WAGGING": _micro(
+        "TAIL_WAGGING",
+        "The dominant action is one gentle, natural tail wag. The anatomically evidenced "
+        "visible tail moves side to side from its base two or three times, then settles "
+        "smoothly back to its original resting carriage. Preserve the source tail's "
+        "length, thickness, curl, fur and occlusion; do not straighten, lengthen, invent "
+        "or duplicate it. The motion comes from the tail rather than a hip swing, torso "
+        "rotation or whole-body sway, while the head and planted paws remain calm",
+        "STAND_READY",
+    ),
 
     "LOOK_UP": _micro(
         "LOOK_UP",
@@ -431,24 +467,62 @@ MOTIONS: dict[str, MotionSpec] = {
     # ── INTERACTION — v1 은 사람 손을 키프레임에 요구하지 않는다 ─────────
     "PET_HEAD": MotionSpec(
         motion_id="PET_HEAD", motion_class=CLASS_INTERACTION,
-        # v8: 엔지니어링 메모("손의 등장 여부는 Phase 6 이 결정한다")가 프로바이더
-        # 프롬프트로 그대로 새고 있었다 — wan 라이브 테스트에서 발견. 서술은
-        # 모델에게 보내는 긍정형 장면 묘사만 담는다. 손 허용/복귀 문장은
-        # INTERACTION 빌더(allow_generated_hand)가 덧붙이므로 일부 중복되지만
-        # 무해하다 (BREATHING 의 선례와 동일).
-        description= "A gentle human hand may briefly enter the frame to pet the pet's head. "
-        "The pet responds naturally and contentedly"
-        "or slight lean into the hand. Keep the pet's entire head, face, ears and muzzle "
-        "fully visible inside the frame throughout the motion, with clear safe space above "
-        "the head. Do not raise the head far enough to leave the frame or crop any part of "
-        "the face. The pet then returns naturally to the starting pose.",
+        description=(
+            "The pet performs a clearly visible, gentle and affectionate head response. "
+            "Starting from its calm upright standing pose, the pet slowly lowers and "
+            "leans its head slightly forward and downward with a natural movement of "
+            "the neck. Its eyes soften or briefly close, and its facial expression "
+            "becomes peaceful and contented. The pet holds this relaxed expression "
+            "briefly while continuing subtle natural breathing, gentle ear adjustments "
+            "and small connected movements of the neck and upper body. The pet remains "
+            "naturally alive throughout the entire animation, never frozen or rigid. "
+            "The movement is an affectionate head dip, not a sideways head tilt, "
+            "repeated nodding or exaggerated bow. The pet then smoothly raises its "
+            "head, opens its eyes and returns to the exact original calm upright "
+            "standing pose. Keep all paws grounded and the pet's position unchanged. "
+            "Preserve the entire head, face, ears, muzzle, body and paws throughout. "
+            "Only the original pet is visible, with no additional subjects or objects"
+        ),
+        # The action hands the same approved HOME pose to Seedance as both
+        # endpoints.  The target remains non-required for QA purposes: it is a
+        # generation control that removes the PET_HEAD -> BREATHING seam, not a
+        # new transition acceptance policy.
         start_keyframe_role="STAND_READY",
-        preferred_video_strategy=STRATEGY_I2V,
+        target_keyframe_role="STAND_READY",
+        preferred_video_strategy=STRATEGY_START_END,
         duration_range_sec=(3.0, 5.0),
+        interruptible=False,
         video_compat={"returns_to_start_pose": True, "motion_scale": "micro",
                       "interaction": "head_touch", "requires_human_in_keyframe": False,
-                      # Phase 6: 영상 단계에서 부드러운 손이 화면 밖에서 들어와도 된다.
-                      "allow_generated_hand": True},
+                      "allow_generated_hand": False,
+                      "end_frame_conditioning_required": True},
+    ),
+    "PAW_HELLO": MotionSpec(
+        motion_id="PAW_HELLO", motion_class=CLASS_INTERACTION,
+        description=(
+            "Starting from the approved calm upright STAND_READY pose, the pet makes a "
+            "small natural weight transfer over the three supporting paws, then lifts "
+            "exactly one front paw cleanly from the ground and gently offers it a short "
+            "distance toward the viewer. The lifted paw remains anatomically connected, "
+            "relaxed and clearly readable. Hold the offered paw briefly, then retract and "
+            "lower it along one continuous natural path until it returns to its original "
+            "grounded placement. Maintain quiet natural breathing and subtle connected "
+            "head, ear, tail and torso responses while preserving realistic balance. The "
+            "other three supporting paws stay grounded without sliding. Preserve the "
+            "pet's identity, four-limb anatomy, joint structure and contact with the "
+            "ground. Finish in the exact original STAND_READY pose so BREATHING can resume "
+            "without a visible jump. Only the original pet is visible: no human, human "
+            "hand, person, leash, toy, platform or added object"
+        ),
+        start_keyframe_role="STAND_READY",
+        target_keyframe_role="STAND_READY",
+        preferred_video_strategy=STRATEGY_START_END,
+        duration_range_sec=(4.0, 5.0),
+        interruptible=False,
+        video_compat={"returns_to_start_pose": True, "motion_scale": "body-part",
+                      "interaction": "paw_hello", "requires_human_in_keyframe": False,
+                      "allow_generated_hand": False,
+                      "end_frame_conditioning_required": True},
     ),
 }
 
@@ -476,6 +550,7 @@ _MOTION_TYPES: dict[str, str] = {
     "ROLL_OVER": "ROLL_TRANSITION",
     "SIT_DOWN": "SIT_TRANSITION",
     "PET_HEAD": "HUMAN_INTERACTION_REACTION",
+    "PAW_HELLO": "PAW_OFFER_INTERACTION",
 }
 
 _MORPHOLOGY_SENSITIVITY: dict[str, str] = {
@@ -501,6 +576,7 @@ _MORPHOLOGY_SENSITIVITY: dict[str, str] = {
     "ROLL_OVER": "HIGH",
     "SIT_DOWN": "MEDIUM",
     "PET_HEAD": "MEDIUM",
+    "PAW_HELLO": "HIGH",
 }
 
 
@@ -556,6 +632,12 @@ def _class_default_qa(spec: MotionSpec) -> dict[str, Any]:
             "temporal_stability",
             "vlm_composition",
         ]
+        if spec.motion_id == "PAW_HELLO":
+            motion_specific.extend([
+                "vlm_paw_lift", "vlm_paw_offer", "vlm_paw_hold",
+                "vlm_paw_support", "vlm_paw_balance", "vlm_paw_limb_count",
+                "vlm_paw_anatomy", "vlm_paw_return",
+            ])
 
     if bool(spec.video_compat.get("returns_to_start_pose")):
         motion_specific.append("loop_return")
@@ -800,6 +882,14 @@ def _class_business_qa(spec: MotionSpec) -> dict[str, Any]:
                 "vlm_human_hand_policy": AUTHORITY_INTEGRITY_HARD,
             }
         )
+        if spec.motion_id == "PAW_HELLO":
+            paw_checks = [
+                "vlm_paw_lift", "vlm_paw_offer", "vlm_paw_hold",
+                "vlm_paw_support", "vlm_paw_balance", "vlm_paw_limb_count",
+                "vlm_paw_anatomy", "vlm_paw_return",
+            ]
+            domains["paw_hello"] = {"required_checks": paw_checks}
+            authority.update(dict.fromkeys(paw_checks, AUTHORITY_INTEGRITY_HARD))
 
     # 목표 키프레임이 필수인 비-TRANSITION 모션(RETURN_HOME): 시작/목표 도달을 전이와
     # 동일한 하드 게이트(INTEGRITY_HARD)로 올린다 — TRANSITION 의 start_state/target_pose
@@ -888,8 +978,13 @@ def _requirements_for(spec: MotionSpec) -> dict[str, Any]:
     degrade_target = spec.fallback_video_strategy
 
     if spec.preferred_video_strategy == STRATEGY_START_END:
-        provider_preferred_any.append("supports_end_frame")
-        degrade_target = STRATEGY_I2V
+        if spec.video_compat.get("end_frame_conditioning_required"):
+            provider_required_all.append("supports_end_frame")
+            degrade_allowed = False
+            degrade_target = None
+        else:
+            provider_preferred_any.append("supports_end_frame")
+            degrade_target = STRATEGY_I2V
     if spec.preferred_video_strategy == STRATEGY_I2V_MOTION_REF:
         provider_preferred_any.append("supports_motion_reference")
         degrade_target = STRATEGY_I2V
@@ -1002,6 +1097,199 @@ _BETA_ACCEPTANCE = {
             "vlm_target_pose": AUTHORITY_QUALITY_ADVISORY,
         },
     },
+    "PET_HEAD": {
+        "policy_revision": "pet-head-v1",
+        "description": (
+            "The pet performs a recognizable affectionate head response to a virtual gentle "
+            "touch: it visibly leans or lowers its head, softens its eyes, enjoys the affection "
+            "briefly, and returns naturally upright. No visible human or hand is required or allowed."
+        ),
+        "expected_start_state": (
+            "STAND_READY: the original calm upright standing pose, with quiet natural breathing."
+        ),
+        "expected_end_state": (
+            "STAND_READY compatible with the existing seam-aligned return to BREATHING. Exact "
+            "pixel matching and complete body stillness are not required."
+        ),
+        "blocking_criteria": [
+            "Reliable temporal evidence clearly shows no affectionate head response or a clearly wrong substituted action.",
+            "A human, hand, arm, person or added interaction object visibly contaminates the generated video.",
+        ],
+        "advisory_criteria": [
+            "The response is plausible but too subtle, occluded, or insufficiently sampled to confirm.",
+            "Minor aesthetic irregularity that does not alter identity or significant anatomy.",
+        ],
+        "allowed_secondary_motion": [
+            "natural breathing", "blinking", "small ear or facial movement",
+            "small connected neck or body adjustment",
+        ],
+        "temporal_evidence_policy": {
+            "absence_requires_reliable_coverage": True,
+            "sparse_non_observation": "REVIEW",
+            "subtle_or_ambiguous_response": "REVIEW",
+        },
+        "check_authority": {
+            "motion_temporal_integrity": AUTHORITY_QUALITY_ADVISORY,
+        },
+    },
+    "PAW_HELLO": {
+        "policy_revision": "paw-hello-v1",
+        "description": (
+            "From STAND_READY the pet visibly lifts exactly one front paw, gently offers it "
+            "toward the viewer, holds it briefly, and lowers it back to the same grounded "
+            "STAND_READY pose with realistic balance and intact four-limb anatomy."
+        ),
+        "expected_start_state": (
+            "STAND_READY: calm upright stance with all four paws naturally grounded."
+        ),
+        "expected_end_state": (
+            "STAND_READY: the offered paw is grounded again and the pose joins BREATHING "
+            "smoothly without a visible jump."
+        ),
+        "blocking_criteria": [
+            "Reliable evidence clearly shows no one-front-paw offer, or a different primary action replaces it.",
+            "More than one paw is offered, a limb is duplicated, missing, merged, detached or anatomically implausible.",
+            "The pet visibly falls, floats, collapses, or loses plausible support and balance.",
+            "A human, hand, arm, person, leash, toy, platform or other added object appears.",
+            "The lifted paw does not return to a grounded STAND_READY-compatible ending when the endpoint is clearly observable.",
+        ],
+        "advisory_criteria": [
+            "The lift, brief hold or offer toward the viewer is plausible but occluded, too subtle, or insufficiently sampled.",
+            "A minor weight shift or small final placement difference does not break balance or the BREATHING seam.",
+        ],
+        "allowed_secondary_motion": [
+            "natural breathing", "blinking", "subtle ear, head or tail response",
+            "small torso and weight adjustments needed for realistic balance",
+        ],
+        "temporal_evidence_policy": {
+            "brief_event": True,
+            "absence_requires_reliable_coverage": True,
+            "sparse_non_observation": "REVIEW",
+            "occlusion_or_perspective_uncertainty": "REVIEW",
+        },
+        "check_authority": {
+            "motion_temporal_integrity": AUTHORITY_QUALITY_ADVISORY,
+        },
+    },
+    "BLINKING": {
+        "policy_revision": "premium-micro-idle-v1",
+        "description": (
+            "The pet performs a recognizable natural blink. A visible eye may close and reopen naturally; "
+            "eyes hidden by fur, pose or source occlusion do not have to become visible."
+        ),
+        "expected_start_state": "HOME_IDLE: the pet keeps its natural resting appearance and visible-eye state.",
+        "expected_end_state": (
+            "HOME_IDLE after the blink. Exact pixel matching and complete body stillness are not required."
+        ),
+        "blocking_criteria": [
+            "Reliable temporal evidence clearly shows that the requested blink is absent or replaced by another primary action."
+        ],
+        "advisory_criteria": [
+            "Sampling or occlusion makes eyelid closure/reopening insufficiently visible.",
+            "Minor blink asymmetry or aesthetic imperfection that does not destroy a recognizable natural blink.",
+        ],
+        "allowed_secondary_motion": [
+            "natural breathing", "subtle ear movement", "small natural facial motion"
+        ],
+        "temporal_evidence_policy": {
+            "brief_event": True,
+            "absence_requires_reliable_coverage": True,
+            "sparse_non_observation": "REVIEW",
+            "occlusion_or_hidden_eyes": "REVIEW",
+        },
+        "check_authority": {
+            # Sparse adjacent-frame pixel differences support diagnosis but cannot
+            # prove a serious discontinuity. Semantic severe-defect/composition
+            # checks retain hard authority below through the common contract.
+            "motion_temporal_integrity": AUTHORITY_QUALITY_ADVISORY,
+        },
+    },
+    "EAR_TWITCHING": {
+        "policy_revision": "premium-micro-idle-v1",
+        "description": (
+            "A naturally visible ear performs a recognizable small flick appropriate to the pet's anatomy. "
+            "Erect, folded and floppy ears are all valid and must not be forced into another ear shape."
+        ),
+        "expected_start_state": "HOME_IDLE with the pet's original ear shape, set, fold and visibility.",
+        "expected_end_state": (
+            "HOME_IDLE after the ear flick. Exact pixel matching and complete body stillness are not required."
+        ),
+        "blocking_criteria": [
+            "Adequate temporal and visibility evidence clearly shows that the requested ear twitch did not happen."
+        ],
+        "advisory_criteria": [
+            "The relevant ear or its movement is insufficiently visible because of perspective, anatomy, occlusion or sampling.",
+            "Minor aesthetic irregularity that does not alter ear identity or significant anatomy.",
+        ],
+        "allowed_secondary_motion": [
+            "natural breathing", "small facial movement", "small connected head or body adjustment"
+        ],
+        "temporal_evidence_policy": {
+            "brief_event": True,
+            "absence_requires_reliable_coverage": True,
+            "sparse_non_observation": "REVIEW",
+            "occlusion_or_low_visibility": "REVIEW",
+        },
+        "check_authority": {
+            "motion_temporal_integrity": AUTHORITY_QUALITY_ADVISORY,
+        },
+    },
+    "HEAD_TILTING": {
+        "policy_revision": "premium-micro-idle-v1",
+        "description": (
+            "The head visibly rolls sideways with natural connected neck motion. The sideways roll must be recognizable, "
+            "but no exact 10-20 degree measurement is required. Pure yaw/turning or pure nodding is not a head tilt."
+        ),
+        "expected_start_state": "HOME_IDLE with the pet's original head, neck and ear anatomy.",
+        "expected_end_state": (
+            "The pet may return toward HOME_IDLE naturally; exact pixel matching and complete body stillness are not required."
+        ),
+        "blocking_criteria": [
+            "Reliable evidence clearly shows the head remains stationary, or only yaw/turning or nodding occurs instead.",
+        ],
+        "advisory_criteria": [
+            "A sideways tilt is plausible but angle, neck connection or temporal progression is ambiguous.",
+            "Minor aesthetic irregularity that does not alter identity or significant anatomy.",
+        ],
+        "allowed_secondary_motion": [
+            "natural breathing", "blinking", "small incidental body movement", "small incidental tail movement"
+        ],
+        "temporal_evidence_policy": {
+            "absence_requires_reliable_coverage": True,
+            "plausible_but_ambiguous": "REVIEW",
+        },
+        "check_authority": {
+            "motion_temporal_integrity": AUTHORITY_QUALITY_ADVISORY,
+        },
+    },
+    "TAIL_WAGGING": {
+        "policy_revision": "premium-micro-idle-v1",
+        "description": (
+            "The pet's original tail performs recognizable natural lateral wagging. Curled, straight and fluffy tails "
+            "retain their natural anatomy; mechanically exact oscillation counts are not required."
+        ),
+        "expected_start_state": "HOME_IDLE with the original tail anatomy, carriage and visibility.",
+        "expected_end_state": (
+            "The tail may settle naturally toward its resting carriage; exact pixel matching is not required."
+        ),
+        "blocking_criteria": [
+            "Reliable evidence clearly shows no lateral wag, only vertical tail lowering instead, or severe tail deformation.",
+        ],
+        "advisory_criteria": [
+            "Perspective, tail occlusion or temporal sampling makes lateral wagging difficult to confirm.",
+            "Minor rhythm, amplitude or oscillation-count variation and subtle natural hip response.",
+        ],
+        "allowed_secondary_motion": [
+            "natural breathing", "blinking", "ear adjustment", "subtle natural hip response"
+        ],
+        "temporal_evidence_policy": {
+            "absence_requires_reliable_coverage": True,
+            "perspective_or_occlusion_uncertainty": "REVIEW",
+        },
+        "check_authority": {
+            "motion_temporal_integrity": AUTHORITY_QUALITY_ADVISORY,
+        },
+    },
 }
 
 
@@ -1015,6 +1303,14 @@ def _acceptance_for(spec: MotionSpec) -> dict[str, Any]:
                 "vlm_motion_integrity", "vlm_critical_state", "motion_temporal_integrity"]
     if spec.motion_class == CLASS_LOCOMOTION:
         required.append("vlm_direction_travel")
+    if spec.motion_class == CLASS_INTERACTION:
+        required.extend(["vlm_interaction", "vlm_human_hand_policy"])
+    if spec.motion_id == "PAW_HELLO":
+        required.extend([
+            "vlm_paw_lift", "vlm_paw_offer", "vlm_paw_hold",
+            "vlm_paw_support", "vlm_paw_balance", "vlm_paw_limb_count",
+            "vlm_paw_anatomy", "vlm_paw_return",
+        ])
     contract.update({
         "version": MOTION_ACCEPTANCE_VERSION,
         "motion_id": spec.motion_id,

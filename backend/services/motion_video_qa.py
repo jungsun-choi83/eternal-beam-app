@@ -282,6 +282,78 @@ def sample_frames(
         return None
 
 
+def sample_dense_frames(
+    video_bytes: bytes,
+    *,
+    fps: float = 12.0,
+    max_frames: int = 72,
+) -> Optional[dict[str, Any]]:
+    """Decode a short generated clip once into a dense chronological QA scan.
+
+    Unlike :func:`sample_frames`, which seeks once per requested timestamp, this
+    uses one ffmpeg decode.  The dense frames stay local; callers select at most
+    a few full-resolution evidence frames for the existing VLM call.  No video
+    generation, upload, model call, crop, resize, or visual transformation is
+    performed.
+    """
+    from PIL import Image
+
+    if not video_bytes or fps <= 0 or max_frames < 2:
+        return None
+    try:
+        with tempfile.TemporaryDirectory(prefix="eb_motion_dense_qa_") as td:
+            path = os.path.join(td, "input.mp4")
+            with open(path, "wb") as tmp:
+                tmp.write(video_bytes)
+            duration = _probe_duration(path)
+            if not duration or duration <= 0:
+                return None
+            pattern = os.path.join(td, "frame_%05d.png")
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-y", "-v", "quiet", "-i", path,
+                    "-vf", f"fps={float(fps):.6f}",
+                    "-frames:v", str(int(max_frames)), pattern,
+                ],
+                capture_output=True,
+                timeout=90,
+            )
+            files = sorted(
+                os.path.join(td, name)
+                for name in os.listdir(td)
+                if name.startswith("frame_") and name.endswith(".png")
+            )
+            if result.returncode != 0 or len(files) < 2:
+                return None
+            frames: list[np.ndarray] = []
+            for file_path in files:
+                try:
+                    with Image.open(file_path) as image:
+                        frames.append(np.asarray(image.convert("RGB"), dtype=np.uint8))
+                except Exception:
+                    continue
+            if len(frames) < 2:
+                return None
+            # fps emits frames on a regular time grid. Fractions are approximate
+            # timestamps used for chronological labels and provenance only.
+            fractions = [
+                min(1.0, max(0.0, (index / float(fps)) / float(duration)))
+                for index in range(len(frames))
+            ]
+            covered_seconds = min(float(duration), (len(frames) - 1) / float(fps))
+            return {
+                "frames": frames,
+                "fractions": fractions,
+                "requested_fps": float(fps),
+                "decoded_frames": len(frames),
+                "duration_sec": float(duration),
+                "coverage_ratio": round(covered_seconds / float(duration), 4),
+            }
+    except Exception:
+        logger.warning("조밀 모션 QA 프레임 디코딩 실패", exc_info=True)
+        return None
+
+
 def _frame_signature(rgb: np.ndarray) -> Optional[dict[str, Any]]:
     """전체 프레임 시그니처 — RGBA 로 승격해 기존 시그니처 코드를 재사용한다."""
     from .pet_identity_service import compute_reference_signature
@@ -1591,6 +1663,14 @@ JUDGEMENT_CHECKS = frozenset(
         "vlm_direction_travel",
         "vlm_interaction",
         "vlm_human_hand_policy",
+        "vlm_paw_lift",
+        "vlm_paw_offer",
+        "vlm_paw_hold",
+        "vlm_paw_support",
+        "vlm_paw_balance",
+        "vlm_paw_limb_count",
+        "vlm_paw_anatomy",
+        "vlm_paw_return",
         "vlm_motion_integrity",
         "vlm_critical_state",
         "vlm_final_position",
@@ -1789,6 +1869,25 @@ def apply_judgement(
             )
             if val == "no":
                 reasons.append(f"vlm:{key}=no")
+
+        if str(spec_contract.get("motion_id") or "").upper() == "PAW_HELLO":
+            paw_fields = (
+                ("vlm_paw_lift", "paw_lift_visible"),
+                ("vlm_paw_offer", "paw_offer_toward_viewer"),
+                ("vlm_paw_hold", "paw_hold_visible"),
+                ("vlm_paw_support", "supporting_paws_grounded"),
+                ("vlm_paw_balance", "natural_balance"),
+                ("vlm_paw_limb_count", "limb_count_correct"),
+                ("vlm_paw_anatomy", "paw_anatomy_plausible"),
+                ("vlm_paw_return", "smooth_return_to_stand_ready"),
+            )
+            for check_name, key in paw_fields:
+                val = v(key)
+                checks[check_name] = (
+                    PASS if val == "yes" else (FAIL if val == "no" else UNKNOWN)
+                )
+                if val == "no":
+                    reasons.append(f"vlm:{key}=no")
 
         composition = PASS
         human_policy_failed = (

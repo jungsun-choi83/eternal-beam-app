@@ -465,6 +465,22 @@ def test_prompts_by_class_and_no_themes(storage, monkeypatch):
     assert "hand MAY enter" in pet_head_prompt
 
 
+def test_durable_idle_uses_motion_scoped_complete_prompt_version(storage, monkeypatch):
+    from backend.services import motion_video_prompts
+
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+    provider = FakeVideoProvider("minimax_h3_max_turbo", [GOOD()])
+
+    blink = _build_motion(h, "BLINKING", [provider])
+
+    assert blink.prompt_version == motion_video_prompts.DURABLE_IDLE_EVENT_PROMPT_VERSION
+    assert blink.analyzer_versions["prompt"] == blink.prompt_version
+    assert provider.requests[0].prompt == blink.prompt
+    assert "complete, natural bilateral blink" in blink.prompt
+    assert "Explicitly allow the named body part" in blink.prompt
+    assert "used by BREATHING" in blink.prompt
+
+
 # ══════════════════════════════════════════════════════════════════════════
 # TRANSITION — LIE_DOWN
 # ══════════════════════════════════════════════════════════════════════════
@@ -573,11 +589,92 @@ def test_come_closer_builds_single_start_i2v_without_reference(storage, monkeypa
 
 
 def test_interaction_pet_head(storage, monkeypatch):
+    from backend.services import motion_video_prompts
+
     h, _ = _prepare_pipeline(monkeypatch, storage)
-    v = _build_motion(h, "PET_HEAD", [FakeVideoProvider("kling", [GOOD()])])
+    seedance = FakeVideoProvider("seedance", [GOOD()], end_frame=True)
+    v = _build_motion(h, "PET_HEAD", [seedance])
     assert v.status == mv.STATUS_COMPLETE
     assert v.motion_class == "INTERACTION"
-    assert "hand MAY enter" in v.prompt  # 스펙이 허용할 때만
+    assert v.video_strategy == ms.STRATEGY_START_END
+    assert v.prompt_version == motion_video_prompts.PET_HEAD_PROMPT_VERSION
+    assert "clearly observable affectionate response" in v.prompt
+    assert "gently leans or lowers its head" in v.prompt
+    assert "Quiet breathing" in v.prompt
+    assert "smoothly" in v.prompt
+    assert "No human or hand appears" in v.prompt
+    assert "hand MAY enter" not in v.prompt
+
+    assert seedance.calls == 1
+    request = seedance.requests[0]
+    assert request.start_image_bytes is not None
+    assert request.end_image_bytes == request.start_image_bytes
+    assert request.metadata["start_keyframe_id"] == request.metadata["target_keyframe_id"]
+
+    # Endpoint conditioning does not add transition QA gates to this interaction.
+    checks = next(c for c in v.candidates if c.selected).qa_result["checks"]
+    assert "starts_at_start_pose" not in checks
+    assert "reaches_target_pose" not in checks
+
+
+def test_interaction_pet_head_never_degrades_to_start_only(storage, monkeypatch):
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+    seedance_without_end_frame = FakeVideoProvider(
+        "seedance", [GOOD()], end_frame=False
+    )
+
+    with pytest.raises(mv.MotionVideoError) as exc:
+        _build_motion(h, "PET_HEAD", [seedance_without_end_frame])
+
+    assert exc.value.code == "END_FRAME_UNSUPPORTED"
+    assert seedance_without_end_frame.calls == 0
+
+
+def test_paw_hello_uses_seedance_same_approved_start_and_end_frame(storage, monkeypatch):
+    from backend.services import motion_video_prompts
+
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+    paw_vlm = {
+        **VLM_MV_OK,
+        "paw_lift_visible": "yes",
+        "paw_offer_toward_viewer": "yes",
+        "paw_hold_visible": "yes",
+        "supporting_paws_grounded": "yes",
+        "natural_balance": "yes",
+        "limb_count_correct": "yes",
+        "paw_anatomy_plausible": "yes",
+        "smooth_return_to_stand_ready": "yes",
+        "source": vlm_identity.VLM_PAW_HELLO_QA_VERSION,
+    }
+    install_mv_vlm(monkeypatch, paw_vlm)
+    seedance = FakeVideoProvider("seedance", [GOOD()], end_frame=True)
+
+    version = _build_motion(h, "PAW_HELLO", [seedance])
+
+    assert version.status == mv.STATUS_COMPLETE
+    assert version.motion_class == ms.CLASS_INTERACTION
+    assert version.video_strategy == ms.STRATEGY_START_END
+    assert version.prompt_version == motion_video_prompts.PAW_HELLO_PROMPT_VERSION
+    assert ms.provider_order_for_motion("PAW_HELLO") == ("seedance",)
+    assert "Lift exactly one front paw" in version.prompt
+    assert "three supporting paws" in version.prompt
+    assert "No human, human hand" in version.prompt
+    assert "BREATHING resumes smoothly" in version.prompt
+    request = seedance.requests[0]
+    assert request.start_image_bytes is not None
+    assert request.end_image_bytes == request.start_image_bytes
+    assert request.metadata["start_keyframe_id"] == request.metadata["target_keyframe_id"]
+
+
+def test_paw_hello_never_degrades_when_seedance_cannot_receive_end_frame(storage, monkeypatch):
+    h, _ = _prepare_pipeline(monkeypatch, storage)
+    incapable = FakeVideoProvider("seedance", [GOOD()], end_frame=False)
+
+    with pytest.raises(mv.MotionVideoError) as exc:
+        _build_motion(h, "PAW_HELLO", [incapable])
+
+    assert exc.value.code == "END_FRAME_UNSUPPORTED"
+    assert incapable.calls == 0
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -1903,7 +2000,7 @@ def test_interaction_contract_enforces_registry_human_hand_policy():
         result, attempt_number=1, request_kind="INTERACTION"
     )
 
-    assert contract["video_compat"]["allow_generated_hand"] is True
+    assert contract["video_compat"]["allow_generated_hand"] is False
     assert result["checks"]["vlm_human_hand_policy"] == "FAIL"
     assert result["business_domains"]["human_hand_policy"]["status"] == "FAIL"
     assert result["business_qa"]["retry_action"] == "REGENERATE"
