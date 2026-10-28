@@ -46,6 +46,19 @@ def test_registration_is_idempotent_and_token_hash_is_the_only_token_storage():
     assert passport.hash_token(_token(1)) in repr(store.rows)
 
 
+def test_id_reservation_is_idempotent_and_contains_no_personal_data():
+    store = passport.InMemoryPassportStore()
+    first = passport.reserve_id(exhibition_id=EXPO, idempotency_key=_token(17), store=store)
+    replay = passport.reserve_id(exhibition_id=EXPO, idempotency_key=_token(17), store=store)
+
+    assert first["queue_number"] == replay["queue_number"] == 1
+    assert first["replayed"] is False and replay["replayed"] is True
+    assert first["pet_name"] is None
+    assert "email" not in first
+    assert _token(17) not in repr(store.rows)
+    assert passport.hash_token(_token(17)) in repr(store.rows)
+
+
 def test_reusing_a_token_for_different_details_is_rejected():
     store = passport.InMemoryPassportStore()
     _register(store, token=_token(2), pet_name="Coco")
@@ -90,6 +103,42 @@ def test_retrieval_is_token_scoped_and_never_returns_email():
     assert retrieved["queue_number"] == created["queue_number"]
     assert "email" not in retrieved
     assert passport.retrieve(token=_token(5), store=store) is None
+
+
+def test_optional_email_is_saved_with_separate_consent_flags_and_never_returned():
+    store = passport.InMemoryPassportStore()
+    reserved = passport.reserve_id(exhibition_id=EXPO, idempotency_key=_token(46), store=store)
+
+    saved = passport.save_email(
+        token=_token(46),
+        email="Visitor@example.com",
+        ai_video_consent=True,
+        marketing_consent=False,
+        store=store,
+    )
+
+    assert saved["email_saved"] is True
+    assert saved["ai_video_consent"] is True
+    assert saved["marketing_consent"] is False
+    assert "email" not in saved
+    retrieved = passport.retrieve(token=_token(46), store=store)
+    assert retrieved["email_saved"] is True
+    assert retrieved["ai_video_consent"] is True
+    assert retrieved["marketing_consent"] is False
+    assert "email" not in retrieved
+    assert store.rows[f"{EXPO}:{passport.hash_token(_token(46))}"]["email"] == "visitor@example.com"
+    assert reserved["queue_number"] == retrieved["queue_number"]
+
+
+def test_skipping_optional_email_keeps_id_and_stores_no_email():
+    store = passport.InMemoryPassportStore()
+    reserved = passport.reserve_id(exhibition_id=EXPO, idempotency_key=_token(47), store=store)
+
+    retrieved = passport.retrieve(token=_token(47), store=store)
+
+    assert retrieved["email_saved"] is False
+    assert retrieved["queue_number"] == reserved["queue_number"]
+    assert store.rows[f"{EXPO}:{passport.hash_token(_token(47))}"]["email"] is None
 
 
 def test_retrieval_returns_short_lived_source_photo_only_for_the_matching_token():
@@ -193,7 +242,7 @@ def test_public_api_has_registration_and_non_enumerable_retrieval_only():
         },
     )
     assert created.status_code == 200, created.text
-    assert "email" not in created.text
+    assert "Alice@example.com" not in created.text
     assert created.json()["passport_token"] == _token(6)
 
     retrieved = client.post(
@@ -201,7 +250,7 @@ def test_public_api_has_registration_and_non_enumerable_retrieval_only():
         json={"passport_token": _token(6)},
     )
     assert retrieved.status_code == 200, retrieved.text
-    assert "email" not in retrieved.text
+    assert "Alice@example.com" not in retrieved.text
     assert retrieved.headers["cache-control"] == "no-store"
 
     unknown = client.post(
@@ -209,7 +258,68 @@ def test_public_api_has_registration_and_non_enumerable_retrieval_only():
         json={"passport_token": _token(7)},
     )
     assert unknown.status_code == 404
+
+
+def test_public_email_save_is_token_scoped_and_does_not_return_email():
+    app = FastAPI()
+    app.include_router(router.router, prefix="/api")
+    store = passport.InMemoryPassportStore()
+    app.dependency_overrides[router.get_store] = lambda: store
+    client = ASGITestClient(app)
+
+    reserved = client.post(
+        "/api/exhibition/passport/id-reservations",
+        json={"exhibition_id": EXPO, "idempotency_key": _token(48)},
+    )
+    assert reserved.status_code == 200, reserved.text
+
+    saved = client.post(
+        "/api/exhibition/passport/email",
+        json={
+            "passport_token": _token(48),
+            "email": "Visitor@example.com",
+            "ai_video_consent": True,
+            "marketing_consent": False,
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["email_saved"] is True
+    assert "Visitor@example.com" not in saved.text
+
+    unknown = client.post(
+        "/api/exhibition/passport/email",
+        json={
+            "passport_token": _token(49),
+            "email": "other@example.com",
+        },
+    )
+    assert unknown.status_code == 404
     assert client.get(f"/api/exhibition/passport/retrieve?passport_token={_token(6)}").status_code == 405
+
+
+def test_public_api_reserves_a_pet_id_without_name_or_email():
+    app = FastAPI()
+    app.include_router(router.router, prefix="/api")
+    store = passport.InMemoryPassportStore()
+    app.dependency_overrides[router.get_store] = lambda: store
+    client = ASGITestClient(app)
+
+    created = client.post(
+        "/api/exhibition/passport/id-reservations",
+        json={"exhibition_id": EXPO, "idempotency_key": _token(18)},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["queue_number"] == 1
+    assert created.json()["pet_name"] is None
+    assert "email_saved" in created.text
+
+    replay = client.post(
+        "/api/exhibition/passport/id-reservations",
+        json={"exhibition_id": EXPO, "idempotency_key": _token(18)},
+    )
+    assert replay.status_code == 200
+    assert replay.json()["queue_number"] == 1
+    assert replay.json()["replayed"] is True
 
 
 def test_public_api_returns_signed_photo_only_for_a_token_scoped_ready_passport():

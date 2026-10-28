@@ -108,7 +108,7 @@ export function StaffBody({
   }, [queue, advancing, token, refresh, handleError]);
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-4">
+    <div className="mx-auto flex min-h-full w-full max-w-5xl flex-col gap-4">
       <SubmitCard
         token={token}
         exhibitionId={exhibitionId}
@@ -118,7 +118,10 @@ export function StaffBody({
 
       {loadError ? <ErrorNote>{loadError}</ErrorNote> : null}
 
-      <Card>
+      {/* Temporarily hidden from the GUI during the Exhibition Staff redesign.
+          The Display, queue controls, and queue state remain implemented below
+          in the component logic and can be restored by removing this JSX comment. */}
+      {/* <Card>
         <CardTitle
           action={
             <Button tone="primary" onClick={onShowNext} busy={advancing} disabled={!canShowNext(queue)}>
@@ -150,6 +153,7 @@ export function StaffBody({
       {queue && queue.recently_complete.length ? (
         <ListCard title="RECENTLY COMPLETE" items={queue.recently_complete} empty="" muted />
       ) : null}
+      */}
     </div>
   );
 }
@@ -233,8 +237,16 @@ function SubmitCard({
   ]);
 
   return (
-    <Card>
-      <CardTitle>New pet</CardTitle>
+    <Card className="flex min-h-[calc(100dvh-8rem)] w-full flex-col md:min-h-[calc(100dvh-10rem)]">
+      <div className="mb-7 border-b pb-5" style={{ borderColor: OPS.border }}>
+        <h2 className="text-2xl font-semibold tracking-tight md:text-3xl" style={{ color: OPS.text }}>
+          New pet
+        </h2>
+        <p className="mt-2 text-sm md:text-base" style={{ color: OPS.textMuted }}>
+          Capture a pet photo and associate it with the visitor&apos;s Passport.
+        </p>
+      </div>
+      <div className="mx-auto flex w-full max-w-4xl flex-1 flex-col justify-start gap-5 py-2 md:gap-7 md:py-5">
       {/* capture 를 강제하지 않는다 — 폰은 카메라/앨범을 고르게 해 준다. */}
       <input
         ref={inputRef}
@@ -247,7 +259,7 @@ function SubmitCard({
           setFile(e.target.files?.[0] ?? null);
         }}
       />
-      <Button full onClick={() => inputRef.current?.click()} disabled={busy}>
+      <Button size="lg" full className="min-h-16" onClick={() => inputRef.current?.click()} disabled={busy}>
         {file ? "Change photo" : "Take / Upload Pet Photo"}
       </Button>
 
@@ -255,22 +267,23 @@ function SubmitCard({
         <img
           src={preview}
           alt="Selected pet"
-          className="mx-auto mt-3 max-h-48 rounded-lg object-contain"
+          className="mx-auto mt-1 block h-auto max-h-[58vh] w-auto max-w-full rounded-xl object-contain md:max-h-[62vh]"
           style={{ border: `1px solid ${OPS.border}` }}
         />
       ) : null}
 
-      <label className="mt-3 block text-[12px]" style={{ color: OPS.textMuted }}>
+      <label className="block text-sm md:text-base" style={{ color: OPS.textMuted }}>
         Pet name (optional)
-        <div className="mt-1">
-          <TextInput value={petName} onChange={setPetName} placeholder="e.g. Coco" onEnter={() => void submit()} />
+        <div className="mt-2">
+          <TextInput className="min-h-14 text-[15px] md:text-base" value={petName} onChange={setPetName} placeholder="e.g. Coco" onEnter={() => void submit()} />
         </div>
       </label>
 
-      <label className="mt-3 block text-[12px]" style={{ color: OPS.textMuted }}>
+      <label className="block text-sm md:text-base" style={{ color: OPS.textMuted }}>
         Passport queue number <span aria-hidden="true" style={{ color: OPS.gold }}>*</span>
-        <div className="mt-1">
+        <div className="mt-2">
           <TextInput
+            className="min-h-14 text-[15px] md:text-base"
             value={queueNumberInput}
             onChange={(value) => {
               setQueueNumberInput(value);
@@ -281,23 +294,25 @@ function SubmitCard({
             onEnter={() => void submit()}
           />
         </div>
-        <span className="mt-1 block text-[11px]" style={{ color: OPS.textFaint }}>
+        <span className="mt-2 block text-xs md:text-sm" style={{ color: OPS.textFaint }}>
           Required for Passport visitors. Leave blank only for the existing legacy STAFF workflow.
         </span>
       </label>
       {hasQueueNumberInput && queueNumberValidation.error ? (
-        <p role="alert" className="mt-2 text-[12px]" style={{ color: "#8A3A22" }}>
+        <p role="alert" className="text-sm" style={{ color: "#8A3A22" }}>
           Enter a positive whole number. Passport IDs are issued by registration.
         </p>
       ) : null}
       {submissionMode === "PASSPORT" && !queueNumberValidation.error ? (
-        <p className="mt-2 text-[12px]" style={{ color: OPS.textMuted }}>
+        <p className="text-sm" style={{ color: OPS.textMuted }}>
           The server will verify this Passport number for the selected exhibition before associating the photo.
         </p>
       ) : null}
 
-      <div className="mt-3">
+      <div>
         <Button
+          size="lg"
+          className="min-h-16"
           tone="primary"
           full
           onClick={() => void submit()}
@@ -317,6 +332,7 @@ function SubmitCard({
           Queued as {assigned}
         </p>
       ) : null}
+      </div>
     </Card>
   );
 }

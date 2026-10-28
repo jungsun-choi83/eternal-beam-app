@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from ..auth import AuthedUser, require_user
 from ..services import device_gateway
+from ..services import library_service
 from ..services import motion_publication_service
 from ..services import theme_catalog
 
@@ -80,35 +81,67 @@ async def send_device_command(
     else:
         pet_id = (body.pet_id or "").strip()
         motion_id = (body.motion_id or "").strip().upper()
-        if not pet_id or motion_id != "BREATHING":
+        if not pet_id or motion_id not in {"BREATHING", "PAW_HELLO"}:
             raise _command_error(
                 "PUBLISHED_ASSET_REQUIRED",
-                "The first device contract supports published BREATHING only.",
+                "The device contract supports published BREATHING and owned PAW_HELLO only.",
                 409,
             )
-        try:
-            published = await motion_publication_service.get_published_breathing(
-                user_id=user.user_id,
-                pet_id=pet_id,
+        if motion_id == "BREATHING":
+            try:
+                published = await motion_publication_service.get_published_breathing(
+                    user_id=user.user_id,
+                    pet_id=pet_id,
+                )
+            except motion_publication_service.MotionPublicationError as exc:
+                raise _command_error(exc.code, exc.message, exc.status) from exc
+            asset_pet_id = published.pet_id
+            asset_motion_id = published.motion_id
+            asset_url = published.url
+            asset_format = published.delivery_format or "raw"
+        else:
+            try:
+                library = await library_service.get_library(
+                    user_id=user.user_id,
+                    pet_id=pet_id,
+                )
+            except library_service.LibraryError as exc:
+                raise _command_error(exc.code, exc.message, exc.status) from exc
+            entry = next(
+                (
+                    item for item in library.motions
+                    if item.motion_id == "PAW_HELLO"
+                    and item.access.state == "playable"
+                    and item.url
+                ),
+                None,
             )
-        except motion_publication_service.MotionPublicationError as exc:
-            raise _command_error(exc.code, exc.message, exc.status) from exc
+            if entry is None:
+                raise _command_error(
+                    "PUBLISHED_ASSET_REQUIRED",
+                    "An owned, published PAW_HELLO asset is required.",
+                    409,
+                )
+            asset_pet_id = entry.pet_id
+            asset_motion_id = entry.motion_id
+            asset_url = str(entry.url)
+            asset_format = entry.delivery_format or "raw"
 
         # The URL is resolved from the published pointer at send time.  No raw
         # candidate URL is accepted from the caller.
         command = {
             "event": "pet_asset",
-            "pet_id": published.pet_id,
-            "motion_id": published.motion_id,
-            "video_url": published.url,
-            "delivery_format": published.delivery_format or "raw",
+            "pet_id": asset_pet_id,
+            "motion_id": asset_motion_id,
+            "video_url": asset_url,
+            "delivery_format": asset_format,
             "version": 1,
         }
         if body.spawn_vfx is not None:
             # Selector only: the device owns and resolves the local VFX asset.
             command["spawn_vfx"] = body.spawn_vfx
-        if published.delivery_format == "packed_alpha":
-            command["packed_url"] = published.url
+        if asset_format == "packed_alpha":
+            command["packed_url"] = asset_url
 
     queued = await device_gateway.enqueue(body.device_id, command)
     return DeviceCommandResponse(

@@ -229,6 +229,7 @@ function MemorialDevicePlayScreenInner({
       COME_CLOSER: premiumAssets?.readyAssets?.COME_CLOSER?.deliveryFormat ?? null,
       RETURN_HOME: premiumAssets?.readyAssets?.RETURN_HOME?.deliveryFormat ?? null,
       PET_HEAD: premiumAssets?.readyAssets?.PET_HEAD?.deliveryFormat ?? null,
+      PAW_HELLO: premiumAssets?.readyAssets?.PAW_HELLO?.deliveryFormat ?? null,
       LOOK_UP: premiumAssets?.readyAssets?.LOOK_UP?.deliveryFormat ?? null,
       LIE_DOWN: premiumAssets?.readyAssets?.LIE_DOWN?.deliveryFormat ?? null,
       STAND_UP: premiumAssets?.readyAssets?.STAND_UP?.deliveryFormat ?? null,
@@ -252,6 +253,9 @@ function MemorialDevicePlayScreenInner({
   // 탭으로만 프리미엄을 계속 쓰게 된다.
   const petHeadSource = eligibility.isEligible("PET_HEAD")
     ? (premiumAssets?.readyAssets?.PET_HEAD?.url ?? null)
+    : null;
+  const pawHelloSource = eligibility.isEligible("PAW_HELLO")
+    ? (premiumAssets?.readyAssets?.PAW_HELLO?.url ?? null)
     : null;
   const lookUpSource = eligibility.isEligible("LOOK_UP")
     ? (premiumAssets?.readyAssets?.LOOK_UP?.url ?? null)
@@ -310,6 +314,11 @@ function MemorialDevicePlayScreenInner({
         deliveryFormat: eventDeliveryFormats.PET_HEAD ?? null,
       },
       {
+        motionId: "PAW_HELLO",
+        url: pawHelloSource,
+        deliveryFormat: eventDeliveryFormats.PAW_HELLO ?? null,
+      },
+      {
         motionId: "LOOK_UP",
         url: lookUpSource,
         deliveryFormat: eventDeliveryFormats.LOOK_UP ?? null,
@@ -336,6 +345,7 @@ function MemorialDevicePlayScreenInner({
     hasIdle,
     breathingDeliveryFormat,
     petHeadSource,
+    pawHelloSource,
     lookUpSource,
     comeCloserSource,
     eventDeliveryFormats,
@@ -564,7 +574,7 @@ function MemorialDevicePlayScreenInner({
                 comeCloserVideoUrl={comeCloserSource}
                 petHeadVideoUrl={petHeadSource}
                 lookUpVideoUrl={lookUpSource}
-                extraEventSources={{ ...poseTransitionSources, RETURN_HOME: returnHomeSource }}
+                extraEventSources={{ ...poseTransitionSources, RETURN_HOME: returnHomeSource, PAW_HELLO: pawHelloSource }}
                 idleEventSources={eligibleIdleEventSources}
                 eventDeliveryFormats={eventDeliveryFormats}
                 actionTriggerRef={comeCloserTriggerRef}
@@ -592,7 +602,7 @@ function MemorialDevicePlayScreenInner({
                 comeCloserVideoUrl={comeCloserSource}
                 petHeadVideoUrl={petHeadSource}
                 lookUpVideoUrl={lookUpSource}
-                extraEventSources={{ ...poseTransitionSources, RETURN_HOME: returnHomeSource }}
+                extraEventSources={{ ...poseTransitionSources, RETURN_HOME: returnHomeSource, PAW_HELLO: pawHelloSource }}
                 // 적격한 것만 넘긴다 — 소스가 없으면 런타임이 자기 규칙(no-source)으로
                 // 거절하므로, 수동 트리거가 남아 있어도 OFF 는 재생되지 않는다.
                 idleEventSources={eligibleIdleEventSources}

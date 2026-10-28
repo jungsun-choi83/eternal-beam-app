@@ -1,16 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   ArrowRight,
   Camera,
   Check,
   Clock3,
-  Copy,
-  KeyRound,
+  Globe2,
   Languages,
   LockKeyhole,
+  PawPrint,
   RefreshCw,
-  ShieldCheck,
-  Sparkles,
 } from 'lucide-react'
 import { formatQueueNumber } from '@/lib/exhibition-queue'
 import {
@@ -18,60 +16,111 @@ import {
   exhibitionPassportExhibitionId,
   isExhibitionPassportEnabled,
   isExhibitionPassportLocalPreview,
-  registerPetPassport,
+  reservePetPassportId,
   retrievePetPassport,
   type PassportRecord,
-  type RegistrationResponse,
 } from '@/lib/exhibition-passport-api'
 import { passportStage, type PassportStage } from '@/lib/exhibition-passport-flow'
+import { PassportPhotoStep } from './passport-photo-step'
+import { PassportFinalStep } from './passport-final-step'
 import {
   readPassportSession,
   savePassportSession,
   clearPassportSession,
-  readPendingPassportRegistration,
-  savePendingPassportRegistration,
-  clearPendingPassportRegistration,
+  readPendingPassportIdReservation,
+  savePendingPassportIdReservation,
+  clearPendingPassportIdReservation,
   type PassportSession,
 } from '@/lib/exhibition-passport-session'
 
 type Language = 'en' | 'ko'
-type PassportView = 'welcome' | 'register'
+type PassportView = 'welcome' | 'register' | 'photo' | 'final'
 
 const languageStorageKey = 'eternal_beam_exhibition_passport_language_v1'
 
 const copy = {
   en: {
-    brand: 'Eternal Beam',
-    soulTrace: 'Soul Trace exhibition',
+    brand: 'Pet Passport',
     eyebrow: 'Pet Passport',
-    title: 'A living keepsake for your companion.',
-    intro: 'Register your pet before the exhibition. Your Pet ID connects your visit to a portrait captured by our exhibition team.',
-    welcomeLabel: 'Visitor journey',
-    welcomeTitle: 'Bring your companion into the light.',
-    welcomeBody: 'Four simple steps connect your visit to a digital Pet Passport made at the exhibition.',
-    startRegistration: 'Start Registration',
-    register: 'Register your pet',
-    journey: 'Your journey',
+    title: 'PET PASSPORT',
+    subtitle: 'A JOURNEY OF LOVE BEYOND TIME',
+    intro: ['Give your pet an identity.', 'Capture today, keep forever.'],
+    createId: "Create my Pet's ID",
+    officialPassport: 'OFFICIAL PET PASSPORT',
+    exhibitionEdition: 'EXHIBITION EDITION',
+    petIdLabel: 'PET ID',
+    backToPassport: 'Back',
+    photoStepTitle: "YOUR PET'S PHOTO",
+    photoStepDescription: "Your pet's photo will be captured at the exhibition booth and added here automatically.",
+    photoWaiting: 'Waiting for your exhibition photo...',
+    photoAutomatic: 'It will be added automatically.',
+    photoProgressTitle: 'Photo in progress',
+    photoProgressBody: "Please show your Pet ID to the exhibition staff. Your pet's photo will appear here automatically once it's taken.",
+    photoAddedTitle: 'Photo added',
+    photoAddedBody: "Your pet's exhibition photo has been successfully added to their passport.",
+    photoLinkUnavailable: 'The photo is linked but temporarily unavailable. We will keep checking.',
+    photoRefresh: 'Check photo status',
+    photoPetName: "PET NAME",
+    photoNoName: 'YOUR PET',
+    photoNameLabel: "Your pet's name (Optional)",
+    photoNamePlaceholder: 'e.g. Mocha',
+    photoNameHint: 'You can add or edit this anytime.',
+    photoPreview: "Preview the Pet's Passport",
+    photoReveal: "Reveal the Pet's Passport",
+    finalBack: 'Back to photo',
+    finalTitleReady: 'YOUR PASSPORT IS READY',
+    finalTitleWaiting: 'YOUR PET PASSPORT IS ALMOST READY',
+    finalSubtitleReady: 'Your pet’s photo, name, and Pet ID are now together in one keepsake.',
+    finalSubtitleWaiting: 'Your passport will be complete when your exhibition photo arrives.',
+    finalDownload: 'Download',
+    finalDownloading: 'Preparing download...',
+    finalShare: 'Share Passport',
+    finalSharing: 'Preparing share...',
+    finalShareHint: 'Choose Instagram, Facebook, or KakaoTalk. The safest sharing option keeps your Passport details private.',
+    finalShared: 'Passport ready to share.',
+    finalShareFallback: 'Your browser downloaded the Passport image for sharing.',
+    finalShareFailed: 'Sharing was cancelled or unavailable. Please download the Passport instead.',
+    finalShareInstagram: 'Share to Instagram',
+    finalShareFacebook: 'Share to Facebook',
+    finalShareKakao: 'Share to KakaoTalk',
+    finalShareInstagramFallback: 'Passport downloaded. Open Instagram to post it.',
+    finalShareFacebookOpened: 'Facebook sharing opened with a safe Passport link.',
+    finalShareKakaoUnavailable: 'KakaoTalk sharing is unavailable here. Use the downloaded Passport image instead.',
+    finalPhotoPending: 'Photo still pending',
+    finalPhotoPendingBody: 'Your photo will appear here automatically when exhibition staff captures it.',
+    finalPhotoUnavailable: 'The photo is linked but temporarily unavailable. Please try again later.',
+    finalEmailTitle: 'Bring Their Story to Life with Eternal Beam',
+    finalEmailBody: "Want to receive your pet's AI video when it's ready? Enter your email below.",
+    finalEmailPlaceholder: 'Enter your email (optional)',
+    finalNotify: 'Save',
+    finalEmailInvalid: 'Please enter a valid email address.',
+    finalEmailUnavailable: 'We could not save your email. Please try again.',
+    finalEmailSaved: 'Your email preference was saved securely.',
+    finalEmailSaving: 'Saving...',
+    finalAiVideoConsent: 'Yes, email me when my Eternal Beam AI video is ready (optional).',
+    finalMarketingConsent: 'I would also like to receive occasional news and offers (optional).',
+    finalSoulTraceTitle: 'Discover More from Soul Trace',
+    finalSoulTraceBody: 'Turn the moments you love into a heartfelt letter or a seasonal Polaroid.',
+    finalSoulTraceCta: 'Explore Soul Trace',
+    idCreatedNote: "This ID will be used at the exhibition booth to capture your pet's photo and complete their passport.",
+    journey: 'How it works',
     steps: [
-      ['Register your pet', 'Tell us your pet’s name and where to send updates.'],
-      ['Get Your Pet ID', 'A unique queue number is issued by the exhibition.'],
-      ['Visit the Photo Booth', 'Show your ID to staff, who take the photo.'],
-      ['Receive Your Passport', 'View and download it when ready.'],
+      { title: "Create Pet's ID", description: 'Get your unique Pet ID instantly.' },
+      { title: 'Get Photo at Booth', description: "Add your pet's name and get their exhibition photo." },
+      { title: 'Download Passport', description: 'Receive and keep your digital Passport.' },
     ],
+    register: 'Register your pet',
     petName: 'Pet name',
     petNameHint: 'The name you would like shown on the Passport',
     email: 'Email address',
     emailHint: 'Used only for your Passport experience',
     privacy: 'I agree to the Privacy Policy and consent to the use of this information for the Pet Passport experience.',
-    privacyRequired: 'Privacy consent is required to register.',
     continue: 'Create my Pet ID',
     creating: 'Creating your Pet ID…',
     secure: 'Your details stay private. We never display your email publicly.',
-    disabled: 'Passport registration is in preview mode. Enable the local feature flag to submit a registration.',
+    disabled: 'Pet ID creation is in preview mode. Enable the exhibition Passport feature flag to continue.',
     idTitle: 'Your Pet ID / Queue Number',
-    previewId: 'LOCAL PREVIEW ID',
-    copyId: 'Copy ID',
-    copied: 'Copied',
+    previewId: 'Local preview ID',
     idNote: 'This is your unique number. Keep this page on your phone and show it to exhibition staff for photo capture.',
     photoPlaceholder: 'Your exhibition portrait will appear here once the staff photo is connected.',
     waitingTitle: 'Waiting for staff photo',
@@ -81,71 +130,116 @@ const copy = {
     readyTitle: 'Your Passport is ready',
     readyBody: 'Your original exhibition portrait is ready to view and download.',
     photoUnavailable: 'Your photo is linked, but is temporarily unavailable. Refresh to try again.',
-    download: 'Download Passport',
-    downloading: 'Preparing download…',
-    downloadFailed: 'The Passport image could not be downloaded. Please refresh and try again.',
-    passportPhotoAlt: 'Exhibition portrait for your Pet Passport',
     back: 'Register another pet',
     localOnly: 'Keep this browser or device available. Your private retrieval token is stored locally and is never placed in the URL.',
     unavailable: 'We could not reach the Passport service. Please try again in a moment.',
     notFound: 'We could not find this Passport on the server. Please register again.',
     retry: 'Try again',
     consentError: 'Please accept the Privacy Policy to continue.',
-    language: '한국어',
+    language: 'KR',
   },
   ko: {
-    brand: 'Eternal Beam',
-    soulTrace: 'Soul Trace 전시',
+    brand: 'Pet Passport',
     eyebrow: 'Pet Passport',
-    title: '반려동물과 함께 남기는 살아 있는 기록.',
-    intro: '전시 방문 전에 반려동물을 등록하세요. 전시팀이 촬영한 초상과 방문을 Pet ID로 연결해 드립니다.',
-    register: '반려동물 등록',
-    journey: '방문 여정',
+    title: 'PET PASSPORT',
+    subtitle: '시간을 넘어 이어지는 사랑의 여정',
+    intro: ['반려동물에게 특별한 아이덴티티를 선물하세요.', '오늘의 순간을 담아, 영원히 간직하세요.'],
+    createId: 'Pet ID 만들기',
+    idCreatedTitle: 'PET ID가 생성되었습니다',
+    idCreatedSubtitle: '이제 반려동물의 여정이 시작됩니다.',
+    officialPassport: '공식 PET PASSPORT',
+    exhibitionEdition: 'EXHIBITION EDITION',
+    petIdLabel: 'PET ID',
+    copyFailed: '복사하지 못했습니다. ID를 직접 선택해 복사해 주세요.',
+    continueJourney: '계속하기',
+    backToPassport: '뒤로',
+    photoStepTitle: '반려동물 사진',
+    photoStepDescription: '반려동물 사진은 전시 부스에서 촬영되며 이곳에 자동으로 추가됩니다.',
+    photoWaiting: '전시 사진을 기다리는 중...',
+    photoAutomatic: '사진이 자동으로 추가됩니다.',
+    photoProgressTitle: '사진 촬영 진행 중',
+    photoProgressBody: 'Pet ID를 전시 스태프에게 보여 주세요. 촬영이 완료되면 반려동물 사진이 이곳에 자동으로 표시됩니다.',
+    photoAddedTitle: '사진이 추가되었습니다',
+    photoAddedBody: '반려동물의 전시 사진이 Passport에 성공적으로 추가되었습니다.',
+    photoLinkUnavailable: '사진은 연결되었지만 잠시 사용할 수 없습니다. 계속 확인하겠습니다.',
+    photoRefresh: '사진 상태 확인',
+    photoPetName: '반려동물 이름',
+    photoNoName: '이름 없음',
+    photoNameLabel: '반려동물 이름 (선택 사항)',
+    photoNamePlaceholder: '예: 모카',
+    photoNameHint: '언제든 입력하거나 수정할 수 있어요.',
+    photoPreview: 'Pet Passport 미리보기',
+    photoReveal: 'Pet Passport 확인하기',
+    finalBack: '사진으로 돌아가기',
+    finalTitleReady: 'YOUR PASSPORT가 준비되었습니다',
+    finalTitleWaiting: 'YOUR PET PASSPORT가 거의 완성되었습니다',
+    finalSubtitleReady: '반려동물의 사진, 이름, Pet ID가 하나의 Passport에 담겼습니다.',
+    finalSubtitleWaiting: '전시 사진이 도착하면 Passport가 완성됩니다.',
+    finalDownload: '다운로드',
+    finalDownloading: '다운로드 준비 중...',
+    finalShare: 'Passport 공유',
+    finalSharing: '공유 준비 중...',
+    finalShareHint: 'Instagram, Facebook 또는 KakaoTalk를 선택하세요. 안전한 공유 방식으로 Passport 정보를 보호합니다.',
+    finalShared: 'Passport를 공유할 준비가 되었습니다.',
+    finalShareFallback: '공유할 수 있도록 Passport 이미지를 다운로드했습니다.',
+    finalShareFailed: '공유가 취소되었거나 지원되지 않습니다. Passport를 다운로드해 주세요.',
+    finalShareInstagram: 'Instagram으로 공유',
+    finalShareFacebook: 'Facebook으로 공유',
+    finalShareKakao: 'KakaoTalk으로 공유',
+    finalShareInstagramFallback: 'Passport 이미지를 다운로드했습니다. Instagram에서 게시해 주세요.',
+    finalShareFacebookOpened: '안전한 Passport 링크로 Facebook 공유 창을 열었습니다.',
+    finalShareKakaoUnavailable: '이 환경에서는 KakaoTalk 공유를 사용할 수 없습니다. 다운로드한 Passport 이미지를 이용해 주세요.',
+    finalPhotoPending: '사진을 기다리는 중입니다',
+    finalPhotoPendingBody: '전시 스태프가 촬영하면 사진이 자동으로 이곳에 표시됩니다.',
+    finalPhotoUnavailable: '사진이 연결되었지만 잠시 사용할 수 없습니다. 나중에 다시 시도해 주세요.',
+    finalEmailTitle: 'Eternal Beam으로 이야기를 완성하세요',
+    finalEmailBody: '반려동물의 AI 영상이 준비되면 받아보시겠어요? 이메일을 입력해 주세요.',
+    finalEmailPlaceholder: '이메일 주소 (선택 사항)',
+    finalNotify: '저장하기',
+    finalEmailInvalid: '유효한 이메일 주소를 입력해 주세요.',
+    finalEmailUnavailable: '이메일을 저장하지 못했습니다. 다시 시도해 주세요.',
+    finalEmailSaved: '이메일 수신 설정이 안전하게 저장되었습니다.',
+    finalEmailSaving: '저장 중...',
+    finalAiVideoConsent: 'Eternal Beam AI 영상이 준비되면 이메일로 받고 싶습니다 (선택 사항).',
+    finalMarketingConsent: '새 소식과 혜택을 가끔 이메일로 받고 싶습니다 (선택 사항).',
+    finalSoulTraceTitle: 'Soul Trace 더 알아보기',
+    finalSoulTraceBody: '소중한 순간을 진심 어린 편지나 시즌 Polaroid로 남겨 보세요.',
+    finalSoulTraceCta: 'Soul Trace 둘러보기',
+    idCreatedNote: '이 ID는 전시 부스에서 반려동물 사진을 촬영하고 Passport를 완성하는 데 사용됩니다.',
+    journey: '이용 방법',
     steps: [
-      ['반려동물 등록', 'Pet Passport에 표시할 이름과 이메일을 입력합니다.'],
-      ['Pet ID 받기', '전시에서 고유 대기번호를 발급합니다.'],
-      ['전시팀 만나기', '사진 부스에서 같은 번호를 보여주세요.'],
-      ['Passport 간직하기', '사진이 준비되면 확인하고 다운로드합니다.'],
+      { title: 'Pet ID 만들기', description: '고유한 Pet ID를 즉시 받아요.' },
+      { title: '부스에서 사진 촬영', description: '이름을 입력하고 전시 사진을 받아요.' },
+      { title: 'Passport 다운로드', description: '디지털 Passport를 받아 오래 간직해요.' },
     ],
+    register: '반려동물 등록',
     petName: '반려동물 이름',
     petNameHint: 'Passport에 표시할 이름',
     email: '이메일 주소',
     emailHint: 'Pet Passport 안내에만 사용합니다',
     privacy: '개인정보처리방침에 동의하며 Pet Passport 경험을 위해 정보가 사용되는 것에 동의합니다.',
-    privacyRequired: '등록하려면 개인정보 동의가 필요합니다.',
     continue: 'Pet ID 만들기',
     creating: 'Pet ID를 만드는 중…',
-    secure: '입력한 정보는 안전하게 보호됩니다. 이메일은 공개되지 않습니다.',
-    disabled: 'Passport 등록은 미리보기 모드입니다. 로컬 기능 플래그를 켜면 등록할 수 있습니다.',
+    secure: '입력한 정보는 안전하게 보호되며 이메일은 공개하지 않습니다.',
+    disabled: 'Pet ID 생성은 미리보기 모드입니다. Exhibition Passport 기능 플래그를 켜면 계속할 수 있습니다.',
     idTitle: 'Pet ID / 대기번호',
-    previewId: '로컬 프리뷰 ID',
-    idNote: '고유 번호입니다. 이 화면을 휴대폰에 보관하고 사진 촬영을 위해 전시팀에 보여주세요.',
+    previewId: '로컬 미리보기 ID',
+    idNote: '고유 번호입니다. 이 화면을 휴대폰에 보관하고 전시 스태프에게 보여 주세요.',
+    photoPlaceholder: '전시 스태프의 사진이 연결되면 이곳에 표시됩니다.',
     waitingTitle: '전시 사진을 기다리는 중',
-    waitingBody: '등록이 저장되었습니다. 전시에 도착하면 Pet ID를 전시팀에 보여주고 반려동물 사진을 촬영해 주세요.',
+    waitingBody: '등록이 저장되었습니다. 전시에 도착하면 Pet ID를 전시 스태프에게 보여 주고 사진을 촬영해 주세요.',
     viewPassport: '내 Passport 보기',
     refresh: '다시 확인하기',
     readyTitle: 'Passport가 준비되었습니다',
-    readyBody: '사진을 받았습니다. Passport 보기와 다운로드는 전시 사진 연동 단계에서 제공됩니다.',
-    downloadSoon: '다운로드는 곧 제공됩니다',
+    readyBody: '전시 사진을 확인하고 다운로드할 수 있습니다.',
+    photoUnavailable: '사진은 연결되었지만 잠시 사용할 수 없습니다. 다시 확인해 주세요.',
     back: '다른 반려동물 등록',
-    localOnly: '이 브라우저 또는 기기를 계속 사용해 주세요. 개인 토큰은 로컬에만 저장되며 URL에 표시되지 않습니다.',
+    localOnly: '이 브라우저 또는 기기를 계속 사용해 주세요. 비공개 조회 토큰은 로컬에만 저장되며 URL에 표시되지 않습니다.',
     unavailable: 'Passport 서비스에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요.',
     notFound: '서버에서 Passport를 찾을 수 없습니다. 다시 등록해 주세요.',
     retry: '다시 시도',
-    consentError: '계속하려면 개인정보처리방침에 동의해 주세요.',
-    welcomeLabel: '\uBC29\uBB38\uC790 \uC5EC\uC815',
-    welcomeTitle: '\uBC18\uB824\uB3D9\uBB3C\uC744 \uBE5B\uC73C\uB85C \uC548\uB0B4\uD558\uC138\uC694.',
-    welcomeBody: '\uB124 \uB2E8\uACC4\uB85C \uC804\uC2DC\uC5D0\uC11C \uB9CC\uB4E0 \uB514\uC9C0\uD138 Pet Passport\uC5D0 \uBC29\uBB38\uC744 \uC5F0\uACB0\uD569\uB2C8\uB2E4.',
-    startRegistration: '\uB4F1\uB85D \uC2DC\uC791',
-    copyId: '\uC544\uC774\uB514 \uBCF5\uC0AC',
-    copied: '\uBCF5\uC0AC\uB428',
-    photoPlaceholder: '\uC804\uC2DC\uD300\uC758 \uC0AC\uC9C4\uC774 \uC5F0\uACB0\uB418\uBA74 \uC774\uACF3\uC5D0 \uD45C\uC2DC\uB429\uB2C8\uB2E4.',
-    photoUnavailable: '\uC0AC\uC9C4\uC740 \uC5F0\uACB0\uB418\uC5C8\uC9C0\uB9CC \uC7A0\uC2DC \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. \uC0C8\uB85C\uACE0\uCE68\uD574 \uB2E4\uC2DC \uD655\uC778\uD574 \uC8FC\uC138\uC694.',
-    download: '\uD328\uC2A4\uD3EC\uD2B8 \uB2E4\uC6B4\uB85C\uB4DC',
-    downloading: '\uB2E4\uC6B4\uB85C\uB4DC \uC900\uBE44 \uC911…',
-    downloadFailed: '\uD328\uC2A4\uD3EC\uD2B8 \uC774\uBBF8\uC9C0\uB97C \uB2E4\uC6B4\uB85C\uB4DC\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. \uC0C8\uB85C\uACE0\uCE68 \uD6C4 \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694.',
-    passportPhotoAlt: '\uD328\uC2A4\uD3EC\uD2B8 \uC804\uC2DC \uCD2C\uC601 \uC0AC\uC9C4',
-    language: 'English',
+    consentError: '계속하려면 개인정보 이용에 동의해 주세요.',
+    language: 'EN',
   },
 } as const
 
@@ -166,6 +260,10 @@ function recordFromSession(session: PassportSession): PassportRecord {
     photo_status: session.photoStatus,
     photo_received_at: null,
     created_at: session.createdAt,
+    photo_url: null,
+    email_saved: session.emailSaved,
+    ai_video_consent: session.aiVideoConsent,
+    marketing_consent: session.marketingConsent,
   }
 }
 
@@ -180,22 +278,27 @@ export function ExhibitionPassportScreen() {
   const [language, setLanguage] = useState<Language>(initialLanguage)
   const t = copy[language]
   const exhibitionId = exhibitionPassportExhibitionId()
-  const featureEnabled = isExhibitionPassportEnabled()
   const localPreview = isExhibitionPassportLocalPreview()
+  const featureEnabled = isExhibitionPassportEnabled() || localPreview
   const [session, setSession] = useState<PassportSession | null>(() => readPassportSession(undefined, exhibitionId))
-  const [pendingRegistration] = useState(() => readPendingPassportRegistration(undefined, exhibitionId))
+  const [pendingIdReservation, setPendingIdReservation] = useState(() => readPendingPassportIdReservation(undefined, exhibitionId))
   const [record, setRecord] = useState<PassportRecord | null>(() => {
     const stored = readPassportSession(undefined, exhibitionId)
     return stored ? recordFromSession(stored) : null
   })
+  const [petName, setPetName] = useState(() => {
+    const stored = readPassportSession(undefined, exhibitionId)
+    return stored?.petName || ''
+  })
   const [stage, setStage] = useState<PassportStage>(() => passportStage(record))
-  const [petName, setPetName] = useState(pendingRegistration?.petName || '')
-  const [email, setEmail] = useState(pendingRegistration?.email || '')
-  const [consent, setConsent] = useState(pendingRegistration?.privacyConsent === true)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [view, setView] = useState<PassportView>(() => (session || pendingRegistration ? 'register' : 'welcome'))
-  const [copied, setCopied] = useState(false)
+  const [view, setView] = useState<PassportView>(() => {
+    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('step') === '4' && session) return 'final'
+    if (session?.photoStatus === 'WAITING_FOR_PHOTO') return 'photo'
+    if (session?.photoStatus === 'PHOTO_RECEIVED') return 'photo'
+    return 'welcome'
+  })
 
   useEffect(() => {
     try {
@@ -212,9 +315,12 @@ export function ExhibitionPassportScreen() {
     retrievePetPassport(session.passportToken)
       .then((fresh) => {
         if (!active) return
-        setRecord(fresh)
-        setStage(passportStage(fresh))
-        savePassportSession(fresh, session.passportToken, undefined, session.exhibitionId)
+        const merged = fresh.pet_name ? fresh : { ...fresh, pet_name: session.petName }
+        setPetName(merged.pet_name || '')
+        setRecord(merged)
+        setStage(passportStage(merged))
+        if (fresh.photo_status === 'PHOTO_RECEIVED') setView('photo')
+        savePassportSession(merged, session.passportToken, undefined, session.exhibitionId)
       })
       .catch((retrievalError: unknown) => {
         if (!active) return
@@ -230,65 +336,65 @@ export function ExhibitionPassportScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.passportToken])
 
-  const progressStep = useMemo(() => {
-    if (stage === 'register') return 1
-    if (stage === 'waiting') return 3
-    return 4
-  }, [stage])
+  useEffect(() => {
+    if ((view !== 'photo' && view !== 'final') || !session?.passportToken) return
+    let active = true
+    let timer: number | undefined
+
+    const poll = async () => {
+      try {
+        const fresh = await retrievePetPassport(session.passportToken)
+        if (!active) return
+        const merged = fresh.pet_name ? fresh : { ...fresh, pet_name: session.petName || petName || null }
+        setPetName(merged.pet_name || '')
+        setRecord(merged)
+        setStage(passportStage(merged))
+        savePassportSession(merged, session.passportToken, undefined, session.exhibitionId)
+        if (fresh.photo_status !== 'PHOTO_RECEIVED' || !fresh.photo_url) {
+          timer = window.setTimeout(poll, 5000)
+        }
+      } catch (pollError) {
+        if (!active) return
+        setError(friendlyError(pollError, t))
+        timer = window.setTimeout(poll, 5000)
+      }
+    }
+
+    timer = window.setTimeout(poll, 250)
+    return () => {
+      active = false
+      if (timer !== undefined) window.clearTimeout(timer)
+    }
+    // The token and view define the polling session. Language changes should not restart it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view, session?.passportToken])
+
+  const isHome = !session && view === 'welcome'
 
   function toggleLanguage() {
     setLanguage((previous) => (previous === 'en' ? 'ko' : 'en'))
   }
 
-  function startRegistration() {
-    setError(null)
-    setView('register')
-  }
-
-  async function copyPetId() {
-    if (!record) return
-    const petId = formatQueueNumber(record.queue_number)
-    try {
-      await navigator.clipboard.writeText(petId)
-      setCopied(true)
-      window.setTimeout(() => setCopied(false), 1600)
-    } catch {
-      setCopied(false)
-    }
-  }
-
-  async function submitRegistration(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!consent) {
-      setError(t.consentError)
+  async function createPetId() {
+    if (busy || session) return
+    if (!featureEnabled) {
+      setError(t.disabled)
       return
     }
-    if (!featureEnabled) return
     setBusy(true)
     setError(null)
     try {
-      const existingPending = pendingRegistration &&
-        pendingRegistration.petName === petName && pendingRegistration.email === email
-          ? pendingRegistration
-          : null
-      const passportToken = existingPending?.passportToken || createPassportToken()
-      savePendingPassportRegistration({
+      const passportToken = pendingIdReservation?.passportToken || createPassportToken()
+      const pendingReservation = {
         passportToken,
         exhibitionId: exhibitionId || 'default',
-        petName,
-        email,
-        privacyConsent: true,
-        privacyPolicyVersion: 'v1',
-      })
-      const response: RegistrationResponse = await registerPetPassport({
-        exhibitionId,
-        petName,
-        email,
-        privacyConsent: consent,
-        passportToken,
-      })
-      clearPendingPassportRegistration(undefined, response.exhibition_id)
-      clearPendingPassportRegistration(undefined, exhibitionId)
+      }
+      savePendingPassportIdReservation(pendingReservation)
+      setPendingIdReservation(pendingReservation)
+      const response = await reservePetPassportId({ exhibitionId, passportToken })
+      clearPendingPassportIdReservation(undefined, response.exhibition_id)
+      clearPendingPassportIdReservation(undefined, exhibitionId)
+      setPendingIdReservation(null)
       savePassportSession(response, response.passport_token, undefined, response.exhibition_id)
       const nextSession = {
         passportToken: response.passport_token,
@@ -300,9 +406,11 @@ export function ExhibitionPassportScreen() {
       } satisfies PassportSession
       setSession(nextSession)
       setRecord(response)
+      setPetName(response.pet_name || '')
       setStage(passportStage(response))
-    } catch (registrationError) {
-      setError(friendlyError(registrationError, t))
+      setView('photo')
+    } catch (reservationError) {
+      setError(friendlyError(reservationError, t))
     } finally {
       setBusy(false)
     }
@@ -314,9 +422,11 @@ export function ExhibitionPassportScreen() {
     setError(null)
     try {
       const fresh = await retrievePetPassport(session.passportToken)
-      savePassportSession(fresh, session.passportToken, undefined, session.exhibitionId)
-      setRecord(fresh)
-      setStage(passportStage(fresh))
+      const merged = fresh.pet_name ? fresh : { ...fresh, pet_name: session.petName || petName || null }
+      savePassportSession(merged, session.passportToken, undefined, session.exhibitionId)
+      setPetName(merged.pet_name || '')
+      setRecord(merged)
+      setStage(passportStage(merged))
     } catch (retrievalError) {
       setError(friendlyError(retrievalError, t))
     } finally {
@@ -324,166 +434,243 @@ export function ExhibitionPassportScreen() {
     }
   }
 
+  function handlePetNameChange(value: string) {
+    setPetName(value)
+    if (!session || !record) return
+    const normalizedName = value.trim() || null
+    const nextRecord = { ...record, pet_name: normalizedName }
+    setRecord(nextRecord)
+    setSession((previous) => previous ? { ...previous, petName: normalizedName } : previous)
+    savePassportSession(nextRecord, session.passportToken, undefined, session.exhibitionId)
+  }
+
+  function continueFromPhoto() {
+    if (session && record) {
+      const normalizedName = petName.trim() || null
+      const nextRecord = { ...record, pet_name: normalizedName }
+      savePassportSession(nextRecord, session.passportToken, undefined, session.exhibitionId)
+      setRecord(nextRecord)
+      setSession((previous) => previous ? { ...previous, petName: normalizedName } : previous)
+    }
+    if (typeof window !== 'undefined') {
+      const params = new URLSearchParams(window.location.search)
+      params.set('step', '4')
+      window.history.pushState({}, '', `/exhibition/passport?${params.toString()}`)
+    }
+    setView('final')
+  }
+
   function resetRegistration() {
     clearPassportSession(undefined, session?.exhibitionId ?? exhibitionId)
-    clearPendingPassportRegistration(undefined, exhibitionId)
+    clearPendingPassportIdReservation(undefined, exhibitionId)
     setSession(null)
     setRecord(null)
+    setPetName('')
     setStage('register')
     setView('welcome')
-    setPetName('')
-    setEmail('')
-    setConsent(false)
     setError(null)
   }
 
   const passportViewHref = `${'/exhibition/passport/view'}${typeof window !== 'undefined' ? window.location.search : ''}`
 
   return (
-    <main className="passport-page">
-      <div className="passport-orbit passport-orbit-one" aria-hidden="true" />
-      <div className="passport-orbit passport-orbit-two" aria-hidden="true" />
+    <main className={`passport-page ${isHome ? 'passport-page-home' : view === 'photo' ? 'passport-page-photo-step' : view === 'final' ? 'passport-page-final-step' : 'passport-page-flow'}`}>
       <header className="passport-header">
-        <a className="passport-brand" href="/" aria-label="Eternal Beam home">
-          <span className="passport-brand-mark"><Sparkles size={16} strokeWidth={1.5} /></span>
+        <a className="passport-brand" href="/exhibition/passport" aria-label="Pet Passport home">
+          <span className="passport-brand-mark" aria-hidden="true">
+            <Globe2 size={28} strokeWidth={1.1} />
+            <PawPrint className="passport-brand-paw" size={14} fill="currentColor" strokeWidth={1.2} />
+          </span>
           <span>{t.brand}</span>
-          <span className="passport-brand-divider">×</span>
-          <span className="passport-brand-soul">{t.soulTrace}</span>
         </a>
-        <button className="passport-language" type="button" onClick={toggleLanguage} aria-label={`Switch language to ${t.language}`}>
-          <Languages size={16} /> {t.language}
+        <button
+          className="passport-language"
+          type="button"
+          onClick={toggleLanguage}
+          aria-label={language === 'en' ? 'Switch language to Korean' : 'Switch language to English'}
+        >
+          <Languages size={14} aria-hidden="true" />
+          <span className={language === 'en' ? 'is-active' : ''}>EN</span>
+          <span className="passport-language-divider" aria-hidden="true">|</span>
+          <span className={language === 'ko' ? 'is-active' : ''}>KR</span>
         </button>
       </header>
 
-      <section className="passport-shell">
-        <div className="passport-hero">
-          <div className="passport-kicker"><span /> {t.eyebrow}</div>
-          <h1>{t.title}</h1>
-          <p>{t.intro}</p>
-        </div>
-
-        <div className={`passport-experience-grid ${stage === 'ready' ? 'is-passport-ready' : ''}`}>
-        <section className="passport-journey" aria-labelledby="passport-journey-title">
-          <div className="passport-section-heading">
-            <span className="passport-overline" id="passport-journey-title">{t.journey}</span>
-            <span className="passport-step-count">{progressStep} / 4</span>
-          </div>
-          <ol className="passport-steps">
-            {t.steps.map(([title, description], index) => {
-              const step = index + 1
-              const complete = step < progressStep
-              const current = step === progressStep
-              return (
-                <li className={`passport-step ${complete ? 'is-complete' : ''} ${current ? 'is-current' : ''}`} key={title}>
-                  <span className="passport-step-number">{complete ? <Check size={14} /> : step}</span>
-                  <span className="passport-step-copy"><strong>{title}</strong><small>{description}</small></span>
-                </li>
-              )
-            })}
-          </ol>
-        </section>
-
-        {!session && view === 'welcome' && (
-          <section className="passport-card passport-welcome-card" aria-labelledby="passport-welcome-title">
-            <div className="passport-welcome-mark"><Sparkles size={25} strokeWidth={1.4} /></div>
-            <span className="passport-overline">{t.welcomeLabel}</span>
-            <h2 id="passport-welcome-title">{t.welcomeTitle}</h2>
-            <p>{t.welcomeBody}</p>
-            <button className="passport-primary-button" type="button" onClick={startRegistration}>
-              {t.startRegistration} <ArrowRight size={17} />
-            </button>
-            {!featureEnabled && <p className="passport-preview-note" role="status">{t.disabled}</p>}
-          </section>
-        )}
-
-        {!session && view === 'register' && stage === 'register' && (
-          <section className="passport-card passport-registration" aria-labelledby="passport-registration-title">
-            <div className="passport-card-heading">
-              <div className="passport-icon"><KeyRound size={21} /></div>
-              <div><span className="passport-overline">01 / 04</span><h2 id="passport-registration-title">{t.register}</h2></div>
-            </div>
-            <form onSubmit={submitRegistration} noValidate>
-              <label className="passport-field">
-                <span>{t.petName}</span>
-                <input value={petName} onChange={(event) => setPetName(event.target.value)} placeholder={t.petNameHint} autoComplete="off" required maxLength={120} />
-              </label>
-              <label className="passport-field">
-                <span>{t.email}</span>
-                <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder={t.emailHint} autoComplete="email" required maxLength={320} />
-              </label>
-              <label className="passport-consent">
-                <input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} required />
-                <span>{t.privacy}</span>
-              </label>
-              <div className="passport-security-note"><ShieldCheck size={16} /> {t.secure}</div>
-              {!featureEnabled && <p className="passport-preview-note" role="status">{t.disabled}</p>}
-              {error && <p className="passport-error" role="alert">{error}</p>}
-              <button className="passport-primary-button" type="submit" disabled={busy || !featureEnabled}>
-                {busy ? t.creating : t.continue} <ArrowRight size={17} />
+      <section className={`passport-shell ${view === 'photo' ? 'passport-photo-step-shell' : view === 'final' ? 'passport-final-shell' : ''}`}>
+        {view === 'final' && session && record ? (
+          <PassportFinalStep
+            record={record}
+            petId={formatQueueNumber(record.queue_number)}
+            petName={petName}
+            language={language}
+            photoReady={record.photo_status === 'PHOTO_RECEIVED'}
+            labels={{
+              back: t.finalBack,
+              titleReady: t.finalTitleReady,
+              titleWaiting: t.finalTitleWaiting,
+              subtitleReady: t.finalSubtitleReady,
+              subtitleWaiting: t.finalSubtitleWaiting,
+              download: t.finalDownload,
+              downloading: t.finalDownloading,
+              share: t.finalShare,
+              sharing: t.finalSharing,
+              shareHint: t.finalShareHint,
+              shared: t.finalShared,
+              shareFallback: t.finalShareFallback,
+              shareFailed: t.finalShareFailed,
+              shareInstagram: t.finalShareInstagram,
+              shareFacebook: t.finalShareFacebook,
+              shareKakao: t.finalShareKakao,
+              shareInstagramFallback: t.finalShareInstagramFallback,
+              shareFacebookOpened: t.finalShareFacebookOpened,
+              shareKakaoUnavailable: t.finalShareKakaoUnavailable,
+              photoPending: t.finalPhotoPending,
+              photoPendingBody: t.finalPhotoPendingBody,
+              photoUnavailable: t.finalPhotoUnavailable,
+              soulTraceTitle: t.finalSoulTraceTitle,
+              soulTraceBody: t.finalSoulTraceBody,
+              soulTraceCta: t.finalSoulTraceCta,
+            }}
+            onBack={() => {
+              if (typeof window !== 'undefined') window.history.pushState({}, '', `/exhibition/passport${window.location.search.replace(/([?&])step=4(&|$)/, '$1').replace(/[?&]$/, '')}`)
+              setView('photo')
+            }}
+            onPhotoError={() => setError(t.finalPhotoUnavailable)}
+          />
+        ) : view === 'photo' && session && record ? (
+          <PassportPhotoStep
+            passportToken={session.passportToken}
+            petId={formatQueueNumber(record.queue_number)}
+            petName={petName}
+            photoUrl={record.photo_url || null}
+            photoReceived={record.photo_status === 'PHOTO_RECEIVED' && Boolean(record.photo_url)}
+            photoUnavailable={record.photo_status === 'PHOTO_RECEIVED' && !record.photo_url}
+            busy={busy}
+            error={error}
+            labels={{
+              back: t.backToPassport,
+              title: t.photoStepTitle,
+              description: t.photoStepDescription,
+              official: t.officialPassport,
+              edition: t.exhibitionEdition,
+              photoWaiting: t.photoWaiting,
+              photoAutomatic: t.photoAutomatic,
+              photoUnavailable: t.photoLinkUnavailable,
+              petId: t.petIdLabel,
+              petName: t.photoPetName,
+              noName: t.photoNoName,
+              photoProgressTitle: t.photoProgressTitle,
+              photoProgressBody: t.photoProgressBody,
+              photoAddedTitle: t.photoAddedTitle,
+              photoAddedBody: t.photoAddedBody,
+              refresh: t.photoRefresh,
+              nameLabel: t.photoNameLabel,
+              namePlaceholder: t.photoNamePlaceholder,
+              nameHint: t.photoNameHint,
+              continueWaiting: t.photoPreview,
+              continueReady: t.photoReveal,
+              journeyTitle: t.journey,
+              journeySteps: t.steps,
+              email: {
+                title: t.finalEmailTitle,
+                body: t.finalEmailBody,
+                placeholder: t.finalEmailPlaceholder,
+                notify: t.finalNotify,
+                saving: t.finalEmailSaving,
+                invalid: t.finalEmailInvalid,
+                unavailable: t.finalEmailUnavailable,
+                saved: t.finalEmailSaved,
+                aiVideoConsent: t.finalAiVideoConsent,
+                marketingConsent: t.finalMarketingConsent,
+              },
+            }}
+            emailSaved={record.email_saved}
+            aiVideoConsent={record.ai_video_consent}
+            marketingConsent={record.marketing_consent}
+            onBack={resetRegistration}
+            onRefresh={refreshPassport}
+            onPetNameChange={handlePetNameChange}
+            onContinue={continueFromPhoto}
+          />
+        ) : (
+          <>
+        {isHome && <div className="passport-home-hero">
+          <div className="passport-home-hero-art" aria-hidden="true" />
+          <div className="passport-home-hero-copy">
+            <div className="passport-kicker"><span /> {t.eyebrow}</div>
+            <img className="passport-home-eternal-logo" src="/eternal-beam-logo-full.png" alt="Eternal Beam" />
+            <h1 aria-label={t.title}><span>PET</span><span>PASSPORT</span></h1>
+            <div className="passport-title-rule" aria-hidden="true"><span /> <ArrowRight size={15} /> <span /></div>
+            <p className="passport-home-subtitle">{t.subtitle}</p>
+            <p className="passport-home-intro">
+              <span>{t.intro[0]}</span>
+              <span>{t.intro[1]}</span>
+            </p>
+            {isHome && (
+              <button className="passport-primary-button passport-home-cta" type="button" onClick={createPetId} disabled={busy}>
+                {busy ? t.creating : t.createId} <ArrowRight size={18} />
               </button>
-            </form>
-          </section>
-        )}
+            )}
+          </div>
+        </div>}
 
-        {stage !== 'register' && record && (
-          <section className="passport-card passport-status-card" aria-live="polite">
-            <div className="passport-id-panel">
-              <span className="passport-overline">{t.idTitle}</span>
-              {localPreview && <span className="passport-preview-badge">{t.previewId}</span>}
-              <strong>{formatQueueNumber(record.queue_number)}</strong>
-              <div className="passport-id-meta">
-                <span className="passport-id-pet">{record.pet_name}</span>
-                <button className="passport-copy-button" type="button" onClick={copyPetId}>
-                  {copied ? <Check size={15} /> : <Copy size={15} />} {copied ? t.copied : t.copyId}
-                </button>
-              </div>
-            </div>
-            {stage === 'waiting' && (
-              <div className="passport-status-content">
-                <div className="passport-photo-placeholder" aria-label={t.photoPlaceholder}>
-                  <span className="passport-photo-placeholder-icon"><Camera size={28} /></span>
-                  <span className="passport-photo-placeholder-label">{t.eyebrow}</span>
-                  <small>{t.photoPlaceholder}</small>
+        {(session || view === 'register') && (
+          <div className={`passport-experience-grid ${stage === 'ready' ? 'is-passport-ready' : ''}`}>
+            {stage !== 'register' && record && (
+              <section className="passport-card passport-status-card" aria-live="polite">
+                <div className="passport-id-panel">
+                  <span className="passport-overline">{t.idTitle}</span>
+                  <strong>{formatQueueNumber(record.queue_number)}</strong>
+                  <div className="passport-id-meta">
+                    <span className="passport-id-pet">{record.pet_name}</span>
+                  </div>
                 </div>
-                <div className="passport-status-icon waiting"><Clock3 size={23} /></div>
-                <span className="passport-overline">03 / 04</span>
-                <h2>{t.waitingTitle}</h2>
-                <p>{t.waitingBody}</p>
-                <div className="passport-instruction"><Camera size={17} /><span>{t.idNote}</span></div>
-                <div className="passport-button-row">
-                  <a className="passport-primary-button passport-link-button" href={passportViewHref}>
-                    <ArrowRight size={17} /> {t.viewPassport}
-                  </a>
-                  <button className="passport-secondary-button" type="button" onClick={refreshPassport} disabled={busy}>
-                    <RefreshCw size={16} /> {t.refresh}
-                  </button>
-                </div>
-              </div>
+                {stage === 'waiting' && (
+                  <div className="passport-status-content">
+                    <div className="passport-photo-placeholder" aria-label={t.photoPlaceholder}>
+                      <span className="passport-photo-placeholder-icon"><Camera size={28} /></span>
+                      <span className="passport-photo-placeholder-label">{t.eyebrow}</span>
+                      <small>{t.photoPlaceholder}</small>
+                    </div>
+                    <div className="passport-status-icon waiting"><Clock3 size={23} /></div>
+                    <h2>{t.waitingTitle}</h2>
+                    <p>{t.waitingBody}</p>
+                    <div className="passport-instruction"><Camera size={17} /><span>{t.idNote}</span></div>
+                    <div className="passport-button-row">
+                      <a className="passport-primary-button passport-link-button" href={passportViewHref}>
+                        <ArrowRight size={17} /> {t.viewPassport}
+                      </a>
+                      <button className="passport-secondary-button" type="button" onClick={refreshPassport} disabled={busy}>
+                        <RefreshCw size={16} /> {t.refresh}
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {stage === 'ready' && (
+                  <div className="passport-ready-summary">
+                    <div className="passport-status-icon ready"><Check size={23} /></div>
+                    <h2>{t.readyTitle}</h2>
+                    <p>{record.photo_url ? t.readyBody : t.photoUnavailable}</p>
+                    <div className="passport-button-row">
+                      <a className="passport-primary-button passport-link-button" href={passportViewHref}>
+                        <ArrowRight size={17} /> {t.viewPassport}
+                      </a>
+                      <button className="passport-secondary-button" type="button" onClick={refreshPassport} disabled={busy}>
+                        <RefreshCw size={16} /> {t.refresh}
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {error && <p className="passport-error" role="alert">{error}</p>}
+                <p className="passport-local-note"><LockKeyhole size={14} /> {t.localOnly}</p>
+                <button className="passport-text-button" type="button" onClick={resetRegistration}>{t.back}</button>
+              </section>
             )}
-            {stage === 'ready' && (
-              <div className="passport-ready-summary">
-                <div className="passport-status-icon ready"><Check size={23} /></div>
-                <span className="passport-overline">04 / 04</span>
-                <h2>{t.readyTitle}</h2>
-                <p>{record.photo_url ? t.readyBody : t.photoUnavailable}</p>
-                <div className="passport-button-row">
-                  <a className="passport-primary-button passport-link-button" href={passportViewHref}>
-                    <ArrowRight size={17} /> {t.viewPassport}
-                  </a>
-                  <button className="passport-secondary-button" type="button" onClick={refreshPassport} disabled={busy}>
-                    <RefreshCw size={16} /> {t.refresh}
-                  </button>
-                </div>
-              </div>
-            )}
-            {error && <p className="passport-error" role="alert">{error}</p>}
-            <p className="passport-local-note"><LockKeyhole size={14} /> {t.localOnly}</p>
-            <button className="passport-text-button" type="button" onClick={resetRegistration}>{t.back}</button>
-          </section>
+          </div>
         )}
-        </div>
+          </>
+        )}
       </section>
-      <footer className="passport-footer"><span>ETERNAL BEAM</span><span>SOUL TRACE / PET PASSPORT</span></footer>
     </main>
   )
 }
