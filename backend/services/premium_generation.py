@@ -306,7 +306,7 @@ async def advance_generation_queue(
 #: 레거시 큐 자동 전진이 PET_HEAD 를 집어 prompt_factory KeyError 로 죽지 않는다.
 #: 새 경로 전용 액션 — 레거시 프롬프트가 없고 앞으로도 만들지 않는다(7J 제거 대상).
 _NEW_PATH_ONLY_ACTIONS = frozenset(
-    {"PET_HEAD", "LOOK_UP", "LIE_DOWN", "STAND_UP", "LIE_IDLE"}
+    {"PET_HEAD", "PAW_HELLO", "LOOK_UP", "LIE_DOWN", "STAND_UP", "LIE_IDLE"}
 )
 
 LEGACY_CAPABLE_ACTIONS: tuple[str, ...] = tuple(

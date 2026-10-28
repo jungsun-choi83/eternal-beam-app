@@ -96,6 +96,8 @@ PACKAGEABLE_MOTIONS: tuple[str, ...] = (
     # "상용 이행이 허용된 모션"의 정본이고 PREMIUM_MOTIONS 가 여기서 파생된다.
     # DB CHECK 는 migration 20261023 이 함께 넓힌다.
     "PET_HEAD",
+    # 사용자 발화 앞발 인사. PET_HEAD 와 같은 상호작용 포장/발행 경로를 쓴다.
+    "PAW_HELLO",
     # VOICE 트리거 상용 모션 (2026-09-08). DB CHECK 는 migration 20261024.
     "LOOK_UP",
     # 자세 전이 3종 (2026-09-08). DB CHECK 는 migration 20261025.

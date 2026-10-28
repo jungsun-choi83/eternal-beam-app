@@ -50,6 +50,7 @@ export type IdleHomeState = typeof IDLE_HOME_STATE;
 export type PetAction =
   | "COME_CLOSER"
   | "PET_HEAD"
+  | "PAW_HELLO"
   | "LOOK_UP"
   | "LIE_DOWN"
   | "STAND_UP"
@@ -193,6 +194,7 @@ export const IDLE_EVENT_PRIORITY = 10;
 export const PET_ACTION_IDS: readonly PetAction[] = [
   "COME_CLOSER",
   "PET_HEAD",
+  "PAW_HELLO",
   "LOOK_UP",
   "LIE_DOWN",
   "STAND_UP",
@@ -258,6 +260,22 @@ export const RUNTIME_EVENTS: Readonly<Partial<Record<RuntimeEventId, RuntimeEven
     themeIndependent: true,
     // 등록 기본값 그대로 none — 프리로드는 COME_CLOSER 만의 예외다.
     preload: "none",
+  },
+
+  // Explicit Behavior Library action. It intentionally has no touch/voice/
+  // approach sensor mapping, so PET_HEAD and COME_CLOSER triggers remain exact.
+  PAW_HELLO: {
+    id: "PAW_HELLO",
+    kind: "ACTION",
+    priority: 88,
+    interruptible: false,
+    returnToIdle: true,
+    entryPolicy: "immediate",
+    returnPolicy: "seam-aligned",
+    themeIndependent: true,
+    preload: "none",
+    requiredPose: "STANDING",
+    endPose: "STANDING",
   },
 
   // LOOK_UP (2026-09-08) — VOICE 트리거의 목적지 (백엔드 TRIGGERS["VOICE"] 와

@@ -164,6 +164,51 @@ def test_generate_succeeded_parses_output_and_cost(monkeypatch):
     assert submitted["json"]["model"] == "seedance2_5"
 
 
+def test_generate_sends_both_pet_head_endpoint_frames(monkeypatch):
+    submitted = _flow(
+        monkeypatch,
+        {"id": "t", "status": "SUCCEEDED", "output": ["https://cdn/v.mp4"]},
+    )
+    monkeypatch.setattr(vp, "_download", lambda url: b"MP4BYTES")
+
+    provider = RunwaySeedanceProvider()
+    assert provider.supports_end_frame is True
+    provider.generate(
+        _req(
+            prompt="affectionate head response; no human hand",
+            end_image_url="https://x/start.png",
+            end_image_bytes=b"x",
+        )
+    )
+
+    assert submitted["json"]["promptImage"] == [
+        {"uri": "https://x/start.png", "position": "first"},
+        {"uri": "https://x/start.png", "position": "last"},
+    ]
+    assert "no human hand" in submitted["json"]["promptText"]
+
+
+def test_generate_sends_both_identical_paw_hello_endpoint_frames(monkeypatch):
+    submitted = _flow(
+        monkeypatch,
+        {"id": "t", "status": "SUCCEEDED", "output": ["https://cdn/v.mp4"]},
+    )
+    monkeypatch.setattr(vp, "_download", lambda url: b"MP4BYTES")
+
+    provider = RunwaySeedanceProvider()
+    assert provider.supports_end_frame is True
+    provider.generate(_req(
+        prompt="lift exactly one front paw; no human hand or object",
+        end_image_url="https://x/start.png",
+        end_image_bytes=b"x",
+    ))
+
+    assert submitted["json"]["promptImage"] == [
+        {"uri": "https://x/start.png", "position": "first"},
+        {"uri": "https://x/start.png", "position": "last"},
+    ]
+
+
 def test_generate_failed_surfaces_failure_code(monkeypatch):
     _flow(monkeypatch, {"id": "t", "status": "FAILED",
                         "failure": "Something went wrong", "failureCode": "INTERNAL.BAD_OUTPUT.CODE01"})

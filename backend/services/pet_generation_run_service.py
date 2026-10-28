@@ -34,6 +34,7 @@ from . import (
     motion_delivery_service,
     motion_publication_service,
     motion_spec,
+    motion_video_prompts,
     motion_video_service,
     pet_identity_service,
     pet_reference_service,
@@ -2351,7 +2352,7 @@ _TERMINAL_SUBMISSION_STATUSES = (durable_provider_jobs.COLLECTED, "FAILED")
 
 async def _stale_motion_pin(run: PetGenerationRun) -> bool:
     """
-    FAILED 실행의 모션 핀이 **스펙 버전 격차 때문에** 재시도 불능인가.
+    FAILED 실행의 모션 핀이 **스펙/프롬프트 버전 격차 때문에** 재시도 불능인가.
 
     배경: 실행은 durable resume 을 위해 motion_version_id 를 고정하고, _motion 의
     lineage 검사는 고정된 버전의 motion_spec_version 이 실행과 다르면 하드하게
@@ -2367,7 +2368,7 @@ async def _stale_motion_pin(run: PetGenerationRun) -> bool:
       * 발행/이행이 이미 있으면 손대지 않는다
       * 운영자 교체 요청이 걸려 있으면 그 흐름에 맡긴다
       * 고정된 버전 행을 못 읽으면 (다른 종류의 손상) 손대지 않는다
-      * 스펙 버전이 현재와 같으면 스테일이 아니다 — 기존 재사용 경로가 맞다
+      * 스펙과 해당 모션의 프롬프트 버전이 모두 현재와 같으면 스테일이 아니다
       * 종료되지 않은 프로바이더 작업이 하나라도 있으면 손대지 않는다
     """
     if run.status != STATUS_FAILED and not is_delivered_fallback(run):
@@ -2387,7 +2388,21 @@ async def _stale_motion_pin(run: PetGenerationRun) -> bool:
         return False
     if not motion or str(motion.id) != str(run.motion_version_id):
         return False
-    if str(motion.motion_spec_version or "") == motion_spec.MOTION_SPEC_VERSION:
+    spec_is_current = (
+        str(motion.motion_spec_version or "") == motion_spec.MOTION_SPEC_VERSION
+    )
+    # Old rows may predate prompt_version.  Absence alone is not enough evidence
+    # to buy another candidate; explicit mismatch is.  Motion-scoped prompt
+    # versions let the four commercial idle events advance without invalidating
+    # failed BREATHING or unrelated action runs.
+    stored_prompt_version = str(getattr(motion, "prompt_version", None) or "")
+    current_prompt_version = motion_video_prompts.prompt_version_for_motion(
+        run.motion_id
+    )
+    prompt_is_current = (
+        not stored_prompt_version or stored_prompt_version == current_prompt_version
+    )
+    if spec_is_current and prompt_is_current:
         return False
     for job in durable_provider_jobs.list_for_run(run.id):
         if str(job.get("submission_status") or "") not in _TERMINAL_SUBMISSION_STATUSES:

@@ -230,7 +230,9 @@ def default_output_spec(duration_range: Sequence[float]) -> dict[str, Any]:
     return build_output_spec(duration_range=duration_range)[0]
 
 
-def analyzer_versions(providers: Sequence[Any]) -> dict[str, Any]:
+def analyzer_versions(
+    providers: Sequence[Any], *, prompt_version: Optional[str] = None
+) -> dict[str, Any]:
     from . import (
         motion_spec,
         motion_video_prompts,
@@ -241,14 +243,22 @@ def analyzer_versions(providers: Sequence[Any]) -> dict[str, Any]:
         vlm_escalation,
     )
 
+    paw_hello = prompt_version == motion_video_prompts.PAW_HELLO_PROMPT_VERSION
     return {
         "motion_builder": MOTION_BUILDER_VERSION,
         "motion_spec": motion_spec.MOTION_SPEC_VERSION,
         "contract": motion_spec.PHASE6_CONTRACT_VERSION,
-        "prompt": motion_video_prompts.MOTION_VIDEO_PROMPT_VERSION,
+        "prompt": prompt_version or motion_video_prompts.MOTION_VIDEO_PROMPT_VERSION,
         "qa": motion_video_qa.active_qa_version(),
         "sampling": motion_video_qa.FRAME_SAMPLING_VERSION,
-        "vlm_motion_qa": vlm_identity.VLM_MOTION_QA_VERSION,
+        "vlm_motion_qa": (
+            vlm_identity.VLM_PAW_HELLO_QA_VERSION
+            if paw_hello else vlm_identity.VLM_MOTION_QA_VERSION
+        ),
+        "motion_vlm_sampling": (
+            PAW_HELLO_VLM_SAMPLING_VERSION
+            if paw_hello else MOTION_VLM_SAMPLING_VERSION
+        ),
         "vlm_escalation": vlm_escalation.VLM_ESCALATION_VERSION,
         "qa_evidence_reuse": qa_evidence_reuse.QA_EVIDENCE_REUSE_VERSION,
         "motion_qa_contract": motion_spec.MOTION_QA_CONTRACT_VERSION,
@@ -274,6 +284,7 @@ QA_ONLY_VERSION_KEYS = (
     "qa",
     "sampling",
     "vlm_motion_qa",
+    "motion_vlm_sampling",
     "vlm_escalation",
     "qa_evidence_reuse",
     "motion_qa_contract",
@@ -768,6 +779,9 @@ async def build_motion_video(
     spec = motion_spec.get_motion(motion_id)
     motion_class = contract["motion_class"]
     motion_description = frozen["motion_description"] if frozen else spec.description
+    active_prompt_version = motion_video_prompts.prompt_version_for_motion(
+        contract["motion_id"]
+    )
 
     # ── 라우팅 + 능력 검증 ────────────────────────────────────────────────
     resolved, _available, _provider_requirements = _resolve_providers_for_contract(
@@ -792,6 +806,18 @@ async def build_motion_video(
     conditioning_fallbacks = list(contract.get("conditioning_fallbacks") or [])
     provider = resolved[0]
     if not frozen and strategy == motion_spec.STRATEGY_START_END and not provider.supports_end_frame:
+        capabilities = (
+            ((contract.get("requirements") or {}).get("provider_capabilities") or {})
+        )
+        if (
+            "supports_end_frame" in (capabilities.get("required_all") or [])
+            and capabilities.get("degrade_allowed") is False
+        ):
+            raise MotionVideoError(
+                "END_FRAME_UNSUPPORTED",
+                f"{provider.name}: this motion requires start/end-frame conditioning",
+                status=503,
+            )
         strategy = motion_spec.STRATEGY_I2V
         conditioning_fallbacks.append("supports_end_frame")
         extra_warnings.append(
@@ -876,7 +902,11 @@ async def build_motion_video(
 
     start_obj = _obj(contract["start_keyframe"])
     target_obj = _obj(contract.get("target_keyframe"))
-    versions_stamp = deepcopy(resume_version["analyzer_versions"]) if frozen else analyzer_versions(resolved)
+    versions_stamp = (
+        deepcopy(resume_version["analyzer_versions"])
+        if frozen
+        else analyzer_versions(resolved, prompt_version=active_prompt_version)
+    )
 
     # ── 멱등 — 바이트를 한 장도 내려받기 전에 먼저 체크한다. 재개/재시도에서
     # 아무것도 안 바뀌었으면 raw 든 클린 플레이트든 전혀 다운로드하지 않는다.
@@ -887,7 +917,7 @@ async def build_motion_video(
             if (
                 latest.get("status") in (STATUS_COMPLETE, STATUS_REVIEW)
                 and str(latest.get("start_keyframe_id")) == str(contract["start_keyframe"]["keyframe_id"])
-                and latest.get("prompt_version") == motion_video_prompts.MOTION_VIDEO_PROMPT_VERSION
+                and latest.get("prompt_version") == active_prompt_version
                 # QA 버전은 비교에서 빠진다 — 판정이 바뀌었다고 영상을 다시 사지 않는다.
                 and generation_versions(latest.get("analyzer_versions"))
                 == generation_versions(versions_stamp)
@@ -1087,7 +1117,7 @@ async def build_motion_video(
         and str(resumable.get("canonical_version_id") or "")
         == str(contract.get("canonical_version_id") or "")
         and resumable.get("motion_spec_version") == contract["motion_spec_version"]
-        and resumable.get("prompt_version") == motion_video_prompts.MOTION_VIDEO_PROMPT_VERSION
+        and resumable.get("prompt_version") == active_prompt_version
         and generation_versions(resumable.get("analyzer_versions"))
         == generation_versions(versions_stamp)
     ):
@@ -1116,7 +1146,9 @@ async def build_motion_video(
             "video_strategy": strategy,
             "output_spec": output_spec,
             "prompt": prompt,
-            "prompt_version": resume_version["prompt_version"] if frozen else motion_video_prompts.MOTION_VIDEO_PROMPT_VERSION,
+            "prompt_version": (
+                resume_version["prompt_version"] if frozen else active_prompt_version
+            ),
             "qa_summary": {},
             "analyzer_versions": versions_stamp,
             "warnings": warnings,
@@ -1634,6 +1666,255 @@ async def list_motion_versions(*, user_id: str, pet_id: str) -> list[MotionVersi
     return [_to_version(r, []) for r in latest.values()]
 
 
+# The base nine samples are 0.625 seconds apart in a five-second MICRO clip and
+# can completely miss a natural blink, ear flick, or subtle affectionate head
+# response. Targeted QA first
+# reuses those frames when they already contain a clear local motion signal. If
+# they do not, one local 12-fps decode scans the stored video and contributes at
+# most three full-resolution before/during/after frames to the same VLM call.
+TARGETED_MICRO_VLM_MOTIONS = frozenset(
+    {"BLINKING", "EAR_TWITCHING", "HEAD_TILTING", "TAIL_WAGGING", "PET_HEAD", "PAW_HELLO"}
+)
+SPARSE_BASE_ABSENCE_UNRELIABLE_MOTIONS = frozenset(
+    {"BLINKING", "EAR_TWITCHING", "PET_HEAD", "PAW_HELLO"}
+)
+MOTION_VLM_SAMPLING_VERSION = "motion-vlm-sampling-v2"
+PAW_HELLO_VLM_SAMPLING_VERSION = "motion-vlm-sampling-v2-paw-hello-v1"
+MICRO_ADAPTIVE_SCAN_FPS = 12.0
+MICRO_ADAPTIVE_SCAN_MAX_FRAMES = 72
+MICRO_VLM_MAX_FRAMES = 12
+MICRO_MOTION_SALIENCE_MIN = 6.0
+
+
+def _motion_sampling_version(motion_id: str) -> str:
+    return (
+        PAW_HELLO_VLM_SAMPLING_VERSION
+        if str(motion_id or "").upper() == "PAW_HELLO"
+        else MOTION_VLM_SAMPLING_VERSION
+    )
+
+
+class _EvidenceFrames(list):
+    """List-compatible VLM frames carrying QA-only sampling provenance."""
+
+    def __init__(self, values=(), *, provenance: Optional[dict[str, Any]] = None):
+        super().__init__(values)
+        self.provenance = dict(provenance or {})
+
+
+def _micro_motion_salience(
+    first: Optional[np.ndarray], second: Optional[np.ndarray], motion_id: str
+) -> Optional[float]:
+    """Top-5% pixel change in a motion-aware pet region.
+
+    This is evidence routing, not semantic motion recognition.  It decides
+    whether the existing sparse frames already show something worth judging or
+    whether dense local extraction is needed; the VLM still decides what action
+    the movement represents.
+    """
+    from . import motion_video_qa
+
+    if not isinstance(first, np.ndarray) or not isinstance(second, np.ndarray):
+        return None
+    if first.shape != second.shape or first.ndim != 3:
+        return None
+    height, width = first.shape[:2]
+    if height < 8 or width < 8:
+        return None
+    try:
+        alpha = motion_video_qa._pet_foreground_alpha(first)
+    except Exception:
+        alpha = None
+    if isinstance(alpha, np.ndarray) and np.any(alpha > 0):
+        ys, xs = np.where(alpha > 0)
+        y0, y1 = int(ys.min()), int(ys.max()) + 1
+        x0, x1 = int(xs.min()), int(xs.max()) + 1
+    else:
+        y0, y1, x0, x1 = 0, height, 0, width
+    pet_h, pet_w = max(1, y1 - y0), max(1, x1 - x0)
+    mid = str(motion_id or "").upper()
+    if mid == "BLINKING":
+        y1 = y0 + max(1, int(round(pet_h * 0.42)))
+        x0 = x0 + int(round(pet_w * 0.18))
+        x1 = x0 + max(1, int(round(pet_w * 0.64)))
+    elif mid == "EAR_TWITCHING":
+        y1 = y0 + max(1, int(round(pet_h * 0.45)))
+    elif mid in {"HEAD_TILTING", "PET_HEAD"}:
+        y1 = y0 + max(1, int(round(pet_h * 0.62)))
+    y0, y1 = max(0, y0), min(height, max(y0 + 1, y1))
+    x0, x1 = max(0, x0), min(width, max(x0 + 1, x1))
+    a = first[y0:y1, x0:x1].astype(np.float32)
+    b = second[y0:y1, x0:x1].astype(np.float32)
+    if not a.size or a.shape != b.shape:
+        return None
+    diff = np.mean(np.abs(a - b), axis=2).reshape(-1)
+    count = max(1, int(round(diff.size * 0.05)))
+    top = np.partition(diff, max(0, diff.size - count))[diff.size - count:]
+    return round(float(np.mean(top)), 4)
+
+
+def _adjacent_salience(
+    frames: Sequence[Optional[np.ndarray]], motion_id: str
+) -> list[tuple[float, int]]:
+    scores: list[tuple[float, int]] = []
+    for index in range(1, len(frames)):
+        score = _micro_motion_salience(frames[index - 1], frames[index], motion_id)
+        if score is not None:
+            scores.append((score, index))
+    return scores
+
+
+def _adaptive_micro_evidence(
+    *,
+    motion_id: str,
+    base_frames: Sequence[Optional[np.ndarray]],
+    base_fractions: Sequence[float],
+    dense_scan: Optional[Mapping[str, Any]],
+) -> _EvidenceFrames:
+    """Select no more than three dense frames and preserve why they were chosen."""
+    paired_base = [
+        (float(fraction), frame)
+        for fraction, frame in zip(base_fractions, base_frames)
+        if frame is not None
+    ]
+    base_scores = _adjacent_salience(list(base_frames), motion_id)
+    base_max = max((score for score, _ in base_scores), default=None)
+    base_sufficient = (
+        len(paired_base) >= 7
+        and base_max is not None
+        and base_max >= MICRO_MOTION_SALIENCE_MIN
+    )
+    provenance: dict[str, Any] = {
+        "version": _motion_sampling_version(motion_id),
+        "motion_id": str(motion_id).upper(),
+        "strategy": "base_reused_salient" if base_sufficient else "adaptive_dense_unavailable",
+        "base_fractions": [fraction for fraction, _ in paired_base],
+        "base_decoded_frames": len(paired_base),
+        "base_max_salience": base_max,
+        "salience_threshold": MICRO_MOTION_SALIENCE_MIN,
+        "dense_scan_attempted": not base_sufficient,
+        "selected_extra_fractions": [],
+        # Even a salient sparse frame sequence cannot prove a brief blink/ear
+        # flick never happened elsewhere. It can still prove a wrong-action
+        # substitution when the VLM explicitly reports one.
+        "absence_reliable": bool(
+            base_sufficient
+            and str(motion_id).upper() not in SPARSE_BASE_ABSENCE_UNRELIABLE_MOTIONS
+        ),
+        "absence_reliability_reason": (
+            "sparse_base_cannot_prove_absence"
+            if base_sufficient
+            and str(motion_id).upper() in SPARSE_BASE_ABSENCE_UNRELIABLE_MOTIONS
+            else "visible_motion_captured_in_base_sequence" if base_sufficient
+            else "adaptive_dense_evidence_unavailable"
+        ),
+    }
+    if base_sufficient or not isinstance(dense_scan, Mapping):
+        provenance["evidence_fractions"] = [fraction for fraction, _ in paired_base]
+        return _EvidenceFrames([frame for _, frame in paired_base], provenance=provenance)
+
+    dense_frames = list(dense_scan.get("frames") or [])
+    dense_fractions = [float(value) for value in (dense_scan.get("fractions") or [])]
+    dense_scores = _adjacent_salience(dense_frames, motion_id)
+    dense_max = max((score for score, _ in dense_scores), default=None)
+    coverage = float(dense_scan.get("coverage_ratio") or 0.0)
+    provenance.update({
+        "strategy": "adaptive_dense_salience",
+        "dense_requested_fps": dense_scan.get("requested_fps"),
+        "dense_decoded_frames": len(dense_frames),
+        "dense_duration_sec": dense_scan.get("duration_sec"),
+        "dense_coverage_ratio": coverage,
+        "dense_max_salience": dense_max,
+    })
+
+    selected_indices: list[int] = []
+    if dense_scores:
+        _score, peak = max(dense_scores, key=lambda item: item[0])
+        for index in (peak - 1, peak, peak + 1):
+            if 0 <= index < len(dense_frames) and index not in selected_indices:
+                selected_indices.append(index)
+    extras: list[tuple[float, np.ndarray]] = []
+    for index in selected_indices:
+        if index >= len(dense_fractions) or not isinstance(dense_frames[index], np.ndarray):
+            continue
+        fraction = dense_fractions[index]
+        if any(abs(fraction - existing) < 0.01 for existing, _ in paired_base):
+            continue
+        extras.append((fraction, dense_frames[index]))
+    # If a peak landed on base timestamps, fill the remaining evidence slots
+    # from the next strongest local transitions without exceeding the 12-image cap.
+    for _score, index in sorted(dense_scores, reverse=True):
+        if len(extras) >= 3:
+            break
+        for candidate in (index, index - 1):
+            if not (0 <= candidate < len(dense_frames)) or candidate >= len(dense_fractions):
+                continue
+            fraction = dense_fractions[candidate]
+            if any(abs(fraction - existing) < 0.01 for existing, _ in [*paired_base, *extras]):
+                continue
+            extras.append((fraction, dense_frames[candidate]))
+            if len(extras) >= 3:
+                break
+
+    combined = sorted([*paired_base, *extras], key=lambda item: item[0])[:MICRO_VLM_MAX_FRAMES]
+    full_coverage = coverage >= 0.90 and len(dense_frames) >= 8
+    provenance.update({
+        "selected_extra_fractions": [fraction for fraction, _ in extras],
+        "evidence_fractions": [fraction for fraction, _ in combined],
+        "absence_reliable": bool(full_coverage),
+        "absence_reliability_reason": (
+            "dense_full_clip_scan" if full_coverage else "dense_scan_incomplete"
+        ),
+    })
+    return _EvidenceFrames([frame for _, frame in combined], provenance=provenance)
+
+
+def _enforce_temporal_evidence_reliability(
+    vlm_qa: Optional[dict[str, Any]],
+    *,
+    motion_id: str,
+    sampling: Mapping[str, Any],
+) -> Optional[dict[str, Any]]:
+    """A sparse non-observation is uncertainty, while preserving the raw VLM answer."""
+    if not isinstance(vlm_qa, dict):
+        return vlm_qa
+    if str(motion_id or "").upper() not in TARGETED_MICRO_VLM_MOTIONS:
+        return vlm_qa
+    if str(vlm_qa.get("requested_motion_occurs") or "") != "no":
+        return vlm_qa
+    if str(vlm_qa.get("wrong_primary_action_observed") or "") == "yes":
+        return vlm_qa
+    if sampling.get("absence_reliable") is True:
+        return vlm_qa
+    adjusted = dict(vlm_qa)
+    adjusted["requested_motion_occurs_raw"] = "no"
+    adjusted["requested_motion_occurs"] = "unknown"
+    # Interaction correctness and PAW_HELLO's lift/offer fields answer the same
+    # semantic absence question. Preserve explicit wrong-action evidence, but do
+    # not turn sparse non-observation back into a hard failure.
+    # Leaving it at "no" would silently turn the protected sparse non-observation
+    # back into a hard interaction failure after requested_motion_occurs was fixed.
+    if (
+        str(motion_id or "").upper() in {"PET_HEAD", "PAW_HELLO"}
+        and str(adjusted.get("interaction_correct") or "") == "no"
+    ):
+        adjusted["interaction_correct_raw"] = "no"
+        adjusted["interaction_correct"] = "unknown"
+    if str(motion_id or "").upper() == "PAW_HELLO":
+        for key in ("paw_lift_visible", "paw_offer_toward_viewer", "paw_hold_visible"):
+            if str(adjusted.get(key) or "") == "no":
+                adjusted[f"{key}_raw"] = "no"
+                adjusted[key] = "unknown"
+    adjusted["temporal_evidence_adjustment"] = {
+        "from": "no",
+        "to": "unknown",
+        "reason": "insufficient_temporal_coverage_for_absence",
+        "sampling_version": sampling.get("version"),
+        "sampling_strategy": sampling.get("strategy"),
+    }
+    return adjusted
+
+
 async def _breathing_evidence(
     motion_id: str,
     video_bytes: Optional[bytes],
@@ -1641,9 +1922,14 @@ async def _breathing_evidence(
     frames: Optional[list[Optional[np.ndarray]]],
 ) -> tuple[Optional[dict[str, Any]], list, tuple[float, ...]]:
     """
-    BREATHING 전용 시간축 증거 + VLM 근접쌍 프레임 (motion-video-qa-v3).
+    모션별 시간축 증거와 VLM 보강 프레임.
 
-    다른 모션은 (None, 기존 프레임, 기존 분율) 그대로다. 어떤 실패도 조용히
+    * BREATHING: 기존 시간축 분석 + 근접쌍 프레임.
+    * targeted MICRO 4종 + PET_HEAD: 기존 9장에 명확한 국소 움직임이 있으면 그대로
+      재사용한다. 부족하면 저장된 영상을 한 번 조밀 디코딩하고 가장 강한
+      변화의 전/중/후 최대 3장을 더한다(총 12장 상한).
+
+    다른 모션은 (None, 기존 프레임, 기존 분율) 그대로다. 어떤 보강 실패도
     기존 입력으로 떨어진다 — 증거 수집이 QA 를 죽이면 안 된다.
 
     시간축 분석(breathing_temporal_qa.analyze — 자체 조밀 디코딩)과 VLM 근접쌍
@@ -1655,7 +1941,38 @@ async def _breathing_evidence(
 
     base_frames = list(frames or [])
     base_fractions = tuple(motion_video_qa.SAMPLE_FRACTIONS)
-    if (motion_id or "").upper() != "BREATHING" or not video_bytes:
+    mid = (motion_id or "").upper()
+    if not video_bytes:
+        return None, base_frames, base_fractions
+
+    if mid in TARGETED_MICRO_VLM_MOTIONS:
+        routed = _adaptive_micro_evidence(
+            motion_id=mid,
+            base_frames=base_frames,
+            base_fractions=base_fractions,
+            dense_scan=None,
+        )
+        if routed.provenance.get("dense_scan_attempted") is not True:
+            return None, routed, tuple(routed.provenance.get("evidence_fractions") or base_fractions)
+        try:
+            dense_scan = await asyncio.to_thread(
+                motion_video_qa.sample_dense_frames,
+                video_bytes,
+                fps=MICRO_ADAPTIVE_SCAN_FPS,
+                max_frames=MICRO_ADAPTIVE_SCAN_MAX_FRAMES,
+            )
+        except Exception:
+            logger.warning("targeted motion dense QA frame sampling failed (motion=%s)", mid, exc_info=True)
+            dense_scan = None
+        routed = _adaptive_micro_evidence(
+            motion_id=mid,
+            base_frames=base_frames,
+            base_fractions=base_fractions,
+            dense_scan=dense_scan,
+        )
+        return None, routed, tuple(routed.provenance.get("evidence_fractions") or base_fractions)
+
+    if mid != "BREATHING":
         return None, base_frames, base_fractions
 
     temporal, extra = await asyncio.gather(
@@ -1721,6 +2038,22 @@ async def _evaluate_candidate_qa(
         temporal_qa, vlm_frames, vlm_fractions = await _breathing_evidence(
             contract["motion_id"], video_bytes, start_rgb, frames
         )
+        sampling_provenance = dict(getattr(vlm_frames, "provenance", {}) or {})
+        if not sampling_provenance:
+            sampling_provenance = {
+                "version": _motion_sampling_version(contract.get("motion_id")),
+                "motion_id": str(contract.get("motion_id") or "").upper(),
+                "strategy": (
+                    "breathing_temporal_pairs"
+                    if str(contract.get("motion_id") or "").upper() == "BREATHING"
+                    else "base_nine"
+                ),
+                "evidence_fractions": list(vlm_fractions),
+                "absence_reliable": (
+                    str(contract.get("motion_id") or "").upper()
+                    not in TARGETED_MICRO_VLM_MOTIONS
+                ),
+            }
         deterministic_qa = motion_video_qa.evaluate_motion_video(
             frames=frames,
             spec_contract=contract,
@@ -1766,6 +2099,7 @@ async def _evaluate_candidate_qa(
                     evidence_context={
                         "stage_qa_version": motion_video_qa.active_qa_version(),
                         "motion_contract_version": contract.get("registry_contract_version"),
+                        "temporal_sampling": sampling_provenance,
                         "inherited_fingerprints": [
                             str(item.get("fingerprint"))
                             for item in inherited_evidence
@@ -1776,6 +2110,11 @@ async def _evaluate_candidate_qa(
                 if should_call
                 else None
             )
+        vlm_qa = _enforce_temporal_evidence_reliability(
+            vlm_qa,
+            motion_id=contract.get("motion_id"),
+            sampling=sampling_provenance,
+        )
         qa = (
             motion_video_qa.evaluate_motion_video(
                 frames=frames,
@@ -1788,6 +2127,11 @@ async def _evaluate_candidate_qa(
             if should_call
             else deterministic_qa
         )
+        qa["vlm_sampling"] = {
+            **sampling_provenance,
+            "fractions": list(vlm_frame_fractions),
+            "frame_count": len(vlm_images),
+        }
         qa["vlm_escalation"] = vlm_escalation.finalize_vlm_escalation(
             escalation, called=should_call, result=vlm_qa, failures=vlm_failures
         )
@@ -1849,7 +2193,9 @@ def candidate_qa_is_current(qa_result: Optional[Mapping[str, Any]], motion_id: s
         and (
             previous_vlm.get("source")
             in {vlm_identity.VLM_MOTION_QA_VERSION, vlm_identity.VLM_TARGETED_QA_VERSION,
-                vlm_identity.VLM_MOTION_ACCEPTANCE_QA_VERSION}
+                vlm_identity.VLM_MOTION_ACCEPTANCE_QA_VERSION,
+                vlm_identity.VLM_PREMIUM_MICRO_TEMPORAL_QA_VERSION,
+                vlm_identity.VLM_PAW_HELLO_QA_VERSION}
             or (
                 (previous_qa.get("vlm_escalation") or {}).get("version")
                 == vlm_escalation.VLM_ESCALATION_VERSION
@@ -1861,8 +2207,18 @@ def candidate_qa_is_current(qa_result: Optional[Mapping[str, Any]], motion_id: s
         and business_qa.receipt(previous_qa) is not None
         and (previous_qa.get("motion_business_contract") or {}).get("acceptance") == current_acceptance
         and (
+            str(motion_id or "").upper() not in TARGETED_MICRO_VLM_MOTIONS
+            or (
+                (previous_qa.get("vlm_sampling") or {}).get("version")
+                == _motion_sampling_version(motion_id)
+                and (previous_qa.get("vlm_sampling") or {}).get("strategy")
+                in {"base_reused_salient", "adaptive_dense_salience"}
+            )
+        )
+        and (
             current_acceptance.get("version") != motion_spec.MOTION_ACCEPTANCE_VERSION
-            or previous_vlm.get("source") == vlm_identity.VLM_MOTION_ACCEPTANCE_QA_VERSION
+            or previous_vlm.get("source")
+            == vlm_identity.motion_acceptance_evaluator_version(current_acceptance)
         )
     )
 

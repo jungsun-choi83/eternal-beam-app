@@ -354,18 +354,18 @@ def test_rescore_reclassifies_stored_temporal_metrics_with_current_classifier():
     assert now["decision"] == "PASS"
 
 
-def test_rescore_uses_motion_spec_compat_for_allowed_hand():
-    # PET_HEAD 는 손을 허용한다 — human_present=yes 가 오염이 아니다.
+def test_rescore_uses_pet_head_no_hand_policy():
+    # PET_HEAD V1 은 가상 터치 반응이며 사람/손이 영상에 나오면 안 된다.
     live = qa.evaluate_motion_video(
         frames=[KEYFRAME] * 3,
         spec_contract={"motion_id": "PET_HEAD", "motion_class": "INTERACTION",
-                       "video_compat": {"returns_to_start_pose": True, "allow_generated_hand": True}},
+                       "video_compat": {"returns_to_start_pose": True, "allow_generated_hand": False}},
         start_keyframe_rgb=KEYFRAME, target_keyframe_rgb=None,
         vlm_qa=_vlm("yes", human_present="yes"), temporal_qa=None, ruleset="v9",
     )
-    assert live["checks"]["vlm_composition"] == "PASS"
+    assert live["checks"]["vlm_composition"] == "FAIL"
     again = qa.rescore_stored_qa_result(json.loads(json.dumps(live)), motion_id="PET_HEAD", ruleset="v9")
-    assert again["checks"]["vlm_composition"] == "PASS" and again["decision"] == live["decision"]
+    assert again["checks"]["vlm_composition"] == "FAIL" and again["decision"] == live["decision"]
 
 
 def test_replay_script_prints_decision_changes(tmp_path, capsys):
