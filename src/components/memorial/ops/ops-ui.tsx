@@ -148,6 +148,7 @@ export function Button({
   type = "button",
   size = "md",
   full = false,
+  className = "",
 }: {
   children: ReactNode;
   onClick?: () => void;
@@ -155,10 +156,11 @@ export function Button({
   busy?: boolean;
   tone?: ButtonTone;
   type?: "button" | "submit";
-  size?: "sm" | "md";
+  size?: "sm" | "md" | "lg";
   full?: boolean;
+  className?: string;
 }) {
-  const pad = size === "sm" ? "px-2.5 py-1.5 text-[12px]" : "px-3.5 py-2 text-[13px]";
+  const pad = size === "sm" ? "px-2.5 py-1.5 text-[12px]" : size === "lg" ? "px-6 py-3.5 text-[15px]" : "px-3.5 py-2 text-[13px]";
   const style =
     tone === "primary"
       ? { background: OPS.gold, borderColor: OPS.gold, color: "#fff" }
@@ -175,7 +177,7 @@ export function Button({
       disabled={disabled || busy}
       className={`rounded-lg border font-medium transition-opacity disabled:opacity-45 ${pad} ${
         full ? "w-full" : ""
-      } ${BUTTON[tone]}`}
+      } ${BUTTON[tone]} ${className}`}
       style={style}
     >
       {busy ? "처리 중…" : children}
@@ -189,12 +191,14 @@ export function TextInput({
   placeholder,
   onEnter,
   mono = false,
+  className = "",
 }: {
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   onEnter?: () => void;
   mono?: boolean;
+  className?: string;
 }) {
   return (
     <input
@@ -206,7 +210,7 @@ export function TextInput({
       placeholder={placeholder}
       className={`w-full rounded-lg border px-3 py-2 text-[13px] outline-none ${
         mono ? "font-mono text-[12px]" : ""
-      }`}
+      } ${className}`}
       style={{ borderColor: OPS.borderStrong, background: "#fff", color: OPS.text }}
     />
   );
