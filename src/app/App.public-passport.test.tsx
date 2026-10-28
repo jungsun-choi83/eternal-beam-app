@@ -26,8 +26,9 @@ describe('public Passport entry isolation', () => {
   it('renders without evaluating Firebase when Firebase configuration is invalid', () => {
     window.history.replaceState({}, '', '/exhibition/passport')
     render(<App />)
-    expect(screen.getByRole('button', { name: /Start Registration/i })).toBeTruthy()
-    expect(screen.getByText('Get Your Pet ID')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /Create my Pet's ID/i })).toBeTruthy()
+    expect(screen.queryByLabelText('Pet name')).toBeNull()
+    expect(screen.queryByLabelText('Email address')).toBeNull()
   })
 
   it('routes the dedicated Passport view without evaluating Firebase', () => {

@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 import anyio
+import pytest
 from fastapi import FastAPI
 from PIL import Image
 
@@ -18,6 +19,53 @@ from backend.services import exhibition_passport
 from backend.services import identity_service
 from backend.services.shaker_ops import require_ops
 from backend.tests.conftest import ASGITestClient
+
+
+@pytest.mark.parametrize(
+    ("environment_name", "environment_value"),
+    [("APP_ENV", "production"), ("ENVIRONMENT", "staging")],
+)
+def test_preview_launcher_rejects_production_environment(monkeypatch, environment_name, environment_value):
+    from backend import exhibition_preview
+
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    monkeypatch.setenv(environment_name, environment_value)
+    monkeypatch.delenv("ENABLE_EXHIBITION_LOCAL_PREVIEW", raising=False)
+    monkeypatch.delenv("ALLOW_INSECURE_TEST_AUTH", raising=False)
+
+    with pytest.raises(RuntimeError, match="production-like environment"):
+        exhibition_preview.configure_local_preview_environment()
+
+    assert os.getenv("ENABLE_EXHIBITION_LOCAL_PREVIEW") is None
+    assert os.getenv("ALLOW_INSECURE_TEST_AUTH") is None
+
+
+def test_preview_launcher_rejects_conflicting_environment_settings(monkeypatch):
+    from backend import exhibition_preview
+
+    monkeypatch.setenv("APP_ENV", "local")
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.delenv("ENABLE_EXHIBITION_LOCAL_PREVIEW", raising=False)
+    monkeypatch.delenv("ALLOW_INSECURE_TEST_AUTH", raising=False)
+
+    with pytest.raises(RuntimeError, match="ENVIRONMENT=production"):
+        exhibition_preview.configure_local_preview_environment()
+
+    assert os.getenv("ENABLE_EXHIBITION_LOCAL_PREVIEW") is None
+    assert os.getenv("ALLOW_INSECURE_TEST_AUTH") is None
+
+
+def test_preview_launcher_configures_only_the_isolated_local_process(monkeypatch):
+    from backend import exhibition_preview
+
+    monkeypatch.delenv("APP_ENV", raising=False)
+    monkeypatch.delenv("ENVIRONMENT", raising=False)
+    exhibition_preview.configure_local_preview_environment()
+
+    assert os.getenv("APP_ENV") == "local"
+    assert os.getenv("ENABLE_EXHIBITION_LOCAL_PREVIEW") == "1"
+    assert os.getenv("ALLOW_INSECURE_TEST_AUTH") == "1"
 
 
 def _preview_app() -> ASGITestClient:

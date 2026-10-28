@@ -3,7 +3,9 @@ import { currentExhibitionId } from './exhibition-queue.ts'
 export const EXHIBITION_PASSPORT_PATH = '/exhibition/passport'
 export const EXHIBITION_PASSPORT_VIEW_PATH = '/exhibition/passport/view'
 export const EXHIBITION_PASSPORT_REGISTRATION_PATH = '/api/exhibition/passport/registrations'
+export const EXHIBITION_PASSPORT_ID_RESERVATION_PATH = '/api/exhibition/passport/id-reservations'
 export const EXHIBITION_PASSPORT_RETRIEVE_PATH = '/api/exhibition/passport/retrieve'
+export const EXHIBITION_PASSPORT_EMAIL_PATH = '/api/exhibition/passport/email'
 export const EXHIBITION_PASSPORT_PRIVACY_POLICY_VERSION = 'v1'
 
 export type PassportPhotoStatus = 'WAITING_FOR_PHOTO' | 'PHOTO_RECEIVED'
@@ -11,7 +13,7 @@ export type PassportPhotoStatus = 'WAITING_FOR_PHOTO' | 'PHOTO_RECEIVED'
 export interface PassportRecord {
   exhibition_id: string
   queue_number: number
-  pet_name: string
+  pet_name: string | null
   photo_status: PassportPhotoStatus
   photo_received_at: string | null
   created_at: string | null
@@ -19,6 +21,9 @@ export interface PassportRecord {
   photo_url?: string | null
   /** Generic, non-sensitive storage availability status. */
   photo_access_error?: 'PHOTO_UNAVAILABLE' | null
+  email_saved?: boolean
+  ai_video_consent?: boolean
+  marketing_consent?: boolean
 }
 
 export interface RegistrationResponse extends PassportRecord {
@@ -61,7 +66,14 @@ export function isExhibitionPassportEnabled(): boolean {
 }
 
 export function isExhibitionPassportLocalPreview(): boolean {
-  return featureFlag('VITE_ENABLE_EXHIBITION_LOCAL_PREVIEW') === '1' || featureFlag('VITE_ENABLE_EXHIBITION_LOCAL_PREVIEW') === 'true'
+  // The local Passport URL uses the isolated in-memory Exhibition backend by
+  // default. Production builds never enter this branch because DEV is false.
+  try {
+    if (import.meta.env.DEV) return featureFlag('VITE_ENABLE_EXHIBITION_LOCAL_PREVIEW') !== '0'
+  } catch {
+    return false
+  }
+  return false
 }
 
 /** Optional event display configuration; never inferred from the exhibition ID. */
@@ -158,6 +170,23 @@ export async function registerPetPassport(
   return (await response.json()) as RegistrationResponse
 }
 
+export async function reservePetPassportId(
+  params: { exhibitionId: string | null; passportToken: string },
+  fetchImpl: FetchFn = fetch,
+): Promise<RegistrationResponse> {
+  validateToken(params.passportToken)
+  const response = await fetchImpl(`${apiBase()}${EXHIBITION_PASSPORT_ID_RESERVATION_PATH}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      exhibition_id: params.exhibitionId,
+      idempotency_key: params.passportToken,
+    }),
+  })
+  if (!response.ok) throw await readError(response)
+  return (await response.json()) as RegistrationResponse
+}
+
 export async function retrievePetPassport(
   passportToken: string,
   fetchImpl: FetchFn = fetch,
@@ -168,6 +197,30 @@ export async function retrievePetPassport(
     cache: 'no-store',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ passport_token: passportToken }),
+  })
+  if (!response.ok) throw await readError(response)
+  return (await response.json()) as PassportRecord
+}
+
+export async function savePetPassportEmail(
+  params: {
+    passportToken: string
+    email: string
+    aiVideoConsent: boolean
+    marketingConsent: boolean
+  },
+  fetchImpl: FetchFn = fetch,
+): Promise<PassportRecord> {
+  validateToken(params.passportToken)
+  const response = await fetchImpl(`${apiBase()}${EXHIBITION_PASSPORT_EMAIL_PATH}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      passport_token: params.passportToken,
+      email: params.email,
+      ai_video_consent: params.aiVideoConsent,
+      marketing_consent: params.marketingConsent,
+    }),
   })
   if (!response.ok) throw await readError(response)
   return (await response.json()) as PassportRecord

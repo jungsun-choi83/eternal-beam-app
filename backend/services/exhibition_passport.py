@@ -37,6 +37,13 @@ class PassportConflict(PassportError):
 
 
 class PassportStore(Protocol):
+    def reserve_id(
+        self,
+        *,
+        exhibition_id: str,
+        token_hash: str,
+    ) -> dict[str, Any]: ...
+
     def register(
         self,
         *,
@@ -49,6 +56,15 @@ class PassportStore(Protocol):
     ) -> dict[str, Any]: ...
 
     def get_by_token_hash(self, token_hash: str) -> Optional[dict[str, Any]]: ...
+
+    def save_email(
+        self,
+        *,
+        token_hash: str,
+        email: str,
+        ai_video_consent: bool,
+        marketing_consent: bool,
+    ) -> dict[str, Any]: ...
 
     def get_photo_ref_by_token_hash(self, token_hash: str) -> Optional[dict[str, Any]]: ...
 
@@ -90,6 +106,9 @@ def _safe_row(row: dict[str, Any]) -> dict[str, Any]:
         "photo_status": row.get("photo_status", "WAITING_FOR_PHOTO"),
         "photo_received_at": row.get("photo_received_at"),
         "created_at": row.get("created_at"),
+        "email_saved": bool(row.get("email")),
+        "ai_video_consent": bool(row.get("ai_video_consent")),
+        "marketing_consent": bool(row.get("marketing_consent")),
     }
 
 
@@ -135,10 +154,51 @@ def register(
     return result
 
 
+def reserve_id(
+    *,
+    exhibition_id: str | None,
+    idempotency_key: str | None,
+    store: PassportStore,
+) -> dict[str, Any]:
+    """Reserve the exhibition Pet ID before the visitor enters personal data.
+
+    The opaque client token is both the bearer credential and the idempotency
+    key. No pet name, email, or privacy-consent claim is fabricated here; the
+    later Passport step is responsible for collecting the pet name.
+    """
+    eid = queue.normalize_exhibition_id(exhibition_id)
+    token = normalize_access_token(idempotency_key)
+    row = store.reserve_id(exhibition_id=eid, token_hash=hash_token(token))
+    result = _safe_row(row)
+    result["passport_token"] = token
+    result["replayed"] = bool(row.get("replayed", False))
+    return result
+
+
 def retrieve(*, token: str | None, store: PassportStore) -> Optional[dict[str, Any]]:
     raw = normalize_access_token(token)
     row = store.get_by_token_hash(hash_token(raw))
     return _safe_row(row) if row else None
+
+
+def save_email(
+    *,
+    token: str | None,
+    email: str | None,
+    ai_video_consent: bool,
+    marketing_consent: bool,
+    store: PassportStore,
+) -> dict[str, Any]:
+    """Save optional visitor contact preferences using the opaque Passport token."""
+    raw_token = normalize_access_token(token)
+    normalized_email = normalize_email(email)
+    row = store.save_email(
+        token_hash=hash_token(raw_token),
+        email=normalized_email,
+        ai_video_consent=bool(ai_video_consent),
+        marketing_consent=bool(marketing_consent),
+    )
+    return _safe_row(row)
 
 
 PHOTO_URL_TTL_SECONDS = 300
@@ -294,12 +354,47 @@ class SupabasePassportStore:
                 ) from exc
             raise
 
+    def reserve_id(self, **kwargs: Any) -> dict[str, Any]:
+        try:
+            res = self._c.rpc(
+                "exhibition_create_pet_passport_id",
+                {
+                    "p_exhibition_id": kwargs["exhibition_id"],
+                    "p_token_hash": kwargs["token_hash"],
+                },
+            ).execute()
+            return self._row(res.data)
+        except Exception as exc:  # noqa: BLE001 - translate known token conflicts
+            if "REGISTRATION_TOKEN_ALREADY_USED" in str(exc):
+                raise PassportConflict(
+                    "REGISTRATION_TOKEN_ALREADY_USED",
+                    "This registration token was already used.",
+                ) from exc
+            raise
+
     def get_by_token_hash(self, token_hash: str) -> Optional[dict[str, Any]]:
         res = self._c.rpc("exhibition_get_pet_passport", {"p_token_hash": token_hash}).execute()
         data = res.data
         if isinstance(data, list):
             return data[0] if data else None
         return data if isinstance(data, dict) else None
+
+    def save_email(self, **kwargs: Any) -> dict[str, Any]:
+        try:
+            res = self._c.rpc(
+                "exhibition_save_pet_passport_email",
+                {
+                    "p_token_hash": kwargs["token_hash"],
+                    "p_email": kwargs["email"],
+                    "p_ai_video_consent": kwargs["ai_video_consent"],
+                    "p_marketing_consent": kwargs["marketing_consent"],
+                },
+            ).execute()
+            return self._row(res.data)
+        except Exception as exc:  # noqa: BLE001 - translate token-scoped lookup failure
+            if "PASSPORT_NOT_FOUND" in str(exc):
+                raise PassportError("PASSPORT_NOT_FOUND", "Passport not found.", status=404) from exc
+            raise
 
     def get_photo_ref_by_token_hash(self, token_hash: str) -> Optional[dict[str, Any]]:
         res = self._c.rpc(
@@ -414,11 +509,65 @@ class InMemoryPassportStore:
             self.rows[key] = row
             return dict(row)
 
+    def reserve_id(self, **kwargs: Any) -> dict[str, Any]:
+        with self._lock:
+            token_hash = kwargs["token_hash"]
+            existing = next(
+                (row for row in self.rows.values() if row["token_hash"] == token_hash),
+                None,
+            )
+            if existing is not None:
+                return {**existing, "replayed": True}
+
+            if self.queue_store is not None:
+                number = self.queue_store.next_queue_number(kwargs["exhibition_id"])
+            else:
+                numbers = [
+                    r["queue_number"]
+                    for r in self.rows.values()
+                    if r["exhibition_id"] == kwargs["exhibition_id"]
+                ]
+                number = max(numbers, default=0) + 1
+            now = datetime.now(timezone.utc).isoformat()
+            row = {
+                "exhibition_id": kwargs["exhibition_id"],
+                "queue_number": number,
+                "pet_name": None,
+                "email": None,
+                "privacy_consent": None,
+                "privacy_policy_version": "v1",
+                "token_hash": token_hash,
+                "request_fingerprint": token_hash,
+                "photo_status": "WAITING_FOR_PHOTO",
+                "photo_received_at": None,
+                "created_at": now,
+                "replayed": False,
+            }
+            self.rows[f"{kwargs['exhibition_id']}:{token_hash}"] = row
+            return dict(row)
+
     def get_by_token_hash(self, token_hash: str) -> Optional[dict[str, Any]]:
         for row in self.rows.values():
             if row["token_hash"] == token_hash:
                 return dict(row)
         return None
+
+    def save_email(self, **kwargs: Any) -> dict[str, Any]:
+        with self._lock:
+            row = next(
+                (value for value in self.rows.values() if value["token_hash"] == kwargs["token_hash"]),
+                None,
+            )
+            if row is None:
+                raise PassportError("PASSPORT_NOT_FOUND", "Passport not found.", status=404)
+            now = datetime.now(timezone.utc).isoformat()
+            row["email"] = kwargs["email"]
+            row["ai_video_consent"] = bool(kwargs["ai_video_consent"])
+            row["ai_video_consent_at"] = now if row["ai_video_consent"] else None
+            row["marketing_consent"] = bool(kwargs["marketing_consent"])
+            row["marketing_consent_at"] = now if row["marketing_consent"] else None
+            row["updated_at"] = now
+            return dict(row)
 
     def get_photo_ref_by_token_hash(self, token_hash: str) -> Optional[dict[str, Any]]:
         row = self.get_by_token_hash(token_hash)
