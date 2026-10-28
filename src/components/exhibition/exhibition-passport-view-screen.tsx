@@ -80,6 +80,9 @@ function recordFromSession(session: PassportSession): PassportRecord {
     photo_status: session.photoStatus,
     photo_received_at: null,
     created_at: session.createdAt,
+    email_saved: session.emailSaved,
+    ai_video_consent: session.aiVideoConsent,
+    marketing_consent: session.marketingConsent,
   }
 }
 
@@ -191,7 +194,7 @@ export function ExhibitionPassportViewScreen() {
       <section className="passport-view-shell" aria-labelledby="passport-view-title">
         <div className="passport-view-heading">
           <span className="passport-kicker"><span /> Pet Passport</span>
-          <h1 id="passport-view-title">{t.title}</h1>
+          <h1 className="passport-screen-title" id="passport-view-title">{t.title}</h1>
           <p>{t.intro}</p>
         </div>
 

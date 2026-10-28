@@ -33,8 +33,22 @@ class RegistrationRequest(BaseModel):
     privacy_policy_version: str = "v1"
 
 
+class IdReservationRequest(BaseModel):
+    exhibition_id: Optional[str] = None
+    # Must be generated with at least 256 bits of client-side randomness. It
+    # is also the opaque bearer token used to recover the issued Pet ID.
+    idempotency_key: str
+
+
 class AccessRequest(BaseModel):
     passport_token: str
+
+
+class EmailPreferenceRequest(BaseModel):
+    passport_token: str
+    email: str
+    ai_video_consent: bool = False
+    marketing_consent: bool = False
 
 
 def get_store() -> passport.PassportStore:
@@ -87,6 +101,26 @@ async def post_registration(body: RegistrationRequest, store=Depends(get_store))
     return result
 
 
+@router.post("/id-reservations")
+async def post_id_reservation(body: IdReservationRequest, store=Depends(get_store)):
+    try:
+        result = await asyncio.to_thread(
+            passport.reserve_id,
+            exhibition_id=body.exhibition_id,
+            idempotency_key=body.idempotency_key,
+            store=store,
+        )
+    except passport.PassportError as exc:
+        raise _error(exc) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("exhibition Passport ID reservation failed")
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "EXHIBITION_PASSPORT_ID_RESERVATION_FAILED", "message": "Could not create Pet ID."},
+        ) from exc
+    return result
+
+
 @router.post("/retrieve")
 async def post_retrieve(
     body: AccessRequest,
@@ -134,4 +168,26 @@ async def post_retrieve(
         raise HTTPException(status_code=404, detail={"code": "PASSPORT_NOT_FOUND", "message": "Passport not found."})
     response.headers["Cache-Control"] = "no-store"
     response.headers["X-Content-Type-Options"] = "nosniff"
+    return result
+
+
+@router.post("/email")
+async def post_email_preferences(body: EmailPreferenceRequest, store=Depends(get_store)):
+    try:
+        result = await asyncio.to_thread(
+            passport.save_email,
+            token=body.passport_token,
+            email=body.email,
+            ai_video_consent=body.ai_video_consent,
+            marketing_consent=body.marketing_consent,
+            store=store,
+        )
+    except passport.PassportError as exc:
+        raise _error(exc) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("exhibition Passport email save failed")
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "EXHIBITION_PASSPORT_EMAIL_SAVE_FAILED", "message": "Could not save email."},
+        ) from exc
     return result

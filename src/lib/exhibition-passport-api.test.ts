@@ -5,7 +5,9 @@ import {
   isExhibitionPassportEnabled,
   isExhibitionPassportPath,
   registerPetPassport,
+  reservePetPassportId,
   retrievePetPassport,
+  savePetPassportEmail,
   type RegistrationResponse,
 } from './exhibition-passport-api.ts'
 
@@ -54,6 +56,27 @@ test('registration client sends the documented body and no photo fields', async 
   assert.equal(String(request?.body).includes('photo'), false)
 })
 
+test('ID reservation client sends only the exhibition and opaque idempotency key', async () => {
+  let request: RequestInit | undefined
+  const response: RegistrationResponse = {
+    exhibition_id: 'seoul-2026', queue_number: 42, pet_name: null,
+    photo_status: 'WAITING_FOR_PHOTO', photo_received_at: null, created_at: null,
+    passport_token: token, replayed: false,
+  }
+  const fetchMock = async (_input: RequestInfo | URL, init?: RequestInit) => {
+    request = init
+    return new Response(JSON.stringify(response), { status: 200 })
+  }
+  const result = await reservePetPassportId({ exhibitionId: 'seoul-2026', passportToken: token }, fetchMock)
+  assert.deepEqual(result, response)
+  assert.equal(request?.method, 'POST')
+  assert.deepEqual(JSON.parse(String(request?.body)), {
+    exhibition_id: 'seoul-2026', idempotency_key: token,
+  })
+  assert.equal(String(request?.body).includes('pet_name'), false)
+  assert.equal(String(request?.body).includes('email'), false)
+})
+
 test('retrieval sends the opaque token in a POST body, never a URL', async () => {
   let input: RequestInfo | URL = ''
   let request: RequestInit | undefined
@@ -80,4 +103,33 @@ test('retrieval preserves the token-scoped short-lived photo URL without adding 
   assert.equal(result.photo_url, 'https://storage.example/signed-source.png')
   assert.equal(result.photo_access_error, null)
   assert.equal('email' in result, false)
+})
+
+test('email preferences use the opaque token endpoint and never put the token in the URL', async () => {
+  let input: RequestInfo | URL = ''
+  let request: RequestInit | undefined
+  const fetchMock = async (received: RequestInfo | URL, init?: RequestInit) => {
+    input = received
+    request = init
+    return new Response(JSON.stringify({
+      exhibition_id: 'seoul-2026', queue_number: 42, pet_name: 'Momo',
+      photo_status: 'WAITING_FOR_PHOTO', photo_received_at: null, created_at: null,
+      email_saved: true, ai_video_consent: true, marketing_consent: false,
+    }), { status: 200 })
+  }
+  const result = await savePetPassportEmail({
+    passportToken: token,
+    email: 'visitor@example.com',
+    aiVideoConsent: true,
+    marketingConsent: false,
+  }, fetchMock)
+  assert.equal(result.email_saved, true)
+  assert.equal(String(input), '/api/exhibition/passport/email')
+  assert.deepEqual(JSON.parse(String(request?.body)), {
+    passport_token: token,
+    email: 'visitor@example.com',
+    ai_video_consent: true,
+    marketing_consent: false,
+  })
+  assert.equal(String(input).includes(token), false)
 })

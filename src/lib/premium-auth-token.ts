@@ -15,6 +15,7 @@
  */
 
 const DEV_BYPASS_FLAG = "VITE_ALLOW_INSECURE_TEST_AUTH";
+const LOCAL_EXHIBITION_PREVIEW_FLAG = "VITE_ENABLE_EXHIBITION_LOCAL_PREVIEW";
 
 function isDev(): boolean {
   try {
@@ -34,6 +35,27 @@ function devBypassEnabled(): boolean {
   }
 }
 
+export function localExhibitionPreviewEnabled(runtimeEnv?: Record<string, unknown>): boolean {
+  const env = runtimeEnv ?? (() => {
+    try {
+      return (import.meta as { env?: Record<string, unknown> }).env ?? {};
+    } catch {
+      return {};
+    }
+  })();
+  if (env.DEV !== true && env.DEV !== "true") return false;
+  try {
+    const v = env[LOCAL_EXHIBITION_PREVIEW_FLAG];
+    return String(v ?? "").trim() === "1";
+  } catch {
+    return false;
+  }
+}
+
+export type PremiumAccessTokenOptions = {
+  allowLocalExhibitionPreview?: boolean;
+};
+
 export type AuthTokenResult =
   | { token: string; source: "supabase" | "dev-bypass" }
   | { token: null; source: "none"; reason: "no-session" | "no-client" };
@@ -41,7 +63,12 @@ export type AuthTokenResult =
 /**
  * 현재 액세스 토큰. 없으면 null — **절대 대체 토큰을 만들지 않는다.**
  */
-export async function getPremiumAccessToken(): Promise<AuthTokenResult> {
+export async function getPremiumAccessToken(
+  options: PremiumAccessTokenOptions = {}
+): Promise<AuthTokenResult> {
+  if (options.allowLocalExhibitionPreview && localExhibitionPreviewEnabled()) {
+    return { token: 'test:local-preview-ops', source: 'dev-bypass' }
+  }
   try {
     const { getAccessToken, isSupabaseAuthConfigured } = await import("./supabase-auth.ts");
     if (isSupabaseAuthConfigured()) {
