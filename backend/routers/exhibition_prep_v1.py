@@ -32,6 +32,8 @@ router = APIRouter(prefix="/exhibition/prep-runs", tags=["exhibition-prep"])
 
 def get_stores() -> tuple[exhibition_prep_store.RunStore, exhibition_prep_store.ArtifactStore]:
     try:
+        if exhibition_prep_store.local_preview_enabled():
+            return exhibition_prep_store.local_preview_stores()
         return exhibition_prep_store.default_stores()
     except RuntimeError as e:
         raise HTTPException(

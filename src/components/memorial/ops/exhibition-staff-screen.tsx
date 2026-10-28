@@ -22,7 +22,10 @@ import {
   formatQueueNumber,
   queueLabel,
   showNext,
+  staffPhotoSubmissionMode,
   submitPetPhoto,
+  submitPassportPetPhoto,
+  validatePassportQueueNumber,
   type QueueItem,
   type StaffQueue,
 } from "@/lib/exhibition-queue";
@@ -166,9 +169,13 @@ function SubmitCard({
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [petName, setPetName] = useState("");
+  const [queueNumberInput, setQueueNumberInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [assigned, setAssigned] = useState<string | null>(null);
+  const queueNumberValidation = validatePassportQueueNumber(queueNumberInput);
+  const submissionMode = staffPhotoSubmissionMode(queueNumberInput);
+  const hasQueueNumberInput = queueNumberInput.trim().length > 0;
 
   useEffect(() => {
     if (!file) {
@@ -184,13 +191,26 @@ function SubmitCard({
 
   const submit = useCallback(async () => {
     if (!file || busy) return;
+    if (hasQueueNumberInput && (queueNumberValidation.error || queueNumberValidation.value === null)) {
+      setError("Enter a positive whole number for the Passport queue number.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const s = await submitPetPhoto(token, { file, petName, exhibitionId });
+      const s =
+        submissionMode === "PASSPORT"
+          ? await submitPassportPetPhoto(token, {
+              file,
+              petName,
+              exhibitionId,
+              queueNumber: queueNumberValidation.value as number,
+            })
+          : await submitPetPhoto(token, { file, petName, exhibitionId });
       setAssigned(queueLabel(s));
       setFile(null);
       setPetName("");
+      setQueueNumberInput("");
       if (inputRef.current) inputRef.current.value = "";
       onSubmitted();
     } catch (e) {
@@ -198,7 +218,19 @@ function SubmitCard({
     } finally {
       setBusy(false);
     }
-  }, [file, busy, token, petName, exhibitionId, onSubmitted, onError]);
+  }, [
+    file,
+    busy,
+    hasQueueNumberInput,
+    queueNumberValidation.error,
+    queueNumberValidation.value,
+    submissionMode,
+    token,
+    petName,
+    exhibitionId,
+    onSubmitted,
+    onError,
+  ]);
 
   return (
     <Card>
@@ -235,8 +267,43 @@ function SubmitCard({
         </div>
       </label>
 
+      <label className="mt-3 block text-[12px]" style={{ color: OPS.textMuted }}>
+        Passport queue number <span aria-hidden="true" style={{ color: OPS.gold }}>*</span>
+        <div className="mt-1">
+          <TextInput
+            value={queueNumberInput}
+            onChange={(value) => {
+              setQueueNumberInput(value);
+              setError(null);
+            }}
+            placeholder="Leave blank for legacy staff mode"
+            mono
+            onEnter={() => void submit()}
+          />
+        </div>
+        <span className="mt-1 block text-[11px]" style={{ color: OPS.textFaint }}>
+          Required for Passport visitors. Leave blank only for the existing legacy STAFF workflow.
+        </span>
+      </label>
+      {hasQueueNumberInput && queueNumberValidation.error ? (
+        <p role="alert" className="mt-2 text-[12px]" style={{ color: "#8A3A22" }}>
+          Enter a positive whole number. Passport IDs are issued by registration.
+        </p>
+      ) : null}
+      {submissionMode === "PASSPORT" && !queueNumberValidation.error ? (
+        <p className="mt-2 text-[12px]" style={{ color: OPS.textMuted }}>
+          The server will verify this Passport number for the selected exhibition before associating the photo.
+        </p>
+      ) : null}
+
       <div className="mt-3">
-        <Button tone="primary" full onClick={() => void submit()} busy={busy} disabled={!file}>
+        <Button
+          tone="primary"
+          full
+          onClick={() => void submit()}
+          busy={busy}
+          disabled={!file || (hasQueueNumberInput && Boolean(queueNumberValidation.error))}
+        >
           Add to queue
         </Button>
       </div>

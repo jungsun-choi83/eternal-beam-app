@@ -84,18 +84,22 @@ def test_gpt_image_mode_calls_provider_once_with_the_original_as_reference(gpt_m
     assert call["metadata"]["subject_class"] == "dog" and call["metadata"]["gate_top_label"] == "top_down"
 
 
-def test_prompt_asks_for_a_deformation_friendly_pose_and_identity_preservation():
+def test_prompt_requires_stand_ready_pose_and_identity_preservation():
     prompt = pose_mod.build_normalization_prompt({"subject_class": "cat"})
     for phrase in (
-        "Full-body", "exact same cat", "standing naturally", "approximately 30–45 degrees",
-        "head turned toward and looking at the camera", "entire pet visible",
+        "full-body", "exact same cat", "standardized STAND_READY pose",
+        "natural, static standing pose", "approximately 30–45 degrees",
+        "all four paws must be visible and firmly grounded", "head upright",
+        "eyes looking toward the camera", "entire pet visible",
         "consistent eye-level camera", "feet aligned on one horizontal ground line",
         "plain neutral light-gray solid-color background", "original coat colors",
         "exact marking shapes and positions", "fur length and texture", "body proportions",
+        "species-specific anatomy", "Do not lift any paw",
     ):
         assert phrase in prompt
-    assert "standing or neatly seated" not in prompt
-    assert "facing forward or" not in prompt
+    negative_pose_clause = prompt.split("Do not depict the pet ", 1)[1]
+    for forbidden_pose in ("sitting", "lying down", "walking", "running", "jumping", "exaggerated action pose"):
+        assert forbidden_pose in negative_pose_clause
 
 
 def test_gpt_image_mode_without_api_key_is_not_configured(gpt_mode, monkeypatch):

@@ -222,6 +222,44 @@ def create_run(
     return store.insert(row)
 
 
+def create_pending_source_run(
+    raw: bytes,
+    *,
+    created_by: str,
+    store: RunStore,
+    artifacts: ArtifactStore,
+    exhibition_id: str,
+    pet_name: Optional[str] = None,
+) -> dict[str, Any]:
+    """Persist a validated source photo without exposing it to the worker.
+
+    Passport association is a second database transaction because Storage is
+    external to Postgres. FAILED is deliberate here: the existing worker only
+    claims QUEUED/RUNNING rows, so a source cannot be processed before the
+    Passport link is committed.
+    """
+    png, info = normalize_source(raw)
+    run_id = str(uuid.uuid4())
+    source_path = run_object_path(run_id, SOURCE_NAME)
+    artifacts.put(source_path, png, "image/png")
+    return store.insert(
+        {
+            "id": run_id,
+            "exhibition_id": exhibition_id,
+            "created_by": created_by,
+            "status": STATUS_FAILED,
+            "stage": None,
+            "source_path": source_path,
+            "source_info": info,
+            "head_hint": None,
+            "review_reasons": [],
+            "error_code": "PASSPORT_PHOTO_PENDING_ASSOCIATION",
+            "error_message": "Waiting for Passport photo association.",
+            "pet_name": pet_name,
+        }
+    )
+
+
 # ── 처리 ─────────────────────────────────────────────────────────────────────
 
 

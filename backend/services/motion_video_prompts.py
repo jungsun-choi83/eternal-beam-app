@@ -18,16 +18,6 @@ from ..scenarios.pet_scenarios import IDLE_EVENTS
 # 그림자로 살려내고, packed-alpha 매트가 그것을 전경으로 삼킨다.
 # v3: unsupported conditioning is expressed in the prompt of the assigned model.
 MOTION_VIDEO_PROMPT_VERSION = "motion-video-prompt-v3"
-# The four commercial idle events use a motion-scoped recipe/version.  Keeping
-# this separate avoids invalidating BREATHING and unrelated motion caches when
-# only these body-part prompts change.
-DURABLE_IDLE_EVENT_PROMPT_VERSION = "motion-video-prompt-v3-idle-event-v1"
-DURABLE_IDLE_EVENT_IDS = frozenset(IDLE_EVENTS)
-# v2: PET_HEAD now conditions Seedance with the same STAND_READY frame at both
-# endpoints. Keep the invalidation scoped to this paid motion.
-PET_HEAD_PROMPT_VERSION = "motion-video-prompt-v3-pet-head-v2"
-# Generation invalidation for the new action is deliberately motion-scoped.
-PAW_HELLO_PROMPT_VERSION = "motion-video-prompt-v3-paw-hello-v1"
 GAIT = {
     "dog": {
         "prompt": "runs naturally straight toward the camera in a short, energetic burst",
@@ -251,21 +241,13 @@ _BUILDERS = {
 
 
 def build_motion_video_prompt(spec_contract: dict[str, Any], description: str) -> str:
-    """Phase 5.1 contract + description -> versioned, class-specific prompt."""
+    """Phase 5.1 계약 + 모션 서술 → 클래스별 프롬프트 (버전 MOTION_VIDEO_PROMPT_VERSION)."""
     fallbacks = spec_contract.get("conditioning_fallbacks") or []
     if "supports_end_frame" in fallbacks:
         # Descriptions may refer to a target image that this model cannot receive.
         description = description.replace("shown in the second frame", "described below")
-    motion_id = str(spec_contract.get("motion_id") or "").strip().upper()
-    if motion_id in DURABLE_IDLE_EVENT_IDS:
-        if str(spec_contract.get("motion_class") or "").upper() != "MICRO":
-            raise ValueError(f"durable idle event {motion_id} must use MICRO")
-        parts = [_durable_idle_event_micro(spec_contract, description)]
-    elif motion_id == "PAW_HELLO":
-        parts = [_paw_hello_interaction(spec_contract, description)]
-    else:
-        builder = _BUILDERS.get(str(spec_contract.get("motion_class") or "").upper(), _micro)
-        parts = [builder(spec_contract, description)]
+    builder = _BUILDERS.get(str(spec_contract.get("motion_class") or "").upper(), _micro)
+    parts = [builder(spec_contract, description)]
     if "supports_end_frame" in fallbacks:
         if spec_contract.get("loop_same_start_end"):
             parts.append(

@@ -779,9 +779,6 @@ async def build_motion_video(
     spec = motion_spec.get_motion(motion_id)
     motion_class = contract["motion_class"]
     motion_description = frozen["motion_description"] if frozen else spec.description
-    active_prompt_version = motion_video_prompts.prompt_version_for_motion(
-        contract["motion_id"]
-    )
 
     # ── 라우팅 + 능력 검증 ────────────────────────────────────────────────
     resolved, _available, _provider_requirements = _resolve_providers_for_contract(
@@ -806,18 +803,6 @@ async def build_motion_video(
     conditioning_fallbacks = list(contract.get("conditioning_fallbacks") or [])
     provider = resolved[0]
     if not frozen and strategy == motion_spec.STRATEGY_START_END and not provider.supports_end_frame:
-        capabilities = (
-            ((contract.get("requirements") or {}).get("provider_capabilities") or {})
-        )
-        if (
-            "supports_end_frame" in (capabilities.get("required_all") or [])
-            and capabilities.get("degrade_allowed") is False
-        ):
-            raise MotionVideoError(
-                "END_FRAME_UNSUPPORTED",
-                f"{provider.name}: this motion requires start/end-frame conditioning",
-                status=503,
-            )
         strategy = motion_spec.STRATEGY_I2V
         conditioning_fallbacks.append("supports_end_frame")
         extra_warnings.append(
@@ -902,11 +887,7 @@ async def build_motion_video(
 
     start_obj = _obj(contract["start_keyframe"])
     target_obj = _obj(contract.get("target_keyframe"))
-    versions_stamp = (
-        deepcopy(resume_version["analyzer_versions"])
-        if frozen
-        else analyzer_versions(resolved, prompt_version=active_prompt_version)
-    )
+    versions_stamp = deepcopy(resume_version["analyzer_versions"]) if frozen else analyzer_versions(resolved)
 
     # ── 멱등 — 바이트를 한 장도 내려받기 전에 먼저 체크한다. 재개/재시도에서
     # 아무것도 안 바뀌었으면 raw 든 클린 플레이트든 전혀 다운로드하지 않는다.
@@ -1146,9 +1127,7 @@ async def build_motion_video(
             "video_strategy": strategy,
             "output_spec": output_spec,
             "prompt": prompt,
-            "prompt_version": (
-                resume_version["prompt_version"] if frozen else active_prompt_version
-            ),
+            "prompt_version": resume_version["prompt_version"] if frozen else motion_video_prompts.MOTION_VIDEO_PROMPT_VERSION,
             "qa_summary": {},
             "analyzer_versions": versions_stamp,
             "warnings": warnings,
@@ -2193,9 +2172,7 @@ def candidate_qa_is_current(qa_result: Optional[Mapping[str, Any]], motion_id: s
         and (
             previous_vlm.get("source")
             in {vlm_identity.VLM_MOTION_QA_VERSION, vlm_identity.VLM_TARGETED_QA_VERSION,
-                vlm_identity.VLM_MOTION_ACCEPTANCE_QA_VERSION,
-                vlm_identity.VLM_PREMIUM_MICRO_TEMPORAL_QA_VERSION,
-                vlm_identity.VLM_PAW_HELLO_QA_VERSION}
+                vlm_identity.VLM_MOTION_ACCEPTANCE_QA_VERSION}
             or (
                 (previous_qa.get("vlm_escalation") or {}).get("version")
                 == vlm_escalation.VLM_ESCALATION_VERSION
@@ -2207,18 +2184,8 @@ def candidate_qa_is_current(qa_result: Optional[Mapping[str, Any]], motion_id: s
         and business_qa.receipt(previous_qa) is not None
         and (previous_qa.get("motion_business_contract") or {}).get("acceptance") == current_acceptance
         and (
-            str(motion_id or "").upper() not in TARGETED_MICRO_VLM_MOTIONS
-            or (
-                (previous_qa.get("vlm_sampling") or {}).get("version")
-                == _motion_sampling_version(motion_id)
-                and (previous_qa.get("vlm_sampling") or {}).get("strategy")
-                in {"base_reused_salient", "adaptive_dense_salience"}
-            )
-        )
-        and (
             current_acceptance.get("version") != motion_spec.MOTION_ACCEPTANCE_VERSION
-            or previous_vlm.get("source")
-            == vlm_identity.motion_acceptance_evaluator_version(current_acceptance)
+            or previous_vlm.get("source") == vlm_identity.VLM_MOTION_ACCEPTANCE_QA_VERSION
         )
     )
 

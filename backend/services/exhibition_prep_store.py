@@ -15,6 +15,7 @@ exhibition_prep_runs 테이블 + exhibition/{run_id}/ 저장소 — 전시 준�
 
 from __future__ import annotations
 
+import base64
 import os
 import threading
 import uuid
@@ -55,6 +56,23 @@ QUEUE_COLUMNS = (
 
 #: 같은 실행을 이만큼 잡았는데도 끝나지 않으면 FAILED (워커 크래시 반복 방지).
 MAX_ATTEMPTS = 3
+
+
+def local_preview_requested() -> bool:
+    return (os.getenv("ENABLE_EXHIBITION_LOCAL_PREVIEW") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def local_preview_enabled() -> bool:
+    """Whether the explicitly isolated local Exhibition preview is active."""
+    enabled = local_preview_requested()
+    if not enabled:
+        return False
+    environment = (os.getenv("APP_ENV") or os.getenv("ENVIRONMENT") or "").strip().lower()
+    return environment in {"local", "development", "dev", "test"}
 
 
 def storage_prefix() -> str:
@@ -310,11 +328,60 @@ class InMemoryArtifactStore:
     def signed_url(self, path: str, ttl_seconds: int = 3600) -> Optional[str]:
         return f"memory://{path}" if path in self.objects else None
 
+    def data_url_for_signed_url(self, signed_url: str) -> Optional[str]:
+        """Materialize an in-memory preview URL without touching Supabase."""
+        prefix = "memory://"
+        if not signed_url.startswith(prefix):
+            return None
+        item = self.objects.get(signed_url[len(prefix):])
+        if item is None:
+            return None
+        data, content_type = item
+        encoded = base64.b64encode(data).decode("ascii")
+        return f"data:{content_type};base64,{encoded}"
+
 
 # ── 기본 인스턴스 ─────────────────────────────────────────────────────────────
 
 
+_LOCAL_PREVIEW_STORES: Optional[tuple[RunStore, ArtifactStore]] = None
+_LOCAL_PREVIEW_PASSPORT_STORE: Any = None
+_LOCAL_PREVIEW_STORES_LOCK = threading.Lock()
+
+
+def local_preview_stores() -> tuple[RunStore, ArtifactStore]:
+    global _LOCAL_PREVIEW_STORES
+    with _LOCAL_PREVIEW_STORES_LOCK:
+        if _LOCAL_PREVIEW_STORES is None:
+            _LOCAL_PREVIEW_STORES = InMemoryRunStore(), InMemoryArtifactStore()
+        return _LOCAL_PREVIEW_STORES
+
+
+def local_preview_passport_store():
+    """Return the Passport store paired with the isolated in-memory run store."""
+    if not local_preview_enabled():
+        raise RuntimeError("Exhibition local preview is not enabled for this environment.")
+
+    # Import lazily to avoid a module cycle during backend startup.
+    from .exhibition_passport import InMemoryPassportStore
+
+    global _LOCAL_PREVIEW_PASSPORT_STORE
+    run_store, _artifacts = local_preview_stores()
+    with _LOCAL_PREVIEW_STORES_LOCK:
+        if (
+            _LOCAL_PREVIEW_PASSPORT_STORE is None
+            or _LOCAL_PREVIEW_PASSPORT_STORE.queue_store is not run_store
+        ):
+            _LOCAL_PREVIEW_PASSPORT_STORE = InMemoryPassportStore(run_store)
+        return _LOCAL_PREVIEW_PASSPORT_STORE
+
+
 def default_stores() -> tuple[RunStore, ArtifactStore]:
+    """Return the configured Supabase stores; never silently fall back to memory."""
+    if local_preview_requested():
+        raise RuntimeError(
+            "Exhibition local preview is active; the Supabase Exhibition store is disabled."
+        )
     """Supabase 가 설정돼 있어야 한다 — 없으면 조용히 메모리로 가지 않고 실패한다."""
     from .supabase_assets import get_client
 

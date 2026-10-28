@@ -574,7 +574,7 @@ function MemorialDevicePlayScreenInner({
                 comeCloserVideoUrl={comeCloserSource}
                 petHeadVideoUrl={petHeadSource}
                 lookUpVideoUrl={lookUpSource}
-                extraEventSources={{ ...poseTransitionSources, RETURN_HOME: returnHomeSource, PAW_HELLO: pawHelloSource }}
+                extraEventSources={{ ...poseTransitionSources, RETURN_HOME: returnHomeSource }}
                 idleEventSources={eligibleIdleEventSources}
                 eventDeliveryFormats={eventDeliveryFormats}
                 actionTriggerRef={comeCloserTriggerRef}
@@ -602,7 +602,7 @@ function MemorialDevicePlayScreenInner({
                 comeCloserVideoUrl={comeCloserSource}
                 petHeadVideoUrl={petHeadSource}
                 lookUpVideoUrl={lookUpSource}
-                extraEventSources={{ ...poseTransitionSources, RETURN_HOME: returnHomeSource, PAW_HELLO: pawHelloSource }}
+                extraEventSources={{ ...poseTransitionSources, RETURN_HOME: returnHomeSource }}
                 // 적격한 것만 넘긴다 — 소스가 없으면 런타임이 자기 규칙(no-source)으로
                 // 거절하므로, 수동 트리거가 남아 있어도 OFF 는 재생되지 않는다.
                 idleEventSources={eligibleIdleEventSources}
