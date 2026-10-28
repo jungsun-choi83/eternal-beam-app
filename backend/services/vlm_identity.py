@@ -44,6 +44,7 @@ VLM_CLASSIFIER_VERSION = "vlm-view-pose-v1"
 VLM_CANONICAL_QA_VERSION = "vlm-canonical-qa-v2"
 VLM_TARGETED_QA_VERSION = "vlm-targeted-qa-v1"
 VLM_MOTION_ACCEPTANCE_QA_VERSION = "vlm-motion-acceptance-v1"
+VLM_PREMIUM_MICRO_TEMPORAL_QA_VERSION = "vlm-premium-micro-temporal-v2"
 
 _ENABLED_ENV = "PET_VLM_IDENTITY_ENABLED"
 _MODEL_ENV = "PET_VLM_MODEL"
@@ -1421,6 +1422,18 @@ def qa_action_keyframe(
 # ══════════════════════════════════════════════════════════════════════════
 
 VLM_MOTION_QA_VERSION = "vlm-motion-qa-v3"
+VLM_PAW_HELLO_QA_VERSION = "vlm-motion-qa-v3-paw-hello-v1"
+
+PAW_HELLO_QA_FIELDS: dict[str, dict[str, Any]] = {
+    "paw_lift_visible": _YNU,
+    "paw_offer_toward_viewer": _YNU,
+    "paw_hold_visible": _YNU,
+    "supporting_paws_grounded": _YNU,
+    "natural_balance": _YNU,
+    "limb_count_correct": _YNU,
+    "paw_anatomy_plausible": _YNU,
+    "smooth_return_to_stand_ready": _YNU,
+}
 
 MOTION_QA_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -1521,6 +1534,25 @@ def _acceptance_prompt(acceptance: Optional[dict[str, Any]]) -> str:
         "hold_without_regeneration", "publish_with_advisory"
     }:
         return ""
+    living_motion_guidance = ""
+    if acceptance.get("allowed_secondary_motion"):
+        living_motion_guidance = (
+            " Natural breathing is allowed. The allowed_secondary_motion entries are harmless supporting behavior, "
+            "not replacement primary actions and not reasons to answer no/FAIL. Do not demand complete body stillness. "
+            "Do not demand an exact angle, amplitude, rhythm or oscillation count unless the contract explicitly makes "
+            "that measurement mandatory."
+        )
+    temporal_policy = acceptance.get("temporal_evidence_policy") or {}
+    temporal_guidance = ""
+    if isinstance(temporal_policy, dict) and temporal_policy:
+        temporal_guidance = (
+            " Apply temporal_evidence_policy strictly: sparse sampled frames that do not happen to show a brief event "
+            "are insufficient proof that it never occurred. Occlusion, poor perspective, or an ambiguous progression "
+            "must be unknown/REVIEW. Answer requested_motion_occurs=no only when the chronological evidence is reliable "
+            "enough to establish absence or a clearly substituted primary action. "
+            "wrong_primary_action_observed: yes only when a different visible primary action clearly replaces the "
+            "requested one; no when no replacement is present; unknown when unclear."
+        )
     return (
         "\nMOTION ACCEPTANCE CONTRACT (independent of generation instructions):\n"
         + json.dumps(acceptance, ensure_ascii=False, sort_keys=True)
@@ -1535,7 +1567,20 @@ def _acceptance_prompt(acceptance: Optional[dict[str, Any]]) -> str:
         "or loop continuity; no when absent, unknown when important compatibility cannot be verified. "
         "final_position_verified: yes/no/unknown for the ideal endpoint; this is a quality observation, "
         "not the mandatory behavior verdict. Report minor defects and uncertainty in notes."
+        + living_motion_guidance
+        + temporal_guidance
     )
+
+
+def motion_acceptance_evaluator_version(
+    acceptance: Optional[dict[str, Any]],
+) -> str:
+    """Return the QA-only evaluator version for one acceptance contract."""
+    if (acceptance or {}).get("policy_revision") == "premium-micro-idle-v1":
+        return VLM_PREMIUM_MICRO_TEMPORAL_QA_VERSION
+    if (acceptance or {}).get("policy_revision") == "paw-hello-v1":
+        return VLM_PAW_HELLO_QA_VERSION
+    return VLM_MOTION_ACCEPTANCE_QA_VERSION
 
 
 def _motion_targeted_specs(
@@ -1549,6 +1594,7 @@ def _motion_targeted_specs(
     has_target: bool,
     has_reference: bool = True,
     acceptance_spec: Optional[dict[str, Any]] = None,
+    evidence_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, tuple[dict[str, Any], str]]:
     from . import vlm_escalation
 
@@ -1571,10 +1617,14 @@ def _motion_targeted_specs(
         ref_note = ""
 
     props = dict(MOTION_QA_SCHEMA["properties"])
+    paw_hello = (acceptance_spec or {}).get("motion_id") == "PAW_HELLO"
+    if paw_hello:
+        props.update(PAW_HELLO_QA_FIELDS)
     acceptance_prompt = _acceptance_prompt(acceptance_spec)
     if acceptance_prompt:
         props.update({key: _YNU for key in (
-            "severe_motion_defect", "critical_state_violation", "final_position_verified"
+            "severe_motion_defect", "critical_state_violation", "final_position_verified",
+            "wrong_primary_action_observed",
         )})
         motion_description = str(acceptance_spec["description"])
     reference_state = bool(acceptance_prompt and acceptance_spec.get("endpoint_reference_required"))
@@ -1623,14 +1673,38 @@ def _motion_targeted_specs(
             }
         )
     if acceptance_prompt:
-        motion_keys.update({"severe_motion_defect", "critical_state_violation", "final_position_verified"})
+        motion_keys.update({
+            "severe_motion_defect", "critical_state_violation", "final_position_verified",
+            "wrong_primary_action_observed",
+        })
         if reference_state:
             motion_keys.discard("critical_state_violation")
+    if paw_hello:
+        motion_keys.update(PAW_HELLO_QA_FIELDS)
     motion_schema = _schema({key: props[key] for key in props if key in motion_keys})
+    temporal_sampling = dict((evidence_context or {}).get("temporal_sampling") or {})
+    provenance_prompt = ""
+    if temporal_sampling:
+        provenance_prompt = (
+            " TEMPORAL EVIDENCE PROVENANCE (QA sampling metadata, not generation instructions): "
+            + json.dumps(temporal_sampling, ensure_ascii=False, sort_keys=True)
+            + ". The supplied full-resolution frames correspond to evidence_fractions. "
+            "If absence_reliable is false, not seeing the requested action is insufficient for no/FAIL; answer unknown. "
+            "If it is true, you may still answer unknown for occlusion or poor visibility."
+        )
     common = (
         f"The supplied generated-video frames are chronological. Requested motion: "
         f"{motion_description}. Motion class: {motion_class}. "
         + acceptance_prompt
+        + provenance_prompt
+    )
+    paw_guidance = (
+        " For PAW_HELLO, separately answer whether exactly one front paw visibly lifts, "
+        "is offered toward the viewer, is held briefly, and returns smoothly to STAND_READY; "
+        "whether the three support paws stay grounded; whether balance is natural; and whether "
+        "limb count and paw/joint anatomy remain correct. A clearly sampled no is a defect, but "
+        "occlusion or insufficient temporal coverage is unknown."
+        if paw_hello else ""
     )
     return {
         vlm_escalation.IDENTITY_VLM: (
@@ -1687,7 +1761,8 @@ def _motion_targeted_specs(
             f"{bool(allow_generated_hand)}. Do not reassess pet identity or anatomy. "
             + ("Use the acceptance behavior even for subtle living motion. " if acceptance_prompt else
                "For BREATHING, deterministic temporal QA owns breathing correctness; do not override it. ")
-            + "Use unknown where the sampled sequence is insufficient.",
+            + paw_guidance
+            + " Use unknown where the sampled sequence is insufficient.",
         ),
     }
 
@@ -1714,7 +1789,11 @@ def qa_motion_video(
         return None
 
     acceptance_prompt = _acceptance_prompt(acceptance_spec)
-    evaluator_version = VLM_MOTION_ACCEPTANCE_QA_VERSION if acceptance_prompt else VLM_TARGETED_QA_VERSION
+    evaluator_version = (
+        motion_acceptance_evaluator_version(acceptance_spec)
+        if acceptance_prompt
+        else VLM_TARGETED_QA_VERSION
+    )
     if acceptance_spec:
         motion_description = str(acceptance_spec.get("description") or motion_description)
 
@@ -1770,6 +1849,7 @@ def qa_motion_video(
                 has_target=has_target,
                 has_reference=has_reference,
                 acceptance_spec=acceptance_spec,
+                evidence_context=evidence_context,
             ),
             params={
                 "motion_description": motion_description,
@@ -1822,12 +1902,39 @@ def qa_motion_video(
     content: list[dict[str, Any]] = [_image_block(data, mime) for data, mime in images]
     if acceptance_prompt:
         prompt += acceptance_prompt
+    paw_hello = (acceptance_spec or {}).get("motion_id") == "PAW_HELLO"
+    if paw_hello:
+        prompt += (
+            "\nPAW_HELLO DEDICATED CHECKS: answer paw_lift_visible, "
+            "paw_offer_toward_viewer, paw_hold_visible, supporting_paws_grounded, "
+            "natural_balance, limb_count_correct, paw_anatomy_plausible, and "
+            "smooth_return_to_stand_ready. Use unknown for occlusion or insufficient "
+            "temporal coverage; use no only for a clearly visible violation."
+        )
+    temporal_sampling = dict((evidence_context or {}).get("temporal_sampling") or {})
+    if temporal_sampling:
+        prompt += (
+            "\nTEMPORAL EVIDENCE PROVENANCE: "
+            + json.dumps(temporal_sampling, ensure_ascii=False, sort_keys=True)
+            + "\nIf absence_reliable is false, sparse non-observation must be unknown rather than no."
+        )
     schema = copy.deepcopy(MOTION_QA_SCHEMA) if acceptance_prompt else MOTION_QA_SCHEMA
     if acceptance_prompt:
-        for key in ("severe_motion_defect", "critical_state_violation", "final_position_verified"):
+        for key in (
+            "severe_motion_defect", "critical_state_violation", "final_position_verified",
+            "wrong_primary_action_observed",
+        ):
             schema["properties"][key] = _YNU
             schema["required"].append(key)
-    combined_version = VLM_MOTION_ACCEPTANCE_QA_VERSION if acceptance_prompt else VLM_MOTION_QA_VERSION
+    if paw_hello:
+        for key, definition in PAW_HELLO_QA_FIELDS.items():
+            schema["properties"][key] = definition
+            schema["required"].append(key)
+    combined_version = (
+        motion_acceptance_evaluator_version(acceptance_spec)
+        if acceptance_prompt
+        else VLM_MOTION_QA_VERSION
+    )
     content.append({"type": "text", "text": prompt})
 
     def _call() -> Optional[dict[str, Any]]:

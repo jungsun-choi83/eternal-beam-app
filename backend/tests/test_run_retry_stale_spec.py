@@ -26,6 +26,7 @@ import pytest
 from backend.services import (
     durable_provider_jobs,
     motion_spec,
+    motion_video_prompts,
     motion_video_service,
     pet_reference_service,
     pet_registry,
@@ -180,6 +181,30 @@ def test_same_spec_retry_keeps_pin_and_reuses_motion_version(storage, monkeypatc
     assert harness.counts["motion_build"] == 1
     assert again.status == runs.STATUS_FAILED  # 모션은 여전히 REVIEW — 판정 정직
     assert again.motion_version_id == harness.motion.id
+
+
+def test_explicitly_stale_motion_scoped_prompt_unpins_without_global_spec_bump(
+    storage, monkeypatch
+):
+    seed_intake()
+    harness = PipelineHarness(monkeypatch, motion_status=motion_video_service.STATUS_REVIEW)
+    harness.motion.prompt_version = "old-motion-scoped-prompt"
+    started = _start(key="retry-stale:prompt")
+    failed = _work()
+    assert failed.status == runs.STATUS_FAILED
+    assert harness.motion.motion_spec_version == motion_spec.MOTION_SPEC_VERSION
+
+    monkeypatch.setattr(
+        motion_video_prompts,
+        "prompt_version_for_motion",
+        lambda motion_id: "new-motion-scoped-prompt",
+    )
+    requeued = _retry(started.id)
+
+    assert requeued.status == runs.STATUS_QUEUED
+    assert requeued.motion_version_id is None
+    assert requeued.motion_version is None
+    assert requeued.current_stage == runs.STAGE_MOTION_SPEC
 
 
 # ══════════════════════════════════════════════════════════════════════════

@@ -204,7 +204,7 @@ def test_registry_owns_motion_check_authority_and_applicability():
     assert transition["check_authority"]["reaches_target_pose"] == "INTEGRITY_HARD"
     assert locomotion["check_authority"]["vlm_direction_travel"] == "INTEGRITY_HARD"
     assert interaction["check_authority"]["vlm_human_hand_policy"] == "INTEGRITY_HARD"
-    assert interaction["domains"]["human_hand_policy"]["allow_generated_hand"] is True
+    assert interaction["domains"]["human_hand_policy"]["allow_generated_hand"] is False
 
     # Runtime repeatability and QA endpoint return are distinct registry facts.
     # BLINKING is not an indefinitely loopable state, but it must return to the
@@ -217,7 +217,7 @@ def test_registry_owns_motion_check_authority_and_applicability():
 
 @pytest.mark.parametrize(
     "motion_id",
-    ["PET_HEAD", "LOOK_UP", "COME_CLOSER", "LIE_DOWN"],
+    ["PET_HEAD", "PAW_HELLO", "LOOK_UP", "COME_CLOSER", "LIE_DOWN"],
 )
 def test_registry_pose_dependent_morphology_is_advisory_for_every_motion_class(
     motion_id,
@@ -327,7 +327,30 @@ def test_interaction_does_not_require_human_in_keyframe():
     spec = ms.MOTIONS["PET_HEAD"]
     assert spec.motion_class == ms.CLASS_INTERACTION
     assert spec.start_keyframe_role == "STAND_READY"
+    assert spec.target_keyframe_role == "STAND_READY"
+    assert spec.requires_target_keyframe is False  # generation control, not new QA policy
+    assert spec.preferred_video_strategy == ms.STRATEGY_START_END
+    assert spec.interruptible is False
     assert spec.video_compat["requires_human_in_keyframe"] is False
+    assert spec.video_compat["allow_generated_hand"] is False
+    assert spec.video_compat["end_frame_conditioning_required"] is True
+
+    capabilities = spec.requirements["provider_capabilities"]
+    assert capabilities["required_all"] == ["supports_end_frame"]
+    assert capabilities["preferred_any"] == []
+    assert capabilities["degrade_allowed"] is False
+    assert capabilities["degrade_to_strategy"] is None
+
+    # Supplying the HOME frame at the end must not expand the existing QA gate.
+    qa_requirements = spec.requirements["qa"]
+    required = [
+        check
+        for domain in ("structural_anatomy", "identity", "motion_specific")
+        for check in qa_requirements[domain]["required_checks"]
+    ]
+    assert "starts_at_start_pose" not in required
+    assert "reaches_target_pose" not in required
+    assert "vlm_target_pose" not in required
 
 
 def test_locomotion_exposes_motion_reference_metadata():
@@ -782,3 +805,17 @@ def test_router_resolves_spec(client, storage, monkeypatch):
 
     res = client.get(f"/api/v1/pet/keyframes/{PET}/motions/MOONWALK/spec", headers=AUTH)
     assert res.status_code == 422
+
+
+def test_paw_hello_registry_is_scoped_start_end_interaction():
+    spec = ms.MOTIONS["PAW_HELLO"]
+    assert spec.motion_class == ms.CLASS_INTERACTION
+    assert spec.start_keyframe_role == "STAND_READY"
+    assert spec.target_keyframe_role == "STAND_READY"
+    assert spec.preferred_video_strategy == ms.STRATEGY_START_END
+    assert spec.video_compat["end_frame_conditioning_required"] is True
+    assert spec.video_compat["allow_generated_hand"] is False
+    assert spec.requirements["provider_capabilities"]["required_all"] == ["supports_end_frame"]
+    assert spec.requirements["provider_capabilities"]["degrade_allowed"] is False
+    assert ms.provider_order_for_motion("PAW_HELLO") == ("seedance",)
+    assert ms.motion_for_trigger("TOUCH") == "PET_HEAD"

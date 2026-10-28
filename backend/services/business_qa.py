@@ -190,6 +190,14 @@ CHECK_AUTHORITIES: dict[str, AuthorityClass] = {
     "vlm_direction_travel": AuthorityClass.INTEGRITY_HARD,
     "vlm_interaction": AuthorityClass.INTEGRITY_HARD,
     "vlm_human_hand_policy": AuthorityClass.INTEGRITY_HARD,
+    "vlm_paw_lift": AuthorityClass.INTEGRITY_HARD,
+    "vlm_paw_offer": AuthorityClass.INTEGRITY_HARD,
+    "vlm_paw_hold": AuthorityClass.INTEGRITY_HARD,
+    "vlm_paw_support": AuthorityClass.INTEGRITY_HARD,
+    "vlm_paw_balance": AuthorityClass.INTEGRITY_HARD,
+    "vlm_paw_limb_count": AuthorityClass.INTEGRITY_HARD,
+    "vlm_paw_anatomy": AuthorityClass.INTEGRITY_HARD,
+    "vlm_paw_return": AuthorityClass.INTEGRITY_HARD,
     # Central default stays fail-closed for breathing-v1 receipts; the
     # breathing-v2 registry contract declares it QUALITY_ADVISORY.
     "breathing_global_motion_integrity": AuthorityClass.INTEGRITY_HARD,
