@@ -41,19 +41,19 @@ const languageStorageKey = 'eternal_beam_exhibition_passport_language_v1'
 const copy = {
   en: {
     brand: 'Pet Passport',
-    eyebrow: 'Pet Passport',
+    eyebrow: 'Create Pet Passport',
     title: 'PET PASSPORT',
     subtitle: 'A JOURNEY OF LOVE BEYOND TIME',
     intro: ['Give your pet an identity.', 'Capture today, keep forever.'],
-    createId: "Create my Pet's ID",
+    createId: "Start",
     officialPassport: 'OFFICIAL PET PASSPORT',
     exhibitionEdition: 'EXHIBITION EDITION',
     petIdLabel: 'PET ID',
     backToPassport: 'Back',
-    photoStepTitle: 'HOW IT WORKS',
+    photoStepTitle: 'STEP BY STEP GUIDE',
     photoStepDescription: 'Follow these steps during the event to complete your Pet Passport.',
-    photoWaiting: 'Waiting for your exhibition photo...',
-    photoAutomatic: 'It will be added automatically.',
+    photoWaiting: 'You pet will appear soon...',
+    photoAutomatic: '',
     photoProgressTitle: 'Photo in progress',
     photoProgressBody: "Please show your Pet ID to the exhibition staff. Your pet's photo will appear here automatically once it's taken.",
     photoAddedTitle: 'Photo added',
@@ -62,17 +62,17 @@ const copy = {
     photoRefresh: 'Check photo status',
     photoPetName: "PET NAME",
     photoNoName: 'YOUR PET',
-    photoNameLabel: "Your pet's name (Optional)",
+    photoNameLabel: "Your pet's name",
     photoNamePlaceholder: 'e.g. Mocha',
-    photoNameHint: 'You can add or edit this anytime.',
-    photoPreview: "Preview the Pet's Passport",
+    photoNameHint: '',
+    photoPreview: "Get the Pet Passport",
     photoReveal: "Reveal the Pet's Passport",
     finalBack: 'Back to photo',
     finalTitleReady: 'YOUR PASSPORT IS READY',
     finalTitleWaiting: 'YOUR PET PASSPORT IS ALMOST READY',
     finalSubtitleReady: 'Your pet’s photo, name, and Pet ID are now together in one keepsake.',
     finalSubtitleWaiting: 'Your passport will be complete when your exhibition photo arrives.',
-    finalDownload: 'Download',
+    finalDownload: 'Save to image',
     finalDownloading: 'Preparing download...',
     finalShare: 'Share Passport',
     finalSharing: 'Preparing share...',
@@ -89,26 +89,26 @@ const copy = {
     finalPhotoPending: 'Photo still pending',
     finalPhotoPendingBody: 'Your photo will appear here automatically when exhibition staff captures it.',
     finalPhotoUnavailable: 'The photo is linked but temporarily unavailable. Please try again later.',
-    finalEmailTitle: 'Get your Eternal Beam video',
+    finalEmailTitle: 'Get your pet video',
     finalEmailBody: "Get notified when your pet's AI video is ready.",
-    finalEmailPlaceholder: 'Enter your email (optional)',
-    finalNotify: 'Save',
+    finalEmailPlaceholder: 'Enter your email',
+    finalNotify: 'Send',
     finalEmailInvalid: 'Please enter a valid email address.',
     finalEmailUnavailable: 'We could not save your email. Please try again.',
     finalEmailSaved: 'Your email preference was saved securely.',
     finalEmailSaving: 'Saving...',
-    finalAiVideoConsent: 'Yes, email me when my Eternal Beam AI video is ready (optional).',
-    finalMarketingConsent: 'I would also like to receive occasional news and offers (optional).',
+    finalAiVideoConsent: 'I agree to let Eternal Beam use my pet’s photo, details, and answers to improve its AI features.',
+    finalMarketingConsent: 'I’d like to receive Eternal Beam news, special offers, and updates by email (optional).',
     finalSoulTraceTitle: 'Discover More from Soul Trace',
     finalSoulTraceBody: 'Turn the moments you love into a heartfelt letter or a seasonal Polaroid.',
     finalSoulTraceCta: 'Explore Soul Trace',
     idCreatedNote: "This ID will be used at the exhibition booth to capture your pet's photo and complete their passport.",
     steps: [
-      { title: 'Visit the Photo Booth', description: "Let our staff capture a special photo of your pet." },
-      { title: 'See Your Pet at Eternal Beam', description: "Watch your pet's unique AI video at the Eternal Beam booth." },
-      { title: 'Visit Soul Trace', description: 'Explore heartfelt stories and seasonal memories at our Soul Trace booth.' },
-      { title: 'Claim Your Gift', description: 'Receive your special exhibition gift after completing the experience.' },
-      { title: "Download Your Pet's Passport", description: "Add your pet's name and reveal your digital passport." },
+      { title: 'Visit the Photo Booth', description: "Get a photo of your pet for your passport." },
+      { title: 'Experience Eternal Beam', description: "See your pet come to life on screen." },
+      { title: 'Discover Soul Trace', description: 'Explore Soul Trace and try its features.' },
+      { title: 'Collect Your Gift', description: 'Finish the event activities and collect your gift.' },
+      { title: "Get Your Pet Passport", description: "Add your pet's name and get the passport" },
     ],
     register: 'Register your pet',
     petName: 'Pet name',
@@ -610,70 +610,70 @@ export function ExhibitionPassportScreen() {
           />
         ) : (
           <>
-        {isHome && <div className="passport-home-hero">
-          <div className="passport-home-hero-art" aria-hidden="true" />
-          <div className="passport-home-hero-copy">
-            <h1 aria-label={t.title}><span>PET</span><span>PASSPORT</span></h1>
-            <button className="passport-primary-button passport-home-cta" type="button" onClick={createPetId} disabled={busy}>
-              {busy ? t.creating : t.createId} <ArrowRight size={18} />
-            </button>
-          </div>
-        </div>}
+            {isHome && <div className="passport-home-hero">
+              <div className="passport-home-hero-art" aria-hidden="true" />
+              <div className="passport-home-hero-copy">
+                <h1 aria-label={t.title}><span>PET</span><span>PASSPORT</span></h1>
+                <button className="passport-primary-button passport-home-cta" type="button" onClick={createPetId} disabled={busy}>
+                  {busy ? t.creating : t.createId} <ArrowRight size={18} />
+                </button>
+              </div>
+            </div>}
 
-        {(session || view === 'register') && (
-          <div className={`passport-experience-grid ${stage === 'ready' ? 'is-passport-ready' : ''}`}>
-            {stage !== 'register' && record && (
-              <section className="passport-card passport-status-card" aria-live="polite">
-                <div className="passport-id-panel">
-                  <span className="passport-overline">{t.idTitle}</span>
-                  <strong>{formatQueueNumber(record.queue_number)}</strong>
-                  <div className="passport-id-meta">
-                    <span className="passport-id-pet">{record.pet_name}</span>
-                  </div>
-                </div>
-                {stage === 'waiting' && (
-                  <div className="passport-status-content">
-                    <div className="passport-photo-placeholder" aria-label={t.photoPlaceholder}>
-                      <span className="passport-photo-placeholder-icon"><Camera size={28} /></span>
-                      <span className="passport-photo-placeholder-label">{t.eyebrow}</span>
-                      <small>{t.photoPlaceholder}</small>
+            {(session || view === 'register') && (
+              <div className={`passport-experience-grid ${stage === 'ready' ? 'is-passport-ready' : ''}`}>
+                {stage !== 'register' && record && (
+                  <section className="passport-card passport-status-card" aria-live="polite">
+                    <div className="passport-id-panel">
+                      <span className="passport-overline">{t.idTitle}</span>
+                      <strong>{formatQueueNumber(record.queue_number)}</strong>
+                      <div className="passport-id-meta">
+                        <span className="passport-id-pet">{record.pet_name}</span>
+                      </div>
                     </div>
-                    <div className="passport-status-icon waiting"><Clock3 size={23} /></div>
-                    <h2>{t.waitingTitle}</h2>
-                    <p>{t.waitingBody}</p>
-                    <div className="passport-instruction"><Camera size={17} /><span>{t.idNote}</span></div>
-                    <div className="passport-button-row">
-                      <a className="passport-primary-button passport-link-button" href={passportViewHref}>
-                        <ArrowRight size={17} /> {t.viewPassport}
-                      </a>
-                      <button className="passport-secondary-button" type="button" onClick={refreshPassport} disabled={busy}>
-                        <RefreshCw size={16} /> {t.refresh}
-                      </button>
-                    </div>
-                  </div>
+                    {stage === 'waiting' && (
+                      <div className="passport-status-content">
+                        <div className="passport-photo-placeholder" aria-label={t.photoPlaceholder}>
+                          <span className="passport-photo-placeholder-icon"><Camera size={28} /></span>
+                          <span className="passport-photo-placeholder-label">{t.eyebrow}</span>
+                          <small>{t.photoPlaceholder}</small>
+                        </div>
+                        <div className="passport-status-icon waiting"><Clock3 size={23} /></div>
+                        <h2>{t.waitingTitle}</h2>
+                        <p>{t.waitingBody}</p>
+                        <div className="passport-instruction"><Camera size={17} /><span>{t.idNote}</span></div>
+                        <div className="passport-button-row">
+                          <a className="passport-primary-button passport-link-button" href={passportViewHref}>
+                            <ArrowRight size={17} /> {t.viewPassport}
+                          </a>
+                          <button className="passport-secondary-button" type="button" onClick={refreshPassport} disabled={busy}>
+                            <RefreshCw size={16} /> {t.refresh}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {stage === 'ready' && (
+                      <div className="passport-ready-summary">
+                        <div className="passport-status-icon ready"><Check size={23} /></div>
+                        <h2>{t.readyTitle}</h2>
+                        <p>{record.photo_url ? t.readyBody : t.photoUnavailable}</p>
+                        <div className="passport-button-row">
+                          <a className="passport-primary-button passport-link-button" href={passportViewHref}>
+                            <ArrowRight size={17} /> {t.viewPassport}
+                          </a>
+                          <button className="passport-secondary-button" type="button" onClick={refreshPassport} disabled={busy}>
+                            <RefreshCw size={16} /> {t.refresh}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    {error && <p className="passport-error" role="alert">{error}</p>}
+                    <p className="passport-local-note"><LockKeyhole size={14} /> {t.localOnly}</p>
+                    <button className="passport-text-button" type="button" onClick={resetRegistration}>{t.back}</button>
+                  </section>
                 )}
-                {stage === 'ready' && (
-                  <div className="passport-ready-summary">
-                    <div className="passport-status-icon ready"><Check size={23} /></div>
-                    <h2>{t.readyTitle}</h2>
-                    <p>{record.photo_url ? t.readyBody : t.photoUnavailable}</p>
-                    <div className="passport-button-row">
-                      <a className="passport-primary-button passport-link-button" href={passportViewHref}>
-                        <ArrowRight size={17} /> {t.viewPassport}
-                      </a>
-                      <button className="passport-secondary-button" type="button" onClick={refreshPassport} disabled={busy}>
-                        <RefreshCw size={16} /> {t.refresh}
-                      </button>
-                    </div>
-                  </div>
-                )}
-                {error && <p className="passport-error" role="alert">{error}</p>}
-                <p className="passport-local-note"><LockKeyhole size={14} /> {t.localOnly}</p>
-                <button className="passport-text-button" type="button" onClick={resetRegistration}>{t.back}</button>
-              </section>
+              </div>
             )}
-          </div>
-        )}
           </>
         )}
       </section>
