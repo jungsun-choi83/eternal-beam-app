@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   ArrowRight,
   Camera,
@@ -50,8 +50,8 @@ const copy = {
     exhibitionEdition: 'EXHIBITION EDITION',
     petIdLabel: 'PET ID',
     backToPassport: 'Back',
-    photoStepTitle: "YOUR PET'S PHOTO",
-    photoStepDescription: "Your pet's photo will be captured at the exhibition booth and added here automatically.",
+    photoStepTitle: 'HOW IT WORKS',
+    photoStepDescription: 'Follow these steps during the event to complete your Pet Passport.',
     photoWaiting: 'Waiting for your exhibition photo...',
     photoAutomatic: 'It will be added automatically.',
     photoProgressTitle: 'Photo in progress',
@@ -89,8 +89,8 @@ const copy = {
     finalPhotoPending: 'Photo still pending',
     finalPhotoPendingBody: 'Your photo will appear here automatically when exhibition staff captures it.',
     finalPhotoUnavailable: 'The photo is linked but temporarily unavailable. Please try again later.',
-    finalEmailTitle: 'Bring Their Story to Life with Eternal Beam',
-    finalEmailBody: "Want to receive your pet's AI video when it's ready? Enter your email below.",
+    finalEmailTitle: 'Get your Eternal Beam video',
+    finalEmailBody: "Get notified when your pet's AI video is ready.",
     finalEmailPlaceholder: 'Enter your email (optional)',
     finalNotify: 'Save',
     finalEmailInvalid: 'Please enter a valid email address.',
@@ -103,11 +103,12 @@ const copy = {
     finalSoulTraceBody: 'Turn the moments you love into a heartfelt letter or a seasonal Polaroid.',
     finalSoulTraceCta: 'Explore Soul Trace',
     idCreatedNote: "This ID will be used at the exhibition booth to capture your pet's photo and complete their passport.",
-    journey: 'How it works',
     steps: [
-      { title: "Create Pet's ID", description: 'Get your unique Pet ID instantly.' },
-      { title: 'Get Photo at Booth', description: "Add your pet's name and get their exhibition photo." },
-      { title: 'Download Passport', description: 'Receive and keep your digital Passport.' },
+      { title: 'Visit the Photo Booth', description: "Let our staff capture a special photo of your pet." },
+      { title: 'See Your Pet at Eternal Beam', description: "Watch your pet's unique AI video at the Eternal Beam booth." },
+      { title: 'Visit Soul Trace', description: 'Explore heartfelt stories and seasonal memories at our Soul Trace booth.' },
+      { title: 'Claim Your Gift', description: 'Receive your special exhibition gift after completing the experience.' },
+      { title: "Download Your Pet's Passport", description: "Add your pet's name and reveal your digital passport." },
     ],
     register: 'Register your pet',
     petName: 'Pet name',
@@ -153,8 +154,8 @@ const copy = {
     copyFailed: '복사하지 못했습니다. ID를 직접 선택해 복사해 주세요.',
     continueJourney: '계속하기',
     backToPassport: '뒤로',
-    photoStepTitle: '반려동물 사진',
-    photoStepDescription: '반려동물 사진은 전시 부스에서 촬영되며 이곳에 자동으로 추가됩니다.',
+    photoStepTitle: '이용 방법',
+    photoStepDescription: '전시를 즐기며 Pet Passport를 완성하는 과정을 따라가 보세요.',
     photoWaiting: '전시 사진을 기다리는 중...',
     photoAutomatic: '사진이 자동으로 추가됩니다.',
     photoProgressTitle: '사진 촬영 진행 중',
@@ -192,8 +193,8 @@ const copy = {
     finalPhotoPending: '사진을 기다리는 중입니다',
     finalPhotoPendingBody: '전시 스태프가 촬영하면 사진이 자동으로 이곳에 표시됩니다.',
     finalPhotoUnavailable: '사진이 연결되었지만 잠시 사용할 수 없습니다. 나중에 다시 시도해 주세요.',
-    finalEmailTitle: 'Eternal Beam으로 이야기를 완성하세요',
-    finalEmailBody: '반려동물의 AI 영상이 준비되면 받아보시겠어요? 이메일을 입력해 주세요.',
+    finalEmailTitle: 'Eternal Beam AI 영상 받기',
+    finalEmailBody: '반려동물의 AI 영상이 준비되면 알려드려요.',
     finalEmailPlaceholder: '이메일 주소 (선택 사항)',
     finalNotify: '저장하기',
     finalEmailInvalid: '유효한 이메일 주소를 입력해 주세요.',
@@ -206,11 +207,12 @@ const copy = {
     finalSoulTraceBody: '소중한 순간을 진심 어린 편지나 시즌 Polaroid로 남겨 보세요.',
     finalSoulTraceCta: 'Soul Trace 둘러보기',
     idCreatedNote: '이 ID는 전시 부스에서 반려동물 사진을 촬영하고 Passport를 완성하는 데 사용됩니다.',
-    journey: '이용 방법',
     steps: [
-      { title: 'Pet ID 만들기', description: '고유한 Pet ID를 즉시 받아요.' },
-      { title: '부스에서 사진 촬영', description: '이름을 입력하고 전시 사진을 받아요.' },
-      { title: 'Passport 다운로드', description: '디지털 Passport를 받아 오래 간직해요.' },
+      { title: '사진 부스 방문', description: '전시 스태프가 반려동물의 특별한 사진을 촬영해 드려요.' },
+      { title: 'Eternal Beam에서 만나기', description: 'Eternal Beam 부스에서 반려동물의 특별한 AI 영상을 감상해 보세요.' },
+      { title: 'Soul Trace 방문', description: 'Soul Trace 부스에서 진심 어린 이야기와 시즌 추억을 만나 보세요.' },
+      { title: '선물 받기', description: '전시 경험을 마친 후 특별한 선물을 받아 가세요.' },
+      { title: 'Pet Passport 다운로드', description: '반려동물의 이름을 입력하고 디지털 Passport를 확인해 보세요.' },
     ],
     register: '반려동물 등록',
     petName: '반려동물 이름',
@@ -290,6 +292,7 @@ export function ExhibitionPassportScreen() {
     const stored = readPassportSession(undefined, exhibitionId)
     return stored?.petName || ''
   })
+  const petNameRef = useRef(petName)
   const [stage, setStage] = useState<PassportStage>(() => passportStage(record))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -315,7 +318,10 @@ export function ExhibitionPassportScreen() {
     retrievePetPassport(session.passportToken)
       .then((fresh) => {
         if (!active) return
-        const merged = fresh.pet_name ? fresh : { ...fresh, pet_name: session.petName }
+        const merged = {
+          ...fresh,
+          pet_name: petNameRef.current || fresh.pet_name || session.petName || null,
+        }
         setPetName(merged.pet_name || '')
         setRecord(merged)
         setStage(passportStage(merged))
@@ -345,7 +351,10 @@ export function ExhibitionPassportScreen() {
       try {
         const fresh = await retrievePetPassport(session.passportToken)
         if (!active) return
-        const merged = fresh.pet_name ? fresh : { ...fresh, pet_name: session.petName || petName || null }
+        const merged = {
+          ...fresh,
+          pet_name: petNameRef.current || fresh.pet_name || session.petName || null,
+        }
         setPetName(merged.pet_name || '')
         setRecord(merged)
         setStage(passportStage(merged))
@@ -406,6 +415,7 @@ export function ExhibitionPassportScreen() {
       } satisfies PassportSession
       setSession(nextSession)
       setRecord(response)
+      petNameRef.current = response.pet_name || ''
       setPetName(response.pet_name || '')
       setStage(passportStage(response))
       setView('photo')
@@ -422,7 +432,10 @@ export function ExhibitionPassportScreen() {
     setError(null)
     try {
       const fresh = await retrievePetPassport(session.passportToken)
-      const merged = fresh.pet_name ? fresh : { ...fresh, pet_name: session.petName || petName || null }
+      const merged = {
+        ...fresh,
+        pet_name: petNameRef.current || fresh.pet_name || session.petName || null,
+      }
       savePassportSession(merged, session.passportToken, undefined, session.exhibitionId)
       setPetName(merged.pet_name || '')
       setRecord(merged)
@@ -435,6 +448,7 @@ export function ExhibitionPassportScreen() {
   }
 
   function handlePetNameChange(value: string) {
+    petNameRef.current = value
     setPetName(value)
     if (!session || !record) return
     const normalizedName = value.trim() || null
@@ -465,6 +479,7 @@ export function ExhibitionPassportScreen() {
     clearPendingPassportIdReservation(undefined, exhibitionId)
     setSession(null)
     setRecord(null)
+    petNameRef.current = ''
     setPetName('')
     setStage('register')
     setView('welcome')
@@ -476,13 +491,15 @@ export function ExhibitionPassportScreen() {
   return (
     <main className={`passport-page ${isHome ? 'passport-page-home' : view === 'photo' ? 'passport-page-photo-step' : view === 'final' ? 'passport-page-final-step' : 'passport-page-flow'}`}>
       <header className="passport-header">
-        <a className="passport-brand" href="/exhibition/passport" aria-label="Pet Passport home">
-          <span className="passport-brand-mark" aria-hidden="true">
-            <Globe2 size={28} strokeWidth={1.1} />
-            <PawPrint className="passport-brand-paw" size={14} fill="currentColor" strokeWidth={1.2} />
-          </span>
-          <span>{t.brand}</span>
-        </a>
+        {!isHome && (
+          <a className="passport-brand" href="/exhibition/passport" aria-label="Pet Passport home">
+            <span className="passport-brand-mark" aria-hidden="true">
+              <Globe2 size={28} strokeWidth={1.1} />
+              <PawPrint className="passport-brand-paw" size={14} fill="currentColor" strokeWidth={1.2} />
+            </span>
+            <span>{t.brand}</span>
+          </a>
+        )}
         <button
           className="passport-language"
           type="button"
@@ -569,7 +586,6 @@ export function ExhibitionPassportScreen() {
               nameHint: t.photoNameHint,
               continueWaiting: t.photoPreview,
               continueReady: t.photoReveal,
-              journeyTitle: t.journey,
               journeySteps: t.steps,
               email: {
                 title: t.finalEmailTitle,
@@ -597,20 +613,10 @@ export function ExhibitionPassportScreen() {
         {isHome && <div className="passport-home-hero">
           <div className="passport-home-hero-art" aria-hidden="true" />
           <div className="passport-home-hero-copy">
-            <div className="passport-kicker"><span /> {t.eyebrow}</div>
-            <img className="passport-home-eternal-logo" src="/eternal-beam-logo-full.png" alt="Eternal Beam" />
             <h1 aria-label={t.title}><span>PET</span><span>PASSPORT</span></h1>
-            <div className="passport-title-rule" aria-hidden="true"><span /> <ArrowRight size={15} /> <span /></div>
-            <p className="passport-home-subtitle">{t.subtitle}</p>
-            <p className="passport-home-intro">
-              <span>{t.intro[0]}</span>
-              <span>{t.intro[1]}</span>
-            </p>
-            {isHome && (
-              <button className="passport-primary-button passport-home-cta" type="button" onClick={createPetId} disabled={busy}>
-                {busy ? t.creating : t.createId} <ArrowRight size={18} />
-              </button>
-            )}
+            <button className="passport-primary-button passport-home-cta" type="button" onClick={createPetId} disabled={busy}>
+              {busy ? t.creating : t.createId} <ArrowRight size={18} />
+            </button>
           </div>
         </div>}
 

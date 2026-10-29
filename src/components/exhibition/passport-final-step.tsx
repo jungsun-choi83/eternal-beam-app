@@ -246,16 +246,11 @@ export function PassportFinalStep({
   }
 
   return (
-    <section className="passport-final-step" aria-labelledby="passport-final-title">
+    <section className="passport-final-step" aria-label="Pet Passport">
       <div className="passport-final-topbar">
         <button className="passport-final-back" type="button" onClick={onBack}>
           ← {labels.back}
         </button>
-      </div>
-
-      <div className="passport-final-heading">
-        <h1 className="passport-screen-title" id="passport-final-title">{isReady ? labels.titleReady : labels.titleWaiting}</h1>
-        <p>{isReady ? labels.subtitleReady : labels.subtitleWaiting}</p>
       </div>
 
       <div className="passport-final-booklet-wrap">
