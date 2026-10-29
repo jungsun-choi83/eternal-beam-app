@@ -26,12 +26,14 @@ export function PassportEmailSection({
   emailSaved = false,
   aiVideoConsent: initialAiVideoConsent = false,
   marketingConsent: initialMarketingConsent = false,
+  onEmailEntered,
 }: {
   labels: PassportEmailLabels
   passportToken: string
   emailSaved?: boolean
   aiVideoConsent?: boolean
   marketingConsent?: boolean
+  onEmailEntered?: () => void
 }) {
   const [email, setEmail] = useState('')
   const [message, setMessage] = useState<string | null>(emailSaved ? labels.saved : null)
@@ -90,7 +92,10 @@ export function PassportEmailSection({
               id="passport-email"
               type="email"
               value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              onChange={(event) => {
+                setEmail(event.target.value)
+                if (event.target.value.trim()) onEmailEntered?.()
+              }}
               placeholder={labels.placeholder}
               autoComplete="email"
             />
