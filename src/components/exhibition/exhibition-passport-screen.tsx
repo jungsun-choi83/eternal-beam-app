@@ -104,11 +104,11 @@ const copy = {
     finalSoulTraceCta: 'Explore Soul Trace',
     idCreatedNote: "This ID will be used at the exhibition booth to capture your pet's photo and complete their passport.",
     steps: [
-      { title: 'Visit the Photo Booth', description: "Get a photo of your pet for your passport." },
-      { title: 'Experience Eternal Beam', description: "See your pet come to life on screen." },
-      { title: 'Discover Soul Trace', description: 'Explore Soul Trace and try its features.' },
-      { title: 'Collect Your Gift', description: 'Finish the event activities and collect your gift.' },
-      { title: "Get Your Pet Passport", description: "Add your pet's name and get the passport" },
+      { title: 'Visit the Photo Booth', description: "Let our staff capture a special photo of your pet." },
+      { title: 'See Your Pet at Eternal Beam', description: "Watch your pet's unique AI video at the Eternal Beam booth." },
+      { title: 'Visit Soul Trace', description: 'Explore heartfelt stories and seasonal memories at our Soul Trace booth.' },
+      { title: "Download Your Pet's Passport", description: "Add your pet's name and reveal your digital passport." },
+      { title: 'Claim Your Gift', description: 'Receive your special exhibition gift after completing the experience.' },
     ],
     register: 'Register your pet',
     petName: 'Pet name',
@@ -211,8 +211,8 @@ const copy = {
       { title: '사진 부스 방문', description: '전시 스태프가 반려동물의 특별한 사진을 촬영해 드려요.' },
       { title: 'Eternal Beam에서 만나기', description: 'Eternal Beam 부스에서 반려동물의 특별한 AI 영상을 감상해 보세요.' },
       { title: 'Soul Trace 방문', description: 'Soul Trace 부스에서 진심 어린 이야기와 시즌 추억을 만나 보세요.' },
-      { title: '선물 받기', description: '전시 경험을 마친 후 특별한 선물을 받아 가세요.' },
       { title: 'Pet Passport 다운로드', description: '반려동물의 이름을 입력하고 디지털 Passport를 확인해 보세요.' },
+      { title: '선물 받기', description: '전시 경험을 마친 후 특별한 선물을 받아 가세요.' },
     ],
     register: '반려동물 등록',
     petName: '반려동물 이름',
@@ -491,7 +491,7 @@ export function ExhibitionPassportScreen() {
   return (
     <main className={`passport-page ${isHome ? 'passport-page-home' : view === 'photo' ? 'passport-page-photo-step' : view === 'final' ? 'passport-page-final-step' : 'passport-page-flow'}`}>
       <header className="passport-header">
-        {!isHome && (
+        {!isHome && view !== 'photo' && view !== 'final' && (
           <a className="passport-brand" href="/exhibition/passport" aria-label="Pet Passport home">
             <span className="passport-brand-mark" aria-hidden="true">
               <Globe2 size={28} strokeWidth={1.1} />

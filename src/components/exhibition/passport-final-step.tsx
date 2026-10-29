@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Check, Download, ExternalLink, Share2, Sparkles } from 'lucide-react'
+import { Check, Download, ExternalLink, Share2 } from 'lucide-react'
 import { downloadPetPassport, sharePetPassport } from '@/lib/exhibition-passport-download'
 import {
   configuredExhibitionLocation,
@@ -316,12 +316,6 @@ export function PassportFinalStep({
         </div>
       </div>
 
-      {!isReady && (
-        <div className="passport-final-pending" role="status">
-          <Sparkles size={18} aria-hidden="true" />
-          <div><strong>{labels.photoPending}</strong><p>{labels.photoPendingBody}</p></div>
-        </div>
-      )}
       {photoReady && (!record.photo_url || photoFailed) && <p className="passport-final-error" role="alert">{labels.photoUnavailable}</p>}
 
       <div className="passport-final-actions">
