@@ -115,7 +115,7 @@ export function PassportPhotoStep({
               />
             </div>
           )}
-          {index === 3 && (
+          {index === 4 && (
             <div className="passport-event-final-action">
               <div className="passport-photo-name-field">
                 <label htmlFor="passport-pet-name">{labels.nameLabel}</label>
