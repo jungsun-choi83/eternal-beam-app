@@ -122,17 +122,16 @@
 .passport-final-heading { margin: 0 auto 25px; max-width: 880px; text-align: center; }
 .passport-final-heading h1 { color: var(--passport-gold-bright); font-family: var(--font-headline, Georgia, serif); font-size: clamp(1.7rem, 4vw, 3.1rem); font-weight: 400; letter-spacing: .08em; line-height: 1.1; margin: 10px 0 7px; }
 .passport-final-heading p { color: rgba(247, 240, 223, .82); font-family: var(--font-headline, Georgia, serif); font-size: 1rem; margin: 0; }
-.passport-final-booklet-wrap { margin: 0 auto; max-width: 1040px; overflow: hidden; padding: 0 0 8px; }
-.passport-final-booklet { aspect-ratio: 3 / 2; box-shadow: 0 28px 75px rgba(0, 0, 0, .55); container-type: inline-size; margin: 0 auto; max-width: 1040px; overflow: hidden; position: relative; width: 100%; }
+.passport-final-booklet-wrap { margin: 0 auto; max-width: 720px; overflow: hidden; padding: 0 0 8px; }
+.passport-final-booklet { aspect-ratio: 2 / 3; box-shadow: 0 28px 75px rgba(0, 0, 0, .55); container-type: inline-size; margin: 0 auto; max-width: 720px; overflow: hidden; position: relative; width: 100%; }
 .passport-final-template { display: block; height: 100%; inset: 0; object-fit: fill; position: absolute; width: 100%; }
 .passport-final-photo { display: block; height: 100%; inset: 0; pointer-events: none; position: absolute; width: 100%; z-index: 2; }
 .passport-final-frame-overlay { height: 100%; inset: 0; pointer-events: none; position: absolute; width: 100%; z-index: 3; }
-.passport-final-location-cover { background: rgba(245, 232, 203, .94); height: 6.05%; left: 28.5%; position: absolute; top: 55.18%; width: 20.2%; z-index: 2; }
-.passport-final-value { color: #10213a; font-family: Georgia, 'Times New Roman', serif; font-size: clamp(.58rem, 1.8cqw, 1.18rem); line-height: 1; max-width: 17.2%; overflow: hidden; position: absolute; text-overflow: ellipsis; white-space: nowrap; z-index: 3; }
-.passport-final-name { left: 29.3%; top: 33.8%; }
-.passport-final-id { left: 29.3%; top: 41.1%; }
-.passport-final-date { left: 29.3%; top: 48.2%; }
-.passport-final-location { left: 29.3%; top: 55.9%; }
+.passport-final-value { color: #10213a; font-family: Georgia, 'Times New Roman', serif; font-size: clamp(.58rem, 2.25cqw, 1.15rem); line-height: 1; max-width: 31.25%; overflow: hidden; position: absolute; text-overflow: ellipsis; white-space: nowrap; z-index: 3; }
+.passport-final-name { left: 48.93%; top: 60.05%; }
+.passport-final-id { left: 48.93%; top: 65.95%; }
+.passport-final-date { left: 48.93%; top: 71.55%; }
+.passport-final-location { left: 48.93%; top: 77.3%; }
 .passport-final-machine { color: #244b70; font: clamp(.3rem, 1.25cqw, .82rem) / 1.75 'Courier New', monospace; font-weight: 400; height: 10.55%; left: 6.1%; letter-spacing: .02em; overflow: hidden; padding: .55% .6%; position: absolute; text-rendering: geometricPrecision; top: 83.2%; white-space: nowrap; width: 47%; z-index: 3; }
 .passport-final-machine span { display: block; }
 .passport-final-pending { align-items: flex-start; background: rgba(12, 16, 16, .86); border: 1px solid var(--passport-line); color: var(--passport-cream); display: flex; gap: 12px; margin: 18px auto 0; max-width: 720px; padding: 17px 20px; }
@@ -2132,11 +2131,11 @@
 /* The approved template is the artwork. The browser and download renderer
    both use one fixed 1536 × 1024 SVG coordinate system. */
 .passport-art {
-  aspect-ratio: 3 / 2;
+  aspect-ratio: 2 / 3;
   background: #080908;
   border: 0;
   box-shadow: none;
-  max-width: 1024px;
+  max-width: 720px;
   overflow: hidden;
   position: relative;
   width: 100%;

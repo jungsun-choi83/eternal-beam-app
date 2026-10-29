@@ -12,11 +12,11 @@ test('uses Seoul, Korea as the Passport location fallback', () => {
     photo_received_at: null,
     created_at: '2026-10-20T00:00:00Z',
   })
-  assert.match(svg, /Eternal%20Beam%20Travel%20Passport%20Duo%20Clean\.png/)
-  assert.match(svg, /P&lt;EBBMOMO/)
+  assert.match(svg, /passport%20%282%29\.png/)
+  assert.match(svg, />2026\.10\.20<\/text>/)
 })
 
-test('places the live photo under a foreground copy of the baked frame', () => {
+test('places the live photo inside the lower-page photo opening', () => {
   const svg = buildPassportSvg({
     exhibition_id: 'seoul-2026',
     queue_number: 42,
@@ -25,11 +25,9 @@ test('places the live photo under a foreground copy of the baked frame', () => {
     photo_received_at: null,
     created_at: '2026-10-20T00:00:00Z',
   }, { photoHref: 'data:image/png;base64,photo' })
-  assert.match(svg, /id="passportPhotoFrameMask"/)
-  assert.match(svg, /mask="url\(#passportPhotoFrameMask\)"/)
-  assert.match(svg, /id="passportPhotoClip"><path d="M 196 312/)
-  assert.match(svg, /<path d="M 196 312[^>]+fill="black"\/>/)
-  assert.match(svg, /id="passport-photo"[^>]+transform="rotate\(1\.5 295 453\.5\)"[^>]+preserveAspectRatio="xMidYMid slice"/)
+  assert.match(svg, /id="passportPhotoClip"><path d="M 176 885 H 472 V 1220 H 176 Z"\/><\/clipPath>/)
+  assert.match(svg, /id="passport-photo"[^>]+preserveAspectRatio="xMidYMid slice"/)
+  assert.doesNotMatch(svg, /passportPhotoFrameMask|rotate\(/)
 })
 
 test('keeps an explicitly configured location when one is provided', () => {

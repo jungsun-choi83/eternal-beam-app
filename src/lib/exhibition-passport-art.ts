@@ -1,58 +1,42 @@
 import type { PassportRecord } from './exhibition-passport-api.ts'
 
-export const PASSPORT_ART_WIDTH = 1536
-export const PASSPORT_ART_HEIGHT = 1024
-export const PASSPORT_TEMPLATE_PATH = '/home/Eternal%20Beam%20Travel%20Passport%20Duo%20Clean.png'
+export const PASSPORT_ART_WIDTH = 1024
+export const PASSPORT_ART_HEIGHT = 1536
+export const PASSPORT_TEMPLATE_PATH = '/home/passport%20%282%29.png'
 export const PASSPORT_MACHINE_INK = '#244b70'
 
-/** Coordinates measured against the approved 1536 × 1024 template. */
+/** Coordinates measured against the approved 1024 x 1536 vertical template. */
 export const PASSPORT_PHOTO_BOX = {
-  x: 190,
-  y: 312,
-  width: 210,
-  height: 283,
+  x: 176,
+  y: 885,
+  width: 296,
+  height: 335,
   radius: 0,
 } as const
 
-/** The slight clockwise tilt of the printed photo opening in the artwork. */
-export const PASSPORT_PHOTO_ROTATION_DEGREES = 1.5
-export const PASSPORT_PHOTO_CENTER = { x: 295, y: 453.5 } as const
-
-/** Overscan used only for the live image so rotation cannot expose gaps. */
-export const PASSPORT_PHOTO_IMAGE_BOX = {
-  x: 184,
-  y: 305,
-  width: 222,
-  height: 297,
+/** The new artwork has a straight white photo opening; no rotation is needed. */
+export const PASSPORT_PHOTO_ROTATION_DEGREES = 0
+export const PASSPORT_PHOTO_CENTER = {
+  x: PASSPORT_PHOTO_BOX.x + PASSPORT_PHOTO_BOX.width / 2,
+  y: PASSPORT_PHOTO_BOX.y + PASSPORT_PHOTO_BOX.height / 2,
 } as const
 
-/**
- * The actual inner opening of the baked photo frame. It is intentionally
- * separate from PASSPORT_PHOTO_BOX: the live image must follow the softly
- * rounded/chamfered paper opening, not expose a hard rectangular edge.
- */
+/** The image is contained inside the printed white photo opening. */
+export const PASSPORT_PHOTO_IMAGE_BOX = PASSPORT_PHOTO_BOX
+
+/** Inner opening of the lower-page photo frame in the supplied artwork. */
 export const PASSPORT_PHOTO_APERTURE_PATH = [
-  'M 196 312',
-  'Q 190 312 190 320',
-  'L 190 580',
-  'Q 190 588 198 588',
-  'L 392 594',
-  'Q 400 594 400 586',
-  'L 400 320',
-  'Q 400 318 392 318',
+  `M ${PASSPORT_PHOTO_BOX.x} ${PASSPORT_PHOTO_BOX.y}`,
+  `H ${PASSPORT_PHOTO_BOX.x + PASSPORT_PHOTO_BOX.width}`,
+  `V ${PASSPORT_PHOTO_BOX.y + PASSPORT_PHOTO_BOX.height}`,
+  `H ${PASSPORT_PHOTO_BOX.x}`,
   'Z',
 ].join(' ')
 
-/** Full baked frame region redrawn above the live photo. */
-export const PASSPORT_PHOTO_FRAME_OUTER = {
-  x: 154,
-  y: 278,
-  width: 286,
-  height: 346,
-} as const
-
-/** Angled lower-left stamp that overlaps the photo opening in the artwork. */
-export const PASSPORT_PHOTO_OVERLAP_STAMP = '38,546 338,612 311,716 12,650'
+// Compatibility exports for callers that share the art module. The new PNG
+// already contains its frame artwork, so no foreground redraw is needed.
+export const PASSPORT_PHOTO_FRAME_OUTER = PASSPORT_PHOTO_BOX
+export const PASSPORT_PHOTO_OVERLAP_STAMP = ''
 
 export function formatPassportId(queueNumber: number): string {
   return `#${String(queueNumber).padStart(4, '0')}`
@@ -138,54 +122,34 @@ export type PassportSvgOptions = {
 /**
  * One SVG composition is used by the browser preview and by the downloaded
  * file. The supplied template owns all labels and decorations; this function
- * adds only the photo and four data values.
+ * adds only the photo and four dynamic values.
  */
 export function buildPassportSvg(record: PassportRecord, options: PassportSvgOptions = {}): string {
   const templateHref = options.templateHref || PASSPORT_TEMPLATE_PATH
-  const petName = record.pet_name?.trim() || 'YOUR PET'
+  const petName = record.pet_name?.trim() || '—'
   const location = options.location || passportLocationLabel(record.exhibition_id)
-  const issuedDate = formatPassportIssuedDate(record.created_at, options.language === 'ko' ? 'ko-KR' : 'en-US')
+  const issuedDate = formatPassportIssuedDateSeoul(record.created_at)
   const petId = options.petId || formatPassportId(record.queue_number)
-  const petNameAttributes = fittedTextAttributes(petName, 30, 18, 250)
-  const idAttributes = fittedTextAttributes(petId, 28, 18, 250)
-  const dateAttributes = fittedTextAttributes(issuedDate, 27, 18, 250)
-  const locationAttributes = fittedTextAttributes(location, 27, 18, 250)
-  const photo = PASSPORT_PHOTO_BOX
-  const frame = PASSPORT_PHOTO_FRAME_OUTER
+  const valueX = 501
+  const maxWidth = 320
   const photoHref = options.photoHref ? escapeXml(options.photoHref) : null
-  const [machineLineOne, machineLineTwo] = passportMachineLines(petName, petId, record.created_at)
-  const dynamicLocationLayer = location.trim().toUpperCase() === 'SEOUL, KOREA'
-    ? ''
-    : `<rect x="438" y="565" width="310" height="62" fill="#f5e8cb" opacity=".94"/>
-  <text x="450" y="606" fill="#10213a" font-family="Georgia, 'Times New Roman', serif" ${locationAttributes}>${escapeXml(location)}</text>`
-
   const photoLayer = photoHref ? `
   <defs>
     <clipPath id="passportPhotoClip"><path d="${PASSPORT_PHOTO_APERTURE_PATH}"/></clipPath>
-    <filter id="passportPhotoBlur" x="-15%" y="-15%" width="130%" height="130%"><feGaussianBlur stdDeviation="16"/></filter>
-    <mask id="passportPhotoFrameMask" maskUnits="userSpaceOnUse" x="0" y="0" width="${PASSPORT_ART_WIDTH}" height="${PASSPORT_ART_HEIGHT}">
-      <rect width="${PASSPORT_ART_WIDTH}" height="${PASSPORT_ART_HEIGHT}" fill="black"/>
-      <rect x="${frame.x}" y="${frame.y}" width="${frame.width}" height="${frame.height}" fill="white"/>
-      <path d="${PASSPORT_PHOTO_APERTURE_PATH}" fill="black"/>
-      <polygon points="${PASSPORT_PHOTO_OVERLAP_STAMP}" fill="white"/>
-    </mask>
   </defs>
   <g clip-path="url(#passportPhotoClip)">
-    <rect x="${photo.x}" y="${photo.y}" width="${photo.width}" height="${photo.height}" fill="#eee3cc"/>
-    <image id="passport-photo" href="${photoHref}" x="${PASSPORT_PHOTO_IMAGE_BOX.x}" y="${PASSPORT_PHOTO_IMAGE_BOX.y}" width="${PASSPORT_PHOTO_IMAGE_BOX.width}" height="${PASSPORT_PHOTO_IMAGE_BOX.height}" transform="rotate(${PASSPORT_PHOTO_ROTATION_DEGREES} ${PASSPORT_PHOTO_CENTER.x} ${PASSPORT_PHOTO_CENTER.y})" preserveAspectRatio="xMidYMid slice"/>
-  </g>
-  <image href="${escapeXml(templateHref)}" x="0" y="0" width="${PASSPORT_ART_WIDTH}" height="${PASSPORT_ART_HEIGHT}" preserveAspectRatio="none" mask="url(#passportPhotoFrameMask)"/>` : ''
+    <rect x="${PASSPORT_PHOTO_BOX.x}" y="${PASSPORT_PHOTO_BOX.y}" width="${PASSPORT_PHOTO_BOX.width}" height="${PASSPORT_PHOTO_BOX.height}" fill="#ffffff"/>
+    <image id="passport-photo" href="${photoHref}" x="${PASSPORT_PHOTO_IMAGE_BOX.x}" y="${PASSPORT_PHOTO_IMAGE_BOX.y}" width="${PASSPORT_PHOTO_IMAGE_BOX.width}" height="${PASSPORT_PHOTO_IMAGE_BOX.height}" preserveAspectRatio="xMidYMid slice"/>
+  </g>` : ''
 
   return `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${PASSPORT_ART_WIDTH}" height="${PASSPORT_ART_HEIGHT}" viewBox="0 0 ${PASSPORT_ART_WIDTH} ${PASSPORT_ART_HEIGHT}" role="img" aria-label="Eternal Beam Pet Passport for ${escapeXml(petName)}">
   <image href="${escapeXml(templateHref)}" x="0" y="0" width="${PASSPORT_ART_WIDTH}" height="${PASSPORT_ART_HEIGHT}" preserveAspectRatio="none"/>
   ${photoLayer}
-  <text x="450" y="374" fill="#10213a" font-family="Georgia, 'Times New Roman', serif" ${petNameAttributes}>${escapeXml(petName)}</text>
-  <text x="450" y="449" fill="#10213a" font-family="Georgia, 'Times New Roman', serif" ${idAttributes}>${escapeXml(petId)}</text>
-  <text x="450" y="521" fill="#10213a" font-family="Georgia, 'Times New Roman', serif" ${dateAttributes}>${escapeXml(issuedDate)}</text>
-  ${dynamicLocationLayer}
-  <g fill="${PASSPORT_MACHINE_INK}" font-family="'Courier New', monospace" font-size="20" letter-spacing="1">
-    <text x="104" y="884">${escapeXml(machineLineOne)}</text>
-    <text x="104" y="921">${escapeXml(machineLineTwo)}</text>
+  <g fill="#10213a" font-family="Georgia, 'Times New Roman', serif">
+    <text x="${valueX}" y="944" ${fittedTextAttributes(petName, 24, 15, maxWidth)}>${escapeXml(petName)}</text>
+    <text x="${valueX}" y="1033" ${fittedTextAttributes(petId, 23, 15, maxWidth)}>${escapeXml(petId)}</text>
+    <text x="${valueX}" y="1121" ${fittedTextAttributes(issuedDate, 22, 15, maxWidth)}>${escapeXml(issuedDate)}</text>
+    <text x="${valueX}" y="1209" ${fittedTextAttributes(location, 22, 15, maxWidth)}>${escapeXml(location)}</text>
   </g>
 </svg>`
 }

@@ -2,17 +2,11 @@ import {
   formatPassportIssuedDateSeoul,
   PASSPORT_ART_HEIGHT,
   PASSPORT_ART_WIDTH,
-  PASSPORT_MACHINE_INK,
   PASSPORT_PHOTO_APERTURE_PATH,
   PASSPORT_PHOTO_BOX,
-  PASSPORT_PHOTO_CENTER,
   PASSPORT_PHOTO_IMAGE_BOX,
-  PASSPORT_PHOTO_FRAME_OUTER,
-  PASSPORT_PHOTO_OVERLAP_STAMP,
-  PASSPORT_PHOTO_ROTATION_DEGREES,
   PASSPORT_TEMPLATE_PATH,
   passportLocationLabel,
-  passportMachineLines,
 } from './exhibition-passport-art.ts'
 import type { PassportRecord } from './exhibition-passport-api.ts'
 
@@ -74,11 +68,8 @@ function drawCover(context: CanvasRenderingContext2D, image: HTMLImageElement): 
   const height = image.naturalHeight * scale
   context.save()
   clipPhotoAperture(context)
-  context.fillStyle = '#eee3cc'
+  context.fillStyle = '#ffffff'
   context.fillRect(PASSPORT_PHOTO_BOX.x, PASSPORT_PHOTO_BOX.y, PASSPORT_PHOTO_BOX.width, PASSPORT_PHOTO_BOX.height)
-  context.translate(PASSPORT_PHOTO_CENTER.x, PASSPORT_PHOTO_CENTER.y)
-  context.rotate(PASSPORT_PHOTO_ROTATION_DEGREES * Math.PI / 180)
-  context.translate(-PASSPORT_PHOTO_CENTER.x, -PASSPORT_PHOTO_CENTER.y)
   context.drawImage(image, PASSPORT_PHOTO_IMAGE_BOX.x + (PASSPORT_PHOTO_IMAGE_BOX.width - width) / 2, PASSPORT_PHOTO_IMAGE_BOX.y + (PASSPORT_PHOTO_IMAGE_BOX.height - height) / 2, width, height)
   context.restore()
 }
@@ -94,37 +85,7 @@ function clipPhotoAperture(context: CanvasRenderingContext2D): void {
 }
 
 function tracePhotoAperture(context: CanvasRenderingContext2D): void {
-  // Same geometry as PASSPORT_PHOTO_APERTURE_PATH, expressed with Canvas
-  // calls so the downloaded PNG uses exactly the SVG preview's aperture.
-  context.moveTo(196, 312)
-  context.quadraticCurveTo(190, 312, 190, 320)
-  context.lineTo(190, 580)
-  context.quadraticCurveTo(190, 588, 198, 588)
-  context.lineTo(392, 594)
-  context.quadraticCurveTo(400, 594, 400, 586)
-  context.lineTo(400, 320)
-  context.quadraticCurveTo(400, 318, 392, 318)
-  context.closePath()
-}
-
-/** Redraw the baked frame outside the photo opening so its corners stay above the photo. */
-function drawFrameOverlay(context: CanvasRenderingContext2D, template: HTMLImageElement): void {
-  context.save()
-  context.beginPath()
-  context.rect(PASSPORT_PHOTO_FRAME_OUTER.x, PASSPORT_PHOTO_FRAME_OUTER.y, PASSPORT_PHOTO_FRAME_OUTER.width, PASSPORT_PHOTO_FRAME_OUTER.height)
-  tracePhotoAperture(context)
-  context.clip('evenodd')
-  context.drawImage(template, 0, 0, PASSPORT_ART_WIDTH, PASSPORT_ART_HEIGHT)
-  context.restore()
-
-  const stampPoints = PASSPORT_PHOTO_OVERLAP_STAMP.split(' ').map((point) => point.split(',').map(Number))
-  context.save()
-  context.beginPath()
-  stampPoints.forEach(([x, y], index) => index === 0 ? context.moveTo(x, y) : context.lineTo(x, y))
-  context.closePath()
-  context.clip()
-  context.drawImage(template, 0, 0, PASSPORT_ART_WIDTH, PASSPORT_ART_HEIGHT)
-  context.restore()
+  context.rect(PASSPORT_PHOTO_BOX.x, PASSPORT_PHOTO_BOX.y, PASSPORT_PHOTO_BOX.width, PASSPORT_PHOTO_BOX.height)
 }
 
 export async function createPetPassportPng(
@@ -149,25 +110,14 @@ export async function createPetPassportPng(
   if (!context) throw new ExhibitionPassportDownloadError()
 
   context.drawImage(template, 0, 0, PASSPORT_ART_WIDTH, PASSPORT_ART_HEIGHT)
-  if (location.trim().toUpperCase() !== 'SEOUL, KOREA') {
-    context.fillStyle = '#f5e8cb'
-    context.fillRect(438, 565, 310, 62)
-  }
   drawCover(context, photo)
-  drawFrameOverlay(context, template)
 
   const ink = '#10213a'
   const name = record.pet_name?.trim() || '—'
-  fitText(context, name, 450, 374, 250, 30, 'Georgia, serif', ink)
-  fitText(context, petId, 450, 449, 250, 28, 'Georgia, serif', ink)
-  fitText(context, formatPassportIssuedDateSeoul(record.created_at), 450, 521, 250, 27, 'Georgia, serif', ink)
-  if (location.trim().toUpperCase() !== 'SEOUL, KOREA') fitText(context, location, 450, 606, 250, 27, 'Georgia, serif', ink)
-
-  const [machineLineOne, machineLineTwo] = passportMachineLines(name, petId, record.created_at)
-  context.fillStyle = PASSPORT_MACHINE_INK
-  context.font = '20px "Courier New", monospace'
-  context.fillText(machineLineOne, 104, 884)
-  context.fillText(machineLineTwo, 104, 921)
+  fitText(context, name, 501, 944, 320, 24, 'Georgia, serif', ink)
+  fitText(context, petId, 501, 1033, 320, 23, 'Georgia, serif', ink)
+  fitText(context, formatPassportIssuedDateSeoul(record.created_at), 501, 1121, 320, 22, 'Georgia, serif', ink)
+  fitText(context, location, 501, 1209, 320, 22, 'Georgia, serif', ink)
 
   return await new Promise((resolve, reject) => {
     canvas.toBlob((blob) => blob ? resolve(blob) : reject(new ExhibitionPassportDownloadError()), 'image/png')
