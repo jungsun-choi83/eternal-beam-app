@@ -42,7 +42,7 @@ const copy = {
   en: {
     brand: 'Pet Passport',
     eyebrow: 'Create Pet Passport',
-    title: 'PET PASSPORT',
+    title: 'CREATE PET PASSPORT',
     subtitle: 'A JOURNEY OF LOVE BEYOND TIME',
     intro: ['Give your pet an identity.', 'Capture today, keep forever.'],
     createId: "Start",
@@ -142,7 +142,7 @@ const copy = {
   ko: {
     brand: 'Pet Passport',
     eyebrow: 'Pet Passport',
-    title: 'PET PASSPORT',
+    title: 'PET PASSPORT 만들기',
     subtitle: '시간을 넘어 이어지는 사랑의 여정',
     intro: ['반려동물에게 특별한 아이덴티티를 선물하세요.', '오늘의 순간을 담아, 영원히 간직하세요.'],
     createId: 'Pet ID 만들기',
@@ -613,7 +613,7 @@ export function ExhibitionPassportScreen() {
             {isHome && <div className="passport-home-hero">
               <div className="passport-home-hero-art" aria-hidden="true" />
               <div className="passport-home-hero-copy">
-                <h1 aria-label={t.title}><span>PET</span><span>PASSPORT</span></h1>
+                <h1 aria-label={t.title}><span>{t.title}</span></h1>
                 <button className="passport-primary-button passport-home-cta" type="button" onClick={createPetId} disabled={busy}>
                   {busy ? t.creating : t.createId} <ArrowRight size={18} />
                 </button>
