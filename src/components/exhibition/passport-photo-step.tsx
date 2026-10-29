@@ -1,7 +1,8 @@
-import { ArrowLeft, ArrowRight, BookOpenCheck, Camera, Check, Compass, Fingerprint, Globe2, MapPinned, RefreshCw, Sparkles } from 'lucide-react'
+import { useState } from 'react'
+import { ArrowLeft, ArrowRight, BookOpen, Camera, Download, Gift, PlayCircle, Sparkles } from 'lucide-react'
 import { PassportEmailSection, type PassportEmailLabels } from './passport-email-section'
 
-const journeyIcons = [Fingerprint, Camera, BookOpenCheck] as const
+const journeyIcons = [Camera, PlayCircle, BookOpen, Gift, Download] as const
 
 export interface PassportJourneyStep {
   title: string
@@ -30,7 +31,6 @@ interface PassportPhotoStepLabels {
   nameHint: string
   continueWaiting: string
   continueReady: string
-  journeyTitle: string
   journeySteps: readonly PassportJourneyStep[]
   email: PassportEmailLabels
 }
@@ -72,6 +72,78 @@ export function PassportPhotoStep({
   onPetNameChange,
   onContinue,
 }: PassportPhotoStepProps) {
+  const [completedSteps, setCompletedSteps] = useState(() => [false, false, false, false, false])
+  const [emailExpanded, setEmailExpanded] = useState(false)
+
+  function toggleStep(index: number) {
+    setCompletedSteps((current) => current.map((complete, stepIndex) => stepIndex === index ? !complete : complete))
+    if (index === 1) setEmailExpanded((expanded) => !expanded)
+  }
+
+  function renderEventStep({ title, description }: PassportJourneyStep, index: number, extraClass = '') {
+    const Icon = journeyIcons[index]
+    return (
+      <div className={`passport-step passport-event-step ${extraClass} ${completedSteps[index] ? 'is-complete' : ''}`} key={title} role="listitem">
+        <button
+          className="passport-event-step-icon"
+          type="button"
+          aria-pressed={completedSteps[index]}
+          aria-expanded={index === 1 ? emailExpanded : undefined}
+          aria-controls={index === 1 ? 'passport-email-panel' : undefined}
+          aria-label={index === 1
+            ? (emailExpanded ? 'Hide Eternal Beam email options' : 'Show Eternal Beam email options')
+            : (completedSteps[index] ? `Mark ${title} as incomplete` : `Mark ${title} as complete`)}
+          onClick={() => toggleStep(index)}
+        >
+          <Icon size={19} strokeWidth={1.5} aria-hidden="true" />
+        </button>
+        <span className="passport-step-copy">
+          <strong>{title}</strong>
+          <small>{description}</small>
+          {index === 1 && (
+            <div
+              className={`passport-event-email-panel ${emailExpanded ? 'is-open' : ''}`}
+              id="passport-email-panel"
+              aria-hidden={!emailExpanded}
+            >
+              <PassportEmailSection
+                labels={labels.email}
+                passportToken={passportToken}
+                emailSaved={emailSaved}
+                aiVideoConsent={aiVideoConsent}
+                marketingConsent={marketingConsent}
+              />
+            </div>
+          )}
+          {index === 4 && (
+            <div className="passport-event-final-action">
+              <div className="passport-photo-name-field">
+                <label htmlFor="passport-pet-name">{labels.nameLabel}</label>
+                <input
+                  id="passport-pet-name"
+                  type="text"
+                  value={petName}
+                  onChange={(event) => onPetNameChange(event.target.value)}
+                  placeholder={labels.namePlaceholder}
+                  maxLength={40}
+                  autoComplete="off"
+                />
+                <small>{labels.nameHint}</small>
+              </div>
+              {error && <p className="passport-error passport-photo-error" role="alert">{error}</p>}
+              <button className="passport-photo-continue" type="button" onClick={onContinue} disabled={busy}>
+                <Sparkles size={18} aria-hidden="true" /> {photoReceived ? labels.continueReady : labels.continueWaiting} <ArrowRight size={18} aria-hidden="true" />
+              </button>
+            </div>
+          )}
+        </span>
+      </div>
+    )
+  }
+
+  const photoBoothStep = labels.journeySteps[0]
+  const remainingSteps = labels.journeySteps.slice(1)
+
   return (
     <section className="passport-photo-step" aria-labelledby="passport-photo-step-title">
       <div className="passport-photo-step-topbar">
@@ -81,18 +153,22 @@ export function PassportPhotoStep({
         </button>
       </div>
 
-      <div className="passport-photo-heading">
-        <h1 className="passport-screen-title" id="passport-photo-step-title">{labels.title}</h1>
-        <p>{labels.description}</p>
+      <div className="passport-photo-page-id" aria-label={`Pet ID ${petId}`}>
+        <strong>{petId}</strong>
       </div>
 
-      <article className="passport-photo-document" aria-label={`${labels.official} ${petId}`}>
-        <div className="passport-photo-document-inner">
-          <header className="passport-photo-document-header">
-            <span>{labels.official}</span>
-            <small>{labels.edition}</small>
-          </header>
+      <div className="passport-photo-heading passport-event-guide-heading">
+        <h1 className="passport-screen-title" id="passport-photo-step-title">{labels.title}</h1>
+      </div>
 
+      {photoBoothStep && (
+        <div className="passport-photo-booth-step" role="list" aria-label={photoBoothStep.title}>
+          {renderEventStep(photoBoothStep, 0, 'is-photo-booth-step')}
+        </div>
+      )}
+
+      <article className="passport-photo-document" aria-label={`${labels.petId} ${petId}`}>
+        <div className="passport-photo-document-inner">
           <div className={`passport-photo-frame ${photoReceived ? 'has-photo' : ''}`}>
             {photoReceived && photoUrl ? (
               <img src={photoUrl} alt="" />
@@ -107,95 +183,14 @@ export function PassportPhotoStep({
             <span className="passport-photo-frame-corner passport-photo-frame-corner-two" aria-hidden="true" />
           </div>
 
-          <div className="passport-photo-document-details">
-            <div>
-              <span>{labels.petId}</span>
-              <strong>{petId}</strong>
-            </div>
-            <div>
-              <span>{labels.petName}</span>
-              <strong>{petName || labels.noName}</strong>
-            </div>
-          </div>
-
-          <div className="passport-photo-document-compass" aria-hidden="true">
-            <Compass size={58} strokeWidth={.85} />
-            <Globe2 size={31} strokeWidth={.8} />
-            <MapPinned size={14} strokeWidth={1} />
-          </div>
-
-          <div className="passport-photo-document-stamp" aria-hidden="true">
-            <span>EXHIBITION</span>
-            <span>EDITION</span>
-          </div>
-
-          <footer className="passport-photo-document-footer">OFFICIAL PET PASSPORT</footer>
         </div>
       </article>
 
-      <section className={`passport-photo-status ${photoReceived ? 'is-added' : ''}`} aria-live="polite">
-        <div className="passport-photo-status-icon">
-          {photoReceived ? <Check size={20} aria-hidden="true" /> : <RefreshCw size={19} aria-hidden="true" />}
+      <section className="passport-photo-journey" aria-labelledby="passport-photo-step-title">
+        <div className="passport-steps" role="list">
+          {remainingSteps.map((step, index) => renderEventStep(step, index + 1))}
         </div>
-        <div>
-          <h2>{photoReceived ? labels.photoAddedTitle : labels.photoProgressTitle}</h2>
-          <p>{photoReceived ? labels.photoAddedBody : photoUnavailable ? labels.photoUnavailable : labels.photoProgressBody}</p>
-        </div>
-        {!photoReceived && (
-          <button className="passport-photo-refresh" type="button" onClick={onRefresh} disabled={busy}>
-            <RefreshCw size={15} aria-hidden="true" /> {labels.refresh}
-          </button>
-        )}
       </section>
-
-      <div className="passport-photo-name-field">
-        <label htmlFor="passport-pet-name">{labels.nameLabel}</label>
-        <input
-          id="passport-pet-name"
-          type="text"
-          value={petName}
-          onChange={(event) => onPetNameChange(event.target.value)}
-          placeholder={labels.namePlaceholder}
-          maxLength={40}
-          autoComplete="off"
-        />
-        <small>{labels.nameHint}</small>
-      </div>
-
-      {error && <p className="passport-error passport-photo-error" role="alert">{error}</p>}
-
-      <button className="passport-photo-continue" type="button" onClick={onContinue} disabled={busy}>
-        <Sparkles size={18} aria-hidden="true" /> {photoReceived ? labels.continueReady : labels.continueWaiting} <ArrowRight size={18} aria-hidden="true" />
-      </button>
-
-      <section className="passport-photo-journey" aria-labelledby="passport-photo-journey-title">
-        <div className="passport-section-heading">
-          <span className="passport-overline" id="passport-photo-journey-title">{labels.journeyTitle}</span>
-        </div>
-        <ol className="passport-steps">
-          {labels.journeySteps.map(({ title, description }, index) => {
-            const Icon = journeyIcons[index]
-            const complete = index === 0
-            const current = index === 1
-            return (
-              <li className={`passport-step ${complete ? 'is-complete' : ''} ${current ? 'is-current' : ''}`} key={title}>
-                <span className="passport-step-visual">
-                  <span className="passport-step-icon"><Icon size={18} strokeWidth={1.5} /></span>
-                </span>
-                <span className="passport-step-copy"><strong>{title}</strong><small>{description}</small></span>
-              </li>
-            )
-          })}
-        </ol>
-      </section>
-
-      <PassportEmailSection
-        labels={labels.email}
-        passportToken={passportToken}
-        emailSaved={emailSaved}
-        aiVideoConsent={aiVideoConsent}
-        marketingConsent={marketingConsent}
-      />
     </section>
   )
 }
