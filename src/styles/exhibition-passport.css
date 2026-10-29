@@ -1642,6 +1642,15 @@
   box-shadow: 0 0 0 3px rgba(244, 213, 140, .18);
 }
 
+.passport-event-step-number {
+  font-family: var(--font-headline, Georgia, serif);
+  font-size: 1.34rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  line-height: 1;
+  transform: translateX(.04em);
+}
+
 .passport-event-step.is-complete .passport-event-step-icon {
   background: var(--passport-gold);
   border-color: var(--passport-gold);
@@ -1658,13 +1667,13 @@
 .passport-event-step .passport-step-copy strong {
   color: var(--passport-cream);
   font-family: var(--font-headline, Georgia, serif);
-  font-size: .96rem;
+  font-size: 1.44rem;
   font-weight: 500;
 }
 
 .passport-event-step .passport-step-copy small {
   color: rgba(231, 218, 191, .72);
-  font-size: .76rem;
+  font-size: 1.14rem;
   line-height: 1.45;
 }
 
@@ -1695,6 +1704,15 @@
   padding: 16px;
 }
 
+.passport-event-email-panel .passport-final-section-copy h2 { font-size: 1.875rem; }
+.passport-event-email-panel .passport-final-email form { margin-top: 24px; }
+.passport-event-email-panel .passport-email-consent { font-size: 1.11rem; }
+.passport-event-email-panel .passport-final-email-row { margin-top: 18px; }
+.passport-event-email-panel .passport-final-email-row input { font-size: 1.35rem; }
+.passport-event-email-panel .passport-final-email-row button { font-size: 1.5rem; }
+.passport-event-email-panel .passport-final-email-message,
+.passport-event-email-panel .passport-final-error { font-size: 1.05rem; }
+
 .passport-event-email-panel {
   max-height: 0;
   opacity: 0;
@@ -1710,6 +1728,40 @@
   pointer-events: auto;
   visibility: visible;
 }
+
+.passport-event-soultrace-panel {
+  margin-top: 14px;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+  transform: translateY(-5px);
+  transition: max-height .35s ease, opacity .22s ease, transform .35s ease;
+  visibility: hidden;
+}
+
+.passport-event-soultrace-panel.is-open {
+  max-height: 92px;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+  visibility: visible;
+}
+
+.passport-event-soultrace-card {
+  align-items: stretch;
+  background: transparent;
+  border: 0;
+  display: block;
+  margin: 0;
+  max-width: none;
+  min-height: 0;
+  padding: 0;
+  width: auto;
+}
+.passport-event-soultrace-card a { margin-top: 0; }
+.passport-event-soultrace-card h2 { font-size: 1.08rem; }
+.passport-event-soultrace-card p { max-width: 560px; }
 
 .passport-event-step .passport-final-section-copy h2 {
   font-size: 1.05rem;
@@ -1753,8 +1805,9 @@
   .passport-event-step { align-items: start; gap: 0 12px; grid-template-columns: 38px minmax(0, 1fr); padding-bottom: 22px; }
   .passport-event-step:not(:last-child)::after { bottom: -1px; left: 18px; top: 47px; }
   .passport-event-step-icon { height: 36px; width: 36px; }
-  .passport-event-step .passport-step-copy strong { font-size: .9rem; }
-  .passport-event-step .passport-step-copy small { font-size: .73rem; }
+  .passport-event-step-number { font-size: 1.18rem; }
+  .passport-event-step .passport-step-copy strong { font-size: 1.35rem; }
+  .passport-event-step .passport-step-copy small { font-size: 1.095rem; }
   .passport-event-step .passport-final-email { padding: 14px; }
 }
 
@@ -2103,10 +2156,11 @@
     width: 100%;
   }
   .passport-page-home .passport-home-hero h1 {
-    font-size: clamp(2.35rem, 10.5vw, 3.2rem);
-    letter-spacing: .015em;
+    font-size: clamp(1.75rem, 8.2vw, 3.2rem);
+    letter-spacing: 0;
     line-height: .98;
     max-width: 100%;
+    white-space: nowrap;
   }
   .passport-title-rule { max-width: 248px; }
   .passport-home-subtitle { font-size: .73rem; letter-spacing: .19em; margin: 20px 0 18px; max-width: 285px; }

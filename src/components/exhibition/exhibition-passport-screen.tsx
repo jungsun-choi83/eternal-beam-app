@@ -312,6 +312,14 @@ export function ExhibitionPassportScreen() {
   }, [language])
 
   useEffect(() => {
+    if (view !== 'final' || typeof document === 'undefined') return
+    // The photo step can be scrolled near its CTA on mobile. Reset both
+    // document scroll roots so the newly opened Passport starts at its top.
+    document.documentElement.scrollTop = 0
+    document.body.scrollTop = 0
+  }, [view])
+
+  useEffect(() => {
     if (!session?.passportToken) return
     let active = true
     setBusy(true)
@@ -587,6 +595,9 @@ export function ExhibitionPassportScreen() {
               continueWaiting: t.photoPreview,
               continueReady: t.photoReveal,
               journeySteps: t.steps,
+              soulTraceTitle: t.finalSoulTraceTitle,
+              soulTraceBody: t.finalSoulTraceBody,
+              soulTraceCta: t.finalSoulTraceCta,
               email: {
                 title: t.finalEmailTitle,
                 body: t.finalEmailBody,

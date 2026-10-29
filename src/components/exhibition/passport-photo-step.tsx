@@ -1,8 +1,7 @@
-import { useState } from 'react'
-import { ArrowLeft, ArrowRight, BookOpen, Camera, Download, Gift, PlayCircle, Sparkles } from 'lucide-react'
+import { useEffect, useState } from 'react'
+import { ArrowLeft, ArrowRight, Camera, Sparkles } from 'lucide-react'
 import { PassportEmailSection, type PassportEmailLabels } from './passport-email-section'
-
-const journeyIcons = [Camera, PlayCircle, BookOpen, Gift, Download] as const
+import { SoulTracePromo } from './soultrace-promo'
 
 export interface PassportJourneyStep {
   title: string
@@ -32,6 +31,9 @@ interface PassportPhotoStepLabels {
   continueWaiting: string
   continueReady: string
   journeySteps: readonly PassportJourneyStep[]
+  soulTraceTitle: string
+  soulTraceBody: string
+  soulTraceCta: string
   email: PassportEmailLabels
 }
 
@@ -73,45 +75,89 @@ export function PassportPhotoStep({
   onContinue,
 }: PassportPhotoStepProps) {
   const [completedSteps, setCompletedSteps] = useState(() => [false, false, false, false, false])
-  const [emailExpanded, setEmailExpanded] = useState(false)
+
+  useEffect(() => {
+    if (photoReceived) {
+      setCompletedSteps((current) => current[0] ? current : current.map((complete, index) => index === 0 ? true : complete))
+    }
+  }, [photoReceived])
+
+  useEffect(() => {
+    const soulTraceChecked = completedSteps[2]
+
+    if (soulTraceChecked) {
+      setCompletedSteps((current) => current[3] ? current : current.map((complete, index) => index === 3 ? true : complete))
+    }
+  }, [completedSteps])
 
   function toggleStep(index: number) {
+    // Only the Passport step remains manually actionable. The other steps are
+    // display-only or driven by real/progression events.
+    if (index !== 4) return
+    if (index === 4) {
+      setCompletedSteps((current) => current[4] ? current : current.map((complete, stepIndex) => stepIndex === 4 ? true : complete))
+      return
+    }
     setCompletedSteps((current) => current.map((complete, stepIndex) => stepIndex === index ? !complete : complete))
-    if (index === 1) setEmailExpanded((expanded) => !expanded)
   }
 
   function renderEventStep({ title, description }: PassportJourneyStep, index: number, extraClass = '') {
-    const Icon = journeyIcons[index]
     return (
-      <div className={`passport-step passport-event-step ${extraClass} ${completedSteps[index] ? 'is-complete' : ''}`} key={title} role="listitem">
+      <div
+        className={`passport-step passport-event-step ${extraClass} ${completedSteps[index] ? 'is-complete' : ''}`}
+        id={`passport-event-step-${index + 1}`}
+        key={title}
+        role="listitem"
+      >
         <button
           className="passport-event-step-icon"
           type="button"
           aria-pressed={completedSteps[index]}
-          aria-expanded={index === 1 ? emailExpanded : undefined}
-          aria-controls={index === 1 ? 'passport-email-panel' : undefined}
-          aria-label={index === 1
-            ? (emailExpanded ? 'Hide Eternal Beam email options' : 'Show Eternal Beam email options')
+          disabled={index !== 4}
+          aria-label={index === 0
+            ? 'Completed automatically when the exhibition photo is added'
+            : index === 1 || index === 2
+              ? 'Progress step'
+            : index === 3
+              ? 'Completed automatically through the exhibition journey'
             : (completedSteps[index] ? `Mark ${title} as incomplete` : `Mark ${title} as complete`)}
           onClick={() => toggleStep(index)}
         >
-          <Icon size={19} strokeWidth={1.5} aria-hidden="true" />
+          <span className="passport-event-step-number" aria-hidden="true">
+            {index + 1}
+          </span>
         </button>
         <span className="passport-step-copy">
           <strong>{title}</strong>
           <small>{description}</small>
           {index === 1 && (
-            <div
-              className={`passport-event-email-panel ${emailExpanded ? 'is-open' : ''}`}
-              id="passport-email-panel"
-              aria-hidden={!emailExpanded}
-            >
+            <div className="passport-event-email-panel is-open" id="passport-email-panel">
               <PassportEmailSection
                 labels={labels.email}
                 passportToken={passportToken}
                 emailSaved={emailSaved}
                 aiVideoConsent={aiVideoConsent}
                 marketingConsent={marketingConsent}
+                onEmailEntered={() => {
+                  setCompletedSteps((current) => current[1] ? current : current.map((complete, stepIndex) => stepIndex === 1 ? true : complete))
+                }}
+              />
+            </div>
+          )}
+          {index === 2 && (
+            <div className="passport-event-soultrace-panel is-open" id="passport-soul-trace-panel">
+              <SoulTracePromo
+                className="passport-event-soultrace-card"
+                title={labels.soulTraceTitle}
+                body={labels.soulTraceBody}
+                cta={labels.soulTraceCta}
+                minimal
+                onCtaClick={() => {
+                  setCompletedSteps((current) => current[2] ? current : current.map((complete, stepIndex) => stepIndex === 2 ? true : complete))
+                  window.setTimeout(() => {
+                    document.getElementById('passport-event-step-4')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }, 0)
+                }}
               />
             </div>
           )}
@@ -123,7 +169,13 @@ export function PassportPhotoStep({
                   id="passport-pet-name"
                   type="text"
                   value={petName}
-                  onChange={(event) => onPetNameChange(event.target.value)}
+                    onChange={(event) => {
+                      const value = event.target.value
+                      onPetNameChange(value)
+                      if (value.trim()) {
+                        setCompletedSteps((current) => current[4] ? current : current.map((complete, index) => index === 4 ? true : complete))
+                      }
+                    }}
                   placeholder={labels.namePlaceholder}
                   maxLength={40}
                   autoComplete="off"
@@ -131,7 +183,15 @@ export function PassportPhotoStep({
                 <small>{labels.nameHint}</small>
               </div>
               {error && <p className="passport-error passport-photo-error" role="alert">{error}</p>}
-              <button className="passport-photo-continue" type="button" onClick={onContinue} disabled={busy}>
+              <button
+                className="passport-photo-continue"
+                type="button"
+                onClick={() => {
+                  setCompletedSteps((current) => current.map((complete, index) => index === 4 ? true : complete))
+                  onContinue()
+                }}
+                disabled={busy}
+              >
                 <Sparkles size={18} aria-hidden="true" /> {photoReceived ? labels.continueReady : labels.continueWaiting} <ArrowRight size={18} aria-hidden="true" />
               </button>
             </div>
