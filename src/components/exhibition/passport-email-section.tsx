@@ -75,8 +75,15 @@ export function PassportEmailSection({
       <div className="passport-final-section-icon"><MailCheck size={22} /></div>
       <div className="passport-final-section-copy">
         <h2 id="passport-email-title">{labels.title}</h2>
-        <p>{labels.body}</p>
         <form onSubmit={submit}>
+          <label className="passport-email-consent">
+            <input type="checkbox" checked={aiConsent} onChange={(event) => setAiConsent(event.target.checked)} />
+            <span>{labels.aiVideoConsent}</span>
+          </label>
+          <label className="passport-email-consent">
+            <input type="checkbox" checked={marketing} onChange={(event) => setMarketing(event.target.checked)} />
+            <span>{labels.marketingConsent}</span>
+          </label>
           <div className="passport-final-email-row">
             <label className="sr-only" htmlFor="passport-email">{labels.placeholder}</label>
             <input
@@ -89,14 +96,6 @@ export function PassportEmailSection({
             />
             <button type="submit" disabled={saving}>{saving ? labels.saving : labels.notify} <span aria-hidden="true">→</span></button>
           </div>
-          <label className="passport-email-consent">
-            <input type="checkbox" checked={aiConsent} onChange={(event) => setAiConsent(event.target.checked)} />
-            <span>{labels.aiVideoConsent}</span>
-          </label>
-          <label className="passport-email-consent">
-            <input type="checkbox" checked={marketing} onChange={(event) => setMarketing(event.target.checked)} />
-            <span>{labels.marketingConsent}</span>
-          </label>
           {error && <p className="passport-final-error" role="alert">{error}</p>}
           {message && <p className="passport-final-email-message" role="status">{message}</p>}
         </form>
