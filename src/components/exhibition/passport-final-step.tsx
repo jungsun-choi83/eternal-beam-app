@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Check, Download, ExternalLink, Share2 } from 'lucide-react'
+import { Download, Share2 } from 'lucide-react'
 import { downloadPetPassport, sharePetPassport } from '@/lib/exhibition-passport-download'
 import {
   configuredExhibitionLocation,
@@ -66,7 +66,7 @@ type KakaoSdk = {
 
 function getKakaoAppKey(): string {
   try {
-    return String(import.meta.env.VITE_KAKAO_APP_KEY || '').trim()
+    return String(import.meta.env.VITE_KAKAO_APP || import.meta.env.VITE_KAKAO_APP_KEY || '').trim()
   } catch {
     return ''
   }
@@ -197,12 +197,23 @@ export function PassportFinalStep({
     }
   }
 
-  function shareFacebook() {
+  async function shareFacebook() {
     if (!isReady || shareBusy) return
+    setShareBusy(true)
     setShareMessage(null)
-    const shareUrl = `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(safePassportShareUrl())}`
-    openExternal(shareUrl)
-    setShareMessage(labels.shareFacebookOpened)
+    try {
+      const result = await sharePetPassport(record, language, petId, location)
+      if (result === 'shared') {
+        setShareMessage(labels.shared)
+      } else {
+        openExternal('https://www.facebook.com/')
+        setShareMessage(labels.shareFallback)
+      }
+    } catch {
+      setShareMessage(labels.shareFailed)
+    } finally {
+      setShareBusy(false)
+    }
   }
 
   async function shareKakao() {
@@ -212,23 +223,34 @@ export function PassportFinalStep({
     try {
       const appKey = getKakaoAppKey()
       if (appKey) {
-        const kakao = await loadKakaoSdk()
-        if (!kakao.isInitialized()) kakao.init(appKey)
-        const shareUrl = safePassportShareUrl()
-        kakao.Share.sendDefault({
-          objectType: 'feed',
-          content: {
-            title: 'Pet Passport',
-            description: 'A keepsake from the exhibition.',
-            imageUrl: new URL(PASSPORT_TEMPLATE_PATH, window.location.origin).toString(),
-            link: { mobileWebUrl: shareUrl, webUrl: shareUrl },
-          },
-          buttons: [{ title: 'View Passport', link: { mobileWebUrl: shareUrl, webUrl: shareUrl } }],
-        })
+        try {
+          const kakao = await loadKakaoSdk()
+          if (!kakao.isInitialized()) kakao.init(appKey)
+          const shareUrl = safePassportShareUrl()
+          kakao.Share.sendDefault({
+            objectType: 'feed',
+            content: {
+              title: 'Pet Passport',
+              description: 'A keepsake from the exhibition.',
+              imageUrl: new URL(PASSPORT_TEMPLATE_PATH, window.location.origin).toString(),
+              link: { mobileWebUrl: shareUrl, webUrl: shareUrl },
+            },
+            buttons: [{ title: 'View Passport', link: { mobileWebUrl: shareUrl, webUrl: shareUrl } }],
+          })
+          setShareMessage(labels.shared)
+          return
+        } catch {
+          // Local IP/HTTP origins may not be registered in Kakao Developers.
+          // Continue with the real Passport image fallback below.
+        }
+      }
+
+      const result = await sharePetPassport(record, language, petId, location)
+      if (result === 'shared') {
         setShareMessage(labels.shared)
       } else {
-        const result = await sharePetPassport(record, language, petId, location)
-        setShareMessage(result === 'shared' ? labels.shared : labels.shareKakaoUnavailable)
+        openExternal('https://www.kakao.com/talk')
+        setShareMessage(labels.shareFallback)
       }
     } catch {
       setShareMessage(labels.shareKakaoUnavailable)
@@ -322,19 +344,6 @@ export function PassportFinalStep({
       </div>
       {shareMessage && shareMessage !== labels.shared && <p className="passport-final-share-message" role="status">{shareMessage}</p>}
 
-      <section className="passport-final-soultrace">
-        <div className="passport-final-soultrace-art" aria-hidden="true">
-          <img src={`/home/soultrace(${language === 'ko' ? 'ko' : 'eng'})-cropped.png`} alt="" />
-        </div>
-        <div>
-          <h2>{labels.soulTraceTitle}</h2>
-          <p>{labels.soulTraceBody}</p>
-          <a href="https://soultrace.pet" target="_blank" rel="noopener noreferrer">
-            {labels.soulTraceCta} <ExternalLink size={15} />
-          </a>
-        </div>
-        <Check className="passport-final-soultrace-mark" size={22} aria-hidden="true" />
-      </section>
     </section>
   )
 }

@@ -88,6 +88,32 @@ function tracePhotoAperture(context: CanvasRenderingContext2D): void {
   context.rect(PASSPORT_PHOTO_BOX.x, PASSPORT_PHOTO_BOX.y, PASSPORT_PHOTO_BOX.width, PASSPORT_PHOTO_BOX.height)
 }
 
+function triggerPngDownload(doc: Document, png: Blob, filename: string): void {
+  const objectUrl = URL.createObjectURL(png)
+  const anchor = doc.createElement('a')
+  const userAgent = doc.defaultView?.navigator.userAgent || ''
+  const isAppleMobile = /iPad|iPhone|iPod/.test(userAgent)
+    || (userAgent.includes('Macintosh') && (doc.defaultView?.navigator.maxTouchPoints || 0) > 1)
+
+  anchor.href = objectUrl
+  anchor.download = filename
+  anchor.rel = 'noopener'
+  if (isAppleMobile) {
+    // iOS Safari does not reliably honor download= for Blob URLs. Opening the
+    // PNG lets the visitor use the native Save Image action instead.
+    anchor.removeAttribute('download')
+    anchor.target = '_blank'
+  }
+  doc.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+
+  // Keep the Blob URL alive while mobile browsers finish the download/open.
+  const release = () => URL.revokeObjectURL(objectUrl)
+  if (doc.defaultView) doc.defaultView.setTimeout(release, 60_000)
+  else release()
+}
+
 export async function createPetPassportPng(
   record: PassportRecord,
   fetchImpl: typeof fetch = fetch,
@@ -135,15 +161,7 @@ export async function downloadPetPassport(
   const doc = documentImpl || (typeof document !== 'undefined' ? document : null)
   if (!doc) throw new ExhibitionPassportDownloadError()
   const png = await createPetPassportPng(record, fetchImpl, language, petId, location || passportLocationLabel(record.exhibition_id))
-  const objectUrl = URL.createObjectURL(png)
-  const anchor = doc.createElement('a')
-  anchor.href = objectUrl
-  anchor.download = `pet-passport-${record.queue_number}.png`
-  anchor.rel = 'noopener'
-  doc.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
-  URL.revokeObjectURL(objectUrl)
+  triggerPngDownload(doc, png, `pet-passport-${record.queue_number}.png`)
 }
 
 export async function sharePetPassport(
@@ -156,14 +174,15 @@ export async function sharePetPassport(
   const filename = `pet-passport-${record.queue_number}.png`
   const file = typeof File !== 'undefined' ? new File([png], filename, { type: 'image/png' }) : null
   if (file && navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
-    await navigator.share({ title: 'Pet Passport', files: [file] })
-    return 'shared'
+    try {
+      await navigator.share({ title: 'Pet Passport', files: [file] })
+      return 'shared'
+    } catch {
+      // Some mobile browsers reject file sharing from local HTTP hosts or
+      // after asynchronous image generation. Continue with the real PNG
+      // download fallback instead of reporting a broken share action.
+    }
   }
-  const objectUrl = URL.createObjectURL(png)
-  const anchor = document.createElement('a')
-  anchor.href = objectUrl
-  anchor.download = filename
-  anchor.click()
-  URL.revokeObjectURL(objectUrl)
+  triggerPngDownload(document, png, filename)
   return 'downloaded'
 }
