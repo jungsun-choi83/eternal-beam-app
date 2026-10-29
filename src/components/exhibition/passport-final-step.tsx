@@ -9,17 +9,10 @@ import {
   formatPassportIssuedDateSeoul,
   PASSPORT_ART_HEIGHT,
   PASSPORT_ART_WIDTH,
-  PASSPORT_MACHINE_INK,
   PASSPORT_PHOTO_APERTURE_PATH,
-  PASSPORT_PHOTO_BOX,
-  PASSPORT_PHOTO_CENTER,
   PASSPORT_PHOTO_IMAGE_BOX,
-  PASSPORT_PHOTO_FRAME_OUTER,
-  PASSPORT_PHOTO_OVERLAP_STAMP,
-  PASSPORT_PHOTO_ROTATION_DEGREES,
   PASSPORT_TEMPLATE_PATH,
   passportLocationLabel,
-  passportMachineLines,
 } from '@/lib/exhibition-passport-art'
 
 export type PassportFinalLanguage = 'en' | 'ko'
@@ -168,7 +161,6 @@ export function PassportFinalStep({
   const isReady = photoReady && Boolean(record.photo_url) && !photoFailed
   const issueDate = formatPassportIssuedDateSeoul(record.created_at)
   const location = passportLocationLabel(record.exhibition_id, configuredExhibitionLocation())
-  const [machineLineOne, machineLineTwo] = passportMachineLines(petName, petId, record.created_at)
 
   async function download() {
     if (!isReady || downloadBusy) return
@@ -277,7 +269,6 @@ export function PassportFinalStep({
                 y={PASSPORT_PHOTO_IMAGE_BOX.y}
                 width={PASSPORT_PHOTO_IMAGE_BOX.width}
                 height={PASSPORT_PHOTO_IMAGE_BOX.height}
-                transform={`rotate(${PASSPORT_PHOTO_ROTATION_DEGREES} ${PASSPORT_PHOTO_CENTER.x} ${PASSPORT_PHOTO_CENTER.y})`}
                 preserveAspectRatio="xMidYMid slice"
                 clipPath="url(#passport-final-photo-clip)"
                 onError={() => {
@@ -287,32 +278,10 @@ export function PassportFinalStep({
               />
             </svg>
           )}
-          {isReady && record.photo_url && (
-            <svg className="passport-final-frame-overlay" viewBox={`0 0 ${PASSPORT_ART_WIDTH} ${PASSPORT_ART_HEIGHT}`} aria-hidden="true">
-              <defs>
-                <mask id="passport-final-frame-mask" maskUnits="userSpaceOnUse" x="0" y="0" width={PASSPORT_ART_WIDTH} height={PASSPORT_ART_HEIGHT}>
-                  <rect width={PASSPORT_ART_WIDTH} height={PASSPORT_ART_HEIGHT} fill="black" />
-                  <rect x={PASSPORT_PHOTO_FRAME_OUTER.x} y={PASSPORT_PHOTO_FRAME_OUTER.y} width={PASSPORT_PHOTO_FRAME_OUTER.width} height={PASSPORT_PHOTO_FRAME_OUTER.height} fill="white" />
-                  <path d={PASSPORT_PHOTO_APERTURE_PATH} fill="black" />
-                  <polygon points={PASSPORT_PHOTO_OVERLAP_STAMP} fill="white" />
-                </mask>
-              </defs>
-              <image href={PASSPORT_TEMPLATE_PATH} x="0" y="0" width={PASSPORT_ART_WIDTH} height={PASSPORT_ART_HEIGHT} preserveAspectRatio="none" mask="url(#passport-final-frame-mask)" />
-            </svg>
-          )}
-              <div className="passport-final-machine" aria-hidden="true" style={{ color: PASSPORT_MACHINE_INK }}>
-            <span>{machineLineOne}</span>
-            <span>{machineLineTwo}</span>
-          </div>
           <div className="passport-final-value passport-final-name">{petName.trim() || '—'}</div>
           <div className="passport-final-value passport-final-id">{petId}</div>
           <div className="passport-final-value passport-final-date">{issueDate}</div>
-          {location.trim().toUpperCase() !== 'SEOUL, KOREA' && (
-            <>
-              <div className="passport-final-location-cover" aria-hidden="true" />
-              <div className="passport-final-value passport-final-location">{location}</div>
-            </>
-          )}
+          <div className="passport-final-value passport-final-location">{location}</div>
         </div>
       </div>
 
