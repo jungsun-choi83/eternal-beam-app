@@ -57,7 +57,7 @@ describe('ExhibitionPassportViewScreen', () => {
     expect(screen.getByRole('heading', { name: 'Your Pet Passport' })).toBeTruthy()
     expect(screen.getByRole('button', { name: /Download Passport/i })).toBeTruthy()
     expect(screen.getByRole('link', { name: /Back to My Pet ID/i }).getAttribute('href')).toBe('/exhibition/passport')
-    expect(screen.getByTestId('passport-art').innerHTML).toContain('Eternal%20Beam%20Travel%20Passport%20Duo%20Clean.png')
+    expect(screen.getByTestId('passport-art').innerHTML).toContain('passport%20%282%29.png')
     expect(screen.getByAltText(/Discover Soul Trace promotional banner/i).getAttribute('src')).toBe('/home/soultrace(eng)-cropped.png')
     const promoCta = screen.getByRole('link', { name: 'Discover Soul Trace' })
     expect(promoCta.getAttribute('href')).toBe('https://soultrace.pet')
