@@ -34,6 +34,7 @@ namespace EternalBeam.Device
         public float? Gamma;
         public Color? Tint;
         public float? VfxIntensity;
+        public PiNetworkInfo pi_network;
 
         public string Summary()
         {
@@ -50,6 +51,12 @@ namespace EternalBeam.Device
                  + " source=" + V(Source)
                  + " spawn_audio=" + V(SpawnAudio);
         }
+    }
+
+    public sealed class PiNetworkInfo
+    {
+        public string ip;
+        public int http_port;
     }
 
     public sealed class UdpJsonListener : IDisposable
@@ -94,6 +101,15 @@ namespace EternalBeam.Device
                 msg.Valid = true;
                 msg.Event = (string)o["event"];
                 msg.ContentId = (string)o["content_id"];
+                var piNetwork = o["pi_network"];
+                if (piNetwork != null)
+                {
+                    msg.pi_network = new PiNetworkInfo
+                    {
+                        ip = (string)piNetwork["ip"],
+                        http_port = (int?)piNetwork["http_port"] ?? 8787
+                    };
+                }
                 msg.PetId = (string)o["pet_id"];
                 msg.MotionId = (string)o["motion_id"];
                 msg.ThemeId = (string)o["theme_id"];

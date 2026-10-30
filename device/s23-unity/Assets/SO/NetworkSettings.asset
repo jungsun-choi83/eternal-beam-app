@@ -12,6 +12,6 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: d4e49c61cdf057440b02f23947ce82a5, type: 3}
   m_Name: NetworkSettings
   m_EditorClassIdentifier: EternalBeam.Device::NetworkSettings
-  piAddress: 192.168.0.117
+  piAddress: '10.59.91.176 '
   piHttpPort: 8787
   udpPort: 5005

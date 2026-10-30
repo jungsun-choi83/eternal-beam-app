@@ -67,8 +67,8 @@ Material:
         m_Offset: {x: 0, y: 0}
     m_Ints: []
     m_Floats:
-    - _BreathSpeed: 6
-    - _BreathStrength: 0.1
+    - _BreathSpeed: 8
+    - _BreathStrength: 0.15
     - _BreathingCenterX: 0.518
     - _Fade: 0
     - _QueueControl: 0

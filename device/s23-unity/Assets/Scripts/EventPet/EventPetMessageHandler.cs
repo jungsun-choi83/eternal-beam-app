@@ -36,6 +36,23 @@ public class EventPetMessageHandler : MonoBehaviour
         if (eventName != "pet_asset") return;
         string url = !string.IsNullOrEmpty(msg.PackedUrl) ? msg.PackedUrl : msg.VideoUrl;
         if (string.IsNullOrEmpty(url)) return;
+        if (msg.pi_network != null &&
+    !string.IsNullOrWhiteSpace(msg.pi_network.ip))
+        {
+            assetDownloader.UpdatePiAddress(
+                msg.pi_network.ip,
+                msg.pi_network.http_port
+            );
+        }
+        if (msg.pi_network != null &&
+            !string.IsNullOrWhiteSpace(msg.pi_network.ip))
+        {
+            assetDownloader.UpdatePiAddress(
+                msg.pi_network.ip,
+                msg.pi_network.http_port
+            );
+        }
+
         Debug.Log($"[EventPet] Pet asset received: {msg.PetId} / {url}");
         assetDownloader.DownloadEventPet(msg.PetId, url);
     }

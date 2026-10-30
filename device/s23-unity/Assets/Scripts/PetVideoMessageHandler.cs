@@ -23,6 +23,7 @@ public class PetVideoMessageHandler : MonoBehaviour
     public TweenActionController tweenActionController;
     public PetModeController petModeController;
     public LocalMotionClipReferenceTester localMotionReference;
+    public AudioMessageHandler audioMessageHandler;
 
     private void OnEnable()
     {
@@ -50,6 +51,7 @@ public class PetVideoMessageHandler : MonoBehaviour
         string eventName = msg.Event?.ToLowerInvariant();
         if (eventName == "demo_init")
         {
+            if (petModeController.CurrentMode != PetMode.Demo) return;
             StartCoroutine(HandleDemoInit());
             return;
         }
@@ -125,6 +127,7 @@ public class PetVideoMessageHandler : MonoBehaviour
         if (startingEvent == "touch")
         {
             Transform target = crossfadeController.GetIncomingRenderObject();
+            if (audioMessageHandler != null) audioMessageHandler.PlayComeCloserBark();
             tweenActionController.PlayComeCloserAction(target);
         }
         if (!isReady && waitingForInitialIdle)

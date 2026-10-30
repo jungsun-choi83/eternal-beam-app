@@ -14,6 +14,7 @@ public class NfcVfxMessageHandler : MonoBehaviour
     [Header("Theme VFX")]
     public GameObject forestVfx;
     public GameObject snowVfx;
+    public GameObject goldenMeadowVfx;
 
     private void Start()
     {
@@ -71,6 +72,10 @@ public class NfcVfxMessageHandler : MonoBehaviour
                 snowVfx?.SetActive(true);
                 currentVisualEffect = snowVfx?.GetComponent<VisualEffect>();
                 break;
+            case "golden_meadow":
+                goldenMeadowVfx?.SetActive(true);
+                currentVisualEffect = goldenMeadowVfx?.GetComponent<VisualEffect>();
+                break;
             default:
                 Debug.LogWarning($"[NFC VFX] Unknown theme_id: {themeId}");
                 break;
@@ -81,6 +86,7 @@ public class NfcVfxMessageHandler : MonoBehaviour
     {
         forestVfx?.SetActive(false);
         snowVfx?.SetActive(false);
+        goldenMeadowVfx?.SetActive(false);
     }
 
     public void SetVFXIntensity(float value)

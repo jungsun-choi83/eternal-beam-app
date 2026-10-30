@@ -24,6 +24,7 @@ public class EventPetAssetDownloader : MonoBehaviour
     public NetworkSettings networkSettings;
     private string currentPetId;
     private string lastReportedStatus;
+    private string currentPetStatusUrl;
 
     public void DownloadEventPet(string petId, string zipUrl)
     {
@@ -200,7 +201,7 @@ public class EventPetAssetDownloader : MonoBehaviour
             status = status
         });
         using UnityWebRequest request = new UnityWebRequest(
-            networkSettings.PetStatusUrl,
+            string.IsNullOrEmpty(currentPetStatusUrl) ? networkSettings.PetStatusUrl : currentPetStatusUrl,
             UnityWebRequest.kHttpVerbPOST
         );
         byte[] body = System.Text.Encoding.UTF8.GetBytes(json);
@@ -214,6 +215,12 @@ public class EventPetAssetDownloader : MonoBehaviour
                 $"[EventPet] Failed to report status to Pi: {request.error}"
             );
         }
+    }
+
+    public void UpdatePiAddress(string ip, int port)
+    {
+        currentPetStatusUrl = $"http://{ip}:{port}/pet-status";
+        Debug.Log($"[EventPet] Pi address updated: {currentPetStatusUrl}");
     }
 
     public string testPetZipName = "1.zip";

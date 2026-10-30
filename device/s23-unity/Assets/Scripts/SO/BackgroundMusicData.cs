@@ -3,7 +3,8 @@ using UnityEngine;
 public enum BackgroundMusicType
 {
     FreshForest,
-    SnowForest
+    SnowForest,
+    GoldenMeadow
 }
 
 [CreateAssetMenu(

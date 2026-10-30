@@ -320,7 +320,7 @@ MonoBehaviour:
   - {fileID: 114780028408030698}
   - {fileID: 114063133802684794}
   dataType: 0
-  capacity: 20
+  capacity: 25
   stripCapacity: 16
   particlePerStripCount: 16
   needsComputeBounds: 0
@@ -1227,7 +1227,7 @@ MonoBehaviour:
       m_Type:
         m_SerializableType: UnityEditor.VFX.OrientedBox, Unity.VisualEffectGraph.Editor,
           Version=0.0.0.0, Culture=neutral, PublicKeyToken=null
-      m_SerializableObject: '{"center":{"x":0.0,"y":10.0,"z":0.0},"angles":{"x":0.0,"y":0.0,"z":0.0},"size":{"x":20.0,"y":2.0,"z":10.0}}'
+      m_SerializableObject: '{"center":{"x":0.0,"y":8.0,"z":0.0},"angles":{"x":0.0,"y":0.0,"z":0.0},"size":{"x":20.0,"y":0.10000000149011612,"z":10.0}}'
     m_Space: 0
   m_Property:
     name: Box

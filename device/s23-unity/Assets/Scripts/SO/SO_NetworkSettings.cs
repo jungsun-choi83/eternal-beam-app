@@ -7,7 +7,7 @@ using UnityEngine;
 public class NetworkSettings : ScriptableObject
 {
     [Header("Raspberry Pi")]
-    public string piAddress = "192.168.0.117";
+    public string piAddress = "192.168.1.102";
     public int piHttpPort = 8787;
 
     [Header("Unity")]

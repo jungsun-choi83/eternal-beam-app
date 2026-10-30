@@ -22,12 +22,12 @@ public class DeviceDebugOverlay : MonoBehaviour
 
     private void Update()
     {
-        if (Input.GetMouseButtonDown(0))
-        {
-            bool show = !debugPanel.activeSelf;
-            debugPanel.SetActive(show);
-            if (show) Refresh();
-        }
+        // if (Input.GetMouseButtonDown(0))
+        // {
+        //     bool show = !debugPanel.activeSelf;
+        //     debugPanel.SetActive(show);
+        //     if (show) Refresh();
+        // }
     }
 
     public void SetUdpReady()

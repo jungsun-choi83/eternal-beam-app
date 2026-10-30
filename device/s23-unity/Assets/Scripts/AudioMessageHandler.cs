@@ -21,6 +21,7 @@ public class AudioMessageHandler : MonoBehaviour
     [Header("Pet Music")]
     public AudioSource petAudioSource;
     public AudioClip petSpawnSound;
+    public AudioClip petComeCloserBarkSound;
 
     [Header("Editor Test")]
     public BackgroundMusicType testMusicA;
@@ -85,7 +86,7 @@ public class AudioMessageHandler : MonoBehaviour
     private IEnumerator PlayDemoAudioCoroutine(string themeId, string spawnAudioId)
     {
         Debug.Log("[Audio Manager] Demo Init received, playing demo audio");
-        PlayPetSound(spawnAudioId);
+        PlayPetSpawnSound(spawnAudioId);
         yield return new WaitForSeconds(demoSetting.initThemeAudioDelayTimeInSecond);
         PlayBackgroundMusic(themeId);
     }
@@ -149,13 +150,15 @@ public class AudioMessageHandler : MonoBehaviour
                 return BackgroundMusicType.FreshForest;
             case "snow_forest":
                 return BackgroundMusicType.SnowForest;
+            case "golden_meadow":
+                return BackgroundMusicType.GoldenMeadow;
             default:
                 Debug.LogWarning($"[NFC Audio] Unknown theme_id: {themeId}");
                 return null;
         }
     }
 
-    public void PlayPetSound(string soundId)
+    public void PlayPetSpawnSound(string soundId)
     {
         Debug.Log($"[PetAudio] PlayPetSound called");
         AudioClip clip = soundId switch
@@ -166,5 +169,16 @@ public class AudioMessageHandler : MonoBehaviour
         if (clip == null || petAudioSource == null) return;
         petAudioSource.volume = 1f;
         petAudioSource.PlayOneShot(clip);
+    }
+
+    public void PlayComeCloserBark()
+    {
+        if (petAudioSource == null || petComeCloserBarkSound == null)
+        {
+            Debug.LogWarning("[PetAudio] Come Closer bark AudioSource or AudioClip is missing.");
+            return;
+        }
+        petAudioSource.PlayOneShot(petComeCloserBarkSound);
+        Debug.Log("[PetAudio] Playing Come Closer bark.");
     }
 }
