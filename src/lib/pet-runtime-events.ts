@@ -51,6 +51,14 @@ export type PetAction =
   | "COME_CLOSER"
   | "PET_HEAD"
   | "PAW_HELLO"
+  // 종 인식 놀자 인사 (2026-10-29) — 사용자 id 는 하나. DOG/CAT 변형은 서버 생성
+  // 계약 안의 일이고, 런타임은 PAW_HELLO 와 같은 STANDING→STANDING 액션으로 본다.
+  | "PLAY_WITH_ME"
+  // DOG 전용 접근+놀자 인사 (2026-10-30) — 홈에서 트롯 접근 → 근접 play bow → 홈 복귀가
+  // **하나의 이어진 자산** 안에서 끝나므로(STAND_READY 양끝, 생성 QA 가 홈 스케일 복귀를
+  // 검사한다) 런타임은 PLAY_WITH_ME 와 같은 STANDING→STANDING 액션으로 본다. COME_CLOSER
+  // 의 RETURN_HOME 체인/디졸브와 무관하다.
+  | "COME_PLAY"
   | "LOOK_UP"
   | "LIE_DOWN"
   | "STAND_UP"
@@ -195,6 +203,8 @@ export const PET_ACTION_IDS: readonly PetAction[] = [
   "COME_CLOSER",
   "PET_HEAD",
   "PAW_HELLO",
+  "PLAY_WITH_ME",
+  "COME_PLAY",
   "LOOK_UP",
   "LIE_DOWN",
   "STAND_UP",
@@ -268,6 +278,41 @@ export const RUNTIME_EVENTS: Readonly<Partial<Record<RuntimeEventId, RuntimeEven
     id: "PAW_HELLO",
     kind: "ACTION",
     priority: 88,
+    interruptible: false,
+    returnToIdle: true,
+    entryPolicy: "immediate",
+    returnPolicy: "seam-aligned",
+    themeIndependent: true,
+    preload: "none",
+    requiredPose: "STANDING",
+    endPose: "STANDING",
+  },
+
+  // PLAY_WITH_ME ("Let's Play!") — PAW_HELLO 와 같은 명시 Behavior Library 액션.
+  // 센서 매핑 없음(touch/voice/approach 는 그대로). STAND_READY 양끝이라 seam-aligned.
+  // 우선순위는 PAW_HELLO 한 단 아래 — 두 명시 액션이 겹치면 먼저 누른 쪽이 끝난다.
+  PLAY_WITH_ME: {
+    id: "PLAY_WITH_ME",
+    kind: "ACTION",
+    priority: 86,
+    interruptible: false,
+    returnToIdle: true,
+    entryPolicy: "immediate",
+    returnPolicy: "seam-aligned",
+    themeIndependent: true,
+    preload: "none",
+    requiredPose: "STANDING",
+    endPose: "STANDING",
+  },
+
+  // COME_PLAY ("Come Play!", 2026-10-30) — 명시 Behavior Library 액션, DOG 전용(서버 게이트).
+  // 접근 → 근접 bow → 홈 복귀가 한 자산에 들어 있고 끝 프레임이 STAND_READY(홈 스케일)라
+  // seam-aligned 복귀다 — COME_CLOSER 처럼 hold-and-dissolve 나 RETURN_HOME 체인이 필요 없다.
+  // 센서 매핑 없음(touch/voice/approach 그대로). 우선순위는 PLAY_WITH_ME 한 단 아래.
+  COME_PLAY: {
+    id: "COME_PLAY",
+    kind: "ACTION",
+    priority: 84,
     interruptible: false,
     returnToIdle: true,
     entryPolicy: "immediate",

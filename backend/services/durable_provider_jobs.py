@@ -304,6 +304,15 @@ def _definitive_submit_error(exc: Exception) -> bool:
     }
 
 
+def _definitive_collect_error(exc: Exception) -> bool:
+    """Deterministic 4xx-class rejections of a finished job: terminal on first sight.
+
+    PROVIDER_TRANSPORT / PROVIDER_DOWNLOAD / unknown exceptions stay on the
+    consecutive-error budget — those are the genuinely transient failures.
+    """
+    return str(getattr(exc, "code", "")) in {"PROVIDER_CONTRACT", "PROVIDER_REJECTED"}
+
+
 class _DurableProviderBase:
     durable_execution = True
 
@@ -553,6 +562,21 @@ class _DurableProviderBase:
                 raise ProviderRecoveryRequired(
                     str(operation["id"]), "완료된 provider 결과를 안전하게 해석할 수 없습니다."
                 ) from exc
+            if _definitive_collect_error(exc):
+                # A deterministic rejection of the finished job (fal answers HTTP 422
+                # at result fetch for schema violations such as an over-limit prompt,
+                # or 4xx content rejections). Fetching the same result again cannot
+                # change the answer, so it is terminal on the first observation —
+                # the consecutive-error budget is for transient transport faults.
+                _update(
+                    str(operation["id"]),
+                    {
+                        "submission_status": FAILED,
+                        "provider_status": FAILED,
+                        "provider_error": error_message,
+                    },
+                )
+                raise
             collect_errors = int(operation.get("consecutive_collect_errors") or 0) + 1
             if collect_errors >= _job_max_consecutive_errors():
                 timeout_error = (
@@ -618,6 +642,18 @@ class DurableImageProvider(_DurableProviderBase):
         return result
 
 
+#: 세그먼트 durable 작업의 attempt 키 — business attempt 와 세그먼트 번호(1부터)를
+#: 한 정수에 싣는다: attempt*100 + index. 단일 요청(세그먼트 없음)은 attempt 그대로라
+#: 두 공간이 겹치지 않는다 (단일은 1..99, 세그먼트는 ≥101).
+SEGMENT_ATTEMPT_STRIDE = 100
+
+
+def segment_durable_attempt(attempt: int, segment_index: int) -> int:
+    if segment_index < 1 or segment_index >= SEGMENT_ATTEMPT_STRIDE:
+        raise ValueError(f"segment_index out of range: {segment_index}")
+    return int(attempt) * SEGMENT_ATTEMPT_STRIDE + int(segment_index)
+
+
 class DurableVideoProvider(_DurableProviderBase):
     def generate(self, request):
         from .video_motion_providers import VideoProviderError, validate_keyframe_capability
@@ -629,6 +665,15 @@ class DurableVideoProvider(_DurableProviderBase):
                 "PROVIDER_CONTRACT", "durable video request 에 motion_version_id 가 없습니다."
             )
         attempt = int(request.metadata.get("attempt") or 1)
+        # 세그먼트 생성(PLAY_WITH_ME: 한 후보 = 세그먼트 A+B, 각각 유료 provider 작업)
+        # — 작업 행의 unique 키 (run, operation, phase_version, provider, attempt) 안에서
+        # 세그먼트를 구분해야 둘이 한 영수증을 두고 싸우지 않는다. provider_operation 은
+        # DB CHECK 로 닫혀 있으므로 attempt 축에 세그먼트 번호를 싣는다
+        # (segment_durable_attempt). 세그먼트가 없는 요청은 이전과 동일한 attempt 다.
+        segment = request.metadata.get("segment")
+        segment_index = request.metadata.get("segment_index")
+        if segment and segment_index is not None:
+            attempt = segment_durable_attempt(attempt, int(segment_index))
         request_hash = _fingerprint(
             {
                 "operation": self.provider_operation,
@@ -640,6 +685,8 @@ class DurableVideoProvider(_DurableProviderBase):
                 "start_keyframe_id": request.metadata.get("start_keyframe_id"),
                 "target_keyframe_id": request.metadata.get("target_keyframe_id"),
                 "motion_reference_id": request.metadata.get("motion_reference_id"),
+                # 세그먼트 요청만 지문에 segment 를 넣는다 — 기존 단일 요청의 지문은 불변.
+                **({"segment": str(segment)} if segment else {}),
                 # Preserve existing request fingerprints for other adapters.
                 # Changing reference content/order must not reuse a paid job.
                 **({"reference_urls": list(request.reference_urls)} if self.supports_reference_images else {}),

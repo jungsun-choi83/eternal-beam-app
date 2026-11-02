@@ -43,63 +43,7 @@ from .business_qa import (
     BREATHING_AUTHORITY_V1,
     BREATHING_AUTHORITY_VERSION,
 )
-
-# v2: PET_HEAD 에 allow_generated_hand 추가.
-# v3 (Phase 6.6): WALK / ROLL_OVER / SIT_DOWN 모션 추가 (기존 어디에도 없던
-#     모션만 — 병행 명명 없음), 모션별 선호 카메라 뷰/이동 방향 메타 추가,
-#     모션 레퍼런스 해석이 라이브러리 리졸버(motion_reference_service)로 위임됨.
-# v4: BREATHING 서술 강화 — 라이브 v5 (Runway seedance2_5) 가 신원/안정성은
-#     통과했지만 호흡이 거의 보이지 않았다. 가슴/흉곽 팽창-수축, 상체의 미세한
-#     오르내림, 클립당 약 2회 호흡 주기를 명시한다 (다른 모션 서술은 불변).
-# v5: BREATHING 서술 재교정 — 라이브 v1/v2 실측에서 v4 의 "clearly visible" +
-#     "상체 오르내림"이 국소 흉곽 운동 대신 **전신 줌/스케일 펄스와 프레이밍
-#     드리프트**를 유발했다 (VLM 소견이 두 클립 모두에서 zoom/framing drift 를
-#     기록). 운동을 가슴/흉곽/옆구리로 국소화하고, 주기를 클립 길이 독립적으로
-#     (2~3초당 1회) 명시하며, 전신 펄스·줌·상하 요동·이동을 명시적으로 금지한다.
-#     (다른 모션 서술은 불변 — BREATHING 한 항목만 바뀐다.)
-# v6: MICRO 길이 고정 4.0s — Runway seedance2_5 의 최소 길이가 4s 라 3s 요청은
-#     계약 위반으로 제출 전에 거절된다(TAIL_WAGGING 라이브 실측, run ebbc11f5).
-#     개발 중 비용/지연 절감과 MICRO 타이밍 일관성을 겸해 당분간 범위가 아니라
-#     고정값으로 둔다. 서술/전략/다른 클래스 길이는 불변이다.
-# v8: PET_HEAD 서술 정리 — 엔지니어링 메모가 프롬프트로 새던 것을 제거하고
-#     긍정형 영어 장면 묘사로 교체 (wan 라이브 테스트에서 발견). 다른 모션 불변.
-# v9: LOOK_UP 상용화 — 시작 키프레임 LOOK_UP→NEUTRAL_IDLE(재사용, 전용 스틸
-#     불필요) + 긍정형 영어 서술. VOICE 트리거의 목적지. 다른 모션 불변.
-# v10: 자세 전이 3종(LIE_DOWN/STAND_UP/LIE_IDLE) 상용화 — 긍정형 영어 서술로
-#      교체 (v8/v9 스타일). 역할/전략/길이 불변. 다른 모션 불변.
-# v7: BREATHING 서술을 긍정형으로 재작성 — v5 는 금지 명령 18개 vs 동작 서술
-#     1문장이라 모델이 두 극단으로 붕괴했다(전부 동결 + 준정지 틱 0.2%, 또는
-#     금지 무시 전신 펄스 3.9%; 16클립 실측). 자연 호흡의 목표 대역(흉곽 국소
-#     0.3~2%, 어깨 동반, 약간 불규칙한 리듬)을 **하라는 말**로 명시하고 금지는
-#     카메라/이동/균일 스케일 셋만 남긴다. breathing-temporal-qa-v2 보정과 한
-#     쌍이다. 다른 모션 서술은 불변.
-# v11 (2026-09-10, Phase 4 키프레임 역할 확장): 서서 시작하는 모션들의 시작
-#     키프레임을 STAND_READY 로 라우팅 — LOCOMOTION 3종(COME_CLOSER/RUN/WALK)
-#     + LIE_DOWN. NEUTRAL_IDLE 은 keyframe-spec-v2 부터 정본 자세를 물려받아
-#     앉아 있을 수 있으므로, 이동/기립 시작점은 명시적 서기 포즈가 필요하다.
-#     서술(프롬프트)/전략/길이/레퍼런스 전부 불변 — 시작 역할만 바뀐다.
-#     ⚠️ 이 범프로 v10 이하 모션 버전에 핀된 FAILED 런은 재시도 시
-#     _stale_motion_pin 이 언핀하고 현행 스펙으로 재생성한다(유료).
-#     v11 확장 (같은 날 — v11 아티팩트 생성 전이라 재범프 없음): 앉은 홈 ↔
-#     STAND_READY 이음매 브리지 전이 SIT_TO_STAND / STAND_TO_SIT 추가.
-#     기존 모션 정의는 바이트 단위로 불변이다.
-# v12 (Phase 4 authoritative motion registry): 기존 모션 id/키프레임 라우팅/전략은
-#     그대로 유지하고, 각 모션에 정본 요구사항(requirements)을 추가한다.
-#     (class/type, 역할, 길이, loop/interrupt, morphology 민감도,
-#      reference/provider/QA 요구사항). Phase 6.7 매칭/소비 로직은 바꾸지 않는다.
-# v14 (Phase 6): motion video QA 에 구조/해부학 도메인 체크
-#     structural_morphology_consistency 를 정본 요구사항으로 선언.
-# v15: 모션 클래스 기본 + 모션별 override 가능한 영상 provider 순서를 이 파일의
-#      정본으로 이동. 생성 서비스/adapter registry 는 이 순서를 소비할 뿐이다.
-# v16 (2026-10-05, STAND_READY = HOME): 홈(BREATHING)과 서 있는 홈 아이들 계열
-#      (BLINKING/EAR_TWITCHING/HEAD_TILTING/TAIL_WAGGING/LOOK_UP/PET_HEAD)의 시작
-#      키프레임을 NEUTRAL_IDLE → STAND_READY 로 이관하고, STAND_UP 의 목표도
-#      STAND_READY 로 맞춘다 (홈으로 복귀하는 전이). 이제 홈·아이들·COME_CLOSER·
-#      LIE_DOWN 이 **하나의** STAND_READY 스틸을 공유한다 — 아이들 사이 자세
-#      점프도, 정본의 나쁜 자세가 홈이 되는 일도 없다. BREATHING 서술은
-#      제품 계약의 정확한 문구로 고정하고, 전략/길이/provider 순서는 불변이다.
-#      ⚠️ v11 과 같은 주의: 이 범프로 v15 이하에 핀된 FAILED 런은 재시도 시
-#      _stale_motion_pin 이 언핀하고 현행 스펙으로 재생성한다(유료).
+from . import species_motion_variants as _species
 MOTION_SPEC_VERSION = "motion-spec-v17"
 # v2 (Phase 6.6): pet_motion_profile 추가 + motion_reference 가 라이브러리에서
 # 해석된 실제 자산/버전/호환성/출처를 담는다 (미해석 시 기존 v1 형태 + 경고 유지).
@@ -111,6 +55,19 @@ MOTION_REGISTRY_CONTRACT_VERSION = "motion-registry-v1"
 MOTION_QA_CONTRACT_VERSION = "motion-qa-contract-v3"
 MOTION_ACCEPTANCE_VERSION = "motion-acceptance-v1"
 MOTION_REVIEW_POLICY = "publish_with_advisory"
+
+#: COME_PLAY v2 자문 품질 검사 (QUALITY_ADVISORY): VLM 보행/접지/회전 + 결정론 모션 프로파일.
+#: 이름은 species_motion_variants / motion_profile 가 정본이고 여기서는 권위만 선언한다.
+_COME_PLAY_QUALITY_CHECK_NAMES: tuple[str, ...] = (
+    "vlm_come_play_gait_coordination",
+    "vlm_come_play_ground_contact",
+    "vlm_come_play_turn",
+    "come_play_profile_lead_stationary",
+    "come_play_profile_approach_growth",
+    "come_play_profile_approach_progression",
+    "come_play_profile_bow_hold",
+    "come_play_profile_return_progression",
+)
 
 CLASS_MICRO = "MICRO"
 CLASS_TRANSITION = "TRANSITION"
@@ -137,7 +94,7 @@ MOTION_PROVIDER_ORDER_BY_CLASS: dict[str, tuple[str, ...]] = {
     CLASS_MICRO: (PROVIDER_WAN_3_STANDARD, PROVIDER_SEEDANCE),
     CLASS_INTERACTION: (PROVIDER_WAN_3_STANDARD, PROVIDER_KLING_3),
     CLASS_LOCOMOTION: (PROVIDER_WAN_3_STANDARD, PROVIDER_KLING_3),
-    CLASS_TRANSITION: (PROVIDER_KLING_3, PROVIDER_WAN_3_STANDARD),
+    CLASS_TRANSITION: (PROVIDER_WAN_3_STANDARD, PROVIDER_KLING_3),
 }
 
 # 특정 모션만 클래스 기본과 다르게 운영할 때 이 표에 추가한다.
@@ -151,6 +108,23 @@ MOTION_MODEL_DEFAULTS: dict[str, str] = {
     # Change these assignments or MOTION_MODEL_<ID> to explicitly select a model.
     BREATHING_HOME_STATE: PROVIDER_WAN_3_STANDARD,
     "COME_CLOSER": PROVIDER_GROK_IMAGINE_LITE,
+    # PLAY_WITH_ME: 전신 자세 변화 + 양끝 STAND_READY 조건이 필수(end-frame required).
+    # TRANSITION 의 1순위이자 end-frame 을 실제로 받는 kling_3 를 명시 핀한다 —
+    # INTERACTION 클래스 기본(wan_3_standard)과 PET_HEAD/PAW_HELLO 라우팅은 불변.
+    _species.PLAY_WITH_ME: PROVIDER_WAN_3_STANDARD,
+    # COME_PLAY: 접근+bow+복귀를 양끝 승인 스틸로 묶는 2 세그먼트 — end-frame 필수라 kling_3.
+    _species.COME_PLAY: PROVIDER_WAN_3_STANDARD,
+}
+
+# 종별 변형 단위 모델 기본값. (motion_id, variant_id) → logical model.
+# 우선순위(configured_model_for_motion): env MOTION_MODEL_<MOTION>_<VARIANT>
+# (예: MOTION_MODEL_PLAY_WITH_ME_PLAY_CROUCH) > env MOTION_MODEL_<MOTION> > 이 표 >
+# MOTION_MODEL_DEFAULTS. 명시 env 는 언제나 코드 기본값을 이긴다.
+# 두 변형 모두 같은 모델로 시작한다 — 라이브 실측 전에 종별로 갈라 둘 근거가 없다.
+MOTION_VARIANT_MODEL_DEFAULTS: dict[tuple[str, str], str] = {
+    (_species.PLAY_WITH_ME, _species.VARIANT_PLAY_BOW): PROVIDER_WAN_3_STANDARD,
+    (_species.PLAY_WITH_ME, _species.VARIANT_PLAY_CROUCH): PROVIDER_WAN_3_STANDARD,
+    (_species.COME_PLAY, _species.VARIANT_COME_PLAY_BOW): PROVIDER_WAN_3_STANDARD,
 }
 
 REF_NONE = "none"
@@ -524,6 +498,86 @@ MOTIONS: dict[str, MotionSpec] = {
                       "allow_generated_hand": False,
                       "end_frame_conditioning_required": True},
     ),
+    # PLAY_WITH_ME ("Let's Play!", 2026-10-29) — 종 인식 상호작용. 사용자가 보는 id 는
+    # 하나이고, 생성 서술/프롬프트/VLM 지침은 계약 해석 시 펫의 종으로 고른다
+    # (species_motion_variants: DOG→PLAY_BOW, CAT→PLAY_CROUCH). 아래 description 은
+    # 종 중립 베이스라인이다 — 실제 생성은 contract["species_variant"]["description"]
+    # 을 쓴다. 키프레임은 PAW_HELLO 와 똑같이 STAND_READY 양끝 재사용(새 스틸 없음).
+    _species.PLAY_WITH_ME: MotionSpec(
+        motion_id=_species.PLAY_WITH_ME, motion_class=CLASS_INTERACTION,
+        description=(
+            "Starting from the approved calm upright STAND_READY pose, the pet shows a brief "
+            "playful anticipation, then performs a clearly readable, species-appropriate "
+            "playful invitation: the front body lowers naturally into the approved "
+            "intermediate playful posture with realistic foreleg support and an attentive, "
+            "bright expression, holds it briefly, then rises smoothly forward in time back to "
+            "the exact original STAND_READY pose so BREATHING can resume without a visible "
+            "jump. The pet stays in place — no running or stepping toward the camera. "
+            "Maintain quiet natural breathing and subtle connected ear, head and tail "
+            "movement. Preserve the pet's identity, four-limb anatomy, joint structure, coat, "
+            "markings and proportions exactly. Only the original pet is visible: no human, "
+            "human hand, person, toy, leash, platform or added object"
+        ),
+        start_keyframe_role="STAND_READY",
+        target_keyframe_role="STAND_READY",
+        preferred_video_strategy=STRATEGY_START_END,
+        duration_range_sec=(4.0, 5.0),
+        interruptible=False,
+        video_compat={"returns_to_start_pose": True, "motion_scale": "body",
+                      "interaction": "play_invite", "requires_human_in_keyframe": False,
+                      "allow_generated_hand": False,
+                      "end_frame_conditioning_required": True,
+                      # 종 변형 — 계약 해석이 이 목록에서 고르고, 없으면 fail-closed.
+                      "species_variants": list(_species.supported_species(_species.PLAY_WITH_ME)),
+                      "species_required": True,
+                      # v2: 종별 **중간 키프레임**(PLAY_BOW/PLAY_CROUCH) 을 거치는 2 세그먼트
+                      # 생성 — A: STAND_READY→중간 포즈, B: 중간 포즈→STAND_READY. 계약의
+                      # intermediate_keyframe / segments 가 이를 나른다 (motion_video_segments).
+                      "segmented": True,
+                      "intermediate_keyframe_roles": list(
+                          _species.intermediate_keyframe_roles(_species.PLAY_WITH_ME)
+                      )},
+    ),
+    # COME_PLAY ("Come Play!", 2026-10-30) — DOG 전용 V1. PLAY_WITH_ME 와 같은 2 세그먼트
+    # 골격(STAND_READY → 중간 키프레임 → STAND_READY)이지만 **이동**이 핵심이다: A 는 홈에서
+    # 카메라 쪽으로 트롯 접근 → 감속 → 근접 play bow(PLAY_BOW_NEAR, 승인 PLAY_BOW 를 앵커로
+    # 만든 근접 스틸), B 는 짧은 유지 → 일어남 → 홈으로 복귀 → STAND_READY. 양끝/중간이 전부
+    # 실제 승인 이미지라 결정론 끝점 검사가 "접근해서 커졌다 / 홈 스케일로 돌아왔다"를 잰다.
+    # COME_CLOSER(단일 I2V + RETURN_HOME 동반) 와 PLAY_WITH_ME(제자리) 는 그대로다.
+    _species.COME_PLAY: MotionSpec(
+        motion_id=_species.COME_PLAY, motion_class=CLASS_INTERACTION,
+        description=(
+            "Starting from the approved calm upright STAND_READY pose at its home spot, the pet "
+            "shows playful excitement and trots a few lively steps straight toward the viewer with a "
+            "natural grounded gait, growing larger in the fixed frame, then slows down smoothly and "
+            "lowers into the approved near play-bow posture close to the camera with realistic "
+            "foreleg support and a bright attentive expression. It holds the inviting bow briefly, "
+            "rises, travels back to its home spot (forward in time, never reversed), turns to face "
+            "the camera and settles into the exact original STAND_READY pose, position and scale so "
+            "BREATHING can resume without a visible jump. Preserve the pet's identity, four-limb "
+            "anatomy, joint structure, coat, markings, tail and proportions exactly. Only the "
+            "original pet is visible: no human, human hand, person, toy, leash, platform or added object"
+        ),
+        start_keyframe_role="STAND_READY",
+        target_keyframe_role="STAND_READY",
+        preferred_video_strategy=STRATEGY_START_END,
+        # 세그먼트 1개의 스펙 길이 (A 5 s / B 8 s 는 변형의 segment_durations_sec 가 정한다).
+        duration_range_sec=(5.0, 8.0),  # v2: B 8 s
+        interruptible=False,
+        video_compat={"returns_to_start_pose": True, "motion_scale": "locomotion",
+                      "interaction": "come_play", "requires_human_in_keyframe": False,
+                      "allow_generated_hand": False,
+                      "end_frame_conditioning_required": True,
+                      "species_variants": list(_species.supported_species(_species.COME_PLAY)),
+                      "species_required": True,
+                      "segmented": True,
+                      # 펫이 이동한다 — 제자리 모션의 홈 위치/스케일 불변 규칙은 적용되지 않는다.
+                      "travels": True,
+                      "intermediate_keyframe_roles": list(
+                          _species.intermediate_keyframe_roles(_species.COME_PLAY)
+                      )},
+        preferred_camera_view="FRONT",
+    ),
 }
 
 
@@ -551,6 +605,8 @@ _MOTION_TYPES: dict[str, str] = {
     "SIT_DOWN": "SIT_TRANSITION",
     "PET_HEAD": "HUMAN_INTERACTION_REACTION",
     "PAW_HELLO": "PAW_OFFER_INTERACTION",
+    _species.PLAY_WITH_ME: "PLAY_INVITATION_INTERACTION",
+    _species.COME_PLAY: "APPROACH_PLAY_INVITATION_INTERACTION",
 }
 
 _MORPHOLOGY_SENSITIVITY: dict[str, str] = {
@@ -577,6 +633,8 @@ _MORPHOLOGY_SENSITIVITY: dict[str, str] = {
     "SIT_DOWN": "MEDIUM",
     "PET_HEAD": "MEDIUM",
     "PAW_HELLO": "HIGH",
+    _species.PLAY_WITH_ME: "HIGH",
+    _species.COME_PLAY: "HIGH",
 }
 
 
@@ -638,6 +696,10 @@ def _class_default_qa(spec: MotionSpec) -> dict[str, Any]:
                 "vlm_paw_support", "vlm_paw_balance", "vlm_paw_limb_count",
                 "vlm_paw_anatomy", "vlm_paw_return",
             ])
+        if spec.motion_id == _species.PLAY_WITH_ME:
+            motion_specific.extend(_species.PLAY_WITH_ME_REQUIRED_CHECK_NAMES)
+        if spec.motion_id == _species.COME_PLAY:
+            motion_specific.extend(_species.COME_PLAY_REQUIRED_CHECK_NAMES)
 
     if bool(spec.video_compat.get("returns_to_start_pose")):
         motion_specific.append("loop_return")
@@ -890,6 +952,27 @@ def _class_business_qa(spec: MotionSpec) -> dict[str, Any]:
             ]
             domains["paw_hello"] = {"required_checks": paw_checks}
             authority.update(dict.fromkeys(paw_checks, AUTHORITY_INTEGRITY_HARD))
+        if spec.motion_id == _species.PLAY_WITH_ME:
+            play_checks = list(_species.PLAY_WITH_ME_REQUIRED_CHECK_NAMES)
+            domains["play_with_me"] = {
+                "required_checks": play_checks,
+                "species_variants": list(_species.supported_species(spec.motion_id)),
+            }
+            authority.update(dict.fromkeys(play_checks, AUTHORITY_INTEGRITY_HARD))
+        if spec.motion_id == _species.COME_PLAY:
+            come_play_checks = list(_species.COME_PLAY_REQUIRED_CHECK_NAMES)
+            domains["come_play"] = {
+                "required_checks": come_play_checks,
+                "species_variants": list(_species.supported_species(spec.motion_id)),
+            }
+            authority.update(dict.fromkeys(come_play_checks, AUTHORITY_INTEGRITY_HARD))
+            # v2 (2026-10-30): 움직임의 **질**은 자문이다 — VLM 보행/회전 필드와 결정론 모션
+            # 프로파일 진단은 QUALITY_ADVISORY (REVIEW 는 DELIVER_WITH_ADVISORY, 재생성 사유 아님).
+            domains["come_play_motion_quality"] = {
+                "required_checks": [],
+                "advisory_checks": list(_COME_PLAY_QUALITY_CHECK_NAMES),
+            }
+            authority.update(dict.fromkeys(_COME_PLAY_QUALITY_CHECK_NAMES, AUTHORITY_QUALITY_ADVISORY))
 
     # 목표 키프레임이 필수인 비-TRANSITION 모션(RETURN_HOME): 시작/목표 도달을 전이와
     # 동일한 하드 게이트(INTEGRITY_HARD)로 올린다 — TRANSITION 의 start_state/target_pose
@@ -955,6 +1038,9 @@ def _morphology_match_fields(spec: MotionSpec) -> list[str]:
         return [*base, "tail_form"]
     if spec.motion_id == "PET_HEAD":
         return ["head_proportion_class", "muzzle_proportion_class", "ear_form"]
+    if spec.motion_id in (_species.PLAY_WITH_ME, _species.COME_PLAY):
+        # 전신 자세 변화 — 몸통/다리 비율에 더해 체형(build)까지 구조 축으로 본다.
+        return [*base, "body_build_class"]
     return base
 
 
@@ -1171,6 +1257,122 @@ _BETA_ACCEPTANCE = {
             "motion_temporal_integrity": AUTHORITY_QUALITY_ADVISORY,
         },
     },
+    # 종 중립 베이스라인. 실제 평가는 acceptance_for_variant 가 종별 본문
+    # (species_motion_variants.PLAY_BOW / PLAY_CROUCH .acceptance)으로 덮어쓴 계약을
+    # 쓴다 — required_checks/authority/정책 리비전은 종과 무관하게 여기서 고정된다.
+    _species.PLAY_WITH_ME: {
+        "policy_revision": _species.PLAY_WITH_ME_POLICY_REVISION,
+        "description": (
+            "From STAND_READY the pet shows a brief playful anticipation, then performs a "
+            "recognizable, species-appropriate playful invitation (a play bow for dogs, a "
+            "playful crouch for cats) matching its approved intermediate keyframe: the front "
+            "body visibly lowers into a brief playful posture with realistic foreleg support "
+            "and an attentive expression, then the pet returns smoothly (forward in time) to "
+            "the same grounded STAND_READY pose with intact four-limb anatomy, staying in "
+            "place. The asset is two start/end-conditioned segments joined without a visible "
+            "seam."
+        ),
+        "expected_start_state": (
+            "STAND_READY: calm upright stance with all four paws naturally grounded."
+        ),
+        "expected_end_state": (
+            "STAND_READY: the pet is upright again on all four paws and the pose joins "
+            "BREATHING smoothly without a visible jump."
+        ),
+        "blocking_criteria": [
+            "Reliable evidence clearly shows no playful invitation posture, or a different "
+            "primary action replaces it.",
+            "A limb is duplicated, missing, merged, detached or anatomically implausible.",
+            "The pet visibly falls, floats, collapses, or loses plausible support and balance.",
+            "A human, hand, arm, person, leash, toy, platform or other added object appears.",
+            "The pet runs or steps toward or away from the camera, or clearly changes its home position, scale or framing "
+            "(a change in body height or silhouette caused by the pose itself does not count).",
+            "A visible jump, freeze, duplicated pose, prolonged motionless hold or reversed playback appears where the two segments join.",
+            "The pet does not return to a grounded STAND_READY-compatible ending when the endpoint is clearly observable.",
+        ],
+        "advisory_criteria": [
+            "The posture, brief hold or playful expression is plausible but occluded, too subtle, "
+            "foreshortened by the front view, or insufficiently sampled to confirm.",
+            "A minor weight shift or small final placement difference does not break balance or the BREATHING seam.",
+        ],
+        "allowed_secondary_motion": [
+            "natural breathing", "blinking", "subtle ear, head or tail response",
+            "small torso and weight adjustments needed for realistic balance",
+            "small paw repositioning required by the intended pose while the paws stay grounded and balanced",
+            "the change in body height and silhouette that the playful posture itself requires",
+            "natural ear, face and tail carriage: the ears need not point forward and the tail need not be raised",
+        ],
+        "temporal_evidence_policy": {
+            "brief_event": True,
+            "absence_requires_reliable_coverage": True,
+            "sparse_non_observation": "REVIEW",
+            "occlusion_or_perspective_uncertainty": "REVIEW",
+            "subtle_or_ambiguous_response": "REVIEW",
+        },
+        "check_authority": {
+            "motion_temporal_integrity": AUTHORITY_QUALITY_ADVISORY,
+        },
+    },
+    # COME_PLAY 종 중립 베이스라인 (실제 평가는 acceptance_for_variant 가 COME_PLAY_BOW
+    # 본문으로 덮어쓴다). required_checks/authority/정책 리비전은 여기서 고정된다.
+    _species.COME_PLAY: {
+        "policy_revision": _species.COME_PLAY_POLICY_REVISION,
+        "description": (
+            "From STAND_READY at its home spot the pet shows playful excitement, travels a few "
+            "lively steps toward the viewer with a natural grounded gait (growing larger in the "
+            "fixed frame), decelerates and performs a recognizable play bow close to the camera "
+            "matching its approved near play-bow keyframe, holds it briefly, then travels back "
+            "(forward in time) to its home spot and settles into the same grounded STAND_READY "
+            "pose, position and scale with intact four-limb anatomy. The asset is two "
+            "start/end-conditioned segments joined without a visible seam."
+        ),
+        "expected_start_state": (
+            "STAND_READY at HOME: calm upright stance with all four paws naturally grounded."
+        ),
+        "expected_end_state": (
+            "STAND_READY at HOME: the pet is back at its original position and scale, upright on "
+            "all four paws, and the pose joins BREATHING smoothly without a visible jump."
+        ),
+        "blocking_criteria": [
+            "Reliable evidence clearly shows no approach toward the camera, no play bow, or a "
+            "different primary action replaces them.",
+            "The approach or the return is a zoom, slide or float with no real limb motion, or the pet "
+            "teleports or jump-cuts between positions.",
+            "A limb is duplicated, missing, merged, detached or anatomically implausible.",
+            "The pet visibly falls, floats, collapses, or loses plausible support and balance.",
+            "A human, hand, arm, person, leash, toy, platform or other added object appears.",
+            "The camera visibly moves, zooms or reframes (the pet's own change of size and position does not count).",
+            "The return is the approach played backward, or the pet ends clearly away from its home position and scale.",
+            "A visible jump, freeze, duplicated pose, prolonged motionless hold or reversed playback appears where the two segments join.",
+            "The pet does not return to a grounded STAND_READY-compatible ending when the endpoint is clearly observable.",
+        ],
+        "advisory_criteria": [
+            "The approach, deceleration, bow, brief hold or playful expression is plausible but occluded, "
+            "too subtle, foreshortened by the front view, or insufficiently sampled to confirm.",
+            "Imperfect gait, unidentifiable footfalls, a short re-orientation, minor speed changes or brief "
+            "partial paw cropping during the approach or the return.",
+            "A small final placement or size difference or a brief settling pause does not break balance or the BREATHING seam.",
+        ],
+        "allowed_secondary_motion": [
+            "natural breathing", "blinking", "subtle ear, head or tail response",
+            "the change in apparent size, framing position and silhouette that the approach, the bow and "
+            "the return themselves require (the camera stays fixed; the pet moves)",
+            "small paw repositioning and weight adjustments needed for braking, the bow and balance",
+            "natural ear, face and tail carriage: the ears need not point forward and the tail need not be raised",
+        ],
+        "temporal_evidence_policy": {
+            "brief_event": True,
+            "absence_requires_reliable_coverage": True,
+            "sparse_non_observation": "REVIEW",
+            "occlusion_or_perspective_uncertainty": "REVIEW",
+            "subtle_or_ambiguous_response": "REVIEW",
+        },
+        "check_authority": {
+            "motion_temporal_integrity": AUTHORITY_QUALITY_ADVISORY,
+            # v2 자문 보행/회전 + 모션 프로파일 진단 — 수용 계약에서도 자문이다.
+            **dict.fromkeys(_COME_PLAY_QUALITY_CHECK_NAMES, AUTHORITY_QUALITY_ADVISORY),
+        },
+    },
     "BLINKING": {
         "policy_revision": "premium-micro-idle-v1",
         "description": (
@@ -1293,6 +1495,13 @@ _BETA_ACCEPTANCE = {
 }
 
 
+#: 모든 베타 수용 계약 앞에 붙는 공통 차단 기준 — 종별 변형 계약도 같은 머리를 쓴다.
+_GENERIC_BLOCKING_CRITERIA: tuple[str, ...] = (
+    "Significant identity inconsistency; severe anatomy deformation or demonstrably missing/broken body parts.",
+    "Obvious teleportation, major temporal discontinuities, clearly sustained sliding/floating, or unusable output.",
+)
+
+
 def _acceptance_for(spec: MotionSpec) -> dict[str, Any]:
     beta = _BETA_ACCEPTANCE.get(spec.motion_id)
     if beta is None:
@@ -1311,14 +1520,17 @@ def _acceptance_for(spec: MotionSpec) -> dict[str, Any]:
             "vlm_paw_support", "vlm_paw_balance", "vlm_paw_limb_count",
             "vlm_paw_anatomy", "vlm_paw_return",
         ])
+    if spec.motion_id == _species.PLAY_WITH_ME:
+        required.extend(_species.PLAY_WITH_ME_REQUIRED_CHECK_NAMES)
+    if spec.motion_id == _species.COME_PLAY:
+        required.extend(_species.COME_PLAY_REQUIRED_CHECK_NAMES)
     contract.update({
         "version": MOTION_ACCEPTANCE_VERSION,
         "motion_id": spec.motion_id,
         "required_checks": required,
         "review_policy": MOTION_REVIEW_POLICY,
         "blocking_criteria": [
-            "Significant identity inconsistency; severe anatomy deformation or demonstrably missing/broken body parts.",
-            "Obvious teleportation, major temporal discontinuities, clearly sustained sliding/floating, or unusable output.",
+            *_GENERIC_BLOCKING_CRITERIA,
             *contract["blocking_criteria"],
         ],
         "check_authority": {
@@ -1363,32 +1575,87 @@ def get_motion(motion_id: str) -> Optional[MotionSpec]:
     return MOTIONS.get((motion_id or "").strip().upper())
 
 
+def acceptance_for_variant(
+    spec: MotionSpec, variant: "_species.SpeciesVariant"
+) -> dict[str, Any]:
+    """
+    레지스트리 수용 계약(종 중립) 위에 종별 본문을 덮어쓴 계약.
+
+    버전/motion_id/required_checks/review_policy/check_authority 는 레지스트리 그대로
+    (종과 무관) — 바뀌는 것은 description, 기대 시작/종료 상태, 차단/자문 기준,
+    허용 보조 동작, 시간 증거 정책이고, species / species_variant 가 기록된다.
+    """
+    contract = deepcopy(spec.qa_acceptance_spec)
+    body = deepcopy(variant.acceptance)
+    contract.update({
+        key: body[key]
+        for key in (
+            "description", "expected_start_state", "expected_intermediate_state",
+            "expected_end_state",
+            "advisory_criteria", "allowed_secondary_motion", "temporal_evidence_policy",
+        )
+        if key in body
+    })
+    contract["blocking_criteria"] = [
+        *_GENERIC_BLOCKING_CRITERIA,
+        *body.get("blocking_criteria", []),
+    ]
+    contract["species"] = variant.species
+    contract["species_variant"] = variant.variant_id
+    contract["intermediate_keyframe_role"] = variant.keyframe_role
+    return contract
+
+
 def provider_order_for_class(motion_class: str) -> tuple[str, ...]:
     """클래스 기본 provider registry id 순서. 미등록 클래스는 fail-closed."""
     return tuple(MOTION_PROVIDER_ORDER_BY_CLASS.get((motion_class or "").strip().upper(), ()))
 
 
-def provider_order_for_motion(motion_id: str) -> tuple[str, ...]:
-    """Select one authoritative model; trailing legacy entries are never fallbacks."""
+def provider_order_for_motion(
+    motion_id: str, variant_id: Optional[str] = None
+) -> tuple[str, ...]:
+    """Select one authoritative model; trailing legacy entries are never fallbacks.
+
+    variant_id (종 변형, 예: PLAY_BOW)가 있으면 변형 단위 설정이 모션 단위보다 앞선다.
+    """
     normalized = (motion_id or "").strip().upper()
     spec = MOTIONS.get(normalized)
     if not spec:
         return ()
     override = MOTION_PROVIDER_ORDER_OVERRIDES.get(normalized)
     order = tuple(override) if override is not None else provider_order_for_class(spec.motion_class)
-    model = configured_model_for_motion(normalized)
+    model = configured_model_for_motion(normalized, variant_id=variant_id)
     return (model,) if model else order[:1]
 
 
-def configured_model_for_motion(motion_id: str) -> Optional[str]:
-    """env MOTION_MODEL_<MOTION_ID> > MOTION_MODEL_DEFAULTS. 미등록 모델은 과금 전에 실패."""
+def configured_model_for_motion(
+    motion_id: str, variant_id: Optional[str] = None
+) -> Optional[str]:
+    """
+    Explicit env always beats code defaults, narrow beats wide:
+      env MOTION_MODEL_<MOTION>_<VARIANT> > env MOTION_MODEL_<MOTION> >
+      MOTION_VARIANT_MODEL_DEFAULTS[(motion, variant)] > MOTION_MODEL_DEFAULTS[motion].
+    미등록 모델은 과금 전에 실패.
+    """
     import os
 
     from . import video_motion_providers
 
     normalized = (motion_id or "").strip().upper()
     env_name = f"{MOTION_MODEL_ENV_PREFIX}{normalized}"
-    model = (os.getenv(env_name) or "").strip().lower() or MOTION_MODEL_DEFAULTS.get(normalized)
+    variant = (variant_id or "").strip().upper()
+    model: Optional[str] = None
+    if variant:
+        variant_env = f"{env_name}_{variant}"
+        model = (os.getenv(variant_env) or "").strip().lower()
+        if model:
+            env_name = variant_env
+    if not model:
+        model = (os.getenv(env_name) or "").strip().lower()
+    if not model and variant:
+        model = MOTION_VARIANT_MODEL_DEFAULTS.get((normalized, variant))
+    if not model:
+        model = MOTION_MODEL_DEFAULTS.get(normalized)
     if not model:
         return None
     if not video_motion_providers.is_registered_model(model):
@@ -1781,6 +2048,51 @@ async def resolve_video_generation_spec(
         confidence_floor=str(confidence_floor),
     )
 
+    # ── 종 인식 변형 (PLAY_WITH_ME) — fail-closed ───────────────────────────
+    # 지원 종이 아니면(UNKNOWN 포함) 계약 자체가 없다: 프로바이더 제출도, 행 기록도,
+    # 과금도 없다. 변형은 계약에 박제되어 재개/재QA 가 같은 서술·지침을 읽는다.
+    species_variant: Optional[dict[str, Any]] = None
+    variant_obj = None
+    if _species.requires_species_variant(spec.motion_id):
+        try:
+            variant_obj = _species.require_variant(
+                spec.motion_id, pet_motion_profile.get("species")
+            )
+        except _species.SpeciesVariantError as e:
+            raise MotionSpecError(e.code, e.message, status=e.status) from e
+        species_variant = _species.variant_payload(variant_obj)
+
+    # ── 종별 중간 키프레임 (PLAY_WITH_ME v2) — fail-closed ──────────────────
+    # 변형의 keyframe_role(PLAY_BOW/PLAY_CROUCH)이 **같은 정본 계보**에서 승인돼
+    # 있어야 한다. 없으면 계약이 없다 — 세그먼트 양끝 조건이 실제 승인 이미지가
+    # 아니면 생성하지 않는다 (정본/STAND_READY 로 조용히 대체하지 않는다).
+    intermediate_payload: Optional[dict[str, Any]] = None
+    segments: Optional[list[dict[str, Any]]] = None
+    if variant_obj is not None and variant_obj.keyframe_role and bool(
+        spec.video_compat.get("segmented")
+    ):
+        inter = await _approved_keyframe(user_id, pet_id, variant_obj.keyframe_role)
+        if not inter:
+            raise MotionSpecError(
+                "INTERMEDIATE_KEYFRAME_REQUIRED",
+                f"{spec.motion_id} 은 승인된 {variant_obj.keyframe_role} 중간 키프레임이 필요합니다 "
+                "— 먼저 빌드/승인하세요.",
+                status=409,
+            )
+        if str(inter.canonical_version_id or "") != str(
+            getattr(start_lineage, "canonical_version_id", None) or ""
+        ):
+            raise MotionSpecError(
+                "INTERMEDIATE_KEYFRAME_LINEAGE",
+                f"{variant_obj.keyframe_role} 중간 키프레임의 정본이 STAND_READY 와 다릅니다 — "
+                "같은 정본 계보에서 다시 빌드하세요.",
+                status=409,
+            )
+        intermediate_payload = _keyframe_payload(inter)
+        from . import motion_video_segments
+
+        segments = motion_video_segments.segment_plan(variant_obj)
+
     strategy = spec.preferred_video_strategy
     motion_reference = None
     if spec.motion_reference_policy != REF_NONE:
@@ -1813,6 +2125,16 @@ async def resolve_video_generation_spec(
             )
             strategy = STRATEGY_I2V
 
+    # 종 변형이 있으면 수용 계약(acceptance)을 종별 본문으로 바꾼다. 검사 이름/권위는
+    # 레지스트리 그대로다 — 바뀌는 것은 VLM 이 읽는 서술·기준·지침뿐이다.
+    acceptance = (
+        acceptance_for_variant(spec, variant_obj) if variant_obj is not None
+        else deepcopy(spec.qa_acceptance_spec)
+    )
+    requirements = deepcopy(spec.requirements)
+    if variant_obj is not None:
+        requirements["qa"]["business"]["acceptance"] = deepcopy(acceptance)
+
     return {
         "pet_motion_profile": pet_motion_profile,
         "contract_version": PHASE6_CONTRACT_VERSION,
@@ -1821,8 +2143,13 @@ async def resolve_video_generation_spec(
         "motion_id": spec.motion_id,
         "motion_class": spec.motion_class,
         "motion_type": spec.motion_type,
+        # 종 인식 변형 (없는 모션은 None). 생성 서술/프롬프트 절/VLM 지침의 정본.
+        "species_variant": species_variant,
         "start_keyframe": start_payload,
         "target_keyframe": target_payload,
+        # 종별 중간 포즈 키프레임 (세그먼트 모션에만, 그 외 None) + 세그먼트 계획.
+        "intermediate_keyframe": intermediate_payload,
+        "segments": segments,
         "motion_reference": motion_reference,
         "video_strategy": strategy,
         "conditioning_fallbacks": (
@@ -1837,10 +2164,13 @@ async def resolve_video_generation_spec(
         "interruptible": spec.interruptible,
         "duration_range_sec": list(spec.duration_range_sec),
         "video_compat": dict(spec.video_compat),
-        "provider_order": list(provider_order_for_motion(spec.motion_id)),
-        "requirements": dict(spec.requirements),
+        "provider_order": list(provider_order_for_motion(
+            spec.motion_id,
+            variant_id=(variant_obj.variant_id if variant_obj is not None else None),
+        )),
+        "requirements": requirements,
         "qa_context": {
-            "acceptance": deepcopy(spec.qa_acceptance_spec),
+            "acceptance": deepcopy(acceptance),
             "expected_direction": direction or spec.preferred_travel_direction,
             "interaction_type": spec.video_compat.get("interaction"),
             "allow_generated_hand": bool(spec.video_compat.get("allow_generated_hand")),

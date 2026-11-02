@@ -48,8 +48,13 @@ GENERATED_KIND_CUTOUT = "keyframe_cutout"
 #: 하류 생성(모션 영상)이 실제로 먹는 입력 — raw 가 아니라 클린 플레이트다.
 GENERATED_KIND_PLATE = "keyframe_plate"
 
-#: 프로필 bbox 비율 비교가 무의미해지는(포즈가 실루엣을 바꾸는) 역할.
+#: 프로필 bbox 비율 비교가 무의미해지는(포즈가 실루엣을 바꾸는) 역할. 앵커 키프레임
+#: 역할(PLAY_BOW/PLAY_CROUCH — anchor_keyframe_role 설정)도 같은 취급이다 (_pose_changing).
 _POSE_CHANGING_ROLES = ("LIE", "SLEEP")
+
+
+def _pose_changing(spec: Any) -> bool:
+    return spec.role in _POSE_CHANGING_ROLES or bool(getattr(spec, "anchor_keyframe_role", None))
 
 #: 새 이미지 생성 대신 승인된 Canonical 을 그대로 별칭하는 후보의 provider 값
 #: (BREATHING → NEUTRAL_IDLE 재사용 전용, generated=false).
@@ -246,6 +251,7 @@ def evaluate_keyframe_candidate(
     reference_signatures: list[dict[str, Any]],
     spec: Any,
     vlm_qa: Optional[dict[str, Any]],
+    anchor_signature: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """
     신원(정본 시그니처 우선) + 포즈 + 해부학 + 사용성.
@@ -253,10 +259,17 @@ def evaluate_keyframe_candidate(
     포즈 판정은 VLM 전용이다 — 실루엣 휴리스틱으로 "엎드림"을 판정하는 것은
     Phase 2 부터 일관되게 거부해 온 종류의 추측이다. VLM 없으면 pose=unknown →
     최대 REVIEW.
+
+    anchor_signature: 앵커 키프레임(STAND_READY) 누끼의 시그니처 — 앵커 역할
+    (PLAY_BOW/PLAY_CROUCH)에서만. 호출자가 reference_signatures 에도 넣어 신원
+    유사도에 반영하고, 여기서는 **앵커 일관성** 수치를 별도로 기록한다
+    (anchor_keyframe_consistency). 정본 QA 가 내린 신원 판정은 바꾸지 않는다 —
+    앵커와 분명히 다른 개체면 identity 쪽이 이미 FAIL 이고, 포즈만 다른 같은 개체는
+    PASS/REVIEW 범위에 머문다.
     """
     from . import canonical_qa
 
-    pose_changing = spec.role in _POSE_CHANGING_ROLES
+    pose_changing = _pose_changing(spec)
     sigs = ([canonical_signature] if canonical_signature else []) + list(reference_signatures)
     base = canonical_qa.evaluate_candidate(
         cutout_rgba=cutout_rgba,
@@ -321,6 +334,29 @@ def evaluate_keyframe_candidate(
             if key in vlm_qa:
                 vlm_evidence[key] = vlm_qa[key]
 
+    anchor_consistency: Optional[dict[str, Any]] = None
+    if anchor_signature is not None:
+        from .pet_identity_service import compute_reference_signature, signature_similarity
+
+        anchor_role = getattr(spec, "anchor_keyframe_role", None)
+        similarity: Optional[float] = None
+        if cutout_rgba is not None:
+            cand_sig = compute_reference_signature(cutout_rgba)
+            sim = signature_similarity(cand_sig, anchor_signature) if cand_sig else {"comparable": False}
+            if sim.get("comparable"):
+                similarity = round(float(sim["hist_intersection"]), 4)
+        anchor_consistency = {
+            "anchor_role": anchor_role,
+            "signature_hist_intersection": similarity,
+            # 수치만 기록한다 — 판정 권위는 정본 QA 의 identity 검사가 쥔다
+            # (앵커 시그니처는 reference_signatures 로도 들어가 그 평균에 반영된다).
+            "status": (
+                "unknown" if similarity is None
+                else canonical_qa.PASS if similarity >= canonical_qa._identity_pass_threshold()
+                else canonical_qa.REVIEW
+            ),
+        }
+
     return {
         "qa_version": KEYFRAME_QA_VERSION,
         "base_qa_version": base["qa_version"],
@@ -342,6 +378,7 @@ def evaluate_keyframe_candidate(
             "secondary_reference_count": len(reference_signatures),
         },
         "vlm": vlm_evidence or None,
+        **({"anchor_keyframe_consistency": anchor_consistency} if anchor_consistency else {}),
     }
 
 
@@ -356,6 +393,7 @@ def _evaluate_keyframe_with_conditional_vlm(
     spec: Any,
     cache_mode: Optional[str] = None,
     inherited_evidence: Sequence[Mapping[str, Any]] = (),
+    anchor_signature: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Run deterministic Keyframe QA first, escalating the existing VLM only if needed."""
 
@@ -369,6 +407,7 @@ def _evaluate_keyframe_with_conditional_vlm(
         reference_signatures=reference_signatures,
         spec=spec,
         vlm_qa=None,
+        anchor_signature=anchor_signature,
     )
     escalation = vlm_escalation.should_call_vlm(
         stage="KEYFRAME",
@@ -415,6 +454,7 @@ def _evaluate_keyframe_with_conditional_vlm(
             reference_signatures=reference_signatures,
             spec=spec,
             vlm_qa=vlm_qa,
+            anchor_signature=anchor_signature,
         )
         if should_call
         else deterministic
@@ -720,11 +760,16 @@ async def build_keyframe(
     allow_canonical_reuse: bool = False,
     pinned_canonical_version_id: Optional[str] = None,
     pinned_canonical_version: Optional[int] = None,
+    anchor_keyframe_version: Optional[int] = None,
 ) -> ActionKeyframe:
     """
     pinned_canonical_version_id / pinned_canonical_version: 생성 실행이 고정한
     정본. 주어지면 **그 버전만** 읽는다 — "최신 정본"을 해석하지 않는다. 틱
     사이에 다른 정본 버전이 생기거나 env 가 바뀌어도 키프레임 계보는 그대로다.
+
+    anchor_keyframe_version: 앵커 역할(spec.anchor_keyframe_role, 예: PLAY_BOW →
+    STAND_READY)이 있는 포즈에서 생성 입력으로 쓸 승인 키프레임의 버전. None 이면
+    같은 정본 계보의 최신 complete 버전을 고른다. 앵커 역할이 없는 포즈는 무시한다.
     """
     from . import (
         action_keyframe_spec,
@@ -934,6 +979,108 @@ async def build_keyframe(
         alias_plate_bucket = gen_ref.bucket
         alias_plate_object_path = gen_ref.object_path
 
+    # ── 앵커 키프레임 (PLAY_BOW/PLAY_CROUCH → 승인된 STAND_READY) ────────────
+    # 생성 입력(첫 이미지)이 정본 플레이트가 아니라 **같은 정본 계보의 승인된 앵커
+    # 키프레임 플레이트**다 — 중간 포즈가 영상 세그먼트 양끝 조건으로 쓰이려면
+    # STAND_READY 와 같은 카메라/프레이밍/배경이어야 한다. 정본은 그대로 2번째
+    # 레퍼런스이자 QA 의 1차 신원 앵커로 남는다. 앵커가 없으면 fail-closed:
+    # 정본 플레이트로 조용히 대체하면 프레이밍이 다른 중간 포즈가 생기고, 그 포즈로
+    # 조건부 생성한 세그먼트는 이음매에서 점프한다.
+    canonical_gen_ref, canonical_gen_bytes = gen_ref, gen_bytes
+    anchor_role = getattr(spec, "anchor_keyframe_role", None)
+    anchor_meta: Optional[dict[str, Any]] = None
+    anchor_raw_bytes: Optional[bytes] = None
+    anchor_signature: Optional[dict[str, Any]] = None
+    if anchor_role:
+        anchor_rows = [
+            r for r in await _keyframe_rows(pid, anchor_role)
+            if r.get("status") == STATUS_COMPLETE
+            and r.get("selected_candidate_id")
+            and str(r.get("canonical_version_id") or "") == str(canonical.id or "")
+            and (anchor_keyframe_version is None or int(r.get("version") or 0) == int(anchor_keyframe_version))
+        ]
+        anchor_row = max(anchor_rows, key=lambda r: int(r.get("version") or 0), default=None)
+        anchor_kf = (
+            _to_keyframe(anchor_row, await _candidate_rows(str(anchor_row["id"]))) if anchor_row else None
+        )
+        anchor_sel = next((c for c in anchor_kf.candidates if c.selected), None) if anchor_kf else None
+        if anchor_kf is None or anchor_sel is None:
+            raise ActionKeyframeError(
+                "ANCHOR_KEYFRAME_REQUIRED",
+                f"{spec.role} 키프레임은 같은 정본의 승인된 {anchor_role} 키프레임을 앵커로 "
+                "요구합니다 — 먼저 그 역할을 빌드/승인하세요.",
+                status=409,
+            )
+        anchor_raw_bytes, anchor_kf_cutout_bytes = await asyncio.gather(
+            _fetch(_obj(anchor_sel.raw_bucket, anchor_sel.raw_object_path)),
+            _fetch(_obj(anchor_sel.cutout_bucket, anchor_sel.cutout_object_path))
+            if anchor_sel.cutout_object_path else _fetch(None),
+        )
+        anchor_plate_bytes: Optional[bytes] = None
+        anchor_plate_ref = None
+        if anchor_sel.plate_object_path:
+            anchor_plate_ref = _obj(anchor_sel.plate_bucket, anchor_sel.plate_object_path)
+            anchor_plate_bytes = await _fetch(anchor_plate_ref)
+        if not anchor_plate_bytes and clean_plate_service.plate_enabled():
+            try:
+                anchor_plate = await clean_plate_service.ensure_plate(
+                    user_id=uid,
+                    content_id=cid,
+                    derived_kind=clean_plate_service.GENERATED_KIND_KEYFRAME_PLATE,
+                    fetch_bytes=fetch,
+                    raw_object_path=anchor_sel.raw_object_path,
+                    cutout_bucket=anchor_sel.cutout_bucket,
+                    cutout_object_path=anchor_sel.cutout_object_path,
+                    cutout_bytes=anchor_kf_cutout_bytes,
+                    plate_bucket=anchor_sel.plate_bucket,
+                    plate_object_path_hint=anchor_sel.plate_object_path,
+                    provenance={"keyframe_id": anchor_kf.id, "keyframe_role": anchor_role,
+                                "candidate_id": anchor_sel.id},
+                    background=plate_background,
+                )
+            except clean_plate_service.CleanPlateError as e:
+                anchor_plate = None
+                logger.warning("앵커 키프레임 플레이트 해석 실패 (%s): %s", anchor_role, e.message)
+            if anchor_plate is not None:
+                anchor_plate_ref = _obj(anchor_plate.bucket, anchor_plate.object_path)
+                anchor_plate_bytes = anchor_plate.bytes
+        if not anchor_plate_bytes:
+            if clean_plate_service.plate_enabled() and clean_plate_service.plate_required():
+                raise ActionKeyframeError(
+                    "ANCHOR_KEYFRAME_PLATE_UNAVAILABLE",
+                    f"앵커 {anchor_role} 키프레임의 클린 플레이트를 만들 수 없습니다 — raw 로 "
+                    "대체하지 않습니다. CLEAN_PLATE_REQUIRED=0 으로만 명시적 허용.",
+                    status=503,
+                )
+            if not anchor_raw_bytes:
+                raise ActionKeyframeError(
+                    "ANCHOR_KEYFRAME_ASSET_UNAVAILABLE",
+                    f"앵커 {anchor_role} 키프레임 이미지를 불러오지 못했습니다.", status=503,
+                )
+            anchor_plate_ref = _obj(anchor_sel.raw_bucket, anchor_sel.raw_object_path)
+            anchor_plate_bytes = anchor_raw_bytes
+        gen_ref, gen_bytes = anchor_plate_ref, anchor_plate_bytes
+        anchor_kf_cutout_rgba = (
+            pet_identity_service.load_rgba(anchor_kf_cutout_bytes) if anchor_kf_cutout_bytes else None
+        )
+        if anchor_kf_cutout_rgba is not None:
+            anchor_signature = pet_identity_service.compute_reference_signature(anchor_kf_cutout_rgba)
+        anchor_meta = {
+            "role": anchor_role,
+            "keyframe_id": anchor_kf.id,
+            "keyframe_version": anchor_kf.version,
+            "candidate_id": anchor_sel.id,
+            "object_path": anchor_plate_ref.object_path,
+            "kind": "clean_plate" if anchor_plate_ref.object_path != anchor_sel.raw_object_path else "raw",
+        }
+        canonical_input = {
+            "kind": "anchor_keyframe_plate",
+            "object_path": anchor_plate_ref.object_path,
+            "anchor": dict(anchor_meta),
+            "canonical_plate": {"kind": canonical_input.get("kind"),
+                                "object_path": canonical_input.get("object_path")},
+        }
+
     # ── 보조 신원 제약: 신뢰 세트의 얼굴/전신 원본 최대 2장 ───────────────
     # 여기서는 (재사용 QA 에도 필요한) 바이트/시그니처만 모은다. signed URL
     # 조립(provider_refs)은 **프로바이더 전용 준비물**이라 재사용 판정 뒤로
@@ -960,6 +1107,13 @@ async def build_keyframe(
     secondary_ids: list[str] = []
     secondary_refs: list[tuple[str, str, Any, bytes]] = []
     vlm_ref_images: list[tuple[bytes, str]] = [(anchor_bytes, "image/png")]
+    if anchor_meta is not None:
+        # VLM 레퍼런스: 정본(1차) 다음에 앵커 STAND_READY raw — 포즈/프레이밍 일관성
+        # 판단의 근거. 시그니처도 신원 유사도에 참여한다 (같은 개체의 다른 포즈).
+        if anchor_raw_bytes:
+            vlm_ref_images.append((anchor_raw_bytes, "image/png"))
+        if anchor_signature:
+            reference_signatures.append(anchor_signature)
     for (role, rid, ref), data in zip(secondary_candidates, secondary_bytes):
         if not data:
             continue
@@ -1007,6 +1161,10 @@ async def build_keyframe(
         **analyzer_versions(),
         "canonical_providers": [f"{p.name}:{p.model_name()}" for p in resolved_providers],
     }
+    if anchor_meta is not None:
+        # 앵커 키프레임이 바뀌면(STAND_READY 새 버전) 이 포즈도 다시 만든다 — 프레이밍이
+        # 앵커에 묶여 있다. 앵커 역할이 없는 포즈의 스탬프는 이전과 바이트 단위로 같다.
+        versions_stamp["anchor_keyframe"] = f"{anchor_meta['role']}:{anchor_meta['keyframe_id']}"
     if pinned:
         # 상류 분석기(신원/세트 — VLM 플래그가 들어가는 부분) 스탬프는 **고정된
         # 정본이 실제로 만들어진 값**이다, 현재 프로세스 env 가 아니다. 그러지
@@ -1160,21 +1318,47 @@ async def build_keyframe(
     # 만든다 — 재사용이 성공한 위 경로는 이 지점에 절대 도달하지 않는다.
     if canonical_signature is None and anchor_cutout_rgba is not None:
         canonical_signature = pet_identity_service.compute_reference_signature(anchor_cutout_rgba)
-    provider_refs: list[CanonicalReference] = [
-        CanonicalReference(
-            reference_id=f"canonical:{anchor.id}",
-            role="CANONICAL",
-            url=sign(gen_ref),
-            data=gen_bytes,
-            mime_type="image/png",
-        )
-    ] + [
-        CanonicalReference(
-            reference_id=rid, role=role, url=sign(ref), data=data,
-            mime_type=ref.mime_type or "image/jpeg",
-        )
-        for role, rid, ref, data in secondary_refs
-    ]
+    if anchor_meta is not None:
+        # [앵커 STAND_READY 플레이트, 정본 플레이트, 보조 사진…] — 이미지 프로바이더의
+        # 레퍼런스 상한(Runway 3장)을 넘지 않도록 보조 사진은 1장으로 줄인다.
+        provider_refs: list[CanonicalReference] = [
+            CanonicalReference(
+                reference_id=f"keyframe:{anchor_meta['keyframe_id']}",
+                role="ANCHOR_KEYFRAME",
+                url=sign(gen_ref),
+                data=gen_bytes,
+                mime_type="image/png",
+            ),
+            CanonicalReference(
+                reference_id=f"canonical:{anchor.id}",
+                role="CANONICAL",
+                url=sign(canonical_gen_ref),
+                data=canonical_gen_bytes,
+                mime_type="image/png",
+            ),
+        ] + [
+            CanonicalReference(
+                reference_id=rid, role=role, url=sign(ref), data=data,
+                mime_type=ref.mime_type or "image/jpeg",
+            )
+            for role, rid, ref, data in secondary_refs[:1]
+        ]
+    else:
+        provider_refs = [
+            CanonicalReference(
+                reference_id=f"canonical:{anchor.id}",
+                role="CANONICAL",
+                url=sign(gen_ref),
+                data=gen_bytes,
+                mime_type="image/png",
+            )
+        ] + [
+            CanonicalReference(
+                reference_id=rid, role=role, url=sign(ref), data=data,
+                mime_type=ref.mime_type or "image/jpeg",
+            )
+            for role, rid, ref, data in secondary_refs
+        ]
 
     candidates = await _candidate_rows(keyframe_id) if resumable else []
     passes = sum(
@@ -1429,6 +1613,7 @@ async def build_keyframe(
                 reference_signatures=reference_signatures,
                 spec=spec,
                 inherited_evidence=inherited_evidence,
+                anchor_signature=anchor_signature,
             )
             business_qa.attach_business_result(
                 qa,

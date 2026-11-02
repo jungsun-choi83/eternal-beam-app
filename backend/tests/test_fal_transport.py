@@ -243,6 +243,47 @@ def test_fal_result_fetch_4xx_is_provider_rejection(monkeypatch):
     assert e.value.code == "PROVIDER_REJECTED" and "content_policy_violation" in e.value.message
 
 
+def test_fal_kling_prompt_limit_is_enforced_before_submission(monkeypatch):
+    """kling-video/v3 I2V: prompt > 2,500자는 결과 조회 단계 HTTP 422 (라이브 2026-10-29).
+    제출 전에 로컬 PROVIDER_CONTRACT 로 멈춰야 하고, 상한 이하는 그대로 제출된다."""
+    import httpx
+
+    from backend.services.video_motion_providers import VideoProviderError
+
+    monkeypatch.setenv("FAL_KEY", "fal-test-key")
+    posts: list[dict] = []
+
+    def fake_post(url, json=None, **k):
+        posts.append(json)
+        return _Resp(200, {"request_id": "rid"})
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    provider = FalKlingProvider()
+    assert provider.max_prompt_chars == 2500
+
+    def req(prompt):
+        return MotionVideoRequest(
+            prompt=prompt, start_image_url="https://x/s.png", start_image_bytes=b"x",
+            end_image_url="https://x/e.png", end_image_bytes=b"x", output_spec=SPEC,
+        )
+
+    with pytest.raises(VideoProviderError) as e:
+        provider.submit(req("p" * 2501))
+    assert e.value.code == "PROVIDER_CONTRACT" and "2501" in e.value.message
+    assert posts == [], "초과 프롬프트로 HTTP 가 나갔다"
+
+    provider.submit(req("p" * 2500))
+    assert len(posts) == 1 and len(posts[0]["prompt"]) == 2500
+
+    # 엔드포인트 상한이 바뀌면 env 로 따라간다 — 코드 배포 없이.
+    monkeypatch.setenv("FAL_KLING_MAX_PROMPT_CHARS", "3000")
+    provider.submit(req("p" * 2600))
+    assert len(posts) == 2
+
+    # 상한을 모르는 어댑터는 검증하지 않는다 (추정 금지).
+    assert FalSeedanceProvider().max_prompt_chars is None
+
+
 def test_fal_undocumented_result_shape_stops_with_sanitized_shape(monkeypatch):
     from backend.services.video_motion_providers import VideoProviderError
 

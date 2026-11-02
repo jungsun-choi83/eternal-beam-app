@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from . import owned_assets
@@ -116,15 +117,105 @@ def motion_id_for_product(product_key: str) -> Optional[str]:
 
 def _idempotency_key(action_id: str, pet_id: str, reservation_ledger_id: Optional[str]) -> str:
     """
-    실행 재사용 열쇠.
+    실행 재사용 열쇠(기본 열쇠).
 
     크레딧 모드: 예약 원장 id — 같은 구매의 재시도는 같은 실행을 재사용하고,
     환불 후 새 구매는 새 예약 → 새 실행이다(환불된 실패 실행에 갇히지 않는다).
     구독 모드: 펫+액션 고정 — 동시 더블탭이 실행 두 개를 만들지 못한다.
-    종료(FAILED)된 기존 실행은 아래 submit 이 retry 로 되살린다.
+
+    종료(FAILED)된 기존 실행은 submit 이 두 갈래로 다룬다:
+      * 판정 전 실패(프로바이더/인프라/취소) → retry 로 되살린다(durable resume).
+      * 핀된 모션 버전에 대한 **최종 판정**(MOTION_QA_FAILED 등) → 이 열쇠에
+        `:regen:<실패 실행 id>` 를 붙인 새 열쇠로 **새 실행**을 만든다
+        (_regeneration_key). 옛 실행·버전·후보·QA 영수증은 그대로 남는다.
     """
     scope = (reservation_ledger_id or "").strip() or f"sub:{pet_id}"
     return f"premium:{action_id}:{scope}"
+
+
+def _regeneration_key(base_key: str, superseded_run_id: str) -> str:
+    """
+    최종 판정으로 끝난 실행을 **대체**하는 새 실행의 열쇠.
+
+    결정적이다(같은 실패 실행을 대체하는 동시 요청 둘은 같은 열쇠를 계산해
+    하나의 실행에 합류한다) 그리고 사슬이다(대체 실행이 또 최종 판정으로 끝나면
+    다음 요청은 그 실행의 id 로 새 열쇠를 만든다). 실행 한 번의 실패당 새 실행
+    하나 — 무한 재생성이 아니라 사용자의 명시적 요청 한 번당 하나다.
+    """
+    return f"{base_key}:regen:{superseded_run_id}"
+
+
+#: provider_state._operator 아래의 재생성 감사 표식 키.
+REGENERATION_MARKER = "regeneration"
+
+
+async def _start_fresh_run(
+    *,
+    user_id: str,
+    pet_id: str,
+    action: str,
+    product_key: str,
+    idempotency_key: str,
+    reservation_ledger_id: Optional[str],
+    credits_reserved: int,
+    superseded: runs.PetGenerationRun,
+    verdict: str,
+) -> runs.PetGenerationRun:
+    """
+    최종 판정으로 끝난 `superseded` 를 대체하는 새 실행을 만든다.
+
+    상거래 맥락: 호출자가 예약을 들고 왔으면(새 구매) 그것을 싣는다. 들고 오지
+    않았으면(구독 모드, 또는 환불되지 않은 기존 구매의 재요청) 대체되는 실행의
+    예약을 **그대로 물려받는다** — retry 로 되살렸을 때 그 실행이 들고 있었을
+    바로 그 예약이다. 확정은 멱등(commit 은 여러 번 안전)이라 같은 구매가 두 번
+    확정되지 않고, 예약 없는 실행(구독)은 아무것도 물려받지 않는다.
+    """
+    inherit = not (reservation_ledger_id or "").strip() and bool(superseded.reservation_ledger_id)
+    marker = {
+        "supersedes_run_id": superseded.id,
+        "superseded_motion_version_id": superseded.motion_version_id,
+        "reason": verdict,
+        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "reservation_inherited": inherit,
+    }
+    return await runs.start_generation_run(
+        user_id=user_id,
+        pet_id=pet_id,
+        motion_id=action,
+        request_kind=runs.REQUEST_PREMIUM_PRODUCT,
+        idempotency_key=idempotency_key,
+        product_key=product_key,
+        reservation_ledger_id=(
+            superseded.reservation_ledger_id if inherit else reservation_ledger_id
+        ),
+        credits_reserved=(
+            int(superseded.credits_reserved or 0) if inherit else int(credits_reserved or 0)
+        ),
+        provider_state_extra={"_operator": {REGENERATION_MARKER: marker}},
+    )
+
+
+async def _start_base_run(
+    *,
+    user_id: str,
+    pet_id: str,
+    action: str,
+    product_key: str,
+    base_key: str,
+    reservation_ledger_id: Optional[str],
+    credits_reserved: int,
+) -> runs.PetGenerationRun:
+    """기본 열쇠로 실행을 만들거나 재사용한다 (예전 submit 과 동일)."""
+    return await runs.start_generation_run(
+        user_id=user_id,
+        pet_id=pet_id,
+        motion_id=action,
+        request_kind=runs.REQUEST_PREMIUM_PRODUCT,
+        idempotency_key=base_key,
+        product_key=product_key,
+        reservation_ledger_id=reservation_ledger_id,
+        credits_reserved=int(credits_reserved or 0),
+    )
 
 
 async def submit_premium_run(
@@ -140,6 +231,18 @@ async def submit_premium_run(
 
     과금은 여기서 일어나지 않는다 — 예약은 구매(premium_purchase)가 이미 잡았고,
     확정/환불은 실행의 종료 경로(finalization / reconcile)가 판정한다.
+
+    실행 수명주기(사용자·펫·액션·요청 종류 범위에서):
+      1) 활성 실행이 있으면 합류한다 — 열쇠가 달라도 (start_generation_run 의
+         활성 범위 합류 + DB 부분 unique 인덱스). 이중 생성 없음.
+      2) 가장 최근 실행이 핀된 모션 버전에 대한 **최종 판정**(MOTION_QA_FAILED /
+         MOTION_QA_REVIEW / 폴백 전달)으로 끝났고 살아 있는 프로바이더 작업이
+         없으면, 이 요청은 의도적인 새 생성이다 → 새 열쇠로 새 실행(새 모션
+         버전, 새 프로바이더 시도). 옛 실행·버전·후보·QA 는 보존된다.
+         retry(=QA 재평가/durable resume)는 별도 엔드포인트로 그대로 남는다.
+      3) 그 밖에는 예전 그대로: 기본 열쇠로 만들거나 재사용하고, 판정 전
+         실패(프로바이더/인프라/취소)면 retry 로 되살린다 — durable 핀과
+         프로바이더 영수증을 보존하므로 살아 있는 외부 작업을 재제출하지 않는다.
     """
     action = (action_id or "").strip().upper()
     if action not in PREMIUM_MOTIONS:
@@ -147,19 +250,61 @@ async def submit_premium_run(
             "MOTION_NOT_COMMERCIAL", f"{action} 는 상용 이행 대상이 아닙니다.", status=409
         )
     product_key = owned_assets.product_key_for_action(action)
+    base_key = _idempotency_key(action, pet_id, reservation_ledger_id)
+    scope = dict(
+        user_id=user_id, pet_id=pet_id, motion_id=action,
+        request_kind=runs.REQUEST_PREMIUM_PRODUCT,
+    )
     try:
-        run = await runs.start_generation_run(
-            user_id=user_id,
-            pet_id=pet_id,
-            motion_id=action,
-            request_kind=runs.REQUEST_PREMIUM_PRODUCT,
-            idempotency_key=_idempotency_key(action, pet_id, reservation_ledger_id),
-            product_key=product_key,
-            reservation_ledger_id=reservation_ledger_id,
-            credits_reserved=int(credits_reserved or 0),
-        )
-        # 같은 열쇠의 기존 실행이 이미 종료(실패)돼 있으면 되살린다 — 구독 모드의
-        # 재구매가 대표적이다. PUBLISHED/진행 중이면 retry 는 그대로 돌려준다.
+        latest = await runs.latest_run_for_scope(**scope)
+        base_run = await runs.find_run_by_key(**scope, idempotency_key=base_key)
+        if latest is None:
+            run = await _start_base_run(
+                user_id=user_id, pet_id=pet_id, action=action, product_key=product_key,
+                base_key=base_key, reservation_ledger_id=reservation_ledger_id,
+                credits_reserved=credits_reserved,
+            )
+        elif latest.status in runs.ACTIVE_RUN_STATUSES:
+            # 1) 활성 실행에 합류 — 열쇠가 달라도 이 범위의 활성 실행은 하나뿐이다.
+            run = latest
+        elif latest.status == runs.STATUS_PUBLISHED and not runs.is_delivered_fallback(latest):
+            # READY — 생성할 것이 없다. 기본 열쇠가 이미 쓰였으면(구독 고정 열쇠 /
+            # 같은 예약) 발행된 실행을 돌려주고, 옛 실패 실행을 되살리지 않는다.
+            # 새 예약(크레딧 모드)이면 예전처럼 그 예약을 실은 실행을 만든다 —
+            # 빌더가 완성 버전을 재사용하고 이행이 포인터/예약을 다시 맞춘다.
+            run = latest if base_run is not None else await _start_base_run(
+                user_id=user_id, pet_id=pet_id, action=action, product_key=product_key,
+                base_key=base_key, reservation_ledger_id=reservation_ledger_id,
+                credits_reserved=credits_reserved,
+            )
+        elif (verdict := runs.terminal_motion_verdict(latest)) and not runs.has_live_provider_work(latest):
+            # 2) 의도적인 새 생성 — 기본 열쇠가 비어 있으면(크레딧 모드의 새
+            #    예약) 그대로, 이미 쓰였으면(구독 모드 고정 열쇠) 대체 열쇠.
+            key = base_key if base_run is None else _regeneration_key(base_key, latest.id)
+            logger.info(
+                "프리미엄 재생성 — %s 실행 %s(%s)을 새 실행으로 대체 (user=%s pet=%s key=%s)",
+                action, latest.id, verdict, user_id, pet_id, key,
+            )
+            run = await _start_fresh_run(
+                user_id=user_id, pet_id=pet_id, action=action, product_key=product_key,
+                idempotency_key=key, reservation_ledger_id=reservation_ledger_id,
+                credits_reserved=int(credits_reserved or 0),
+                superseded=latest, verdict=verdict,
+            )
+        elif base_run is None:
+            # 3a) 판정 전 종료 + 새 예약(크레딧 모드) — 예전 그대로 새 실행.
+            run = await _start_base_run(
+                user_id=user_id, pet_id=pet_id, action=action, product_key=product_key,
+                base_key=base_key, reservation_ledger_id=reservation_ledger_id,
+                credits_reserved=credits_reserved,
+            )
+        else:
+            # 3b) 판정 전 종료(프로바이더/인프라/취소) — **가장 최근** 실행을
+            #     되살린다(durable resume: 핀·프로바이더 영수증 보존, 살아 있는
+            #     외부 작업 재제출 없음). 기본 열쇠의 옛 실행이 아니라 최근 실행이다.
+            run = await runs.retry_generation_run(user_id=user_id, run_id=latest.id)
+        # 같은 열쇠의 기존 실행이 판정 전 실패/취소로 종료돼 있으면 되살린다 —
+        # durable resume. PUBLISHED/진행 중이면 retry 는 그대로 돌려준다.
         if run.status in (
             runs.STATUS_FAILED, runs.STATUS_CANCELLED
         ) or runs.is_delivered_fallback(run):

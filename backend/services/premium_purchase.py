@@ -217,6 +217,24 @@ def resolve_kind(raw: str | None) -> str:
     raise PurchaseError("UNKNOWN_KIND", f"알 수 없는 구매 종류: {raw!r}")
 
 
+async def _assert_species_supported(user_id: str, pet_id: str, actions) -> None:
+    """종 인식 액션(PLAY_WITH_ME)의 과금 전 게이트. 그 외 액션은 무관."""
+    from . import species_motion_variants
+
+    gated = [a for a in actions if species_motion_variants.requires_species_variant(a)]
+    if not gated:
+        return
+    species = await species_motion_variants.resolve_pet_species(user_id, pet_id)
+    for action in gated:
+        if species_motion_variants.select_variant(action, species) is None:
+            supported = ", ".join(species_motion_variants.supported_species(action))
+            raise PurchaseError(
+                "SPECIES_UNSUPPORTED",
+                f"{action} 는 {supported} 에서만 만들 수 있습니다 (이 펫의 종: {species}).",
+                status=409,
+            )
+
+
 # ── 소유권 ────────────────────────────────────────────────────────────────────
 
 
@@ -538,6 +556,13 @@ async def purchase(
     #
     # "이미 있는 것을 또 만들지 않는다"는 보장은 원장이 아니라 위의 asset_state()
     # READY/GENERATING 검사가 이미 하고 있다 — 구독이 무제한 재생성이 아닌 이유다.
+    # ①' 종 인식 액션은 **과금 전에** 종을 확인한다 (PLAY_WITH_ME: DOG/CAT 만).
+    #    이미 READY 인 자산은 위에서 0원으로 끝났으므로 여기 오는 것은 새 생성뿐이다.
+    #    지원하지 않는 종/UNKNOWN 이면 예약도 제출도 없이 409 — 생성 계약 단계가
+    #    같은 판정을 fail-closed 로 한 번 더 하지만, 그때는 이미 예약 뒤라 환불
+    #    경로를 타야 한다. 여기서 막아야 크레딧이 잠시도 묶이지 않는다.
+    await _assert_species_supported(user_id, pet_id, state.missing)
+
     existing = None
     charged = 0
     remaining: Optional[int] = None

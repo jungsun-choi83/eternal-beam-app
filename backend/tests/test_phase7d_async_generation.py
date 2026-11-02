@@ -755,6 +755,46 @@ def test_repeated_collect_errors_become_terminal_timeout(monkeypatch):
     assert provider.submit_calls == 1  # never resubmitted
 
 
+class RejectedCollectProvider(FailingCollectProvider):
+    """fal shape (live 2026-10-29, PLAY_WITH_ME): the queue accepts the submit, the
+    status endpoint reports COMPLETED, and the result fetch answers HTTP 422 for a
+    schema violation (prompt > 2,500 chars). Fetching again can never change that."""
+
+    def collect(self, external_job_id):
+        self.collect_calls += 1
+        raise CanonicalProviderError(
+            "PROVIDER_REJECTED",
+            'fal 결과 조회 HTTP 422: {"detail":[{"loc":["body","prompt"],'
+            '"msg":"String should have at most 2500 characters","type":"string_too_long"}]}',
+        )
+
+
+def test_deterministic_collect_rejection_is_terminal_on_first_sight(monkeypatch):
+    """A 4xx rejection of the finished job must not burn the five-collect retry budget."""
+    monkeypatch.setenv("PROVIDER_JOB_MAX_CONSECUTIVE_ERRORS", "5")
+    provider = RejectedCollectProvider()
+
+    with pytest.raises(jobs.ProviderWorkPending):
+        _image_call(_image_wrapper(provider))  # submit
+
+    with pytest.raises(CanonicalProviderError) as exc:
+        _image_call(_image_wrapper(provider))  # first collect — terminal immediately
+    assert exc.value.code == "PROVIDER_REJECTED"
+    assert "422" in str(exc.value)
+    assert provider.collect_calls == 1
+
+    operation = jobs._MOCK_JOBS[0]
+    assert operation["submission_status"] == jobs.FAILED
+    assert operation["provider_status"] == jobs.FAILED
+    assert "PROVIDER_REJECTED" in operation["provider_error"]
+    assert not operation.get("consecutive_collect_errors"), "the transient budget was consumed"
+
+    with pytest.raises(CanonicalProviderError):
+        _image_call(_image_wrapper(provider))
+    assert provider.collect_calls == 1  # never fetched again once terminal
+    assert provider.submit_calls == 1  # never resubmitted
+
+
 def test_ambiguous_submission_is_never_auto_resubmitted_after_deadline_logic_added():
     """Timeout handling must not weaken the pre-existing ambiguous-submission guard."""
     provider = FakeDurableImageProvider(

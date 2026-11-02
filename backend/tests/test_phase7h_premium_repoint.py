@@ -539,7 +539,7 @@ def test_behavior_library_discovery_shows_legacy_keys_and_run_progress(
     assert body["idle_events"] == ["BLINKING", "EAR_TWITCHING", "HEAD_TILTING", "TAIL_WAGGING"]
     assert body["action_events"] == [
         "COME_CLOSER", "PET_HEAD", "PAW_HELLO", "LOOK_UP",
-        "LIE_DOWN", "STAND_UP", "LIE_IDLE",
+        "LIE_DOWN", "STAND_UP", "LIE_IDLE", "PLAY_WITH_ME", "COME_PLAY",
     ]
     assert body["prices"]["idle:BLINKING"] == 1
     assert body["prices"]["action:COME_CLOSER"] == 1

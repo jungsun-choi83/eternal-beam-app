@@ -36,6 +36,8 @@ from typing import Any, Optional
 
 import numpy as np
 
+from . import species_motion_variants
+
 logger = logging.getLogger(__name__)
 
 # v3: BREATHING 시간축 증거(breathing_temporal_qa) 통합 — vlm_motion=unknown 을
@@ -1889,6 +1891,36 @@ def apply_judgement(
                 if val == "no":
                     reasons.append(f"vlm:{key}=no")
 
+        if str(spec_contract.get("motion_id") or "").upper() == species_motion_variants.PLAY_WITH_ME:
+            # Same contract as PAW_HELLO's dedicated fields: an explicit no is a
+            # defect, anything else stays UNKNOWN (REVIEW), never a silent PASS.
+            for check_name, key in species_motion_variants.PLAY_WITH_ME_CHECKS:
+                val = v(key)
+                checks[check_name] = (
+                    PASS if val == "yes" else (FAIL if val == "no" else UNKNOWN)
+                )
+                if val == "no":
+                    reasons.append(f"vlm:{key}=no")
+
+        if str(spec_contract.get("motion_id") or "").upper() == species_motion_variants.COME_PLAY:
+            # COME_PLAY (approach / near bow / return home) — identical polarity rules.
+            for check_name, key in species_motion_variants.COME_PLAY_CHECKS:
+                val = v(key)
+                checks[check_name] = (
+                    PASS if val == "yes" else (FAIL if val == "no" else UNKNOWN)
+                )
+                if val == "no":
+                    reasons.append(f"vlm:{key}=no")
+            # v2 advisory gait/turn quality: a no is REVIEW (QUALITY_ADVISORY in the registry),
+            # never FAIL — movement quality does not block delivery; anatomy fields still do.
+            for check_name, key in species_motion_variants.COME_PLAY_ADVISORY_CHECKS:
+                val = v(key)
+                checks[check_name] = (
+                    PASS if val == "yes" else (REVIEW if val == "no" else UNKNOWN)
+                )
+                if val == "no":
+                    reasons.append(f"vlm_advisory:{key}=no")
+
         composition = PASS
         human_policy_failed = (
             motion_class == "INTERACTION"
@@ -2538,6 +2570,9 @@ REASON_SEVERITY_RULES: tuple[tuple[str, str, str], ...] = (
     ("prefix", "loop_return_unmeasurable", SEVERITY_COSMETIC),
     ("prefix", "end_pose_far_from_start", SEVERITY_COSMETIC),      # qa-v1 루프 사유
     ("prefix", "locomotion_identity_resolved", SEVERITY_COSMETIC), # 정보성 (신원 PASS 로 해소됨)
+    # ── COSMETIC: COME_PLAY v2 자문 보행/회전 (QUALITY_ADVISORY — 전달은 막지 않는다) ──
+    ("prefix", "vlm_advisory:", SEVERITY_COSMETIC),
+    ("prefix", "segment:profile:", SEVERITY_COSMETIC),             # 결정론 모션 프로파일 진단 (REVIEW 상한)
     # ── COSMETIC: 자문 구조 신호 ─────────────────────────────────────────
     ("regex", r"^structural_.+_(drift|insufficient_visibility|pose_dependent_change_advisory)", SEVERITY_COSMETIC),
     ("prefix", "structural_evidence_unavailable", SEVERITY_COSMETIC),

@@ -134,6 +134,8 @@ _SEED: tuple[tuple[str, str, int, str], ...] = (
     ("action:COME_CLOSER", TYPE_ACTION, 1, "Come Closer"),
     ("action:PET_HEAD", TYPE_ACTION, 1, "Pet Head"),
     ("action:PAW_HELLO", TYPE_ACTION, 1, "Give Paw"),
+    ("action:PLAY_WITH_ME", TYPE_ACTION, 1, "Let's Play!"),
+    ("action:COME_PLAY", TYPE_ACTION, 1, "Come Play!"),
     ("action:LOOK_UP", TYPE_ACTION, 1, "Look Up"),
     ("action:LIE_DOWN", TYPE_ACTION, 1, "Lie Down"),
     ("action:STAND_UP", TYPE_ACTION, 1, "Stand Up"),

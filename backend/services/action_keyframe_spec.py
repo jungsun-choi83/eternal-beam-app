@@ -71,6 +71,19 @@ class KeyframeRole:
     #: 문장만 짧다 — 신원/형태 특성 줄이 길이 상한 때문에 잘리지 않게 한다.
     #: None 이면 컴팩트 프롬프트도 required_pose 를 그대로 쓴다.
     compact_pose: Optional[str] = None
+    #: 설정되면 생성 입력(첫 이미지)이 정본 플레이트가 아니라 **같은 정본 계보의
+    #: 승인된 이 역할 키프레임 플레이트**다 (PLAY_BOW/PLAY_CROUCH → STAND_READY).
+    #: 중간 포즈가 영상 세그먼트의 양끝 조건으로 쓰이려면 STAND_READY 와 같은
+    #: 카메라 거리/프레이밍/배경이어야 하기 때문이다. 정본은 그대로 1차 신원
+    #: 레퍼런스(QA 앵커)로 남는다. None 이면 기존 동작(정본 플레이트 입력).
+    anchor_keyframe_role: Optional[str] = None
+    #: 앵커 머리말의 프레이밍 문장 덮어쓰기 (풀 / 컴팩트). None 이면 공유 기본 문장
+    #: ("같은 위치·크기·카메라 거리·프레이밍 … 포즈만 바꾼다")을 그대로 쓴다 —
+    #: 기존 앵커 역할(PLAY_CROUCH)의 프롬프트는 바이트 단위로 불변이다. PLAY_BOW 는
+    #: 몸·사지가 자연스럽게 재배치되어야 해서(앞발 전진, 가슴 하강) 서 있는
+    #: 실루엣/발 위치 고정 요구를 풀고 카메라·프레이밍·전체 스케일·지면선만 잠근다.
+    anchor_framing_clause: Optional[str] = None
+    compact_anchor_framing_clause: Optional[str] = None
 
 
 #: 시작 포즈가 LIE 인 액션 — NEUTRAL_IDLE 이 아니라 LIE 역할이 담당한다.
@@ -200,17 +213,177 @@ KEYFRAME_ROLES: dict[str, KeyframeRole] = {
         video_compat={"loopable_base": False, "motion_class": "gesture"},
         supported_action_ids=(),
     ),
+    # ── PLAY_WITH_ME 종별 중간 포즈 (2026-10-29) ──────────────────────────────
+    # 액션 매핑은 비어 있다: PLAY_WITH_ME 의 **시작/끝** 포즈는 STAND_READY 이고
+    # (role_for_action 불변), 이 역할들은 생성 계약이 종으로 고르는 **중간** 포즈다
+    # (species_motion_variants.SpeciesVariant.keyframe_role). STAND_READY 플레이트를
+    # 앵커로 생성해 같은 카메라/프레이밍/배경을 물려받는다. 스펙 버전은 올리지
+    # 않는다 — 역할 추가는 기존 역할 행의 재사용 게이트(역할 단위)를 건드리지 않는다.
+    "PLAY_BOW": KeyframeRole(
+        role="PLAY_BOW",
+        # 2026-10-30 고객 피드백: bow 는 자연스러운데 엉덩이가 과하게 들렸다. 뒷몸은
+        # **평소 서 있는 높이 그대로**(들어 올리지도, 척추를 휘지도 않는다), bow 의 깊이는
+        # 이 개체의 다리 길이·비율·유연성에 맞춘다. CAT/STAND_READY/전역 버전은 불변.
+        required_pose=(
+            "a recognizable full-body canine play bow held mid-invitation: the front paws "
+            "extend slightly forward and the front legs reach into a comfortable bow as the "
+            "shoulders and chest lower naturally toward the ground with realistic shoulder "
+            "and elbow anatomy, while the hindquarters stay at about their normal standing "
+            "height on naturally supported hind legs — hips not lifted above standing height, "
+            "spine not arched. Bow depth follows this dog's own anatomy, leg length, body "
+            "proportions and natural flexibility; a shallower bow is correct when the build "
+            "allows no more, as long as the front body is clearly lower than the rear. All "
+            "four paws rest on the ground with realistic weight distribution and natural "
+            "ground contact; body height and silhouette change as the bow requires. The head "
+            "is up toward the camera with a bright attentive gaze and a relaxed or softly open "
+            "mouth. The ears keep this pet's own shape, size, fold and anatomy, with a natural "
+            "attentive adjustment. Keep this pet's exact face, muzzle, eyes, coat colors, "
+            "markings, fur texture, body structure and proportions, tail shape and distinctive "
+            "features. Not an exaggerated stretch, head-only dip, sitting pose, lying pose or "
+            "sprawl"
+        ),
+        required_visibility=("face", "full_body", "ears", "front_paws"),
+        body_motion_complexity="medium",
+        preferred_canonical_source="clean_plate",
+        video_compat={"loopable_base": False, "motion_class": "play_pose",
+                      "intermediate_for": ["PLAY_WITH_ME"], "species": "DOG"},
+        supported_action_ids=(),
+        # 컴팩트(≤1000자, Runway): 공유 베이스(~660자) + 가시성 줄 + 신원 특성 줄
+        # (최악 3색 + 긴 귀 모양 ≈ 130자)이 전부 실리려면 포즈 절은 ~250자여야 한다.
+        # 컴팩트 예산: 공유 베이스(~660자) + 가시성 줄 + 신원 특성 줄(최악 ≈ 130자) 뒤에
+        # 포즈 절이 ~245자 이내여야 특성 줄이 하나도 잘리지 않는다 (테스트가 강제).
+        compact_pose=(
+            "play bow: front paws a bit forward, shoulders and chest lowered, rear at standing "
+            "height, supported hind legs, not lifted/arched, depth suited to this dog, all "
+            "four paws grounded, head up; ears keep own shape/fold; no head dip, sit, "
+            "lie-down, sprawl"
+        ),
+        anchor_keyframe_role="STAND_READY",
+        anchor_framing_clause=(
+            "Keep the same camera, camera distance, framing, overall subject scale, ground "
+            "line, background tone and lighting as the first image; the body, limbs and "
+            "silhouette may reposition naturally into the requested pose and need not keep "
+            "the standing outline or the exact paw positions."
+        ),
+        compact_anchor_framing_clause=(
+            "keep the camera, framing, scale and ground line; body and limbs may move "
+            "naturally."
+        ),
+    ),
+    "PLAY_CROUCH": KeyframeRole(
+        role="PLAY_CROUCH",
+        required_pose=(
+            "an alert, ready-to-pounce cat play crouch held mid-invitation: all four legs "
+            "are bent, the chest is close to the ground and the hindquarters are gathered low "
+            "and compact with the hind legs folded beneath the body, not sprawled flat; all "
+            "four paws are planted on the ground. The head is up and facing the camera with "
+            "a bright, focused playful gaze and ears forward. The body stays at exactly the "
+            "same position, scale, camera distance and framing as the first supplied standing "
+            "image; only the pose changes. Not lying flat on the side or belly, not an "
+            "upright sit"
+        ),
+        required_visibility=("face", "full_body", "ears", "front_paws"),
+        body_motion_complexity="medium",
+        preferred_canonical_source="clean_plate",
+        video_compat={"loopable_base": False, "motion_class": "play_pose",
+                      "intermediate_for": ["PLAY_WITH_ME"], "species": "CAT"},
+        supported_action_ids=(),
+        compact_pose=(
+            "alert cat play crouch held mid-invitation: all four legs bent, chest close to the "
+            "ground, hindquarters low and compact with hind legs folded beneath the body, all "
+            "four paws planted, head up facing the camera, bright focused gaze, ears forward; "
+            "not lying flat, not an upright sit"
+        ),
+        anchor_keyframe_role="STAND_READY",
+    ),
+    # ── COME_PLAY 근접 play bow (2026-10-30, DOG 전용) ────────────────────────
+    # COME_PLAY 는 홈에서 카메라 쪽으로 트롯해 와서 bow 하므로, 세그먼트 경계의 bow 는 홈
+    # 스케일(PLAY_BOW)이 아니라 **카메라에 가까운** 스케일이어야 한다. 승인된 PLAY_BOW
+    # 플레이트를 앵커로(같은 개체·같은 bow 형태·같은 카메라) 몇 걸음 다가온 위치의 같은
+    # 포즈를 만든다. 앵커 체인: STAND_READY → PLAY_BOW → PLAY_BOW_NEAR (anchor_chain).
+    # 액션 매핑은 비어 있다(시작/끝은 STAND_READY). 스펙/프롬프트 버전은 올리지 않는다.
+    "PLAY_BOW_NEAR": KeyframeRole(
+        role="PLAY_BOW_NEAR",
+        required_pose=(
+            "the same recognizable canine play bow as in the first supplied image, held "
+            "mid-invitation after the dog has trotted a few steps closer to the camera: the dog "
+            "appears clearly larger in the frame, roughly one and a half times its standing size, "
+            "and lower in the frame, centered and facing the camera, still fully visible with all "
+            "four paws and the tail inside the frame and never cropped. The front paws extend "
+            "slightly forward as the shoulders and chest lower toward the ground with realistic "
+            "shoulder and elbow anatomy, while the hindquarters stay at about their normal standing "
+            "height on supported hind legs — hips not lifted above standing height, spine not "
+            "arched; bow depth exactly as in the first image, natural to this dog's build. All four "
+            "paws rest on the ground with realistic weight. The head is up toward the camera with a "
+            "bright attentive gaze and a relaxed or softly open mouth; the ears keep this pet's own "
+            "shape, size and fold. Keep this pet's exact face, muzzle, eyes, coat colors, markings, "
+            "fur texture, body structure and proportions, tail shape and distinctive features. Not "
+            "an exaggerated stretch, head-only dip, sitting pose, lying pose or sprawl"
+        ),
+        required_visibility=("face", "full_body", "ears", "front_paws"),
+        body_motion_complexity="medium",
+        preferred_canonical_source="clean_plate",
+        video_compat={"loopable_base": False, "motion_class": "play_pose",
+                      "intermediate_for": ["COME_PLAY"], "species": "DOG",
+                      "camera_distance": "near"},
+        supported_action_ids=(),
+        # 컴팩트(≤1000자, Runway): 포즈 절은 ~250자 — 신원 특성 줄이 잘리지 않게.
+        compact_pose=(
+            "same play bow as the first image, a few steps nearer the camera: about 1.5x larger, "
+            "lower in frame, centered, fully visible incl. all four paws; front paws a bit forward, "
+            "chest lowered, rear at standing height, head up; no sit, lie-down, sprawl"
+        ),
+        anchor_keyframe_role="PLAY_BOW",
+        anchor_framing_clause=(
+            "Keep the same camera, lens, camera height, background tone and lighting as the first "
+            "image and keep the same play-bow posture; the dog has moved a few steps toward the "
+            "camera, so it appears about one and a half times larger and lower in the frame, "
+            "centered, with the whole body including all four paws and the tail inside the frame."
+        ),
+        compact_anchor_framing_clause=(
+            "same camera and play-bow posture; the dog is a few steps closer, about 1.5x larger "
+            "and lower in frame, fully visible."
+        ),
+    ),
 }
 
 #: 결정론적 순서 (벤치마크 순서). 앞의 4개가 기계적으로 쓰이는 포즈 역할이다
-#: (Phase 4) — LOOK_UP/HAPPY 는 매핑 없는 미래 벤치마크로 남는다.
+#: (Phase 4) — LOOK_UP/HAPPY 는 매핑 없는 미래 벤치마크로 남는다. PLAY_BOW /
+#: PLAY_CROUCH 는 PLAY_WITH_ME 의 종별 중간 포즈다 (뒤에 붙는다 — 앞 순서 불변).
+#: PLAY_BOW_NEAR 는 COME_PLAY 의 근접 bow (PLAY_BOW 앵커) — 맨 뒤에 붙는다.
 KEYFRAME_ROLE_ORDER: tuple[str, ...] = (
     "NEUTRAL_IDLE", "STAND_READY", "LIE", "SLEEP", "LOOK_UP", "HAPPY",
+    "PLAY_BOW", "PLAY_CROUCH",
+    "PLAY_BOW_NEAR",
 )
 
 
 def get_role(role: str) -> Optional[KeyframeRole]:
     return KEYFRAME_ROLES.get((role or "").strip().upper())
+
+
+def anchor_chain(role: str) -> tuple[str, ...]:
+    """역할의 **생성 순서**: 가장 바깥 앵커부터 역할 자신까지.
+
+    예) PLAY_BOW → ("STAND_READY", "PLAY_BOW"); PLAY_BOW_NEAR → ("STAND_READY",
+    "PLAY_BOW", "PLAY_BOW_NEAR"); 앵커 없는 역할 → (role,). 앵커 포즈는 자기 앵커가
+    승인돼 있어야 만들 수 있으므로 실행(run)은 이 순서대로 핀하며 빌드한다. 순환은
+    스펙 오류다 (임포트 시 _assert 가 잡는다)."""
+    chain: list[str] = []
+    current: Optional[str] = (role or "").strip().upper()
+    while current:
+        if current in chain or len(chain) > len(KEYFRAME_ROLES):
+            raise ValueError(f"anchor cycle at {current}")
+        chain.append(current)
+        spec = KEYFRAME_ROLES.get(current)
+        current = getattr(spec, "anchor_keyframe_role", None) if spec else None
+    return tuple(reversed(chain))
+
+
+for _role, _spec in KEYFRAME_ROLES.items():
+    if _spec.anchor_keyframe_role:
+        assert _spec.anchor_keyframe_role in KEYFRAME_ROLES, (_role, _spec.anchor_keyframe_role)
+        anchor_chain(_role)  # 순환 없음
 
 
 def role_for_action(action_id: str) -> Optional[str]:
@@ -224,7 +397,7 @@ def role_for_action(action_id: str) -> Optional[str]:
 
 def role_spec_snapshot(spec: KeyframeRole) -> dict[str, Any]:
     """빌드 시점 스냅샷 — DB 에 박제되는 형태."""
-    return {
+    snapshot = {
         "spec_version": KEYFRAME_SPEC_VERSION,
         "role": spec.role,
         "required_pose": spec.required_pose,
@@ -234,6 +407,12 @@ def role_spec_snapshot(spec: KeyframeRole) -> dict[str, Any]:
         "video_compat": dict(spec.video_compat),
         "supported_action_ids": list(spec.supported_action_ids),
     }
+    if spec.anchor_keyframe_role:
+        # 앵커 역할이 있는 포즈만 기록한다 — 기존 역할의 스냅샷은 바이트 단위로 같다.
+        snapshot["anchor_keyframe_role"] = spec.anchor_keyframe_role
+    if spec.anchor_framing_clause:
+        snapshot["anchor_framing_clause"] = spec.anchor_framing_clause
+    return snapshot
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -263,6 +442,38 @@ _PROMPT_BASE = (
 )
 
 
+#: 앵커 키프레임 역할(anchor_keyframe_role) 전용 머리말 — 첫 이미지가 정본이 아니라
+#: 승인된 STAND_READY 스틸이라는 사실과 프레이밍 고정 요구를 명시한다. 기존 역할의
+#: 프롬프트(_PROMPT_BASE 그대로)는 바이트 단위로 불변이다.
+_ANCHORED_PROMPT_HEAD = (
+    "The first supplied image is the pet's approved {anchor_role} still (the same pet, "
+    "the same camera, the same framing and background); the second supplied image is the "
+    "canonical identity reference of the same pet, and any further images are real photos "
+    "of it. Create a photorealistic still image of the EXACT SAME pet — this is a pose "
+    "change from the first image, not a new interpretation of the animal. {framing}\n"
+)
+#: 공유 기본 프레이밍 문장 — anchor_framing_clause 가 없는 앵커 역할이 쓴다.
+_ANCHORED_FRAMING_DEFAULT = (
+    "Keep the pet at the same position, scale, camera distance, framing, background tone "
+    "and lighting as the first image; change only the pose."
+)
+_COMPACT_ANCHORED_FRAMING_DEFAULT = (
+    "change only the pose from the first image; keep its position, scale, camera "
+    "distance, framing and background."
+)
+
+
+def _prompt_base_for(spec: KeyframeRole) -> str:
+    anchor = getattr(spec, "anchor_keyframe_role", None)
+    if not anchor:
+        return _PROMPT_BASE
+    # 첫 문장("The first supplied image is the canonical reference …")을 앵커 머리말로
+    # 바꾼다. 나머지(보존/변경/배경/금지 절)는 그대로다.
+    head_end = _PROMPT_BASE.index("Preserve exactly:")
+    framing = spec.anchor_framing_clause or _ANCHORED_FRAMING_DEFAULT
+    return _ANCHORED_PROMPT_HEAD.format(anchor_role=anchor, framing=framing) + _PROMPT_BASE[head_end:]
+
+
 def build_keyframe_prompt(
     spec: KeyframeRole,
     visual_identity: dict[str, Any],
@@ -276,7 +487,7 @@ def build_keyframe_prompt(
     """
     from .canonical_prompt import _with_tone, confident_trait_lines
 
-    parts = [_with_tone(_PROMPT_BASE, background_tone), f"Requested pose: {spec.required_pose}."]
+    parts = [_with_tone(_prompt_base_for(spec), background_tone), f"Requested pose: {spec.required_pose}."]
     if spec.required_visibility:
         parts.append(
             "The following must be clearly visible: "
@@ -312,7 +523,18 @@ def build_compact_keyframe_prompt(
     """짧은 전용 변형 — 신원은 이미지가 정본이고, 포즈 절만 필수다."""
     from .canonical_prompt import _compact_trait_lines, _with_tone
 
-    base = _with_tone(_COMPACT_PROMPT_BASE, background_tone)
+    compact_base = _COMPACT_PROMPT_BASE
+    anchor = getattr(spec, "anchor_keyframe_role", None)
+    if anchor:
+        compact_base = (
+            f"First image: the pet's approved {anchor} still. Second: its canonical "
+            "reference. Further images: real photos of it. Create a photorealistic still of "
+            "the EXACT SAME pet — "
+            + (spec.compact_anchor_framing_clause or _COMPACT_ANCHORED_FRAMING_DEFAULT)
+            + " "
+            + _COMPACT_PROMPT_BASE[_COMPACT_PROMPT_BASE.index("Preserve face"):]
+        )
+    base = _with_tone(compact_base, background_tone)
 
     pose = f"Requested pose: {getattr(spec, 'compact_pose', None) or spec.required_pose}."
     vis = (

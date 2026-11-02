@@ -123,6 +123,8 @@ def test_ready_assets_are_skipped():
         "LIE_DOWN",
         "LIE_IDLE",
         "STAND_UP",
+        "PLAY_WITH_ME",
+        "COME_PLAY",
     ]
 
 
