@@ -115,6 +115,10 @@ class VideoGenerationProvider:
     supports_motion_reference: bool = False
     #: 신원 레퍼런스 이미지 예산 (시작/끝 프레임 제외).
     reference_budget: int = 0
+    #: 엔드포인트가 문서화/라이브 검증한 prompt 문자 상한. None = 알려진 상한 없음
+    #: (검증 생략). 설정된 어댑터는 HTTP **이전에** PROVIDER_CONTRACT 로 멈춘다 —
+    #: 초과 프롬프트는 결정적 거절(fal 422)이지 재시도·폴백 대상이 아니다.
+    max_prompt_chars: Optional[int] = None
 
     def available(self) -> bool:  # pragma: no cover
         return False
@@ -147,6 +151,26 @@ def validate_keyframe_capability(provider: Any, request: MotionVideoRequest) -> 
     if request.keyframes and not getattr(provider, "supports_keyframes", False):
         raise VideoProviderError(
             "KEYFRAMES_UNSUPPORTED", f"{provider.name} does not support keyframes."
+        )
+
+
+def validate_prompt_length(provider: Any, prompt: str) -> None:
+    """Stop locally, before any HTTP, when the prompt exceeds the endpoint's limit.
+
+    An over-limit prompt is a deterministic schema rejection (fal answers HTTP 422
+    at result fetch, after accepting the queue submit), so it is a PROVIDER_CONTRACT
+    violation: never retried, never a reason to fall back to a paid alternative.
+    Providers without a known limit (``max_prompt_chars`` None) are not checked.
+    """
+    limit = getattr(provider, "max_prompt_chars", None)
+    if not limit:
+        return
+    length = len(prompt or "")
+    if length > int(limit):
+        raise VideoProviderError(
+            "PROVIDER_CONTRACT",
+            f"{provider.name} prompt {length}자 > 상한 {int(limit)}자 — 프롬프트 빌더 "
+            "설정 오류 (재시도·폴백 대상 아님)",
         )
 
 
@@ -666,6 +690,7 @@ class FalVideoProvider(VideoGenerationProvider):
             )
         # 페이로드는 HTTP **이전에** 만든다 — 계약 위반(PROVIDER_CONTRACT)은
         # 로컬에서 잡히고 과금 호출이 나가지 않는다.
+        validate_prompt_length(self, request.prompt)
         payload = self.build_payload(request)
         if not self.available():
             raise VideoProviderError("PROVIDER_NOT_CONFIGURED", "FAL_KEY 가 없습니다.")
@@ -904,18 +929,59 @@ class FalKlingProvider(FalVideoProvider):
     default_model = "fal-ai/kling-video/v3/standard/image-to-video"
     supports_end_frame = True
 
+    @property
+    def max_prompt_chars(self) -> int:  # type: ignore[override]
+        # 라이브 검증 (2026-10-29, PLAY_WITH_ME): kling-video/v3 I2V 는 prompt 2,500자
+        # 초과 시 큐 제출은 받고 결과 조회에서 HTTP 422 "String should have at most
+        # 2500 characters" — 결정적 거절. 제출 전에 로컬에서 막는다.
+        try:
+            return int(os.getenv("FAL_KLING_MAX_PROMPT_CHARS", "2500"))
+        except ValueError:
+            return 2500
+
+    #: 문서화된 duration 범위 (fal 모델 페이지 2026-10-29 확인): 정수 3..15 초,
+    #: 기본 "5". 범위 밖 요청은 계약 위반 — 몰래 늘리거나 줄이지 않는다.
+    MIN_DURATION_SEC = 3
+    MAX_DURATION_SEC = 15
+    #: 문서화된 단가 (fal 모델 페이지, USD/초): 오디오 끔 0.084, 오디오 켬 0.126.
+    #: 영수증(estimated_cost_usd) 용 — 과금 결정에는 쓰지 않는다.
+    PRICE_PER_SEC_USD = {"audio_off": 0.084, "audio_on": 0.126}
+
     def build_payload(self, request: MotionVideoRequest) -> dict[str, Any]:
         spec = request.output_spec
+        raw_duration = spec.get("duration_sec", 5)
+        try:
+            duration = int(raw_duration)
+        except (TypeError, ValueError):
+            raise VideoProviderError(
+                "PROVIDER_CONTRACT",
+                f"fal Kling v3 duration 은 {self.MIN_DURATION_SEC}..{self.MAX_DURATION_SEC} 정수여야 "
+                f"합니다: {raw_duration!r}",
+            )
+        if not (self.MIN_DURATION_SEC <= duration <= self.MAX_DURATION_SEC):
+            raise VideoProviderError(
+                "PROVIDER_CONTRACT",
+                f"fal Kling v3 duration 은 {self.MIN_DURATION_SEC}..{self.MAX_DURATION_SEC}s 다 — "
+                f"{duration}s 요청은 계약 위반 (모션 스펙/프로파일을 조정하라).",
+            )
         # aspect_ratio 파라미터는 V3 I2V 에 없다 — 기하는 시작 이미지가 결정한다.
         payload: dict[str, Any] = {
             "prompt": request.prompt,
             "start_image_url": request.start_image_url,
-            "duration": str(int(spec.get("duration_sec", 5))),
+            "duration": str(duration),
             "generate_audio": bool(spec.get("audio", False)),  # 기본 true — 명시적으로 끈다
         }
         if request.end_image_url:
             payload["end_image_url"] = request.end_image_url  # start/end 계약 유지
         return payload
+
+    def estimate_cost_usd(self, payload: dict[str, Any]) -> Optional[float]:
+        try:
+            duration = float(payload.get("duration"))
+        except (TypeError, ValueError):
+            return None
+        rate = self.PRICE_PER_SEC_USD["audio_on" if payload.get("generate_audio") else "audio_off"]
+        return round(rate * duration, 4)
 
 
 class FalWan3StandardProvider(FalVideoProvider):

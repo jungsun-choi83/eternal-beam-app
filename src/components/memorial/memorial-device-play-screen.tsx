@@ -230,6 +230,8 @@ function MemorialDevicePlayScreenInner({
       RETURN_HOME: premiumAssets?.readyAssets?.RETURN_HOME?.deliveryFormat ?? null,
       PET_HEAD: premiumAssets?.readyAssets?.PET_HEAD?.deliveryFormat ?? null,
       PAW_HELLO: premiumAssets?.readyAssets?.PAW_HELLO?.deliveryFormat ?? null,
+      PLAY_WITH_ME: premiumAssets?.readyAssets?.PLAY_WITH_ME?.deliveryFormat ?? null,
+      COME_PLAY: premiumAssets?.readyAssets?.COME_PLAY?.deliveryFormat ?? null,
       LOOK_UP: premiumAssets?.readyAssets?.LOOK_UP?.deliveryFormat ?? null,
       LIE_DOWN: premiumAssets?.readyAssets?.LIE_DOWN?.deliveryFormat ?? null,
       STAND_UP: premiumAssets?.readyAssets?.STAND_UP?.deliveryFormat ?? null,
@@ -256,6 +258,16 @@ function MemorialDevicePlayScreenInner({
     : null;
   const pawHelloSource = eligibility.isEligible("PAW_HELLO")
     ? (premiumAssets?.readyAssets?.PAW_HELLO?.url ?? null)
+    : null;
+  // PLAY_WITH_ME — PAW_HELLO 와 같은 발견 계약 + 같은 적격성(구독 ∩ READY ∩ ON).
+  // 종별 변형은 서버 생성 계약의 일이라 재생 쪽은 motion_id 하나만 안다.
+  const playWithMeSource = eligibility.isEligible("PLAY_WITH_ME")
+    ? (premiumAssets?.readyAssets?.PLAY_WITH_ME?.url ?? null)
+    : null;
+  // COME_PLAY (2026-10-30) — DOG 전용 접근+놀자 인사. 같은 발견 계약 + 같은 적격성. 접근과
+  // 홈 복귀가 한 자산 안에 있어 COME_CLOSER 의 RETURN_HOME 체인을 쓰지 않는다.
+  const comePlaySource = eligibility.isEligible("COME_PLAY")
+    ? (premiumAssets?.readyAssets?.COME_PLAY?.url ?? null)
     : null;
   const lookUpSource = eligibility.isEligible("LOOK_UP")
     ? (premiumAssets?.readyAssets?.LOOK_UP?.url ?? null)
@@ -317,6 +329,16 @@ function MemorialDevicePlayScreenInner({
         motionId: "PAW_HELLO",
         url: pawHelloSource,
         deliveryFormat: eventDeliveryFormats.PAW_HELLO ?? null,
+      },
+      {
+        motionId: "PLAY_WITH_ME",
+        url: playWithMeSource,
+        deliveryFormat: eventDeliveryFormats.PLAY_WITH_ME ?? null,
+      },
+      {
+        motionId: "COME_PLAY",
+        url: comePlaySource,
+        deliveryFormat: eventDeliveryFormats.COME_PLAY ?? null,
       },
       {
         motionId: "LOOK_UP",
@@ -574,7 +596,7 @@ function MemorialDevicePlayScreenInner({
                 comeCloserVideoUrl={comeCloserSource}
                 petHeadVideoUrl={petHeadSource}
                 lookUpVideoUrl={lookUpSource}
-                extraEventSources={{ ...poseTransitionSources, RETURN_HOME: returnHomeSource, PAW_HELLO: pawHelloSource }}
+                extraEventSources={{ ...poseTransitionSources, RETURN_HOME: returnHomeSource, PAW_HELLO: pawHelloSource, PLAY_WITH_ME: playWithMeSource, COME_PLAY: comePlaySource }}
                 idleEventSources={eligibleIdleEventSources}
                 eventDeliveryFormats={eventDeliveryFormats}
                 actionTriggerRef={comeCloserTriggerRef}
@@ -602,7 +624,7 @@ function MemorialDevicePlayScreenInner({
                 comeCloserVideoUrl={comeCloserSource}
                 petHeadVideoUrl={petHeadSource}
                 lookUpVideoUrl={lookUpSource}
-                extraEventSources={{ ...poseTransitionSources, RETURN_HOME: returnHomeSource, PAW_HELLO: pawHelloSource }}
+                extraEventSources={{ ...poseTransitionSources, RETURN_HOME: returnHomeSource, PAW_HELLO: pawHelloSource, PLAY_WITH_ME: playWithMeSource, COME_PLAY: comePlaySource }}
                 // 적격한 것만 넘긴다 — 소스가 없으면 런타임이 자기 규칙(no-source)으로
                 // 거절하므로, 수동 트리거가 남아 있어도 OFF 는 재생되지 않는다.
                 idleEventSources={eligibleIdleEventSources}

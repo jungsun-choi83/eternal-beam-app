@@ -52,6 +52,13 @@ class DeviceCommandResponse(BaseModel):
     delivery: str
 
 
+#: Owned-library motions the device command accepts (resolved from the owned,
+#: published library pointer at send time). BREATHING uses the published-home
+#: pointer instead. Explicit Behavior Library actions only — TOUCH/VOICE/approach
+#: motions keep their sensor semantics and are not re-purposed here.
+DEVICE_OWNED_MOTIONS: tuple[str, ...] = ("PAW_HELLO", "PLAY_WITH_ME", "COME_PLAY")
+
+
 def _command_error(code: str, message: str, status: int = 400) -> HTTPException:
     return HTTPException(status_code=status, detail={"code": code, "message": message})
 
@@ -81,10 +88,11 @@ async def send_device_command(
     else:
         pet_id = (body.pet_id or "").strip()
         motion_id = (body.motion_id or "").strip().upper()
-        if not pet_id or motion_id not in {"BREATHING", "PAW_HELLO"}:
+        if not pet_id or (motion_id != "BREATHING" and motion_id not in DEVICE_OWNED_MOTIONS):
             raise _command_error(
                 "PUBLISHED_ASSET_REQUIRED",
-                "The device contract supports published BREATHING and owned PAW_HELLO only.",
+                "The device contract supports published BREATHING and owned "
+                + "/".join(DEVICE_OWNED_MOTIONS) + " only.",
                 409,
             )
         if motion_id == "BREATHING":
@@ -110,7 +118,7 @@ async def send_device_command(
             entry = next(
                 (
                     item for item in library.motions
-                    if item.motion_id == "PAW_HELLO"
+                    if item.motion_id == motion_id
                     and item.access.state == "playable"
                     and item.url
                 ),
@@ -119,7 +127,7 @@ async def send_device_command(
             if entry is None:
                 raise _command_error(
                     "PUBLISHED_ASSET_REQUIRED",
-                    "An owned, published PAW_HELLO asset is required.",
+                    f"An owned, published {motion_id} asset is required.",
                     409,
                 )
             asset_pet_id = entry.pet_id

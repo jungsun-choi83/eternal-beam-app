@@ -31,6 +31,8 @@ export const COMMERCIAL_BEHAVIOR_IDS = [
   "COME_CLOSER",
   "PET_HEAD",
   "PAW_HELLO",
+  "PLAY_WITH_ME",
+  "COME_PLAY",
 ] as const;
 
 const COMMERCIAL_BEHAVIOR_SET = new Set<string>(COMMERCIAL_BEHAVIOR_IDS);

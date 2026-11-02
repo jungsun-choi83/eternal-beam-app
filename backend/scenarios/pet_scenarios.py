@@ -186,9 +186,16 @@ IDLE_EVENTS: tuple[str, ...] = (
 #: 자세 전이 3종 (2026-09-08): LIE_DOWN → LIE_IDLE(누운 홈) → STAND_UP.
 #: LIE_IDLE 은 아이들 이벤트가 **아니다** — IDLE_EVENTS 에 넣으면 번들 구매와
 #: 자발 스케줄러에 끌려 들어간다. 자세 전용 홈 루프는 단건 액션으로만 판다.
+#: PLAY_WITH_ME (2026-10-29): 종 인식 상호작용 — 사용자 id 는 하나, 생성은 종별
+#: (DOG→PLAY_BOW / CAT→PLAY_CROUCH, species_motion_variants). 여기 추가되면
+#: PAW_HELLO 와 같은 구매/Behavior Library/선호/발행 경로가 함께 열린다.
+#: COME_PLAY (2026-10-30): DOG 전용 — 홈에서 트롯 접근 → 근접 play bow → 홈 복귀. 종 변형은
+#: species_motion_variants.COME_PLAY_BOW. PLAY_WITH_ME/COME_CLOSER 와 독립인 별도 액션이다.
 PET_ACTIONS: tuple[str, ...] = (
     "COME_CLOSER", "PET_HEAD", "PAW_HELLO", "LOOK_UP",
     "LIE_DOWN", "STAND_UP", "LIE_IDLE",
+    "PLAY_WITH_ME",
+    "COME_PLAY",
 )
 
 #: 테마 독립 · ACTION_ORDER 밖인 모든 것. 저장 키·파일명 규칙이 동일하다.

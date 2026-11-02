@@ -44,6 +44,8 @@ import {
 const CC = 'COME_CLOSER'
 const PH = 'PET_HEAD'
 const PAW = 'PAW_HELLO'
+const PLAY = 'PLAY_WITH_ME'
+const CP = 'COME_PLAY'
 const LU = 'LOOK_UP'
 const LD = 'LIE_DOWN'
 const SU = 'STAND_UP'
@@ -66,7 +68,7 @@ test('1) COME_CLOSER 는 ACTION 으로 분류된다', () => {
   assert.ok(isPetAction(CC))
   assert.ok(!isIdleEvent(CC), 'COME_CLOSER 가 아이들 이벤트로 새면 안 된다')
   assert.equal(RUNTIME_EVENTS[CC]?.kind, 'ACTION')
-  assert.deepEqual([...PET_ACTION_IDS], [CC, PH, PAW, LU, LD, SU, LI, STS, RH])
+  assert.deepEqual([...PET_ACTION_IDS], [CC, PH, PAW, PLAY, CP, LU, LD, SU, LI, STS, RH])
 })
 
 // ── 2) 아이들 이벤트는 분류되지만 아직 등록되지 않았다 ────────────────────────
@@ -89,7 +91,7 @@ test('8) 선언된 아이들 이벤트 4종이 모두 등록됐다 (Phase 4 완�
   }
   // 등록표는 사용자 액션/전이/시스템 액션 + 아이들 4종으로 닫혀 있다.
   assert.deepEqual(
-    Object.keys(RUNTIME_EVENTS).sort(), [CC, PH, PAW, LU, LD, SU, LI, STS, RH, ...ALL_IDLE].sort())
+    Object.keys(RUNTIME_EVENTS).sort(), [CC, PH, PAW, PLAY, CP, LU, LD, SU, LI, STS, RH, ...ALL_IDLE].sort())
 })
 
 test('8b) 미선언 id 는 여전히 트리거되지 않는다 (오타·미래 이벤트)', () => {
@@ -215,14 +217,14 @@ test('6) registeredIdleEvents() 는 COME_CLOSER 를 절대 포함하지 않는�
   // Phase 2 — BLINKING + EAR_TWITCHING 이 등록돼 있다.
   assert.deepEqual(idle.map((e) => e.id).sort(), [...REGISTERED_IDLE].sort())
   assert.deepEqual(
-    registeredActions().map((e) => e.id).sort(), [CC, PH, PAW, LU, LD, SU, LI, STS, RH].sort())
+    registeredActions().map((e) => e.id).sort(), [CC, PH, PAW, PLAY, CP, LU, LD, SU, LI, STS, RH].sort())
 })
 
 test('6b) 아이들 이벤트는 실제로 등록돼 있어 주입 없이 열거된다', () => {
   assert.deepEqual(registeredIdleEvents().map((e) => e.id).sort(), [...REGISTERED_IDLE].sort())
   assert.deepEqual(
     registeredActions().map((e) => e.id).sort(),
-    [CC, PH, PAW, LU, LD, SU, LI, STS, RH].sort(), '액션 목록이 오염됐다')
+    [CC, PH, PAW, PLAY, CP, LU, LD, SU, LI, STS, RH].sort(), '액션 목록이 오염됐다')
 })
 
 test('6c) 등록된 어떤 것도 COME_CLOSER 보다 우선순위가 높지 않다', () => {
@@ -438,7 +440,7 @@ test('P2-10) COME_CLOSER 는 Phase 2 로 인해 바뀌지 않았다', () => {
   assert.equal(def.interruptible, false)
   assert.equal(def.preload, 'auto')
   assert.deepEqual(
-    registeredActions().map((e) => e.id).sort(), [CC, PH, PAW, LU, LD, SU, LI, STS, RH].sort())
+    registeredActions().map((e) => e.id).sort(), [CC, PH, PAW, PLAY, CP, LU, LD, SU, LI, STS, RH].sort())
 })
 
 test('P2-11) 모든 아이들 이벤트가 같은 우선순위를 공유한다', () => {
@@ -532,7 +534,7 @@ test('P4) COME_CLOSER 는 Phase 4 로 인해 바뀌지 않았다', () => {
   assert.equal(def.interruptible, false)
   assert.equal(def.preload, 'auto')
   assert.deepEqual(
-    registeredActions().map((e) => e.id).sort(), [CC, PH, PAW, LU, LD, SU, LI, STS, RH].sort())
+    registeredActions().map((e) => e.id).sort(), [CC, PH, PAW, PLAY, CP, LU, LD, SU, LI, STS, RH].sort())
 })
 
 
@@ -587,6 +589,57 @@ test('PAW_HELLO 는 명시 사용자 액션이고 기존 센서 트리거를 차
   assert.equal(sensorEventToRuntimeEvent('touch'), PH)
   assert.equal(sensorEventToRuntimeEvent('approach'), CC)
   assert.equal(sensorEventToRuntimeEvent('paw_hello'), null)
+})
+
+test('PLAY_WITH_ME 는 종 중립의 명시 사용자 액션이고 PAW_HELLO/센서 트리거를 건드리지 않는다', () => {
+  const def = RUNTIME_EVENTS[PLAY] as RuntimeEventDef
+  assert.deepEqual(classifyRuntimeEvent(PLAY), { kind: 'ACTION', id: PLAY })
+  assert.ok(isRegisteredRuntimeEvent(PLAY))
+  assert.equal(def.returnPolicy, 'seam-aligned')
+  assert.equal(def.returnToIdle, true)
+  assert.equal(def.interruptible, false)
+  assert.equal(def.requiredPose, 'STANDING')
+  assert.equal(def.endPose, 'STANDING')
+  assert.equal(def.preload, 'none')
+  // 명시 액션끼리의 계단: PLAY_WITH_ME < PAW_HELLO < PET_HEAD < COME_CLOSER, 전부 아이들 위.
+  const paw = RUNTIME_EVENTS[PAW] as RuntimeEventDef
+  const ph = RUNTIME_EVENTS[PH] as RuntimeEventDef
+  assert.ok(def.priority < paw.priority && paw.priority < ph.priority)
+  assert.ok(def.priority > IDLE_EVENT_PRIORITY)
+  // 기존 센서 매핑은 그대로 — 새 액션은 어떤 센서도 차지하지 않는다.
+  assert.equal(sensorEventToRuntimeEvent('touch'), PH)
+  assert.equal(sensorEventToRuntimeEvent('voice'), LU)
+  assert.equal(sensorEventToRuntimeEvent('approach'), CC)
+  assert.equal(sensorEventToRuntimeEvent('play_with_me'), null)
+  assert.ok(registeredIdleEvents().every((e) => e.id !== PLAY))
+})
+
+test('COME_PLAY 는 DOG 전용 명시 액션 — STANDING→STANDING seam-aligned, RETURN_HOME 체인 없음, 센서 매핑 없음', () => {
+  const def = RUNTIME_EVENTS[CP] as RuntimeEventDef
+  assert.deepEqual(classifyRuntimeEvent(CP), { kind: 'ACTION', id: CP })
+  assert.ok(isRegisteredRuntimeEvent(CP))
+  assert.equal(def.returnPolicy, 'seam-aligned')   // 접근+홈 복귀가 한 자산 안 — 디졸브/체인 불필요
+  assert.equal(def.returnToIdle, true)
+  assert.equal(def.interruptible, false)
+  assert.equal(def.requiredPose, 'STANDING')
+  assert.equal(def.endPose, 'STANDING')
+  assert.equal(def.preload, 'none')
+  assert.equal(def.chainTo, undefined)
+  // 계단: COME_PLAY < PLAY_WITH_ME < PAW_HELLO < PET_HEAD < COME_CLOSER, 전부 아이들 위.
+  const play = RUNTIME_EVENTS[PLAY] as RuntimeEventDef
+  const paw = RUNTIME_EVENTS[PAW] as RuntimeEventDef
+  assert.ok(def.priority < play.priority && play.priority < paw.priority)
+  assert.ok(def.priority > IDLE_EVENT_PRIORITY)
+  // COME_CLOSER 의 복귀 계약은 그대로다.
+  const cc = RUNTIME_EVENTS[CC] as RuntimeEventDef
+  assert.equal(cc.chainTo, RH)
+  assert.equal(cc.returnPolicy, 'hold-and-dissolve')
+  // 기존 센서 매핑 불변 — 새 액션은 어떤 센서도 차지하지 않는다.
+  assert.equal(sensorEventToRuntimeEvent('touch'), PH)
+  assert.equal(sensorEventToRuntimeEvent('voice'), LU)
+  assert.equal(sensorEventToRuntimeEvent('approach'), CC)
+  assert.equal(sensorEventToRuntimeEvent('come_play'), null)
+  assert.ok(registeredIdleEvents().every((e) => e.id !== CP))
 })
 
 

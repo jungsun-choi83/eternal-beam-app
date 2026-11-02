@@ -23,6 +23,7 @@ from backend.scenarios.pet_scenarios import ACTION_ORDER, IDLE_EVENTS, PREMIUM_A
 from backend.services import (
     premium_generation,
     premium_purchase,
+    species_motion_variants,
     subscription_store_service as sub_store,
     wallet_service,
 )
@@ -57,6 +58,8 @@ class _World:
         self.ready: dict[str, str] = {}
         self.active: set[str] = set()
         self.submitted: list[str] = []
+        #: 이 세계의 펫 종 — 종 인식 액션(PLAY_WITH_ME)의 과금 전 게이트가 읽는다.
+        self.species: str = "DOG"
 
 
 @pytest.fixture
@@ -82,6 +85,12 @@ def world(monkeypatch: pytest.MonkeyPatch) -> _World:
             provider="mock", provider_model=None, keyframe_url=pet_image_url,
         )
 
+    # 종 인식 액션(PLAY_WITH_ME)의 과금 전 게이트가 읽는 종 — 이 세계의 펫은 개다.
+    # (실제 조회는 신원/형태 프로필이 필요하고, 이 하네스에는 그런 행이 없다.)
+    async def species(user_id, pet_id):
+        return w.species
+
+    monkeypatch.setattr(species_motion_variants, "resolve_pet_species", species)
     monkeypatch.setattr(premium_purchase.motions_svc, "list_motions_for_pet", list_motions)
     monkeypatch.setattr(premium_purchase.motions_svc, "list_active_action_ids_for_pet", list_active)
     monkeypatch.setattr(premium_generation, "submit_premium_action", submit)
@@ -179,6 +188,22 @@ async def test_generating_all_five_one_by_one_touches_each_once(world):
 
     assert sorted(world.submitted) == sorted(PREMIUM_ACTIONS)
     assert len(world.submitted) == len(set(world.submitted)), "같은 행동이 두 번 제출됐다"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("species", ["UNKNOWN", "RABBIT", "OTHER"])
+async def test_species_aware_action_is_rejected_before_submission_for_unsupported_pets(world, species):
+    """PLAY_WITH_ME 는 DOG/CAT 전용 — 그 외 종은 제출(=과금 근거)이 생기기 전에 409 다.
+    같은 세계에서 종 중립 행동은 그대로 흐른다."""
+    await _member()
+    world.species = species
+    with pytest.raises(premium_purchase.PurchaseError) as e:
+        await _generate("PLAY_WITH_ME")
+    assert e.value.code == "SPECIES_UNSUPPORTED"
+    assert e.value.status == 409
+    assert world.submitted == [], "지원하지 않는 종인데 제출됐다"
+    await _generate("PAW_HELLO")
+    assert world.submitted == ["PAW_HELLO"]
 
 
 # ── 재생성 금지 ──────────────────────────────────────────────────────────────

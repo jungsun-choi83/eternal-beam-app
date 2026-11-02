@@ -30,7 +30,9 @@ const IDLE = ['BLINKING', 'EAR_TWITCHING', 'HEAD_TILTING', 'TAIL_WAGGING']
 const CC = 'COME_CLOSER'
 const PH = 'PET_HEAD'
 const PAW = 'PAW_HELLO'
-const ALL = [...IDLE, CC, PH, PAW]
+const PLAY = 'PLAY_WITH_ME'
+const CP = 'COME_PLAY'
+const ALL = [...IDLE, CC, PH, PAW, PLAY, CP]
 const url = (id: string) => `https://cdn.test/${id}.mp4`
 
 function assets(over: Partial<PremiumAssets> = {}): PremiumAssets {
@@ -41,8 +43,8 @@ function assets(over: Partial<PremiumAssets> = {}): PremiumAssets {
     generating: [],
     missing: ALL,
     idleEvents: IDLE,
-    actionEvents: [CC, PH, PAW],
-    prices: { "idle:BUNDLE": 1, "action:COME_CLOSER": 1, "action:PET_HEAD": 1, "action:PAW_HELLO": 1 },
+    actionEvents: [CC, PH, PAW, PLAY, 'COME_PLAY'],
+    prices: { "idle:BUNDLE": 1, "action:COME_CLOSER": 1, "action:PET_HEAD": 1, "action:PAW_HELLO": 1, "action:PLAY_WITH_ME": 1, "action:COME_PLAY": 1 },
     entitled: true,
     preferences: {},
     subscriptionStatus: 'active',
@@ -59,13 +61,35 @@ const itemOf = (s: BehaviorLibraryState, id: string) =>
 
 // ── 그룹 ─────────────────────────────────────────────────────────────────────
 
-test('상용 7종이 두 그룹으로 나뉘고 PAW_HELLO 는 Interactive Actions 에 있다', () => {
+test('상용 9종이 두 그룹으로 나뉘고 PAW_HELLO/PLAY_WITH_ME/COME_PLAY 는 Interactive Actions 에 있다', () => {
   const s = derive(assets())
   const spont = s.groups.find((g) => g.id === 'spontaneous')!
   const inter = s.groups.find((g) => g.id === 'interactive')!
   assert.deepEqual(spont.items.map((i) => i.id), IDLE)
-  assert.deepEqual(inter.items.map((i) => i.id), [CC, PH, PAW])
-  assert.equal(s.totalCount, 7)
+  assert.deepEqual(inter.items.map((i) => i.id), [CC, PH, PAW, PLAY, 'COME_PLAY'])
+  assert.equal(s.totalCount, 9)
+})
+
+test('COME_PLAY 는 Interactive Actions 에 Come Play! 로 표시되고 1 credit 이다 (PLAY_WITH_ME 와 별개)', () => {
+  const s = derive(assets({ entitled: false, subscriptionRequired: false }), false)
+  const comePlay = itemOf(s, 'COME_PLAY')
+  assert.equal(comePlay.offerAccess, 'credit')
+  assert.equal(comePlay.priceCredits, 1)
+  const play = itemOf(s, PLAY)
+  assert.equal(play.priceCredits, 1)
+  const i18n = readFileSync('src/components/memorial/memorial-i18n.ts', 'utf8')
+  assert.match(i18n, /COME_PLAY:\s*"Come Play!"/)
+  assert.match(i18n, /COME_PLAY:\s*"달려와 놀자!"/)
+})
+
+test("PLAY_WITH_ME 는 Interactive Actions 에 Let's Play! 로 표시되고 1 credit 이다", () => {
+  const s = derive(assets({ entitled: false, subscriptionRequired: false }), false)
+  const play = itemOf(s, PLAY)
+  assert.equal(play.offerAccess, 'credit')
+  assert.equal(play.priceCredits, 1)
+  const i18n = readFileSync('src/components/memorial/memorial-i18n.ts', 'utf8')
+  assert.match(i18n, /PLAY_WITH_ME:\s*"Let's Play!"/)
+  assert.match(i18n, /PLAY_WITH_ME:\s*"같이 놀자!"/)
 })
 
 test('PAW_HELLO 는 Interactive Actions 에 Give Paw 로 표시되고 1 credit 이다', () => {
@@ -88,9 +112,9 @@ test('PET_HEAD 는 Interactive Actions 에 Pet Me 로 표시되고 1 credit 제�
 
 test('서버 레지스트리의 내부 모션은 소비자 상품으로 자동 노출되지 않는다', () => {
   const five = [...IDLE, 'NOSE_WIGGLE']
-  const s = derive(assets({ idleEvents: five, missing: [...five, CC, PH, PAW] }))
+  const s = derive(assets({ idleEvents: five, missing: [...five, CC, PH, PAW, PLAY, CP] }))
   assert.equal(s.groups.find((g) => g.id === 'spontaneous')!.items.length, 4)
-  assert.equal(s.totalCount, 7)
+  assert.equal(s.totalCount, 9)
   assert.equal(itemOf(s, 'NOSE_WIGGLE'), undefined)
 })
 
@@ -158,7 +182,7 @@ test('전부 READY 면 만들 것이 없다', () => {
   const ready = Object.fromEntries(ALL.map((i) => [i, url(i)]))
   const s = derive(assets({ ready, missing: [] }))
   assert.deepEqual(s.missingIds, [])
-  assert.equal(s.readyCount, 7)
+  assert.equal(s.readyCount, 9)
   assert.equal(s.anyGenerating, false)
 })
 

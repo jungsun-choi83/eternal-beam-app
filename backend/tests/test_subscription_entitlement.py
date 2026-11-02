@@ -129,8 +129,8 @@ async def _buy(kind: str = BUNDLE, *, user_id: str = USER, image: str | None = I
 # ── 프리미엄 행동 집합 ────────────────────────────────────────────────────────
 
 
-def test_premium_behaviors_are_exactly_the_eleven_named():
-    """아이들 4종 + 액션 7종(PAW_HELLO 포함)."""
+def test_premium_behaviors_are_exactly_the_twelve_named():
+    """아이들 4종 + 액션 9종(PAW_HELLO, PLAY_WITH_ME, COME_PLAY 포함)."""
     assert set(PREMIUM_ACTIONS) == {
         "BLINKING",
         "EAR_TWITCHING",
@@ -143,6 +143,8 @@ def test_premium_behaviors_are_exactly_the_eleven_named():
         "LIE_DOWN",
         "STAND_UP",
         "LIE_IDLE",
+        "PLAY_WITH_ME",
+        "COME_PLAY",
     }
 
 

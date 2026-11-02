@@ -45,6 +45,11 @@ GENERATION_ORDER: tuple[str, ...] = (
     # 자세 전이 세트 — 전이(LIE_DOWN) → 누운 홈(LIE_IDLE) → 복귀(STAND_UP) 순.
     # 셋이 모두 READY 여야 자세 전환이 의미가 있으므로 생성도 이 순서다.
     "LIE_DOWN", "LIE_IDLE", "STAND_UP",
+    # PLAY_WITH_ME — 명시 Behavior Library 액션(explicit_pick 이 순서를 무시한다).
+    # 자동 전진에서는 맨 뒤: 기존 자산의 순서를 한 칸도 밀지 않는다.
+    "PLAY_WITH_ME",
+    # COME_PLAY (2026-10-30) — 명시 Behavior Library 액션. 역시 맨 뒤, 기존 순서 불변.
+    "COME_PLAY",
 )
 
 #: 한 펫이 동시에 돌릴 수 있는 프로바이더 작업 수.

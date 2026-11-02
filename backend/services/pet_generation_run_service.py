@@ -41,7 +41,8 @@ from . import (
     pet_reference_set_service,
     premium_motion_finalization,
     qa_shadow_telemetry,
-    video_motion_providers, 
+    species_motion_variants,
+    video_motion_providers,
 )
 
 logger = logging.getLogger(__name__)
@@ -380,6 +381,43 @@ async def _row_by_scope_active(
     if not candidates:
         return None
     return min(candidates, key=lambda r: str(r.get("created_at") or ""))
+
+
+async def _row_by_scope_latest(
+    *, user_id: str, pet_id: str, motion_id: str, request_kind: str
+) -> Optional[dict[str, Any]]:
+    """이 pet/motion/request_kind 의 **가장 최근에 만들어진** 실행 — 상태 무관."""
+    client = _supabase() if _use_db() else None
+    if client:
+        try:
+            result = (
+                client.table(_table())
+                .select("*")
+                .eq("user_id", user_id)
+                .eq("pet_id", pet_id)
+                .eq("motion_id", motion_id)
+                .eq("request_kind", request_kind)
+                .order("created_at", desc=True)
+                .limit(1)
+                .execute()
+            )
+            rows = getattr(result, "data", None) or []
+            return rows[0] if rows else None
+        except Exception as exc:
+            raise PetGenerationRunError(
+                "GENERATION_RUNS_UNAVAILABLE", "생성 실행을 확인하지 못했습니다.", status=503
+            ) from exc
+    latest = None
+    for r in _MOCK_RUNS:
+        if (
+            r.get("user_id") == user_id
+            and r.get("pet_id") == pet_id
+            and r.get("motion_id") == motion_id
+            and r.get("request_kind") == request_kind
+            and (latest is None or str(r.get("created_at") or "") >= str(latest.get("created_at") or ""))
+        ):
+            latest = r
+    return latest
 
 
 def _is_unique_violation(exc: Exception) -> bool:
@@ -1242,8 +1280,26 @@ def _assert_canonical_lineage(run: PetGenerationRun, canonical: Any) -> None:
         raise PetGenerationRunError("RUN_LINEAGE_INVALID", "canonical 의 신원 프로필이 실행과 다릅니다.", status=409)
 
 
-async def _keyframe(run: PetGenerationRun, role: str, *, allow_canonical_reuse: bool = False):
+async def _keyframe(
+    run: PetGenerationRun,
+    role: str,
+    *,
+    allow_canonical_reuse: bool = False,
+    anchor_pin: Optional[dict[str, Any]] = None,
+):
+    """
+    anchor_pin: 앵커 역할(PLAY_BOW/PLAY_CROUCH → STAND_READY)이 있는 포즈에서 이 실행이
+    핀한 앵커 키프레임 {"role","id","version"}. 저장/최신 키프레임이 **다른** 앵커 위에
+    만들어진 것이면 재사용하지 않고 다시 만든다 — 중간 포즈의 프레이밍은 앵커에 묶인다.
+    """
     saved = dict(run.keyframes.get(role) or {})
+
+    def _anchor_matches(kf: Any) -> bool:
+        if not anchor_pin:
+            return True
+        stamp = str((getattr(kf, "analyzer_versions", None) or {}).get("anchor_keyframe") or "")
+        return stamp == f"{anchor_pin.get('role')}:{anchor_pin.get('id')}"
+
     if saved.get("id") and saved.get("version"):
         keyframe = await action_keyframe_service.get_keyframe(
             user_id=run.user_id, pet_id=run.pet_id, keyframe_role=role, version=int(saved["version"])
@@ -1262,7 +1318,11 @@ async def _keyframe(run: PetGenerationRun, role: str, *, allow_canonical_reuse: 
     if latest and str(latest.canonical_version_id or "") == str(run.canonical_version_id or ""):
         # See _canonical(): an explicit REVIEW replacement request refuses to
         # reuse its source version until the worker builds the next one.
-        if latest.id != replacement_source and latest.status != action_keyframe_service.STATUS_BUILDING:
+        if (
+            latest.id != replacement_source
+            and latest.status != action_keyframe_service.STATUS_BUILDING
+            and _anchor_matches(latest)
+        ):
             return latest, run
     # An explicit replacement request for this role must always bypass the
     # Canonical-reuse shortcut and go through real keyframe generation — an
@@ -1284,6 +1344,9 @@ async def _keyframe(run: PetGenerationRun, role: str, *, allow_canonical_reuse: 
         allow_canonical_reuse=allow_canonical_reuse and not is_replacement_build,
         pinned_canonical_version_id=run.canonical_version_id,
         pinned_canonical_version=run.canonical_version,
+        anchor_keyframe_version=(
+            int(anchor_pin["version"]) if anchor_pin and anchor_pin.get("version") else None
+        ),
     )
     return keyframe, run
 
@@ -1729,6 +1792,12 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
                     status=409,
                 )
 
+        # 종별 중간 키프레임(PLAY_WITH_ME v2): 종은 이 단계에서 아직 모를 수 있으니
+        # 어느 변형 역할이든 하나가 핀돼 있으면 된다 (계약 단계가 핀된 형태로 다시 판정).
+        intermediate_roles: tuple[str, ...] = (
+            species_motion_variants.intermediate_keyframe_roles(spec.motion_id)
+            if bool((spec.video_compat or {}).get("segmented")) else ()
+        )
         if is_derived_start:
             # 파생 시작 모션은 시작 역할 키프레임이 없다 — 목표(STAND_READY)만 핀한다.
             keyframes_pinned = bool((run.keyframes.get(spec.target_keyframe_role) or {}).get("id"))
@@ -1736,6 +1805,10 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
             keyframes_pinned = bool((run.keyframes.get(spec.start_keyframe_role) or {}).get("id")) and (
                 not (spec.requires_target_keyframe and spec.target_keyframe_role)
                 or bool((run.keyframes.get(spec.target_keyframe_role) or {}).get("id"))
+            )
+        if intermediate_roles:
+            keyframes_pinned = keyframes_pinned and any(
+                bool((run.keyframes.get(role) or {}).get("id")) for role in intermediate_roles
             )
         if resume_from <= _stage_index(STAGE_KEYFRAMES) or not keyframes_pinned:
             stage = STAGE_KEYFRAMES
@@ -1767,6 +1840,50 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
                 run = await _advance_keyframe_stage(run, spec.target_keyframe_role, target_kf, keyframes)
                 if _is_business_fallback(run):
                     return run
+            # ── 종별 중간 키프레임 (PLAY_WITH_ME v2) ──────────────────────────
+            # 변형(DOG→PLAY_BOW / CAT→PLAY_CROUCH)의 키프레임 역할을 **승인된 STAND_READY
+            # 를 앵커로** 만든다. 지원하지 않는 종은 여기서 409 — 구매 게이트와 계약
+            # 해석이 같은 판정을 한 번 더 한다(fail-closed 3중). 이미 같은 앵커 위에
+            # 승인된 중간 키프레임이 있으면 _keyframe 이 그대로 재사용한다(재생성 없음).
+            if intermediate_roles and spec.start_keyframe_role:
+                species = await species_motion_variants.resolve_pet_species(run.user_id, run.pet_id)
+                try:
+                    variant = species_motion_variants.require_variant(spec.motion_id, species)
+                except species_motion_variants.SpeciesVariantError as exc:
+                    raise PetGenerationRunError(exc.code, exc.message, status=exc.status) from exc
+                # 앵커 체인을 바깥에서 안으로 빌드한다 (action_keyframe_spec.anchor_chain):
+                #   PLAY_WITH_ME: STAND_READY → PLAY_BOW
+                #   COME_PLAY:    STAND_READY → PLAY_BOW → PLAY_BOW_NEAR
+                # 각 포즈는 이 실행이 **바로 앞에서 핀한** 앵커 버전 위에 만들어지고, 이미
+                # 같은 앵커 위에 승인된 것이 있으면 _keyframe 이 재사용한다 (PLAY_BOW 는
+                # PLAY_WITH_ME 와 COME_PLAY 가 공유한다 — 두 번 만들지 않는다).
+                from . import action_keyframe_spec as _kf_spec
+
+                chain = [
+                    role for role in _kf_spec.anchor_chain(variant.keyframe_role)
+                    if role != spec.start_keyframe_role
+                ]
+                for role in chain:
+                    anchor_role = _kf_spec.KEYFRAME_ROLES[role].anchor_keyframe_role
+                    anchor_pin = None
+                    if anchor_role:
+                        pinned = dict(run.keyframes.get(anchor_role) or {})
+                        if not pinned.get("id"):
+                            raise PetGenerationRunError(
+                                "RUN_LINEAGE_INVALID",
+                                f"{role} 의 앵커 {anchor_role} 키프레임이 이 실행에 핀돼 있지 않습니다.",
+                                status=409,
+                            )
+                        anchor_pin = {
+                            "role": anchor_role,
+                            "id": pinned.get("id"),
+                            "version": pinned.get("version"),
+                        }
+                    inter_kf, run = await _keyframe(run, role, anchor_pin=anchor_pin)
+                    keyframes = dict(run.keyframes)
+                    run = await _advance_keyframe_stage(run, role, inter_kf, keyframes)
+                    if _is_business_fallback(run):
+                        return run
 
         # MOTION_SPEC 계보 검증은 항상 run.keyframes 의 영속 핀을 본다 — 위
         # 블록이 이번 틱에 스킵됐어도(재개) 이전 틱이 이미 같은 값을 박아
@@ -1802,6 +1919,18 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
                 or str(contract.get("canonical_version_id") or "") != str(run.canonical_version_id or "")
             ):
                 raise PetGenerationRunError("RUN_LINEAGE_INVALID", "Phase 5.1 계약이 실행 lineage 와 다릅니다.", status=409)
+            intermediate = dict(contract.get("intermediate_keyframe") or {})
+            if intermediate:
+                # 계약의 중간 키프레임은 이 실행이 KEYFRAMES 단계에서 핀한 바로 그 버전이어야
+                # 한다 — 세그먼트 양끝 조건이 핀과 다른 스틸이면 계보가 갈라진 것이다.
+                inter_pin = dict(run.keyframes.get(str(intermediate.get("role") or "")) or {})
+                if (
+                    str(intermediate.get("keyframe_id") or "") != str(inter_pin.get("id") or "")
+                    or intermediate.get("version") != inter_pin.get("version")
+                ):
+                    raise PetGenerationRunError(
+                        "RUN_LINEAGE_INVALID", "Phase 5.1 계약의 중간 키프레임이 실행 lineage 와 다릅니다.", status=409,
+                    )
             run = await _progress(
                 run, {"motion_spec_version": str(contract.get("motion_spec_version") or "")}
             )
@@ -2344,10 +2473,32 @@ async def start_generation_run(
     return run
 
 
-#: 더 기다릴 것이 없는 프로바이더 작업 상태. 이 둘이 아니면 — PREPARED /
+#: 더 기다릴 것이 없는 프로바이더 작업 상태. 이 셋이 아니면 — PREPARED /
 #: SUBMITTING / SUBMITTED / AMBIGUOUS — 외부 작업이 살아 있거나 복구 판정이
 #: 모호하다는 뜻이고, 그때 핀을 풀면 같은 생성에 두 번 과금될 수 있다.
-_TERMINAL_SUBMISSION_STATUSES = (durable_provider_jobs.COLLECTED, "FAILED")
+#: TIMED_OUT 은 durable_provider_jobs 가 "FAILED 와 같은 종료 — 다시 폴링도
+#: 재제출도 없다"로 정의한 상태다. 예전에는 여기 빠져 있어서, 프롬프트/스펙이
+#: 올라갔는데도 TIMED_OUT 작업 하나가 핀 해제를 영원히 막았다
+#: (PLAY_WITH_ME 라이브 실측, run b4861dc2: 핀된 prompt v1 vs 현재 v5).
+_TERMINAL_SUBMISSION_STATUSES = (
+    durable_provider_jobs.COLLECTED,
+    durable_provider_jobs.FAILED,
+    durable_provider_jobs.TIMED_OUT,
+)
+
+#: 외부 프로바이더 작업이 살아 있을 수 있는(= 이미 과금됐을 수 있는) 제출 상태.
+#: 이런 작업을 가진 실행을 **대체**하는 새 실행을 만들면 같은 생성에 두 번
+#: 과금될 수 있다 — 대체 대신 기존 실행의 durable resume(retry)만 허용한다.
+_LIVE_SUBMISSION_STATUSES = (
+    durable_provider_jobs.SUBMITTING,
+    durable_provider_jobs.SUBMITTED,
+    durable_provider_jobs.AMBIGUOUS,
+)
+
+#: 모션 단계가 핀된 버전에 대해 **최종** 판정을 내린 실패 코드. 이 코드로 끝난
+#: 실행을 같은 핀으로 다시 돌리면(_motion 의 핀 분기) 저장된 버전을 다시 읽고
+#: 같은 판정을 반복할 뿐, 새 프로바이더 시도는 절대 생기지 않는다.
+TERMINAL_MOTION_VERDICT_CODES = ("MOTION_QA_FAILED", "MOTION_QA_REVIEW")
 
 
 async def _stale_motion_pin(run: PetGenerationRun) -> bool:
@@ -2899,6 +3050,59 @@ async def request_keyframe_replacement_generation(
             "next_attempt_at": None,
             "provider_state": provider_state,
         },
+    )
+
+
+async def find_run_by_key(
+    *, user_id: str, pet_id: str, motion_id: str, request_kind: str, idempotency_key: str
+) -> Optional[PetGenerationRun]:
+    """정확히 이 idempotency_key 의 실행(상태 무관). 없으면 None. 읽기 전용."""
+    row = await _row_by_key(
+        user_id=user_id, pet_id=pet_id, motion_id=motion_id,
+        request_kind=request_kind, idempotency_key=idempotency_key,
+    )
+    return _to_run(row) if row else None
+
+
+async def latest_run_for_scope(
+    *, user_id: str, pet_id: str, motion_id: str, request_kind: str
+) -> Optional[PetGenerationRun]:
+    """이 사용자·펫·모션·요청 종류의 가장 최근 실행(상태 무관). 읽기 전용."""
+    row = await _row_by_scope_latest(
+        user_id=user_id, pet_id=pet_id, motion_id=motion_id, request_kind=request_kind
+    )
+    return _to_run(row) if row else None
+
+
+def terminal_motion_verdict(run: PetGenerationRun) -> Optional[str]:
+    """
+    이 실행이 **핀된 모션 버전에 대한 최종 판정**으로 끝났는가 — 그렇다면 그 코드.
+
+    True 인 실행은 retry(durable resume)로는 절대 새 영상을 만들지 못한다:
+    _motion 의 핀 분기가 같은 버전을 다시 읽고, _refresh_stale_motion_qa 는
+    (QA 버전이 그대로면) 아무것도 다시 평가하지 않으며, QA 단계는 같은 코드로
+    다시 실패한다. 새 시도를 원하는 **의도적인** 요청은 새 실행(새 버전)을
+    만들어야 하고, 이 실행과 그 버전/후보/QA 영수증은 역사로 남는다.
+
+    None 인 종료 실행(프로바이더/인프라 실패, 취소, 판정 전 실패)은 지금처럼
+    retry 가 durable 핀과 프로바이더 영수증을 보존한 채 이어서 돈다.
+    """
+    if not run.motion_version_id:
+        return None
+    if is_delivered_fallback(run):
+        return business_qa.DELIVERED_FALLBACK
+    if run.status != STATUS_FAILED:
+        return None
+    code = str((run.last_error or {}).get("code") or "")
+    return code if code in TERMINAL_MOTION_VERDICT_CODES else None
+
+
+def has_live_provider_work(run: PetGenerationRun) -> bool:
+    """이 실행에 외부 작업이 살아 있을 수 있는(SUBMITTING/SUBMITTED/AMBIGUOUS)
+    프로바이더 영수증이 하나라도 있는가. 있으면 대체 실행을 만들지 않는다."""
+    return any(
+        str(job.get("submission_status") or "") in _LIVE_SUBMISSION_STATUSES
+        for job in durable_provider_jobs.list_for_run(run.id)
     )
 
 

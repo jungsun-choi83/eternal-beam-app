@@ -43,6 +43,8 @@ export const DEVICE_PRELOAD_MOTIONS = [
   'BREATHING',
   'PET_HEAD',
   'PAW_HELLO',
+  'PLAY_WITH_ME',
+  'COME_PLAY',
   'LOOK_UP',
   'COME_CLOSER',
 ] as const

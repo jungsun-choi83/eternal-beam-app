@@ -235,7 +235,7 @@ services:
       - key: PHASE6_RESOLUTION
         value: 480p
       - key: BUSINESS_QA_USER_TEST_MODE
-        value: allowlist
+        value: all
       - key: BUSINESS_QA_USER_TEST_PET_IDS
         sync: false
       - key: BUSINESS_QA_SHADOW_TELEMETRY
@@ -290,53 +290,53 @@ services:
       - key: LUMA_API_KEY
         sync: false
 
-  - type: worker
-    name: eternal-beam-exhibition-worker 
-    region: singapore
-    plan: starter
-    runtime: docker
-    dockerfilePath: ./Dockerfile
-    dockerCommand: python -m backend.workers.exhibition_prep_worker
-    autoDeploy: true
-    envVars:
-      - key: SUPABASE_URL
-        sync: false
+  # - type: worker
+  #   name: eternal-beam-exhibition-worker 
+  #   region: singapore
+  #   plan: starter
+  #   runtime: docker
+  #   dockerfilePath: ./Dockerfile
+  #   dockerCommand: python -m backend.workers.exhibition_prep_worker
+  #   autoDeploy: true
+  #   envVars:
+  #     - key: SUPABASE_URL
+  #       sync: false
 
-      - key: SUPABASE_SERVICE_ROLE_KEY
-        sync: false
+  #     - key: SUPABASE_SERVICE_ROLE_KEY
+  #       sync: false
 
-      # Exhibition worker identity
-      - key: EXHIBITION_PREP_WORKER_ID
-        value: "render-exhibition-worker-1"
+  #     # Exhibition worker identity
+  #     - key: EXHIBITION_PREP_WORKER_ID
+  #       value: "render-exhibition-worker-1"
 
-      # Worker polling
-      - key: EXHIBITION_PREP_POLL_INTERVAL_SEC
-        value: "5"
+  #     # Worker polling
+  #     - key: EXHIBITION_PREP_POLL_INTERVAL_SEC
+  #       value: "5"
 
-      # Recover stale jobs
-      - key: EXHIBITION_PREP_STALE_MINUTES
-        value: "15"
+  #     # Recover stale jobs
+  #     - key: EXHIBITION_PREP_STALE_MINUTES
+  #       value: "15"
 
-      # Existing local pose gate
-      - key: EXHIBITION_POSE_GATE_MODE
-        value: "clip"
+  #     # Existing local pose gate
+  #     - key: EXHIBITION_POSE_GATE_MODE
+  #       value: "clip"
 
-      # Every Exhibition upload is standardized once before cutout/maps.
-      - key: EXHIBITION_POSE_NORMALIZATION_MODE
-        value: "gpt_image"
+  #     # Every Exhibition upload is standardized once before cutout/maps.
+  #     - key: EXHIBITION_POSE_NORMALIZATION_MODE
+  #       value: "gpt_image"
 
-      - key: OPENAI_API_KEY
-        sync: false
+  #     - key: OPENAI_API_KEY
+  #       sync: false
 
-      - key: OPENAI_IMAGE_MODEL
-        value: "gpt-image-2"
+  #     - key: OPENAI_IMAGE_MODEL
+  #       value: "gpt-image-2"
 
-      # Storage
-      - key: EXHIBITION_STORAGE_BUCKET
-        value: "user-assets"
+  #     # Storage
+  #     - key: EXHIBITION_STORAGE_BUCKET
+  #       value: "user-assets"
 
-      - key: EXHIBITION_STORAGE_PREFIX
-        value: "exhibition"
+  #     - key: EXHIBITION_STORAGE_PREFIX
+  #       value: "exhibition"
 
 
 # Render 유료 플랜으로 올리면 아래 cron 서비스로 옮길 수 있다 — 서버 코드는

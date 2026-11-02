@@ -65,9 +65,12 @@ def test_come_closer_is_a_premium_action_outside_the_set():
 
     # PET_HEAD(2026-09-08, 첫 INTERACTION 상용 모션)가 합류했다 — 검사하는
     # 계약은 그대로다: 액션은 명시 목록뿐이고 레거시 4종과 절대 섞이지 않는다.
+    # PLAY_WITH_ME(2026-10-29, 종 인식 상호작용)도 같은 규칙으로 합류했다.
+    # COME_PLAY(2026-10-30, DOG 전용 접근+놀자 인사)도 같은 규칙으로 합류했다 — COME_CLOSER
+    # 자체의 정의/트리거/RETURN_HOME 동반 계약은 그대로다.
     assert PET_ACTIONS == (
         "COME_CLOSER", "PET_HEAD", "PAW_HELLO", "LOOK_UP",
-        "LIE_DOWN", "STAND_UP", "LIE_IDLE",
+        "LIE_DOWN", "STAND_UP", "LIE_IDLE", "PLAY_WITH_ME", "COME_PLAY",
     ), "액션 목록이 예고 없이 변했다"
     assert "COME_CLOSER" in PREMIUM_ACTIONS
     assert set(PREMIUM_ACTIONS) == set(PET_ACTIONS) | set(IDLE_EVENTS)

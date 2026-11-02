@@ -37,6 +37,8 @@ import threading
 from collections import OrderedDict
 from typing import Any, Optional, Sequence
 
+from . import species_motion_variants
+
 logger = logging.getLogger(__name__)
 
 VLM_ANALYZER_VERSION = "vlm-identity-v1"
@@ -1435,6 +1437,68 @@ PAW_HELLO_QA_FIELDS: dict[str, dict[str, Any]] = {
     "smooth_return_to_stand_ready": _YNU,
 }
 
+# PLAY_WITH_ME — field names are shared by both species variants; the per-species
+# meaning is delivered in the prompt (species_motion_variants.*.vlm_guidance).
+# v2 (2026-10-29): 중간 키프레임/2 세그먼트 — intermediate_pose_matches_keyframe,
+# playful_lead_in_visible, segment_seam_smooth, stays_in_place_no_approach 추가 + INTERMEDIATE 레퍼런스.
+# v4 (2026-10-30): DOG guidance names the single in-place lead-in bounce as expected
+# (not locomotion/approach) — QA-only revision; stored PLAY_WITH_ME QA is re-evaluated
+# on retry, never regenerated.
+# v5 (2026-10-30): DOG rear_posture_correct judges "up and supported near standing
+# height", never requires lifted hips or an arched spine; shallow bows accepted.
+VLM_PLAY_WITH_ME_QA_VERSION = "vlm-motion-qa-v3-play-with-me-v5"
+PLAY_WITH_ME_QA_FIELDS: dict[str, dict[str, Any]] = {
+    name: _YNU for name in species_motion_variants.PLAY_WITH_ME_QA_FIELD_NAMES
+}
+
+# COME_PLAY (2026-10-30, DOG only) — dedicated fields for the approach / deceleration /
+# near bow / return-to-home contract. Motion-scoped: re-evaluating stored COME_PLAY rows
+# never touches PLAY_WITH_ME or COME_CLOSER verdicts.
+# v2 (2026-10-30): advisory gait/ground-contact/turn fields judged on dense gait windows
+# (consecutive frames listed in the temporal evidence provenance) + sharpened approach_gait_natural.
+VLM_COME_PLAY_QA_VERSION = "vlm-motion-qa-v3-come-play-v2"
+COME_PLAY_QA_FIELDS: dict[str, dict[str, Any]] = {
+    name: _YNU for name in species_motion_variants.COME_PLAY_QA_FIELD_NAMES
+}
+
+
+def _come_play_guidance(acceptance_spec: Optional[dict[str, Any]]) -> str:
+    """Instructions for the COME_PLAY dedicated fields (variant text from the registry)."""
+    if (acceptance_spec or {}).get("motion_id") != species_motion_variants.COME_PLAY:
+        return ""
+    variant_id = str((acceptance_spec or {}).get("species_variant") or "")
+    for variant in species_motion_variants.variants_for(species_motion_variants.COME_PLAY):
+        if variant.variant_id == variant_id:
+            return variant.vlm_guidance
+    return (
+        " For COME_PLAY, separately answer whether the pet visibly travels toward the camera with "
+        "a natural grounded gait, slows before lowering into a recognizable play bow close to the "
+        "camera matching the INTERMEDIATE keyframe, holds it briefly with a playful expression, "
+        "keeps correct limb count and joint anatomy, never substitutes lying or sitting, travels "
+        "back to its home spot (forward in time, never reversed) and ends at the same position and "
+        "scale in STAND_READY. A clearly sampled no is a defect, but occlusion or insufficient "
+        "temporal coverage is unknown."
+    )
+
+
+def _play_with_me_guidance(acceptance_spec: Optional[dict[str, Any]]) -> str:
+    """Species-specific instructions for the PLAY_WITH_ME dedicated fields."""
+    if (acceptance_spec or {}).get("motion_id") != species_motion_variants.PLAY_WITH_ME:
+        return ""
+    variant_id = str((acceptance_spec or {}).get("species_variant") or "")
+    for variant in species_motion_variants.variants_for(species_motion_variants.PLAY_WITH_ME):
+        if variant.variant_id == variant_id:
+            return variant.vlm_guidance
+    # A contract without a resolved variant cannot be generated (resolve fails
+    # closed); keep QA answerable with species-neutral wording for stored rows.
+    return (
+        " For PLAY_WITH_ME, separately answer whether a recognizable playful invitation "
+        "posture occurs with the front body lowered, a brief hold, an attentive playful "
+        "expression, balanced foreleg support, correct limb count and joint anatomy, no "
+        "substituted lying or sitting, and a smooth return to STAND_READY. A clearly sampled "
+        "no is a defect, but occlusion or insufficient temporal coverage is unknown."
+    )
+
 MOTION_QA_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -1580,6 +1644,10 @@ def motion_acceptance_evaluator_version(
         return VLM_PREMIUM_MICRO_TEMPORAL_QA_VERSION
     if (acceptance or {}).get("policy_revision") == "paw-hello-v1":
         return VLM_PAW_HELLO_QA_VERSION
+    if (acceptance or {}).get("policy_revision") == species_motion_variants.PLAY_WITH_ME_POLICY_REVISION:
+        return VLM_PLAY_WITH_ME_QA_VERSION
+    if (acceptance or {}).get("policy_revision") == species_motion_variants.COME_PLAY_POLICY_REVISION:
+        return VLM_COME_PLAY_QA_VERSION
     return VLM_MOTION_ACCEPTANCE_QA_VERSION
 
 
@@ -1595,6 +1663,7 @@ def _motion_targeted_specs(
     has_reference: bool = True,
     acceptance_spec: Optional[dict[str, Any]] = None,
     evidence_context: Optional[dict[str, Any]] = None,
+    has_intermediate: bool = False,
 ) -> dict[str, tuple[dict[str, Any], str]]:
     from . import vlm_escalation
 
@@ -1602,7 +1671,14 @@ def _motion_targeted_specs(
     # chronological video frames for the identity/anatomy tasks only, and are
     # explicitly labelled here so they are never mistaken for the final video
     # frame. MOTION_VLM receives video frames only (no reference note).
-    if has_reference and has_target:
+    if has_reference and has_target and has_intermediate:
+        ref_note = (
+            " The final three supplied images are reference keyframes, not video frames: "
+            "the third-to-last is the pet's approved START reference pose, the second-to-last "
+            "is the approved INTERMEDIATE play pose keyframe the clip must pass through, and "
+            "the last is the TARGET pose keyframe. Do not treat any of them as a video frame."
+        )
+    elif has_reference and has_target:
         ref_note = (
             " The final two supplied images are reference keyframes, not video frames: "
             "the second-to-last is the pet's approved START reference pose and the last "
@@ -1620,6 +1696,12 @@ def _motion_targeted_specs(
     paw_hello = (acceptance_spec or {}).get("motion_id") == "PAW_HELLO"
     if paw_hello:
         props.update(PAW_HELLO_QA_FIELDS)
+    play_with_me = (acceptance_spec or {}).get("motion_id") == species_motion_variants.PLAY_WITH_ME
+    if play_with_me:
+        props.update(PLAY_WITH_ME_QA_FIELDS)
+    come_play = (acceptance_spec or {}).get("motion_id") == species_motion_variants.COME_PLAY
+    if come_play:
+        props.update(COME_PLAY_QA_FIELDS)
     acceptance_prompt = _acceptance_prompt(acceptance_spec)
     if acceptance_prompt:
         props.update({key: _YNU for key in (
@@ -1681,6 +1763,10 @@ def _motion_targeted_specs(
             motion_keys.discard("critical_state_violation")
     if paw_hello:
         motion_keys.update(PAW_HELLO_QA_FIELDS)
+    if play_with_me:
+        motion_keys.update(PLAY_WITH_ME_QA_FIELDS)
+    if come_play:
+        motion_keys.update(COME_PLAY_QA_FIELDS)
     motion_schema = _schema({key: props[key] for key in props if key in motion_keys})
     temporal_sampling = dict((evidence_context or {}).get("temporal_sampling") or {})
     provenance_prompt = ""
@@ -1706,6 +1792,8 @@ def _motion_targeted_specs(
         "occlusion or insufficient temporal coverage is unknown."
         if paw_hello else ""
     )
+    paw_guidance += _play_with_me_guidance(acceptance_spec) if play_with_me else ""
+    paw_guidance += _come_play_guidance(acceptance_spec) if come_play else ""
     return {
         vlm_escalation.IDENTITY_VLM: (
             identity_schema,
@@ -1783,8 +1871,17 @@ def qa_motion_video(
     unresolved_questions: Sequence[str] = (),
     evidence_context: Optional[dict[str, Any]] = None,
     acceptance_spec: Optional[dict[str, Any]] = None,
+    intermediate_image: Optional[tuple[bytes, str]] = None,
+    max_frames: int = 12,
 ) -> Optional[dict[str, Any]]:
-    """샘플 프레임들 + 레퍼런스 → 구조화 모션 QA. 실패/비활성은 None."""
+    """샘플 프레임들 + 레퍼런스 → 구조화 모션 QA. 실패/비활성은 None.
+
+    intermediate_image: 세그먼트 모션(PLAY_WITH_ME)의 승인된 중간 포즈 키프레임 —
+    START 와 TARGET 사이에 끼워 "클립이 거쳐야 하는 포즈"로 라벨링된다. 다른 모션은
+    None 이고 그때의 이미지 순서/문구는 이전과 같다.
+    max_frames: 영상 프레임 상한 (기본 12 — 기존 계약). COME_PLAY 는 조밀 보행 창 2개를
+    더 싣기 위해 호출자가 15 를 넘긴다; 다른 모션의 호출은 바뀌지 않는다.
+    """
     if not is_enabled() or not frame_images:
         return None
 
@@ -1807,7 +1904,7 @@ def qa_motion_video(
     # frame stays labelled 1.0 whenever it decoded.
     paired = [
         ((data, (mime or "image/png")), float(frac))
-        for (data, mime), frac in zip(frame_images[:12], list(sample_fractions)[:12])
+        for (data, mime), frac in zip(frame_images[:max_frames], list(sample_fractions)[:max_frames])
         if data
     ]
     video_images: list[tuple[bytes, str]] = [img for img, _ in paired]
@@ -1821,10 +1918,16 @@ def qa_motion_video(
     reference_images: list[tuple[bytes, str]] = []
     if reference_image and reference_image[0]:
         reference_images.append((reference_image[0], (reference_image[1] or "image/png")))
-    if target_image and target_image[0]:
-        reference_images.append((target_image[0], (target_image[1] or "image/png")))
     has_reference = bool(reference_image and reference_image[0])
     has_target = bool(target_image and target_image[0])
+    # INTERMEDIATE 는 START 와 TARGET 둘 다 있을 때만 의미가 있다(라벨 문구가 셋을 전제).
+    has_intermediate = bool(
+        has_reference and has_target and intermediate_image and intermediate_image[0]
+    )
+    if has_intermediate:
+        reference_images.append((intermediate_image[0], (intermediate_image[1] or "image/png")))
+    if target_image and target_image[0]:
+        reference_images.append((target_image[0], (target_image[1] or "image/png")))
     if tasks is not None:
         reference_tasks = _motion_reference_consuming_tasks()
         with_references = video_images + reference_images
@@ -1850,6 +1953,7 @@ def qa_motion_video(
                 has_reference=has_reference,
                 acceptance_spec=acceptance_spec,
                 evidence_context=evidence_context,
+                has_intermediate=has_intermediate,
             ),
             params={
                 "motion_description": motion_description,
@@ -1861,6 +1965,7 @@ def qa_motion_video(
                 "frame_count": len(video_images),
                 "has_reference": has_reference,
                 "has_target": has_target,
+                **({"has_intermediate": True} if has_intermediate else {}),
                 "evidence_context": dict(evidence_context or {}),
                 "acceptance_spec": acceptance_spec,
             },
@@ -1871,7 +1976,14 @@ def qa_motion_video(
     # reference keyframes appended AFTER the video frames and labels them
     # unambiguously (which trailing image is the reference vs. the target).
     images = video_images + reference_images
-    if has_reference and has_target:
+    if has_intermediate:
+        reference_note = (
+            "The final three supplied images are reference keyframes, NOT video frames: "
+            "the third-to-last is the pet's reference (START) keyframe, the second-to-last is "
+            "the approved INTERMEDIATE play pose keyframe the clip must pass through, and the "
+            "last is the TARGET pose keyframe."
+        )
+    elif has_reference and has_target:
         reference_note = (
             "The final two supplied images are reference keyframes, NOT video frames: "
             "the second-to-last is the pet's reference keyframe and the last is the "
@@ -1911,6 +2023,24 @@ def qa_motion_video(
             "smooth_return_to_stand_ready. Use unknown for occlusion or insufficient "
             "temporal coverage; use no only for a clearly visible violation."
         )
+    play_with_me = (acceptance_spec or {}).get("motion_id") == species_motion_variants.PLAY_WITH_ME
+    if play_with_me:
+        prompt += (
+            "\nPLAY_WITH_ME DEDICATED CHECKS: answer "
+            + ", ".join(species_motion_variants.PLAY_WITH_ME_QA_FIELD_NAMES)
+            + "." + _play_with_me_guidance(acceptance_spec)
+            + " Use unknown for occlusion or insufficient temporal coverage; use no only "
+            "for a clearly visible violation."
+        )
+    come_play = (acceptance_spec or {}).get("motion_id") == species_motion_variants.COME_PLAY
+    if come_play:
+        prompt += (
+            "\nCOME_PLAY DEDICATED CHECKS: answer "
+            + ", ".join(species_motion_variants.COME_PLAY_QA_FIELD_NAMES)
+            + "." + _come_play_guidance(acceptance_spec)
+            + " Use unknown for occlusion or insufficient temporal coverage; use no only "
+            "for a clearly visible violation."
+        )
     temporal_sampling = dict((evidence_context or {}).get("temporal_sampling") or {})
     if temporal_sampling:
         prompt += (
@@ -1928,6 +2058,14 @@ def qa_motion_video(
             schema["required"].append(key)
     if paw_hello:
         for key, definition in PAW_HELLO_QA_FIELDS.items():
+            schema["properties"][key] = definition
+            schema["required"].append(key)
+    if play_with_me:
+        for key, definition in PLAY_WITH_ME_QA_FIELDS.items():
+            schema["properties"][key] = definition
+            schema["required"].append(key)
+    if come_play:
+        for key, definition in COME_PLAY_QA_FIELDS.items():
             schema["properties"][key] = definition
             schema["required"].append(key)
     combined_version = (
@@ -1958,6 +2096,7 @@ def qa_motion_video(
             "frame_count": len(video_images),
             "has_reference": has_reference,
             "has_target": has_target,
+            **({"has_intermediate": True} if has_intermediate else {}),
         },
         call=_call,
         cache_mode=cache_mode,

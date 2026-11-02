@@ -37,6 +37,8 @@ from typing import Any, Callable, Mapping, Optional, Sequence
 
 import numpy as np
 
+from . import motion_video_segments, species_motion_variants
+
 logger = logging.getLogger(__name__)
 
 MOTION_BUILDER_VERSION = "motion-video-builder-v1"
@@ -234,6 +236,7 @@ def analyzer_versions(
     providers: Sequence[Any], *, prompt_version: Optional[str] = None
 ) -> dict[str, Any]:
     from . import (
+        motion_profile,
         motion_spec,
         motion_video_prompts,
         motion_video_qa,
@@ -244,6 +247,8 @@ def analyzer_versions(
     )
 
     paw_hello = prompt_version == motion_video_prompts.PAW_HELLO_PROMPT_VERSION
+    play_with_me = prompt_version == motion_video_prompts.PLAY_WITH_ME_PROMPT_VERSION
+    come_play = prompt_version == motion_video_prompts.COME_PLAY_PROMPT_VERSION
     return {
         "motion_builder": MOTION_BUILDER_VERSION,
         "motion_spec": motion_spec.MOTION_SPEC_VERSION,
@@ -252,16 +257,34 @@ def analyzer_versions(
         "qa": motion_video_qa.active_qa_version(),
         "sampling": motion_video_qa.FRAME_SAMPLING_VERSION,
         "vlm_motion_qa": (
-            vlm_identity.VLM_PAW_HELLO_QA_VERSION
-            if paw_hello else vlm_identity.VLM_MOTION_QA_VERSION
+            vlm_identity.VLM_PAW_HELLO_QA_VERSION if paw_hello
+            else vlm_identity.VLM_PLAY_WITH_ME_QA_VERSION if play_with_me
+            else vlm_identity.VLM_COME_PLAY_QA_VERSION if come_play
+            else vlm_identity.VLM_MOTION_QA_VERSION
         ),
         "motion_vlm_sampling": (
-            PAW_HELLO_VLM_SAMPLING_VERSION
-            if paw_hello else MOTION_VLM_SAMPLING_VERSION
+            PAW_HELLO_VLM_SAMPLING_VERSION if paw_hello
+            else PLAY_WITH_ME_VLM_SAMPLING_VERSION if play_with_me
+            else COME_PLAY_VLM_SAMPLING_VERSION if come_play
+            else MOTION_VLM_SAMPLING_VERSION
         ),
         "vlm_escalation": vlm_escalation.VLM_ESCALATION_VERSION,
         "qa_evidence_reuse": qa_evidence_reuse.QA_EVIDENCE_REUSE_VERSION,
         "motion_qa_contract": motion_spec.MOTION_QA_CONTRACT_VERSION,
+        # 세그먼트 모션(PLAY_WITH_ME / COME_PLAY)만: 이어 붙이기 규칙(생성 결과를 바꾼다) +
+        # 세그먼트 QA(판정만 바꾼다 — QA_ONLY_VERSION_KEYS). 다른 모션 스탬프는 불변.
+        **(
+            {
+                "segment_join": (
+                    motion_video_segments.COME_PLAY_SEGMENT_JOIN_VERSION if come_play
+                    else motion_video_segments.SEGMENT_JOIN_VERSION
+                ),
+                "segment_qa": motion_video_segments.SEGMENT_QA_VERSION,
+            }
+            if (play_with_me or come_play) else {}
+        ),
+        # COME_PLAY 만: 이어진 자산의 결정론 모션 프로파일 진단 (판정만 바꾼다 — QA_ONLY).
+        **({"motion_profile_qa": motion_profile.COME_PLAY_PROFILE_QA_VERSION} if come_play else {}),
         "providers": [f"{p.name}:{p.model_name()}" for p in providers],
         "provider_bindings": [
             video_motion_providers.provider_identity(provider) for provider in providers
@@ -288,12 +311,24 @@ QA_ONLY_VERSION_KEYS = (
     "vlm_escalation",
     "qa_evidence_reuse",
     "motion_qa_contract",
+    # 세그먼트 결정론 QA (PLAY_WITH_ME) — 판정 규칙만, 생성물은 그대로.
+    "segment_qa",
+    # COME_PLAY 모션 프로파일 진단 — 자문 판정만, 생성물은 그대로.
+    "motion_profile_qa",
 )
 
 
 def generation_versions(stamp: Optional[dict[str, Any]]) -> dict[str, Any]:
     """스탬프에서 **생성 결과를 바꾸는** 부분만 남긴다."""
     return {k: v for k, v in (stamp or {}).items() if k not in QA_ONLY_VERSION_KEYS and k != DURABLE_CONTRACT_KEY}
+
+
+def _generation_description(contract: Mapping[str, Any], spec: Any) -> str:
+    """The generation description: the resolved species variant's text when the
+    contract carries one (PLAY_WITH_ME), otherwise the registry description."""
+    variant = (contract or {}).get("species_variant") or {}
+    text = str(variant.get("description") or "").strip()
+    return text or spec.description
 
 
 def _resolve_providers_for_contract(
@@ -677,6 +712,133 @@ def _frames_to_jpeg_pairs(
 DURABLE_CONTRACT_KEY = "durable_generation_contract"
 
 
+def _generate_segmented(
+    provider: Any,
+    *,
+    contract: Mapping[str, Any],
+    segment_prompts: Mapping[str, str],
+    output_spec: dict[str, Any],
+    base_metadata: dict[str, Any],
+    images: Mapping[str, tuple[Optional[str], Optional[bytes], Optional[np.ndarray]]],
+    join_fn: Callable[[Sequence[bytes]], tuple[bytes, dict[str, Any]]],
+    frame_sampler: Callable[[bytes], Optional[list[Optional[np.ndarray]]]],
+    joined_spec: Optional[dict[str, Any]] = None,
+):
+    """세그먼트 모션 1 후보: 계획대로 세그먼트들을 생성 → 결정론 세그먼트 QA → 이어 붙임.
+
+    joined_spec: 이어진 자산의 output_spec (segments 에 세그먼트별 길이) — 세그먼트별
+    길이의 정본. None 이면 output_spec(세그먼트 1개 사양)의 길이를 모두에 쓴다.
+
+    반환 (MotionVideoResult(이어진 영상), bundle). bundle.items[*]["_video_bytes"] 는
+    호출자가 증거로 저장한 뒤 지운다. ProviderWorkPending / VideoProviderError 는
+    그대로 올라간다 (durable 재개·계약 위반 처리는 호출자의 기존 경로).
+    """
+    from .video_motion_providers import MotionVideoResult, VideoProviderError
+
+    plan = list(contract.get("segments") or [])
+    # 세그먼트별 길이: 계획의 duration_sec(COME_PLAY A 5 s / B 6 s) 가 있으면 그것, 없으면
+    # 호출자의 세그먼트 사양 길이(PLAY_WITH_ME: 둘 다 같다).
+    durations = motion_video_segments.segment_durations(plan, joined_spec or output_spec)
+    inputs: list[motion_video_segments.SegmentInput] = []
+    for seg in plan:
+        start_url, start_bytes, start_rgb = images[str(seg["start"])]
+        end_url, end_bytes, end_rgb = images[str(seg["end"])]
+        inputs.append(
+            motion_video_segments.SegmentInput(
+                id=str(seg["id"]),
+                index=int(seg["index"]),
+                prompt=str(segment_prompts[str(seg["id"])]),
+                start_image_url=start_url,
+                start_image_bytes=start_bytes,
+                end_image_url=end_url,
+                end_image_bytes=end_bytes,
+                start_keyframe_id=(contract.get(str(seg["start"])) or {}).get("keyframe_id"),
+                end_keyframe_id=(contract.get(str(seg["end"])) or {}).get("keyframe_id"),
+                expected_start_rgb=start_rgb,
+                expected_end_rgb=end_rgb,
+                duration_sec=durations.get(str(seg["id"])),
+            )
+        )
+    results = motion_video_segments.generate_segments(
+        provider, inputs, output_spec=output_spec, base_metadata=base_metadata
+    )
+    videos = [r.video_bytes for r in results]
+    motion_id = contract.get("motion_id")
+    segments_qa = motion_video_segments.evaluate_segments(
+        segment_videos=videos, inputs=inputs, frame_sampler=frame_sampler,
+        check_names=species_motion_variants.segment_check_names(motion_id),
+    )
+    # 모션 스코프 이음매 규칙: COME_PLAY 는 정지 리드인/과도한 bow 유지를 정지 구간 안에서
+    # 트리밍하는 v2 (motion_profile), PLAY_WITH_ME 는 v1 concat 그대로 (인자 없이 호출).
+    trim_policy = species_motion_variants.segment_trim_policy(motion_id)
+    join_kwargs: dict[str, Any] = (
+        {"trim_policy": trim_policy, "join_version": species_motion_variants.segment_join_version(motion_id)}
+        if trim_policy is not None else {}
+    )
+    try:
+        joined, join_meta = join_fn(videos, **join_kwargs) if join_kwargs else join_fn(videos)
+    except motion_video_segments.MotionVideoSegmentError as exc:
+        # 이어 붙이기는 우리 쪽 후처리다 — 프로바이더 장애가 아니라 계약/도구 문제로
+        # 분류한다 (재시도·폴백으로 유료 생성을 더 사지 않는다).
+        raise VideoProviderError("PROVIDER_CONTRACT", f"{exc.code}: {exc.message}") from exc
+    profile: Optional[dict[str, Any]] = None
+    if species_motion_variants.has_motion_profile(motion_id):
+        # 이어진(전달되는) 자산의 결정론 모션 프로파일 — 자문 진단, 측정 불가면 판정 불변.
+        from . import motion_profile
+
+        try:
+            gray = motion_profile.decode_gray_timeline(joined)
+            timeline = motion_profile.motion_timeline(gray) if gray is not None else None
+            profile = motion_profile.evaluate_come_play_profile(
+                timeline, seam_frame=(join_meta or {}).get("seam_frame"),
+            )
+        except Exception:
+            logger.warning("COME_PLAY 모션 프로파일 진단 실패 — unmeasurable 로 기록", exc_info=True)
+            profile = {"version": motion_profile.COME_PLAY_PROFILE_QA_VERSION, "status": "unmeasurable",
+                       "checks": {}, "metrics": {}, "reasons": ["profile_error"]}
+        segments_qa = motion_video_segments.attach_motion_profile(segments_qa, profile)
+    usage: dict[str, Any] = {
+        "segments": {
+            str(seg.id): dict(getattr(res, "usage", None) or {}) for seg, res in zip(inputs, results)
+        },
+    }
+    costs = [
+        (getattr(res, "usage", None) or {}).get("estimated_cost_usd") for res in results
+    ]
+    if all(isinstance(c, (int, float)) for c in costs) and costs:
+        usage["estimated_cost_usd"] = round(float(sum(costs)), 4)
+    bundle = {
+        "version": str((join_meta or {}).get("version") or motion_video_segments.SEGMENT_JOIN_VERSION),
+        "plan": [dict(seg) for seg in plan],
+        "items": [
+            {
+                "id": seg.id,
+                "index": seg.index,
+                "external_job_id": res.external_job_id,
+                "model": res.model,
+                "start_keyframe_id": seg.start_keyframe_id,
+                "end_keyframe_id": seg.end_keyframe_id,
+                "prompt_chars": len(seg.prompt),
+                "usage": dict(getattr(res, "usage", None) or {}),
+                "_video_bytes": res.video_bytes,
+            }
+            for seg, res in zip(inputs, results)
+        ],
+        "join": join_meta,
+        "qa": segments_qa,
+    }
+    return (
+        MotionVideoResult(
+            video_bytes=joined,
+            provider=results[0].provider,
+            model=results[0].model,
+            external_job_id="+".join(str(r.external_job_id or "") for r in results),
+            usage=usage,
+        ),
+        bundle,
+    )
+
+
 async def submitted_motion_version(*, run_id: str, user_id: str, pet_id: str, motion_id: str,
                                    replacement_source_id: str = ""):
     """Recover the run's submission pin, including a crash before run-row pinning.
@@ -732,7 +894,12 @@ async def build_motion_video(
     skip_if_unchanged: bool = True,
     precomputed_contract: Optional[dict[str, Any]] = None,
     resume_version: Optional[dict[str, Any]] = None,
+    segment_join_fn: Optional[Callable[[Sequence[bytes]], tuple[bytes, dict[str, Any]]]] = None,
 ) -> MotionVersion:
+    """
+    segment_join_fn: 세그먼트 모션(PLAY_WITH_ME)에서 세그먼트 mp4 들을 하나로 잇는 함수
+    (기본 motion_video_segments.join_segment_videos — ffmpeg). 테스트 주입용.
+    """
     from . import (
         business_qa,
         canonical_pet_service,
@@ -778,10 +945,16 @@ async def build_motion_video(
 
     spec = motion_spec.get_motion(motion_id)
     motion_class = contract["motion_class"]
-    motion_description = frozen["motion_description"] if frozen else spec.description
+    motion_description = (
+        frozen["motion_description"] if frozen
+        else _generation_description(contract, spec)
+    )
     active_prompt_version = motion_video_prompts.prompt_version_for_motion(
         contract["motion_id"]
     )
+    # 세그먼트 모션: 계약이 승인된 중간 키프레임 + 세그먼트 계획을 나른다 (PLAY_WITH_ME).
+    segmented = motion_video_segments.is_segmented_contract(contract)
+    join_segments = segment_join_fn or motion_video_segments.join_segment_videos
 
     # ── 라우팅 + 능력 검증 ────────────────────────────────────────────────
     resolved, _available, _provider_requirements = _resolve_providers_for_contract(
@@ -902,6 +1075,7 @@ async def build_motion_video(
 
     start_obj = _obj(contract["start_keyframe"])
     target_obj = _obj(contract.get("target_keyframe"))
+    intermediate_obj = _obj(contract.get("intermediate_keyframe")) if segmented else None
     versions_stamp = (
         deepcopy(resume_version["analyzer_versions"])
         if frozen
@@ -931,7 +1105,30 @@ async def build_motion_video(
             duration_range=contract.get("duration_range_sec") or [],
             motion_class=motion_class,
         )
+        if segmented:
+            # 세그먼트 1개가 스펙 길이(프로파일/클래스)를 받고, 후보/적합성 검사가 보는
+            # output_spec 은 이어진 자산의 **총** 길이다 (segments 에 각 길이 기록).
+            output_spec = motion_video_segments.joined_output_spec(
+                output_spec, contract["segments"]
+            )
+    # 프로바이더에 보내는 사양: 세그먼트 모션은 세그먼트 1개 길이, 그 외는 그대로.
+    provider_output_spec = (
+        motion_video_segments.segment_output_spec(output_spec) if segmented else output_spec
+    )
     prompt = resume_version["prompt"] if frozen else motion_video_prompts.build_motion_video_prompt(contract, motion_description)
+    segment_prompts: Optional[dict[str, str]] = None
+    if segmented:
+        segment_prompts = (
+            dict(frozen.get("segment_prompts") or {}) if frozen
+            else motion_video_prompts.build_segment_prompts(contract)
+        )
+        if not segment_prompts or any(
+            str(seg["id"]) not in segment_prompts for seg in contract["segments"]
+        ):
+            raise MotionVideoError(
+                "MOTION_RESUME_CONTRACT_INVALID",
+                "세그먼트 프롬프트가 계약의 세그먼트 계획과 맞지 않습니다.", status=409,
+            )
     warnings = list(contract.get("warnings") or []) + profile_warnings + extra_warnings
 
     cid = pid[4:] if pid.startswith("pet_") else pid
@@ -994,12 +1191,18 @@ async def build_motion_video(
     # 이전과 동일하다 (플레이트 우선, raw 는 폴백).
     start_bytes: Optional[bytes] = None
     target_bytes: Optional[bytes] = None
+    intermediate_bytes: Optional[bytes] = None
     keyframe_inputs: dict[str, Any] = {}
     if frozen:
         start_obj = SimpleNamespace(**frozen["inputs"]["start"])
         target_obj = SimpleNamespace(**frozen["inputs"]["target"]) if frozen["inputs"].get("target") else None
+        intermediate_obj = (
+            SimpleNamespace(**frozen["inputs"]["intermediate"])
+            if frozen["inputs"].get("intermediate") else None
+        )
         start_bytes = fetch(start_obj)
         target_bytes = fetch(target_obj) if target_obj else None
+        intermediate_bytes = fetch(intermediate_obj) if intermediate_obj else None
         keyframe_inputs = deepcopy(frozen["keyframe_inputs"])
     elif clean_plate_service.plate_enabled():
         for label, payload, obj_ref in (
@@ -1010,6 +1213,8 @@ async def build_motion_video(
                 contract.get("target_keyframe"),
                 target_obj,
             ),
+            # 세그먼트 모션의 중간 포즈 — A 의 끝 / B 의 시작 조건 이미지.
+            ("intermediate", contract.get("intermediate_keyframe") if segmented else None, intermediate_obj),
         ):
             if not payload:
                 continue
@@ -1028,6 +1233,8 @@ async def build_motion_video(
             if data and obj:
                 if label == "start":
                     start_bytes, start_obj = data, obj
+                elif label == "intermediate":
+                    intermediate_bytes, intermediate_obj = data, obj
                 else:
                     target_bytes, target_obj = data, obj
             elif clean_plate_service.plate_required():
@@ -1042,6 +1249,8 @@ async def build_motion_video(
                 raw_bytes = fetch(obj_ref) if obj_ref else None
                 if label == "start":
                     start_bytes = raw_bytes
+                elif label == "intermediate":
+                    intermediate_bytes = raw_bytes
                 else:
                     target_bytes = raw_bytes
                 warnings.append(
@@ -1051,6 +1260,7 @@ async def build_motion_video(
     else:
         start_bytes = fetch(start_obj) if start_obj else None
         target_bytes = fetch(target_obj) if target_obj else None
+        intermediate_bytes = fetch(intermediate_obj) if intermediate_obj else None
 
     if not start_bytes:
         raise MotionVideoError(
@@ -1059,6 +1269,16 @@ async def build_motion_video(
     if contract["video_strategy"] == "START_END_FRAME" and not target_bytes:
         raise MotionVideoError(
             "KEYFRAME_ASSET_UNAVAILABLE", "목표 키프레임 이미지를 불러오지 못했습니다.", status=503
+        )
+    if segmented and not intermediate_bytes:
+        raise MotionVideoError(
+            "KEYFRAME_ASSET_UNAVAILABLE", "중간 키프레임 이미지를 불러오지 못했습니다.", status=503
+        )
+    if segmented and contract["video_strategy"] != "START_END_FRAME":
+        # 세그먼트는 양끝 조건 없이는 의미가 없다 (강등 금지 — PLAY_WITH_ME 는
+        # degrade_allowed=False 라 위에서 이미 END_FRAME_UNSUPPORTED 로 멈춘다).
+        raise MotionVideoError(
+            "END_FRAME_UNSUPPORTED", "세그먼트 모션은 start/end-frame 조건이 필수입니다.", status=503
         )
 
     # ── 9:16 비디오 앵커 (라이브 검증 계약) ──────────────────────────────
@@ -1072,6 +1292,7 @@ async def build_motion_video(
         if target_obj and contract["video_strategy"] == "START_END_FRAME"
         else None
     )
+    intermediate_image_url = sign(intermediate_obj) if (segmented and intermediate_obj) else None
     anchor_meta: dict[str, Any] = deepcopy(frozen.get("anchor_meta") or {})
     if not frozen and video_anchor.anchor_enabled():
         # fetch_bytes/sign_url_fn 을 넘기면 결정론적 object_path 에 이미 같은
@@ -1096,6 +1317,16 @@ async def build_motion_video(
             if t:
                 target_bytes, target_image_url = t.bytes, t.url
                 anchor_meta["target"] = {"object_path": t.object_path, **t.meta}
+        if segmented and intermediate_bytes:
+            m = await video_anchor.ensure_video_anchor(
+                user_id=uid, content_id=cid, keyframe=contract["intermediate_keyframe"],
+                image_bytes=intermediate_bytes, aspect_ratio=output_spec["aspect_ratio"],
+                source_object_path=(intermediate_obj.object_path if intermediate_obj else None),
+                fetch_bytes=fetch, sign_url_fn=sign,
+            )
+            if m:
+                intermediate_bytes, intermediate_image_url = m.bytes, m.url
+                anchor_meta["intermediate"] = {"object_path": m.object_path, **m.meta}
 
     policy = deepcopy(frozen["candidate_policy"]) if frozen else candidate_policy(motion_class)
     rows = await _version_rows(pid, contract["motion_id"])
@@ -1169,8 +1400,18 @@ async def build_motion_video(
                 "provider_identity": video_motion_providers.provider_identity(resolved[0]),
                 "contract": deepcopy(contract), "motion_description": motion_description,
                 "candidate_policy": deepcopy(policy),
-                "inputs": {"start": saved_input(start_obj, "start"), "target": saved_input(target_obj, "target")},
+                "inputs": {
+                    "start": saved_input(start_obj, "start"),
+                    "target": saved_input(target_obj, "target"),
+                    **(
+                        {"intermediate": saved_input(intermediate_obj, "intermediate")}
+                        if segmented else {}
+                    ),
+                },
                 "keyframe_inputs": deepcopy(keyframe_inputs), "anchor_meta": deepcopy(anchor_meta),
+                # 세그먼트 프롬프트는 제출 시점 문장으로 박제된다 — 재개 틱의 지문이 같아야
+                # durable 영수증을 다시 읽는다 (프롬프트 빌더가 바뀌어도 재제출 없음).
+                **({"segment_prompts": dict(segment_prompts or {})} if segmented else {}),
             }
         if not await canonical_pet_service._insert(_versions_table(), _MOCK_VERSIONS, version_row):
             raise MotionVideoError("MOTIONS_UNAVAILABLE", "모션 버전을 기록하지 못했습니다.", status=503)
@@ -1179,6 +1420,7 @@ async def build_motion_video(
     sampler = frame_sampler or motion_video_qa.sample_frames
     start_rgb = _rgb_from_bytes(start_bytes)
     target_rgb = _rgb_from_bytes(target_bytes)
+    intermediate_rgb = _rgb_from_bytes(intermediate_bytes) if segmented else None
 
     # 해석된 모션 레퍼런스의 id+버전을 박제한다 (Phase 6.6) — 라이브러리가 V2 로
     # 개선돼도 이 생성물은 영원히 "V1 을 썼다"고 기록된다.
@@ -1222,6 +1464,20 @@ async def build_motion_video(
                 ),
             }]
             if contract.get("target_keyframe")
+            else []
+        ),
+        *(
+            [{
+                "kind": "intermediate_keyframe",
+                "keyframe_id": contract["intermediate_keyframe"]["keyframe_id"],
+                "role": contract["intermediate_keyframe"].get("role"),
+                "conditioning_sent": True,
+                **(
+                    {"sent_input": keyframe_inputs["intermediate"]}
+                    if keyframe_inputs.get("intermediate") else {}
+                ),
+            }]
+            if segmented
             else []
         ),
         *(
@@ -1337,29 +1593,47 @@ async def build_motion_video(
                     provider_identity["adapter"],
                     attempt,
                 )
-                
-                result = provider.generate(
-                    MotionVideoRequest(
-                        prompt=prompt,
-                        start_image_url=start_image_url,
-                        start_image_bytes=start_bytes,
-                        end_image_url=target_image_url,
-                        end_image_bytes=(target_bytes if contract["video_strategy"] == "START_END_FRAME" else None),
-                        output_spec=output_spec,
-                        motion_reference_url=motion_reference_url,
-                        metadata={
-                            "pet_id": pid,
-                            "motion_id": contract["motion_id"],
-                            "motion_version_id": version_id,
-                            "start_keyframe_id": contract["start_keyframe"]["keyframe_id"],
-                            "target_keyframe_id": (contract.get("target_keyframe") or {}).get(
-                                "keyframe_id"
-                            ),
-                            "motion_reference_id": (contract.get("motion_reference") or {}).get("id"),
-                            "attempt": attempt,
+                base_metadata = {
+                    "pet_id": pid,
+                    "motion_id": contract["motion_id"],
+                    "motion_version_id": version_id,
+                    "start_keyframe_id": contract["start_keyframe"]["keyframe_id"],
+                    "target_keyframe_id": (contract.get("target_keyframe") or {}).get(
+                        "keyframe_id"
+                    ),
+                    "motion_reference_id": (contract.get("motion_reference") or {}).get("id"),
+                    "attempt": attempt,
+                }
+                segment_bundle: Optional[dict[str, Any]] = None
+                if segmented:
+                    result, segment_bundle = _generate_segmented(
+                        provider,
+                        contract=contract,
+                        segment_prompts=segment_prompts or {},
+                        output_spec=provider_output_spec,
+                        base_metadata=base_metadata,
+                        images={
+                            "start_keyframe": (start_image_url, start_bytes, start_rgb),
+                            "intermediate_keyframe": (intermediate_image_url, intermediate_bytes, intermediate_rgb),
+                            "target_keyframe": (target_image_url, target_bytes, target_rgb),
                         },
+                        join_fn=join_segments,
+                        frame_sampler=sampler,
+                        joined_spec=output_spec,
                     )
-                )
+                else:
+                    result = provider.generate(
+                        MotionVideoRequest(
+                            prompt=prompt,
+                            start_image_url=start_image_url,
+                            start_image_bytes=start_bytes,
+                            end_image_url=target_image_url,
+                            end_image_bytes=(target_bytes if contract["video_strategy"] == "START_END_FRAME" else None),
+                            output_spec=output_spec,
+                            motion_reference_url=motion_reference_url,
+                            metadata=base_metadata,
+                        )
+                    )
             except VideoProviderError as e:
                 cand_row["error"] = f"{e.code}: {e.message}"[:500]
                 if e.code in _CONTRACT_CODES:
@@ -1403,6 +1677,27 @@ async def build_motion_video(
                 f"{uid}/{cid}/motions/{contract['motion_id'].lower()}/v{version_row['version']}/"
                 f"{logical_model}_a{attempt}_raw.mp4"
             )
+            segments_qa: Optional[dict[str, Any]] = None
+            if segment_bundle is not None:
+                # 세그먼트 원본은 **증거**로 저장한다(이어진 자산이 전달물). 저장 실패는
+                # 경고로만 남긴다 — 유료 결과는 이어진 raw 가 쥐고, 그 저장 실패만
+                # 아래의 RAW_STORE_FAILED 복구 경로를 탄다.
+                for item in segment_bundle["items"]:
+                    seg_path = raw_path.replace("_raw.mp4", f"_seg{item['id']}_raw.mp4")
+                    try:
+                        await supabase_assets.upload_asset_to_storage(
+                            seg_path, item.pop("_video_bytes"), "video/mp4"
+                        )
+                        item["raw_video_path"] = seg_path
+                    except Exception:
+                        item.pop("_video_bytes", None)
+                        item["raw_video_path"] = None
+                        logger.warning("세그먼트 원본 저장 실패 (%s)", seg_path, exc_info=True)
+                segments_qa = segment_bundle.pop("qa", None)
+                cand_row["generation_metadata"] = {
+                    **cand_row["generation_metadata"],
+                    "segments": {**segment_bundle, "qa": segments_qa},
+                }
             if not cand_row.get("raw_video_path"):
                 try:
                     await supabase_assets.upload_asset_to_storage(raw_path, result.video_bytes, "video/mp4")
@@ -1452,10 +1747,25 @@ async def build_motion_video(
                     await canonical_pet_service._insert(_candidates_table(), _MOCK_CANDIDATES, cand_row)
                     candidates.append(cand_row)
 
+            # 트리밍된 세그먼트 자산: 적합성 검사의 기대 길이는 계획 길이에서 **의도한** 트리밍을 뺀
+            # 값이다 (프로바이더 양자화 허용치 ±2 s 를 트리밍이 먹어 버리지 않게).
+            qa_output_spec = output_spec
+            trimmed_sec = float(((segment_bundle or {}).get("join") or {}).get("trimmed_sec") or 0.0)
+            if trimmed_sec > 0 and isinstance(output_spec.get("duration_sec"), (int, float)):
+                qa_output_spec = {
+                    **output_spec,
+                    "duration_sec": max(1.0, round(float(output_spec["duration_sec"]) - trimmed_sec, 3)),
+                    "planned_duration_sec": output_spec["duration_sec"],
+                    "trimmed_sec": trimmed_sec,
+                }
+                cand_row["generation_metadata"] = {
+                    **cand_row["generation_metadata"],
+                    "delivered_duration_sec": qa_output_spec["duration_sec"],
+                }
             qa = await _evaluate_candidate_qa(
                 video_bytes=result.video_bytes,
                 contract=contract,
-                output_spec=output_spec,
+                output_spec=qa_output_spec,
                 motion_description=motion_description,
                 motion_class=motion_class,
                 start_rgb=start_rgb,
@@ -1468,11 +1778,17 @@ async def build_motion_video(
                 inherited_evidence=[
                     evidence
                     for evidence in [
-                        (contract.get("start_keyframe") or {}).get("approved_qa_evidence")
+                        (contract.get("start_keyframe") or {}).get("approved_qa_evidence"),
+                        (contract.get("intermediate_keyframe") or {}).get("approved_qa_evidence"),
                     ]
                     if evidence
                 ],
+                intermediate_bytes=intermediate_bytes if segmented else None,
             )
+            if segments_qa is not None:
+                # 결정론 세그먼트 검사(끝점 조건 준수 + 이음매)를 후보 QA 에 합친다 —
+                # business-v1 영수증은 합쳐진 checks 를 레지스트리 권위로 읽는다.
+                qa = motion_video_segments.merge_segment_qa(qa, segments_qa)
             try:
                 business_qa.attach_business_result(
                     qa,
@@ -1673,25 +1989,40 @@ async def list_motion_versions(*, user_id: str, pet_id: str) -> list[MotionVersi
 # they do not, one local 12-fps decode scans the stored video and contributes at
 # most three full-resolution before/during/after frames to the same VLM call.
 TARGETED_MICRO_VLM_MOTIONS = frozenset(
-    {"BLINKING", "EAR_TWITCHING", "HEAD_TILTING", "TAIL_WAGGING", "PET_HEAD", "PAW_HELLO"}
+    {"BLINKING", "EAR_TWITCHING", "HEAD_TILTING", "TAIL_WAGGING", "PET_HEAD", "PAW_HELLO",
+     species_motion_variants.PLAY_WITH_ME, species_motion_variants.COME_PLAY}
 )
 SPARSE_BASE_ABSENCE_UNRELIABLE_MOTIONS = frozenset(
-    {"BLINKING", "EAR_TWITCHING", "PET_HEAD", "PAW_HELLO"}
+    {"BLINKING", "EAR_TWITCHING", "PET_HEAD", "PAW_HELLO", species_motion_variants.PLAY_WITH_ME,
+     species_motion_variants.COME_PLAY}
 )
 MOTION_VLM_SAMPLING_VERSION = "motion-vlm-sampling-v2"
 PAW_HELLO_VLM_SAMPLING_VERSION = "motion-vlm-sampling-v2-paw-hello-v1"
+PLAY_WITH_ME_VLM_SAMPLING_VERSION = "motion-vlm-sampling-v2-play-with-me-v1"
+# COME_PLAY v2 (2026-10-30): 9 base frames + two dense GAIT WINDOWS (3 consecutive 12 fps
+# frames about a sixth of a second apart: the strongest sustained motion in the approach half
+# and in the return half) so the VLM can judge limb coordination, ground contact and the turn
+# across consecutive frames instead of one frame every ~1.4 s.
+COME_PLAY_VLM_SAMPLING_VERSION = "motion-vlm-sampling-v2-come-play-v2"
 MICRO_ADAPTIVE_SCAN_FPS = 12.0
 MICRO_ADAPTIVE_SCAN_MAX_FRAMES = 72
 MICRO_VLM_MAX_FRAMES = 12
 MICRO_MOTION_SALIENCE_MIN = 6.0
+COME_PLAY_DENSE_SCAN_MAX_FRAMES = 240   # 12 fps × 20 s — the trimmed 13 s plan fits with margin
+COME_PLAY_GAIT_WINDOW_STRIDE = 2         # dense-frame spacing inside a window (2 / 12 fps ≈ 0.167 s)
+COME_PLAY_GAIT_WINDOW_FRAMES = 3
+COME_PLAY_VLM_MAX_FRAMES = 9 + 2 * COME_PLAY_GAIT_WINDOW_FRAMES
 
 
 def _motion_sampling_version(motion_id: str) -> str:
-    return (
-        PAW_HELLO_VLM_SAMPLING_VERSION
-        if str(motion_id or "").upper() == "PAW_HELLO"
-        else MOTION_VLM_SAMPLING_VERSION
-    )
+    normalized = str(motion_id or "").upper()
+    if normalized == "PAW_HELLO":
+        return PAW_HELLO_VLM_SAMPLING_VERSION
+    if normalized == species_motion_variants.PLAY_WITH_ME:
+        return PLAY_WITH_ME_VLM_SAMPLING_VERSION
+    if normalized == species_motion_variants.COME_PLAY:
+        return COME_PLAY_VLM_SAMPLING_VERSION
+    return MOTION_VLM_SAMPLING_VERSION
 
 
 class _EvidenceFrames(list):
@@ -1869,6 +2200,122 @@ def _adaptive_micro_evidence(
     return _EvidenceFrames([frame for _, frame in combined], provenance=provenance)
 
 
+def _come_play_gait_windows(
+    dense_scores: Sequence[tuple[float, int]],
+    dense_count: int,
+    *,
+    stride: int = COME_PLAY_GAIT_WINDOW_STRIDE,
+    window_frames: int = COME_PLAY_GAIT_WINDOW_FRAMES,
+) -> list[tuple[str, list[int]]]:
+    """Two gait windows: the strongest *sustained* motion in the first half (approach) and in
+    the second half (return/turn). Sustained = mean adjacent salience over the window span, so a
+    single flicker frame does not win. Returns (label, dense indices) pairs."""
+    if dense_count < 2 or not dense_scores:
+        return []
+    salience = [0.0] * dense_count
+    for score, index in dense_scores:
+        if 0 <= index < dense_count:
+            salience[index] = float(score)
+    span = stride * (window_frames - 1)
+    # Sustain span: score each candidate centre by the mean salience over ~2× the window
+    # (≈0.75 s at 12 fps) so a one- or two-frame flicker cannot outrank a real run.
+    sustain = span * 2
+    half = dense_count // 2
+    windows: list[tuple[str, list[int]]] = []
+    for label, lo, hi in (("approach", 0, half), ("return", half, dense_count)):
+        best_center: Optional[int] = None
+        best_score = -1.0
+        for center in range(lo + span // 2, hi - (span - span // 2)):
+            first = center - span // 2
+            last = first + span
+            if first < lo or last >= hi:
+                continue
+            s_first, s_last = max(lo, center - sustain // 2), min(hi - 1, center + sustain // 2)
+            mean = sum(salience[s_first:s_last + 1]) / float(s_last - s_first + 1)
+            if mean > best_score:
+                best_score, best_center = mean, center
+        if best_center is None or best_score <= 0.0:
+            continue
+        first = best_center - span // 2
+        windows.append((label, [first + k * stride for k in range(window_frames)]))
+    return windows
+
+
+def _come_play_gait_evidence(
+    *,
+    base_frames: Sequence[Optional[np.ndarray]],
+    base_fractions: Sequence[float],
+    dense_scan: Optional[Mapping[str, Any]],
+) -> _EvidenceFrames:
+    """COME_PLAY VLM evidence: the 9 base frames plus two dense gait windows (3 frames each).
+
+    The windows are recorded in the provenance (`gait_windows`) that the VLM prompt receives, so
+    the advisory fields run_gait_coordinated / run_ground_contact_plausible / turn_natural are
+    answered on consecutive frames. absence_reliable stays False: 15 frames still cannot prove
+    a brief event never happened (requirement 8 — uncertainty is REVIEW, not FAIL).
+    """
+    motion_id = species_motion_variants.COME_PLAY
+    paired_base = [
+        (float(fraction), frame)
+        for fraction, frame in zip(base_fractions, base_frames)
+        if frame is not None
+    ]
+    provenance: dict[str, Any] = {
+        "version": _motion_sampling_version(motion_id),
+        "motion_id": motion_id,
+        "strategy": "come_play_gait_windows",
+        "base_fractions": [fraction for fraction, _ in paired_base],
+        "base_decoded_frames": len(paired_base),
+        "dense_scan_attempted": True,
+        "gait_windows": [],
+        "selected_extra_fractions": [],
+        "absence_reliable": False,
+        "absence_reliability_reason": "sparse_base_cannot_prove_absence",
+    }
+    if not isinstance(dense_scan, Mapping):
+        provenance.update({"strategy": "come_play_gait_windows_unavailable",
+                           "evidence_fractions": [fraction for fraction, _ in paired_base]})
+        return _EvidenceFrames([frame for _, frame in paired_base], provenance=provenance)
+    dense_frames = list(dense_scan.get("frames") or [])
+    dense_fractions = [float(value) for value in (dense_scan.get("fractions") or [])]
+    dense_scores = _adjacent_salience(dense_frames, motion_id)
+    windows = _come_play_gait_windows(dense_scores, len(dense_frames))
+    fps = float(dense_scan.get("requested_fps") or MICRO_ADAPTIVE_SCAN_FPS)
+    provenance.update({
+        "dense_requested_fps": fps,
+        "dense_decoded_frames": len(dense_frames),
+        "dense_duration_sec": dense_scan.get("duration_sec"),
+        "dense_coverage_ratio": float(dense_scan.get("coverage_ratio") or 0.0),
+        "gait_window_spacing_sec": round(COME_PLAY_GAIT_WINDOW_STRIDE / fps, 4) if fps else None,
+    })
+    extras: list[tuple[float, np.ndarray]] = []
+    for label, indices in windows:
+        fractions_in_window: list[float] = []
+        for index in indices:
+            if not (0 <= index < len(dense_frames)) or index >= len(dense_fractions):
+                continue
+            frame = dense_frames[index]
+            if not isinstance(frame, np.ndarray):
+                continue
+            fraction = dense_fractions[index]
+            fractions_in_window.append(round(fraction, 4))
+            if any(abs(fraction - existing) < 0.005 for existing, _ in [*paired_base, *extras]):
+                continue
+            extras.append((fraction, frame))
+        if fractions_in_window:
+            provenance["gait_windows"].append({
+                "segment": label,
+                "fractions": fractions_in_window,
+                "consecutive": True,
+            })
+    combined = sorted([*paired_base, *extras], key=lambda item: item[0])[:COME_PLAY_VLM_MAX_FRAMES]
+    provenance.update({
+        "selected_extra_fractions": [round(fraction, 4) for fraction, _ in extras],
+        "evidence_fractions": [fraction for fraction, _ in combined],
+    })
+    return _EvidenceFrames([frame for _, frame in combined], provenance=provenance)
+
+
 def _enforce_temporal_evidence_reliability(
     vlm_qa: Optional[dict[str, Any]],
     *,
@@ -1895,13 +2342,28 @@ def _enforce_temporal_evidence_reliability(
     # Leaving it at "no" would silently turn the protected sparse non-observation
     # back into a hard interaction failure after requested_motion_occurs was fixed.
     if (
-        str(motion_id or "").upper() in {"PET_HEAD", "PAW_HELLO"}
+        str(motion_id or "").upper() in {"PET_HEAD", "PAW_HELLO", species_motion_variants.PLAY_WITH_ME,
+                                         species_motion_variants.COME_PLAY}
         and str(adjusted.get("interaction_correct") or "") == "no"
     ):
         adjusted["interaction_correct_raw"] = "no"
         adjusted["interaction_correct"] = "unknown"
     if str(motion_id or "").upper() == "PAW_HELLO":
         for key in ("paw_lift_visible", "paw_offer_toward_viewer", "paw_hold_visible"):
+            if str(adjusted.get(key) or "") == "no":
+                adjusted[f"{key}_raw"] = "no"
+                adjusted[key] = "unknown"
+    if str(motion_id or "").upper() == species_motion_variants.PLAY_WITH_ME:
+        # Only the observational posture fields soften under sparse coverage;
+        # anatomy, limb-count and endpoint answers keep their raw value.
+        for key in species_motion_variants.PLAY_WITH_ME_OBSERVATIONAL_FIELDS:
+            if str(adjusted.get(key) or "") == "no":
+                adjusted[f"{key}_raw"] = "no"
+                adjusted[key] = "unknown"
+    if str(motion_id or "").upper() == species_motion_variants.COME_PLAY:
+        # Only the brief posture events soften; the approach/return travel, gait, anatomy,
+        # home-scale, seam and forward-time answers keep their raw value (requirement 11).
+        for key in species_motion_variants.COME_PLAY_OBSERVATIONAL_FIELDS:
             if str(adjusted.get(key) or "") == "no":
                 adjusted[f"{key}_raw"] = "no"
                 adjusted[key] = "unknown"
@@ -1944,6 +2406,22 @@ async def _breathing_evidence(
     mid = (motion_id or "").upper()
     if not video_bytes:
         return None, base_frames, base_fractions
+
+    if mid == species_motion_variants.COME_PLAY:
+        try:
+            dense_scan = await asyncio.to_thread(
+                motion_video_qa.sample_dense_frames,
+                video_bytes,
+                fps=MICRO_ADAPTIVE_SCAN_FPS,
+                max_frames=COME_PLAY_DENSE_SCAN_MAX_FRAMES,
+            )
+        except Exception:
+            logger.warning("COME_PLAY dense gait sampling failed", exc_info=True)
+            dense_scan = None
+        routed = _come_play_gait_evidence(
+            base_frames=base_frames, base_fractions=base_fractions, dense_scan=dense_scan,
+        )
+        return None, routed, tuple(routed.provenance.get("evidence_fractions") or base_fractions)
 
     if mid in TARGETED_MICRO_VLM_MOTIONS:
         routed = _adaptive_micro_evidence(
@@ -2019,10 +2497,14 @@ async def _evaluate_candidate_qa(
     conformance_fn: Callable[[bytes, dict[str, Any]], dict[str, Any]],
     force_vlm: bool = False,
     inherited_evidence: Sequence[Mapping[str, Any]] = (),
+    intermediate_bytes: Optional[bytes] = None,
 ) -> dict[str, Any]:
     """
     후보 1건의 전체 QA — build_motion_video 와 reevaluate_motion_candidate 가
     공유한다 (동작은 이전과 동일, 실행 방식만 바뀐다).
+
+    intermediate_bytes: 세그먼트 모션의 승인된 중간 포즈 스틸 — VLM 에 "클립이
+    거쳐야 하는 포즈" 레퍼런스로 전달된다 (그 외 모션은 None, 호출 형태 불변).
 
     output_conformance(ffprobe — 프레임 샘플링/시간축/VLM 체인의 결과에 전혀
     의존하지 않는다)를 그 체인과 **동시에** 시작한다. 최종 판정(qa["decision"])
@@ -2089,6 +2571,16 @@ async def _evaluate_candidate_qa(
                     sample_fractions=vlm_frame_fractions,
                     reference_image=(start_bytes, "image/png"),
                     target_image=((target_bytes, "image/png") if target_bytes else None),
+                    **(
+                        {"intermediate_image": (intermediate_bytes, "image/png")}
+                        if intermediate_bytes else {}
+                    ),
+                    # COME_PLAY 만: 9 기본 + 보행 창 2×3 = 15 장 (다른 모션은 기본 12 상한 그대로).
+                    **(
+                        {"max_frames": COME_PLAY_VLM_MAX_FRAMES}
+                        if str(contract.get("motion_id") or "").upper() == species_motion_variants.COME_PLAY
+                        else {}
+                    ),
                     expected_direction=(contract.get("qa_context") or {}).get("expected_direction"),
                     interaction_type=(contract.get("qa_context") or {}).get("interaction_type"),
                     allow_generated_hand=bool(
@@ -2195,7 +2687,9 @@ def candidate_qa_is_current(qa_result: Optional[Mapping[str, Any]], motion_id: s
             in {vlm_identity.VLM_MOTION_QA_VERSION, vlm_identity.VLM_TARGETED_QA_VERSION,
                 vlm_identity.VLM_MOTION_ACCEPTANCE_QA_VERSION,
                 vlm_identity.VLM_PREMIUM_MICRO_TEMPORAL_QA_VERSION,
-                vlm_identity.VLM_PAW_HELLO_QA_VERSION}
+                vlm_identity.VLM_PAW_HELLO_QA_VERSION,
+                vlm_identity.VLM_PLAY_WITH_ME_QA_VERSION,
+                vlm_identity.VLM_COME_PLAY_QA_VERSION}
             or (
                 (previous_qa.get("vlm_escalation") or {}).get("version")
                 == vlm_escalation.VLM_ESCALATION_VERSION
@@ -2358,8 +2852,13 @@ async def reevaluate_motion_candidate(
     fetch = fetch_bytes or pet_identity_service._default_fetch_bytes
     start_obj = _obj(contract.get("start_keyframe"))
     target_obj = _obj(contract.get("target_keyframe"))
+    intermediate_obj = (
+        _obj(contract.get("intermediate_keyframe"))
+        if motion_video_segments.is_segmented_contract(contract) else None
+    )
     start_bytes = fetch(start_obj) if start_obj else None
     target_bytes = fetch(target_obj) if target_obj else None
+    intermediate_bytes = fetch(intermediate_obj) if intermediate_obj else None
     if not start_bytes:
         raise MotionVideoError("KEYFRAME_ASSET_UNAVAILABLE", "시작 키프레임을 불러오지 못했습니다.", status=503)
 
@@ -2379,11 +2878,20 @@ async def reevaluate_motion_candidate(
     spec = motion_spec.get_motion(mid)
     assert spec is not None  # resolve_video_generation_spec succeeded above.
     start_rgb = _rgb_from_bytes(start_bytes)
+    reeval_output_spec = dict(version_row.get("output_spec") or {})
+    delivered = (candidate.get("generation_metadata") or {}).get("delivered_duration_sec")
+    if isinstance(delivered, (int, float)) and isinstance(reeval_output_spec.get("duration_sec"), (int, float)):
+        # 트리밍된 세그먼트 자산(COME_PLAY): 적합성의 기대 길이는 전달된 길이다 (생성 때와 같은 규칙).
+        reeval_output_spec = {
+            **reeval_output_spec,
+            "duration_sec": float(delivered),
+            "planned_duration_sec": reeval_output_spec["duration_sec"],
+        }
     qa = await _evaluate_candidate_qa(
         video_bytes=raw,
         contract=contract,
-        output_spec=dict(version_row.get("output_spec") or {}),
-        motion_description=spec.description,
+        output_spec=reeval_output_spec,
+        motion_description=_generation_description(contract, spec),
         motion_class=contract["motion_class"],
         start_rgb=start_rgb,
         target_rgb=_rgb_from_bytes(target_bytes),
@@ -2404,7 +2912,15 @@ async def reevaluate_motion_candidate(
             ]
             if evidence
         ],
+        intermediate_bytes=intermediate_bytes,
     )
+    # 세그먼트 결정론 검사는 생성 시점 측정값이 후보 메타데이터에 남아 있다 — 세그먼트
+    # 원본을 다시 받지 않고 그 측정값을 합친다 (측정은 결정론이라 같다).
+    stored_segments_qa = (
+        (dict(candidate.get("generation_metadata") or {}).get("segments") or {}).get("qa")
+    )
+    if stored_segments_qa:
+        qa = motion_video_segments.merge_segment_qa(qa, stored_segments_qa)
     business_qa.attach_business_result(
         qa,
         attempt_number=business_qa.automatic_attempt_number(

@@ -252,7 +252,8 @@ def test_beta_escalation_requests_identity_anatomy_and_motion():
 
 def test_generation_description_is_independent_and_other_motion_authority_unchanged():
     targeted = {
-        "BREATHING", "COME_CLOSER", "RETURN_HOME", "PET_HEAD", "PAW_HELLO",
+        "BREATHING", "COME_CLOSER", "RETURN_HOME", "PET_HEAD", "PAW_HELLO", "PLAY_WITH_ME",
+        "COME_PLAY",
         *PREMIUM_MICRO_IDLE_MOTIONS,
     }
     for mid, spec in motion_spec.MOTIONS.items():
