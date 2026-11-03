@@ -184,7 +184,7 @@ services:
     plan: standard
     runtime: docker
     dockerfilePath: ./Dockerfile
-    dockerCommand: python -m backend.workers.pet_generation_worker
+    dockerCommand: python -m backend.workers.generation_worker_supervisor
     autoDeploy: true
     envVars:
       - key: PYTHONUNBUFFERED
@@ -193,6 +193,8 @@ services:
       # 안에서 두 번째 폴링 루프가 돌아 이 블루프린트가 고치려는 문제,
       # 곧 "웹 재시작/스케일과 생성 폴링이 얽히는 상태"가 되돌아온다).
       - key: PET_GENERATION_WORKER_ENABLED
+        value: "1"
+      - key: ARCHIVE_PREPARATION_WORKER_ENABLED
         value: "1"
       - key: PET_GENERATION_WORKER_POLL_SEC
         value: "10"
