@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import socket
 import threading
 import time
 import uuid
@@ -22,6 +23,7 @@ from typing import Any, Optional
 
 from . import (
     action_keyframe_service,
+    archive_storage,
     business_qa,
     business_qa_user_test,
     archive_intake_service,
@@ -42,6 +44,8 @@ from . import (
 )
 
 logger = logging.getLogger(__name__)
+
+PET_GENERATION_WORKER_VERSION = "pet-generation-worker-v2"
 
 MOTION_BREATHING = "BREATHING"
 REQUEST_FREE_HOME = "FREE_HOME"
@@ -551,21 +555,16 @@ async def _claim_next(worker_id: str) -> Optional[PetGenerationRun]:
             pet_allowlist = business_qa_user_test.claim_pet_allowlist()
             params = {
                 "p_worker_id": worker_id,
+                "p_worker_hostname": socket.gethostname(),
+                "p_worker_pid": os.getpid(),
+                "p_worker_version": os.getenv(
+                    "PET_GENERATION_WORKER_VERSION", PET_GENERATION_WORKER_VERSION
+                ),
                 "p_lease_seconds": _lease_seconds(),
                 "p_max_lease_recoveries": _max_lease_recoveries(),
                 "p_pet_allowlist": pet_allowlist,
             }
-            try:
-                result = client.rpc("claim_next_pet_generation_run", params).execute()
-            except Exception:
-                # Deployment-order compatibility only while Phase 12 is OFF:
-                # the old 3-argument claim RPC remains safe because no cohort
-                # isolation was requested. Active allowlist mode never falls
-                # back to an unfiltered claim.
-                if pet_allowlist is not None:
-                    raise
-                params.pop("p_pet_allowlist")
-                result = client.rpc("claim_next_pet_generation_run", params).execute()
+            result = client.rpc("claim_next_pet_generation_run", params).execute()
             data = getattr(result, "data", None) or {}
             if isinstance(data, list):
                 data = data[0] if data else {}
@@ -1028,7 +1027,7 @@ def _next_poll_iso() -> str:
 def _provider_state(run: PetGenerationRun) -> dict[str, Any]:
     """Refresh receipt summaries without discarding durable operator intent."""
     state = durable_provider_jobs.summary_for_run(run.id)
-    for key in ("_operator", "_business_qa_cutover"):
+    for key in ("_operator", "_business_qa_cutover", "_archive_storage"):
         value = dict(run.provider_state.get(key) or {})
         if value:
             state[key] = value
@@ -1766,6 +1765,13 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
                     pet_id=run.pet_id,
                     motion_version_id=motion.id,
                     candidate_id=packageable.id,
+                    timing_context={
+                        "application_id": run.user_id.removeprefix("archive_")
+                        if str(run.user_id or "").startswith("archive_")
+                        else None,
+                        "generation_run_id": run.id,
+                        "user_id": run.user_id,
+                    },
                 )
             except motion_delivery_service.MotionDeliveryError as exc:
                 raise PetGenerationRunError(exc.code, exc.message, status=exc.status) from exc
@@ -1961,8 +1967,9 @@ async def process_next_generation_run(*, worker_id: str) -> Optional[PetGenerati
                 )
             # The run keeps the QA authority mode stamped at its creation; an
             # unstamped (older / in-flight) run stays on legacy authority.
-            with business_qa.qa_authority_scope(business_qa.run_qa_authority(run.provider_state)):
-                return await _execute(run)
+            with archive_storage.scope_for_run(run):
+                with business_qa.qa_authority_scope(business_qa.run_qa_authority(run.provider_state)):
+                    return await _execute(run)
 
 
 def _validate_request(motion_id: str, request_kind: str, idempotency_key: str) -> tuple[str, str, str]:
@@ -2006,6 +2013,7 @@ async def start_generation_run(
     product_key: Optional[str] = None,
     reservation_ledger_id: Optional[str] = None,
     credits_reserved: int = 0,
+    storage_bucket: Optional[str] = None,
 ) -> PetGenerationRun:
     uid = (user_id or "").strip()
     pid = (pet_id or "").strip()
@@ -2050,6 +2058,11 @@ async def start_generation_run(
         "lease_expires_at": None,
         "next_attempt_at": None,
     }
+    if storage_bucket:
+        row["provider_state"]["_archive_storage"] = {
+            "bucket": str(storage_bucket).strip(),
+            "private": True,
+        }
     if kind == REQUEST_PREMIUM_PRODUCT:
         # 상거래 맥락은 프리미엄 실행에만 싣는다 — FREE_HOME 행은 마이그레이션
         # (20261022) 이전 DB 에서도 예전 컬럼 집합 그대로 들어가야 한다.

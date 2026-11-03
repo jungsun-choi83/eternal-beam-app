@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Sequence
@@ -27,6 +28,8 @@ OP_KEYFRAME = "KEYFRAME_IMAGE"
 OP_MOTION = "MOTION_VIDEO"
 
 _MOCK_JOBS: list[dict[str, Any]] = []
+_TEST_SINGLE_VIDEO_GATE_PROVIDER = "__TEST_SINGLE_PAID_VIDEO_GATE__"
+_TEST_SINGLE_VIDEO_GATE_LOCK = threading.Lock()
 
 
 class ProviderWorkPending(Exception):
@@ -43,6 +46,12 @@ class ProviderRecoveryRequired(Exception):
         super().__init__(message)
         self.operation_id = operation_id
         self.message = message
+
+
+class SinglePaidVideoTestGateError(ProviderRecoveryRequired):
+    """A test-only run already consumed, or cannot safely claim, its slot."""
+
+    code = "SINGLE_PAID_VIDEO_TEST_GATE"
 
 
 def __reset_for_tests() -> None:
@@ -105,6 +114,149 @@ def _deadline_passed(operation: dict[str, Any]) -> bool:
 def _fingerprint(payload: dict[str, Any]) -> str:
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _test_gate_phase_id(run_id: str) -> str:
+    """Use one stable UUID key for the run, independent of motion version."""
+
+    try:
+        return str(uuid.UUID(str(run_id)))
+    except (ValueError, AttributeError):
+        # Mock-only callers sometimes use readable IDs.  Real generation run
+        # IDs are UUIDs; this keeps the mock path deterministic without making
+        # a database-invalid UUID.
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"eternal-beam:test-video:{run_id}"))
+
+
+def _claim_single_paid_video_test_slot(
+    *, run_id: str, user_id: str, pet_id: str
+) -> None:
+    """Atomically reserve the one paid video submission for a test run.
+
+    The reservation is a durable provider-job row with a fixed provider key.
+    The database unique constraint makes competing workers converge on one
+    winner; the lock provides the same guarantee for the in-memory test store.
+    No provider call is made by this function.
+    """
+
+    from . import business_qa_user_test
+
+    approved_pet = business_qa_user_test.single_paid_video_test_pet_id(pet_id)
+    if approved_pet is None:
+        return
+
+    phase_id = _test_gate_phase_id(run_id)
+    request_hash = _fingerprint(
+        {
+            "gate": "single_paid_video_test",
+            "run_id": run_id,
+            "user_id": user_id,
+            "pet_id": approved_pet,
+        }
+    )
+    existing = _find(
+        run_id=run_id,
+        provider_operation=OP_MOTION,
+        phase_version_id=phase_id,
+        provider=_TEST_SINGLE_VIDEO_GATE_PROVIDER,
+        attempt=1,
+    )
+    if existing:
+        raise SinglePaidVideoTestGateError(
+            str(existing["id"]),
+            "The single paid-video test submission slot is already consumed.",
+        )
+
+    # A run created before this gate was enabled may already have an actual
+    # motion provider receipt.  We cannot infer whether that provider charged,
+    # so the safe choice is to refuse every new paid submission.
+    for operation in list_for_run(run_id):
+        if (
+            operation.get("provider_operation") == OP_MOTION
+            and operation.get("provider") != _TEST_SINGLE_VIDEO_GATE_PROVIDER
+            and str(operation.get("submission_status") or PREPARED) != PREPARED
+        ):
+            raise SinglePaidVideoTestGateError(
+                str(operation.get("id") or run_id),
+                "The test run already has a motion provider receipt; no new paid submission is allowed.",
+            )
+
+    now = _now_iso()
+    row = {
+        "id": str(uuid.uuid4()),
+        "run_id": run_id,
+        "user_id": user_id,
+        "pet_id": approved_pet,
+        "provider_operation": OP_MOTION,
+        "phase_version_id": phase_id,
+        "provider": _TEST_SINGLE_VIDEO_GATE_PROVIDER,
+        "model": "test-single-paid-video-gate",
+        "attempt": 1,
+        "request_fingerprint": request_hash,
+        "submission_status": PREPARED,
+        "external_job_id": None,
+        "submitted_at": None,
+        "deadline_at": None,
+        "provider_status": None,
+        "provider_error": None,
+        "consecutive_poll_errors": 0,
+        "consecutive_collect_errors": 0,
+        "result_metadata": {
+            "test_single_paid_video_gate": True,
+            "approved_pet_id": approved_pet,
+        },
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    client = _client()
+    if client:
+        try:
+            result = client.table(_table()).insert(row).execute()
+            rows = getattr(result, "data", None) or []
+            if rows:
+                return
+        except Exception as exc:
+            # A concurrent worker normally reaches the unique constraint here.
+            # Re-read and report the consumed slot; any other DB failure is
+            # also fail-closed and never proceeds to the paid provider.
+            existing = _find(
+                run_id=run_id,
+                provider_operation=OP_MOTION,
+                phase_version_id=phase_id,
+                provider=_TEST_SINGLE_VIDEO_GATE_PROVIDER,
+                attempt=1,
+            )
+            if existing:
+                raise SinglePaidVideoTestGateError(
+                    str(existing["id"]),
+                    "The single paid-video test submission slot is already consumed.",
+                ) from exc
+            raise SinglePaidVideoTestGateError(
+                row["id"],
+                "The single paid-video test slot could not be durably reserved.",
+            ) from exc
+        raise SinglePaidVideoTestGateError(
+            row["id"],
+            "The single paid-video test slot reservation returned no durable row.",
+        )
+
+    # The mock store has no database uniqueness constraint, so protect the
+    # check-and-append pair explicitly for concurrent worker tests.
+    with _TEST_SINGLE_VIDEO_GATE_LOCK:
+        existing = _find(
+            run_id=run_id,
+            provider_operation=OP_MOTION,
+            phase_version_id=phase_id,
+            provider=_TEST_SINGLE_VIDEO_GATE_PROVIDER,
+            attempt=1,
+        )
+        if existing:
+            raise SinglePaidVideoTestGateError(
+                str(existing["id"]),
+                "The single paid-video test submission slot is already consumed.",
+            )
+        _MOCK_JOBS.append(row)
 
 
 def _provider_identity(provider: Any) -> dict[str, str]:
@@ -341,6 +493,17 @@ class _DurableProviderBase:
         return self.delegate.model_name()
 
     def _execute(self, phase_version_id: str, attempt: int, request_hash: str, submit, collect):
+        single_paid_video_test = False
+        if self.provider_operation == OP_MOTION:
+            from . import business_qa_user_test
+
+            # Validation happens on every worker tick, including a restart or
+            # poll.  If the test-only configuration disappears, the run stops
+            # safely instead of broadening into normal production behavior.
+            single_paid_video_test = (
+                business_qa_user_test.single_paid_video_test_pet_id(self.pet_id)
+                is not None
+            )
         identity = _provider_identity(self)
         operation = _ensure(
             run_id=self.run_id,
@@ -376,6 +539,15 @@ class _DurableProviderBase:
 
         external_id = str(operation.get("external_job_id") or "")
         if not external_id:
+            if single_paid_video_test:
+                # Reserve before changing the operation to SUBMITTING.  A
+                # second candidate/provider, a double-click, or a concurrent
+                # worker can therefore never reach submit().
+                _claim_single_paid_video_test_slot(
+                    run_id=self.run_id,
+                    user_id=self.user_id,
+                    pet_id=self.pet_id,
+                )
             operation = _update(
                 str(operation["id"]),
                 {"submission_status": SUBMITTING, "provider_error": None},

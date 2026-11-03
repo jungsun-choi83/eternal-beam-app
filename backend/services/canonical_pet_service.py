@@ -887,8 +887,14 @@ async def build_canonical(
 
             if not cand_row.get("raw_object_path"):
                 try:
-                    await supabase_assets.upload_asset_to_storage(raw_path, result.image_bytes, "image/png")
-                    cand_row["raw_bucket"] = supabase_assets.BUCKET
+                    await supabase_assets.upload_asset_for_scope(
+                        raw_path,
+                        result.image_bytes,
+                        "image/png",
+                        bucket=supabase_assets.active_bucket(),
+                        require_private=supabase_assets.active_requires_private(),
+                    )
+                    cand_row["raw_bucket"] = supabase_assets.active_bucket()
                     cand_row["raw_object_path"] = raw_path
                     cand_row["error"] = None
                 except Exception as store_exc:
@@ -939,8 +945,14 @@ async def build_canonical(
 
             async def _upload_cutout(cut_path: str) -> None:
                 try:
-                    await supabase_assets.upload_asset_to_storage(cut_path, cut_bytes, "image/png")
-                    cand_row["cutout_bucket"] = supabase_assets.BUCKET
+                    await supabase_assets.upload_asset_for_scope(
+                        cut_path,
+                        cut_bytes,
+                        "image/png",
+                        bucket=supabase_assets.active_bucket(),
+                        require_private=supabase_assets.active_requires_private(),
+                    )
+                    cand_row["cutout_bucket"] = supabase_assets.active_bucket()
                     cand_row["cutout_object_path"] = cut_path
                 except Exception:
                     logger.exception("정본 누끼 저장 실패 (%s attempt=%d)", provider.name, attempt)
@@ -955,8 +967,14 @@ async def build_canonical(
                         clean_plate_service.build_clean_plate, cut_bytes, plate_background
                     )
                     plate_path = clean_plate_service.plate_object_path(raw_path)
-                    await supabase_assets.upload_asset_to_storage(plate_path, plate_bytes, "image/png")
-                    cand_row["plate_bucket"] = supabase_assets.BUCKET
+                    await supabase_assets.upload_asset_for_scope(
+                        plate_path,
+                        plate_bytes,
+                        "image/png",
+                        bucket=supabase_assets.active_bucket(),
+                        require_private=supabase_assets.active_requires_private(),
+                    )
+                    cand_row["plate_bucket"] = supabase_assets.active_bucket()
                     cand_row["plate_object_path"] = plate_path
                     cand_row["generation_metadata"] = {
                         **cand_row["generation_metadata"],

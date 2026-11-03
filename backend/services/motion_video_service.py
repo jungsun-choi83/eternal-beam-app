@@ -1326,8 +1326,14 @@ async def build_motion_video(
             )
             if not cand_row.get("raw_video_path"):
                 try:
-                    await supabase_assets.upload_asset_to_storage(raw_path, result.video_bytes, "video/mp4")
-                    cand_row["raw_bucket"] = supabase_assets.BUCKET
+                    await supabase_assets.upload_asset_for_scope(
+                        raw_path,
+                        result.video_bytes,
+                        "video/mp4",
+                        bucket=supabase_assets.active_bucket(),
+                        require_private=supabase_assets.active_requires_private(),
+                    )
+                    cand_row["raw_bucket"] = supabase_assets.active_bucket()
                     cand_row["raw_video_path"] = raw_path
                     cand_row["error"] = None
                 except Exception as store_exc:

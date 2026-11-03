@@ -19,12 +19,18 @@ from __future__ import annotations
 import contextvars
 import logging
 import os
-import resource
 import sys
 import threading
 import time
 import uuid
 from typing import Any, Optional
+
+try:
+    import resource
+except ImportError:  # pragma: no cover - exercised on Windows
+    # ``resource`` is Unix-only. Peak RSS is an optional diagnostic; keep the
+    # tracer and current-RSS path available when it is not installed.
+    resource = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +58,8 @@ def read_rss_mb() -> Optional[float]:
 
 def read_maxrss_mb() -> Optional[float]:
     """프로세스 수명 최대 RSS(MB). Linux 는 kB, macOS 는 bytes 단위."""
+    if resource is None:
+        return None
     try:
         raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     except Exception:  # noqa: BLE001

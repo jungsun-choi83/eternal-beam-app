@@ -18,8 +18,11 @@
 """
 
 import asyncio
+from contextlib import contextmanager
+from contextvars import ContextVar
 import os
 import re
+from dataclasses import dataclass
 from typing import Optional
 
 from supabase import create_client, Client
@@ -61,7 +64,78 @@ def _client() -> Optional[Client]:
 BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "user-assets")
 
 
-async def upload_asset_to_storage(object_path: str, data: bytes, content_type: str) -> str:
+@dataclass(frozen=True)
+class StorageScope:
+    """Per-generation storage routing; never mutates the process default."""
+
+    bucket: str
+    require_private: bool = False
+
+
+_STORAGE_SCOPE: ContextVar[StorageScope | None] = ContextVar(
+    "eb_storage_scope", default=None
+)
+
+
+def active_bucket(explicit: str | None = None) -> str:
+    """Resolve an explicit bucket, scoped bucket, or legacy global default."""
+
+    if explicit and str(explicit).strip():
+        return str(explicit).strip()
+    scope = _STORAGE_SCOPE.get()
+    return scope.bucket if scope else BUCKET
+
+
+def active_requires_private() -> bool:
+    scope = _STORAGE_SCOPE.get()
+    return bool(scope and scope.require_private)
+
+
+@contextmanager
+def storage_scope(bucket: str, *, require_private: bool = False):
+    target = (bucket or "").strip()
+    if not target:
+        raise ValueError("storage bucket is required")
+    token = _STORAGE_SCOPE.set(StorageScope(target, require_private=require_private))
+    try:
+        yield target
+    finally:
+        _STORAGE_SCOPE.reset(token)
+
+
+def _signed_url_from_response(response: object) -> str | None:
+    """Accept response shapes used by supported supabase-py versions."""
+
+    pending = [response, getattr(response, "data", None)]
+    seen: set[int] = set()
+    keys = ("signedURL", "signedUrl", "signed_url", "url")
+    while pending:
+        value = pending.pop(0)
+        if value is None or id(value) in seen:
+            continue
+        seen.add(id(value))
+        if isinstance(value, dict):
+            for key in keys:
+                candidate = value.get(key)
+                if isinstance(candidate, str) and candidate:
+                    return candidate
+            pending.append(value.get("data"))
+        else:
+            for key in keys:
+                candidate = getattr(value, key, None)
+                if isinstance(candidate, str) and candidate:
+                    return candidate
+    return None
+
+
+async def upload_asset_to_storage(
+    object_path: str,
+    data: bytes,
+    content_type: str,
+    *,
+    bucket: str | None = None,
+    require_private: bool | None = None,
+) -> str:
     """
     Storage에 업로드 후 public URL 또는 signed URL 반환.
 
@@ -75,7 +149,16 @@ async def upload_asset_to_storage(object_path: str, data: bytes, content_type: s
         raise RuntimeError("Supabase가 설정되지 않았습니다.")
 
     def _sync() -> str:
-        supabase.storage.from_(BUCKET).upload(
+        target_bucket = active_bucket(bucket)
+        private = active_requires_private() if require_private is None else require_private
+        storage = supabase.storage.from_(target_bucket)
+        if private:
+            response = supabase.storage.get_bucket(target_bucket)
+            payload = getattr(response, "data", response)
+            public = payload.get("public") if isinstance(payload, dict) else getattr(payload, "public", None)
+            if not (public is False or str(public).strip().lower() == "false"):
+                raise RuntimeError("storage bucket is not verified private")
+        storage.upload(
             object_path,
             data,
             {"content-type": content_type, "upsert": "true"},
@@ -83,25 +166,42 @@ async def upload_asset_to_storage(object_path: str, data: bytes, content_type: s
         # private bucket일 가능성이 높아 signed URL을 우선 시도.
         # get_public_url()은 private여도 문자열을 반환할 수 있어, 브라우저 GET 시 400/403이 날 수 있다.
         try:
-            res = supabase.storage.from_(BUCKET).create_signed_url(object_path, 604800)
-            if isinstance(res, dict):
-                for k in ("signedURL", "signedUrl", "signed_url", "url"):
-                    v = res.get(k)
-                    if isinstance(v, str) and v:
-                        return v
-                nested = res.get("data")
-                if isinstance(nested, dict):
-                    for k in ("signedURL", "signedUrl", "signed_url", "url"):
-                        v = nested.get(k)
-                        if isinstance(v, str) and v:
-                            return v
+            signed = _signed_url_from_response(storage.create_signed_url(object_path, 604800))
+            if signed:
+                return signed
         except Exception:
-            pass
+            if private:
+                raise
 
         # 공개 버킷이면 public URL fallback
-        return supabase.storage.from_(BUCKET).get_public_url(object_path)
+        if private:
+            raise RuntimeError("private storage signed URL unavailable")
+        return storage.get_public_url(object_path)
 
     return await asyncio.to_thread(_sync)
+
+
+async def upload_asset_for_scope(
+    object_path: str,
+    data: bytes,
+    content_type: str,
+    *,
+    bucket: str | None = None,
+    require_private: bool | None = None,
+) -> str:
+    """Scoped upload adapter that keeps legacy three-argument mocks/callers valid."""
+
+    target = active_bucket(bucket)
+    private = active_requires_private() if require_private is None else require_private
+    if target == BUCKET and not private:
+        return await upload_asset_to_storage(object_path, data, content_type)
+    return await upload_asset_to_storage(
+        object_path,
+        data,
+        content_type,
+        bucket=target,
+        require_private=private,
+    )
 
 
 async def download_asset_from_storage(
@@ -116,8 +216,153 @@ async def download_asset_from_storage(
         raise RuntimeError("Supabase is not configured")
 
     def _sync() -> bytes:
-        raw = supabase.storage.from_(bucket or BUCKET).download(path)
+        raw = supabase.storage.from_(active_bucket(bucket)).download(path)
         return bytes(raw)
+
+    return await asyncio.to_thread(_sync)
+
+
+async def verify_private_storage_bucket(bucket: str) -> bool:
+    """Return True only when Supabase explicitly reports a private bucket."""
+
+    target_bucket = (bucket or "").strip()
+    if not target_bucket:
+        return False
+    supabase = _client()
+    if not supabase:
+        return False
+
+    def _sync() -> bool:
+        try:
+            response = supabase.storage.get_bucket(target_bucket)
+            payload = getattr(response, "data", response)
+            if isinstance(payload, dict):
+                public = payload.get("public")
+            else:
+                public = getattr(payload, "public", None)
+            if isinstance(public, bool):
+                return public is False
+            return str(public).strip().lower() == "false"
+        except Exception:
+            return False
+
+    return await asyncio.to_thread(_sync)
+
+
+async def get_private_asset_info_from_storage(
+    object_path: str,
+    *,
+    bucket: str,
+) -> dict:
+    """Read private object metadata without producing a URL."""
+
+    path = (object_path or "").strip()
+    target_bucket = (bucket or "").strip()
+    if not path or not target_bucket:
+        raise ValueError("object_path and a verified private bucket are required")
+    if not await verify_private_storage_bucket(target_bucket):
+        raise RuntimeError("storage bucket is not verified private")
+    supabase = _client()
+    if not supabase:
+        raise RuntimeError("Supabase is not configured")
+
+    def _sync() -> dict:
+        info = supabase.storage.from_(target_bucket).info(path)
+        if not isinstance(info, dict):
+            raise RuntimeError("storage returned invalid object metadata")
+        return info
+
+    return await asyncio.to_thread(_sync)
+
+
+async def download_private_asset_from_storage(
+    object_path: str,
+    *,
+    bucket: str,
+) -> bytes:
+    """Download bytes only after verifying the bucket is private."""
+
+    path = (object_path or "").strip()
+    target_bucket = (bucket or "").strip()
+    if not path or not target_bucket:
+        raise ValueError("object_path and a verified private bucket are required")
+    if not await verify_private_storage_bucket(target_bucket):
+        raise RuntimeError("storage bucket is not verified private")
+    return await download_asset_from_storage(path, bucket=target_bucket)
+
+
+async def upload_private_asset_to_storage(
+    object_path: str,
+    data: bytes,
+    content_type: str,
+    *,
+    bucket: str | None = None,
+    required_prefix: str | None = None,
+) -> str:
+    """Upload an object without creating or returning a public URL.
+
+    Browser exports are consumed by a later server-to-server handoff.  This
+    helper intentionally does not call ``get_public_url`` and does not create a
+    signed URL, so a private bucket remains private.
+    """
+
+    path = (object_path or "").strip()
+    if not path:
+        raise ValueError("object_path is required")
+    if required_prefix and not path.startswith(required_prefix):
+        raise ValueError("object_path is outside the permitted private prefix")
+    supabase = _client()
+    if not supabase:
+        raise RuntimeError("Supabase is not configured")
+    target_bucket = (bucket or "").strip()
+    if not target_bucket:
+        raise ValueError("a verified private bucket is required")
+    if not await verify_private_storage_bucket(target_bucket):
+        raise RuntimeError("storage bucket is not verified private")
+
+    def _sync() -> str:
+        supabase.storage.from_(target_bucket).upload(
+            path,
+            data,
+            {"content-type": content_type, "upsert": "false"},
+        )
+        return path
+
+    return await asyncio.to_thread(_sync)
+
+
+async def replace_private_asset_to_storage(
+    object_path: str,
+    data: bytes,
+    content_type: str,
+    *,
+    bucket: str | None = None,
+) -> str:
+    """Replace one private object after the caller has validated new bytes.
+
+    This is intentionally separate from the non-upserting upload helper.  It is
+    used only by an explicit operator repair, and never creates a public URL.
+    """
+
+    path = (object_path or "").strip()
+    target_bucket = (bucket or "").strip()
+    if not path:
+        raise ValueError("object_path is required")
+    if not target_bucket:
+        raise ValueError("a verified private bucket is required")
+    supabase = _client()
+    if not supabase:
+        raise RuntimeError("Supabase is not configured")
+    if not await verify_private_storage_bucket(target_bucket):
+        raise RuntimeError("storage bucket is not verified private")
+
+    def _sync() -> str:
+        supabase.storage.from_(target_bucket).upload(
+            path,
+            data,
+            {"content-type": content_type, "upsert": "true"},
+        )
+        return path
 
     return await asyncio.to_thread(_sync)
 

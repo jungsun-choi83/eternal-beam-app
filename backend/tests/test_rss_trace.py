@@ -44,6 +44,37 @@ def test_read_rss_returns_numbers():
     assert mx is None or mx > 0
 
 
+def test_maxrss_is_optional_when_resource_is_unavailable(monkeypatch):
+    """Windows has no stdlib ``resource`` module; diagnostics must remain usable."""
+    monkeypatch.setattr(rss_trace, "resource", None)
+
+    assert rss_trace.read_maxrss_mb() is None
+
+
+def test_tracer_retains_points_when_maxrss_is_unavailable(monkeypatch):
+    monkeypatch.setattr(rss_trace, "resource", None)
+
+    with rss_trace.Tracer(enabled=True) as trace:
+        trace.mark("windows")
+
+    assert trace.points[0]["point"] == "windows"
+    assert trace.points[0]["maxrss_mb"] is None
+
+
+def test_maxrss_preserves_linux_kilobyte_conversion(monkeypatch):
+    class FakeResource:
+        RUSAGE_SELF = object()
+
+        @staticmethod
+        def getrusage(_who):
+            return type("Usage", (), {"ru_maxrss": 4096})()
+
+    monkeypatch.setattr(rss_trace, "resource", FakeResource)
+    monkeypatch.setattr(rss_trace.sys, "platform", "linux")
+
+    assert rss_trace.read_maxrss_mb() == 4.0
+
+
 def test_tracer_marks_every_vitmatte_point_and_removes_hooks(tiny_loader, caplog):
     rgb = np.zeros((64, 96, 3), dtype=np.uint8)
     trimap = np.zeros((64, 96), dtype=np.uint8)

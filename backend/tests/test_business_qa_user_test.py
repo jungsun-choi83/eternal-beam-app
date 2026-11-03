@@ -100,6 +100,87 @@ def test_worker_claims_only_allowlisted_cohort(monkeypatch):
     assert next(row for row in runs._MOCK_RUNS if row["id"] == "run-blocked")["status"] == runs.STATUS_QUEUED
 
 
+def test_supabase_worker_claim_sends_production_seven_argument_contract(monkeypatch):
+    monkeypatch.setenv("HYBRID_USE_SUPABASE", "1")
+    monkeypatch.setenv("BUSINESS_QA_USER_TEST_MODE", "allowlist")
+    monkeypatch.setenv("BUSINESS_QA_USER_TEST_PET_IDS", "pet-b,pet-a")
+    monkeypatch.setenv("PET_GENERATION_WORKER_VERSION", "worker-build-42")
+    calls = []
+
+    class RpcResult:
+        data = {"claimed": False}
+
+    class Client:
+        def rpc(self, name, params):
+            calls.append((name, params))
+            return self
+
+        def execute(self):
+            return RpcResult()
+
+    monkeypatch.setattr(runs, "_supabase", lambda: Client())
+    monkeypatch.setenv("GENERATION_RUN_LEASE_SECONDS", "420")
+    monkeypatch.setenv("GENERATION_RUN_MAX_LEASE_RECOVERIES", "3")
+
+    assert _run(runs._claim_next("worker-1")) is None
+    assert len(calls) == 1
+    name, params = calls[0]
+    assert name == "claim_next_pet_generation_run"
+    assert params == {
+        "p_worker_id": "worker-1",
+        "p_worker_hostname": runs.socket.gethostname(),
+        "p_worker_pid": runs.os.getpid(),
+        "p_worker_version": "worker-build-42",
+        "p_lease_seconds": 420,
+        "p_max_lease_recoveries": 3,
+        "p_pet_allowlist": ["pet-a", "pet-b"],
+    }
+
+
+def test_supabase_worker_claim_defaults_to_v2_contract_version(monkeypatch):
+    monkeypatch.setenv("HYBRID_USE_SUPABASE", "1")
+    monkeypatch.delenv("PET_GENERATION_WORKER_VERSION", raising=False)
+    calls = []
+
+    class RpcResult:
+        data = {"claimed": False}
+
+    class Client:
+        def rpc(self, name, params):
+            calls.append((name, params))
+            return self
+
+        def execute(self):
+            return RpcResult()
+
+    monkeypatch.setattr(runs, "_supabase", lambda: Client())
+
+    assert _run(runs._claim_next("worker-default-version")) is None
+    assert calls[0][0] == "claim_next_pet_generation_run"
+    assert calls[0][1]["p_worker_version"] == "pet-generation-worker-v2"
+def test_allowlisted_worker_never_retries_claim_without_pet_filter(monkeypatch):
+    monkeypatch.setenv("HYBRID_USE_SUPABASE", "1")
+    monkeypatch.setenv("BUSINESS_QA_USER_TEST_MODE", "allowlist")
+    monkeypatch.setenv("BUSINESS_QA_USER_TEST_PET_IDS", "pet-approved")
+    calls = []
+
+    class Client:
+        def rpc(self, name, params):
+            calls.append((name, dict(params)))
+            raise RuntimeError("RPC unavailable")
+
+    monkeypatch.setattr(runs, "_supabase", lambda: Client())
+
+    with pytest.raises(runs.PetGenerationRunError) as caught:
+        _run(runs._claim_next("test-worker"))
+
+    assert caught.value.code == "GENERATION_RUNS_UNAVAILABLE"
+    assert len(calls) == 1
+    assert calls[0][0] == "claim_next_pet_generation_run"
+    assert calls[0][1]["p_pet_allowlist"] == ["pet-approved"]
+    assert len(calls[0][1]) == 7
+
+
 def test_provider_refresh_preserves_cutover_receipt(monkeypatch):
     receipt = {"version": user_test.USER_TEST_VERSION, "enrolled": True}
     run = SimpleNamespace(id="run-1", provider_state={"_business_qa_cutover": receipt})

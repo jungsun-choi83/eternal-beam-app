@@ -154,7 +154,7 @@ async def ensure_video_anchor(
 
     if fetch_bytes is not None:
         existing_obj = SimpleNamespace(
-            bucket=supabase_assets.BUCKET, object_path=object_path, mime_type="image/png"
+            bucket=supabase_assets.active_bucket(), object_path=object_path, mime_type="image/png"
         )
         existing_bytes = fetch_bytes(existing_obj)
         if existing_bytes:
@@ -176,12 +176,20 @@ async def ensure_video_anchor(
 
     anchor_bytes, meta = build_anchor_image(image_bytes, aspect_ratio=aspect_ratio)
 
-    url = await supabase_assets.upload_asset_to_storage(object_path, anchor_bytes, "image/png")
+    bucket = supabase_assets.active_bucket()
+    url = await supabase_assets.upload_asset_for_scope(
+        object_path,
+        anchor_bytes,
+        "image/png",
+        bucket=bucket,
+        require_private=supabase_assets.active_requires_private(),
+    )
     # DERIVED 대장 기록은 필수다 (근거 없는 앵커로 생성하지 않는다) — 실패는 전파.
     await pet_reference_service.record_derived(
         user_id=user_id,
         content_id=content_id,
         object_path=object_path,
+        bucket=bucket,
         derived_kind=DERIVED_KIND_VIDEO_ANCHOR,
         mime_type="image/png",
         diagnostics={
