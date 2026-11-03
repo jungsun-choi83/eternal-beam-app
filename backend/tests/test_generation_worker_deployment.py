@@ -71,12 +71,11 @@ def test_render_yaml_declares_a_persistent_generation_worker_service():
     # web service's lifecycle.
     assert worker_svc["type"] == "worker"
     assert worker_svc["autoDeploy"] is True
-    assert "backend.workers.pet_generation_worker" in worker_svc["dockerCommand"]
-
-    # `exec` replaces the shell with the python process (PID 1) so Render's
-    # SIGTERM reaches the worker directly instead of being swallowed by an
-    # un-trapping `sh -c`.
-    assert "exec python -m backend.workers.pet_generation_worker" in worker_svc["dockerCommand"]
+    # The Python supervisor is PID 1 and forwards Render shutdown to both
+    # worker subprocesses.
+    assert worker_svc["dockerCommand"] == (
+        "python -m backend.workers.generation_worker_supervisor"
+    )
 
 
 def test_worker_service_is_explicitly_enabled_and_web_service_is_not():
