@@ -202,7 +202,7 @@ async def ensure_plate(
         if data:
             return SimpleNamespace(
                 bytes=data,
-                bucket=plate_bucket or supabase_assets.BUCKET,
+                bucket=plate_bucket or cutout_bucket or supabase_assets.active_bucket(),
                 object_path=plate_object_path_hint,
                 meta={"plate_version": CLEAN_PLATE_VERSION, "reused": True},
                 created=False,
@@ -217,7 +217,14 @@ async def ensure_plate(
 
     plate_bytes, meta = build_clean_plate(cut_bytes, background)
     path = plate_object_path_hint or plate_object_path(raw_object_path or cutout_object_path)
-    await supabase_assets.upload_asset_to_storage(path, plate_bytes, "image/png")
+    target_bucket = plate_bucket or cutout_bucket or supabase_assets.active_bucket()
+    await supabase_assets.upload_asset_for_scope(
+        path,
+        plate_bytes,
+        "image/png",
+        bucket=target_bucket,
+        require_private=supabase_assets.active_requires_private(),
+    )
 
     # 근거 없는 파생물로 생성하지 않는다 — 대장 기록 실패는 전파한다
     # (video_anchor.ensure_video_anchor 와 같은 계약).
@@ -227,6 +234,7 @@ async def ensure_plate(
         user_id=user_id,
         content_id=content_id,
         object_path=path,
+        bucket=target_bucket,
         derived_kind=derived_kind,
         mime_type="image/png",
         diagnostics={"clean_plate": meta, **(provenance or {})},
@@ -234,7 +242,7 @@ async def ensure_plate(
 
     return SimpleNamespace(
         bytes=plate_bytes,
-        bucket=supabase_assets.BUCKET,
+        bucket=target_bucket,
         object_path=path,
         meta=meta,
         created=True,

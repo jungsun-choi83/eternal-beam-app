@@ -9,6 +9,8 @@ from typing import Any
 
 from . import (
     archive_intake_service,
+    archive_preparation_diagnostics,
+    archive_storage,
     business_qa_user_test,
     pet_cutout_service,
     pet_generation_run_service,
@@ -36,6 +38,22 @@ class ArchivePreparationError(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+def _log_persistence_failure(
+    application_id: str, stage: str, exc: Exception
+) -> None:
+    """Keep preparation logs structured and free of provider exception text."""
+    logger.warning(
+        "archive_preparation_stage",
+        extra={
+            "application_id": application_id,
+            "stage": stage,
+            "duration_ms": 0.0,
+            "error_code": archive_preparation_diagnostics.safe_error_code(exc),
+            "traceback": archive_preparation_diagnostics.redacted_traceback(exc),
+        },
+    )
 
 
 def __reset_for_tests() -> None:
@@ -73,7 +91,7 @@ def _safe_failure(exc: Exception) -> tuple[str, str]:
 async def prepare_and_queue(
     archive_application_id: str,
 ) -> ArchivePreparationResult:
-    """Prepare all possible strict pairs and queue the normal generation run."""
+    """Legacy synchronous entry point used by controlled callers and tests."""
     app_id = (archive_application_id or "").strip()
     if not app_id:
         raise ArchivePreparationError(
@@ -101,63 +119,93 @@ async def prepare_and_queue(
                 )
             return ArchivePreparationResult(intake=current)
 
-        owner_id = str(claimed.get("owner_id") or "")
-        content_id = str(claimed.get("content_id") or "")
-        pet_id = str(claimed.get("pet_id") or "")
-        if (
-            owner_id != f"archive_{app_id}"
-            or content_id != f"archive_{app_id}"
-            or pet_id != pet_reference_service.pet_id_for_content(content_id)
-        ):
-            exc = ArchivePreparationError(
-                "ARCHIVE_IDENTITY_MISMATCH",
-                "Archive intake identity mapping is invalid.",
-            )
-            try:
-                await archive_intake_service.mark_generation_failed(app_id, exc.code)
-            except Exception:
-                logger.exception(
-                    "Could not persist Archive identity failure (application=%s)",
-                    app_id,
-                )
-            raise exc
+        return await _prepare_claimed(app_id, claimed)
 
-        prepared: pet_cutout_service.PreparedCutoutSet | None = None
+
+async def process_claimed(claimed: dict[str, Any]) -> ArchivePreparationResult:
+    """Process one durable preparation row already claimed by a worker."""
+    app_id = str(claimed.get("archive_application_id") or "").strip()
+    if not app_id:
+        raise ArchivePreparationError(
+            "ARCHIVE_APPLICATION_ID_INVALID", "Archive application ID is required."
+        )
+    lock = _LOCKS.setdefault(app_id, asyncio.Lock())
+    async with lock:
+        current = await archive_intake_service.get_intake(app_id)
+        if not current:
+            raise ArchivePreparationError(
+                "ARCHIVE_INTAKE_NOT_FOUND", "Archive intake metadata was not found."
+            )
+        if current.get("generation_run_id"):
+            return ArchivePreparationResult(intake=current)
+        return await _prepare_claimed(app_id, claimed)
+
+
+async def _prepare_claimed(
+    app_id: str,
+    claimed: dict[str, Any],
+) -> ArchivePreparationResult:
+    owner_id = str(claimed.get("owner_id") or "")
+    content_id = str(claimed.get("content_id") or "")
+    pet_id = str(claimed.get("pet_id") or "")
+    lease_id = str(claimed.get("preparation_lease_id") or "") or None
+    progress_stage = archive_intake_service.PREPARATION_STAGE_CLAIMED
+
+    async def _progress(stage: str, progress: int) -> None:
+        nonlocal progress_stage
+        progress_stage = stage
+        if lease_id:
+            updated = await archive_intake_service.update_preparation_progress(
+                app_id, lease_id, stage=stage, progress=progress
+            )
+            if updated is None:
+                raise ArchivePreparationError(
+                    "ARCHIVE_PREPARATION_LEASE_LOST",
+                    "Archive preparation was claimed by another worker.",
+                )
+
+    if (
+        owner_id != f"archive_{app_id}"
+        or content_id != f"archive_{app_id}"
+        or pet_id != pet_reference_service.pet_id_for_content(content_id)
+    ):
+        exc = ArchivePreparationError(
+            "ARCHIVE_IDENTITY_MISMATCH",
+            "Archive intake identity mapping is invalid.",
+        )
         try:
+            await archive_intake_service.mark_generation_failed(
+                app_id,
+                exc.code,
+                lease_id=lease_id,
+                preparation_stage=progress_stage,
+            )
+        except Exception:
+            _log_persistence_failure(app_id, progress_stage, exc)
+        raise exc
+
+    prepared: pet_cutout_service.PreparedCutoutSet | None = None
+    archive_bucket = archive_storage.archive_storage_bucket()
+    try:
+        await _progress("CUTOUT_PREPARATION", 10)
+        with archive_storage.archive_scope(archive_bucket):
             prepared = await pet_cutout_service.prepare_strict_cutouts(
-                user_id=owner_id, pet_id=pet_id
-            )
-
-            # Keep the explicit admission checkpoint in this orchestration.
-            # start_generation_run() checks it again and stamps its receipt.
-            business_qa_user_test.require_admission(
-                user_id=owner_id, pet_id=pet_id
-            )
-
-            # A future recovery may have persisted the run ID before leaving
-            # the intake retryable. Never start a second paid run in that case.
-            refreshed = await archive_intake_service.get_intake(app_id)
-            existing_run_id = str((refreshed or {}).get("generation_run_id") or "")
-            if existing_run_id:
-                queued = await archive_intake_service.mark_generation_queued(
-                    app_id, existing_run_id
-                )
-                return ArchivePreparationResult(
-                    intake=queued,
-                    original=prepared.pairs[0].original,
-                    cutout=prepared.pairs[0].cutout,
-                    cutout_generated=any(pair.generated for pair in prepared.pairs),
-                    prepared_pairs=prepared.pairs,
-                    failed_cutout_count=len(prepared.failures),
-                )
-
-            run = await pet_generation_run_service.start_generation_run(
                 user_id=owner_id,
                 pet_id=pet_id,
-                idempotency_key=generation_idempotency_key(content_id),
+                stage_observer=archive_preparation_diagnostics.observer(app_id),
             )
+        await _progress("CUTOUT_PREPARED", 85)
+
+        business_qa_user_test.require_admission(user_id=owner_id, pet_id=pet_id)
+        await _progress("GENERATION_QUEUE", 95)
+
+        # A future recovery may have persisted the run ID before leaving the
+        # intake retryable. Never start a second paid run in that case.
+        refreshed = await archive_intake_service.get_intake(app_id)
+        existing_run_id = str((refreshed or {}).get("generation_run_id") or "")
+        if existing_run_id:
             queued = await archive_intake_service.mark_generation_queued(
-                app_id, run.id
+                app_id, existing_run_id, lease_id=lease_id
             )
             return ArchivePreparationResult(
                 intake=queued,
@@ -167,15 +215,35 @@ async def prepare_and_queue(
                 prepared_pairs=prepared.pairs,
                 failed_cutout_count=len(prepared.failures),
             )
-        except Exception as exc:
-            code, message = _safe_failure(exc)
-            try:
-                await archive_intake_service.mark_generation_failed(app_id, code)
-            except Exception:
-                logger.exception(
-                    "Could not persist Archive preparation failure (application=%s)",
-                    app_id,
-                )
-            if isinstance(exc, ArchivePreparationError):
-                raise
-            raise ArchivePreparationError(code, message) from exc
+
+        run = await pet_generation_run_service.start_generation_run(
+            user_id=owner_id,
+            pet_id=pet_id,
+            idempotency_key=generation_idempotency_key(content_id),
+            storage_bucket=archive_bucket,
+        )
+        queued = await archive_intake_service.mark_generation_queued(
+            app_id, run.id, lease_id=lease_id
+        )
+        return ArchivePreparationResult(
+            intake=queued,
+            original=prepared.pairs[0].original,
+            cutout=prepared.pairs[0].cutout,
+            cutout_generated=any(pair.generated for pair in prepared.pairs),
+            prepared_pairs=prepared.pairs,
+            failed_cutout_count=len(prepared.failures),
+        )
+    except Exception as exc:
+        code, message = _safe_failure(exc)
+        try:
+            await archive_intake_service.mark_generation_failed(
+                app_id,
+                code,
+                lease_id=lease_id,
+                preparation_stage=progress_stage,
+            )
+        except Exception:
+            _log_persistence_failure(app_id, progress_stage, exc)
+        if isinstance(exc, ArchivePreparationError):
+            raise
+        raise ArchivePreparationError(code, message) from exc

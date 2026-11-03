@@ -281,7 +281,7 @@ async def register_reference(
         "fps": extra.get("fps"),
         "resolution": extra.get("resolution"),
         "loopable": bool(extra.get("loopable")),
-        "bucket": bucket or (supabase_assets.BUCKET if object_path else None),
+        "bucket": bucket or (supabase_assets.active_bucket() if object_path else None),
         "object_path": object_path,
         "pet_id": (pet_id or None),
         "source_type": source_type,

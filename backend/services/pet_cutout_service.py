@@ -6,7 +6,11 @@ import hashlib
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from . import pet_reference_service, supabase_assets
+from . import (
+    archive_preparation_diagnostics,
+    pet_reference_service,
+    supabase_assets,
+)
 
 
 @dataclass(frozen=True)
@@ -42,6 +46,7 @@ def generate_vitmatte_cutout_sync(
     debug_artifacts: dict[str, bytes] | None = None,
     matte_function: Callable[..., tuple[bytes, dict[str, Any]]] | None = None,
     quality_function: Callable[[bytes], dict[str, Any]] | None = None,
+    stage_observer: archive_preparation_diagnostics.StageObserver | None = None,
 ) -> GeneratedCutout:
     """Run the existing ViTMatte implementation on the calling thread."""
     if not data:
@@ -50,7 +55,8 @@ def generate_vitmatte_cutout_sync(
         )
 
     # Keep heavyweight model imports out of unrelated router import paths.
-    if matte_function is None:
+    using_default_matte = matte_function is None
+    if using_default_matte:
         from .vitmatte_service import matte_foreground_with_meta
 
         matte_function = matte_foreground_with_meta
@@ -59,14 +65,20 @@ def generate_vitmatte_cutout_sync(
 
         quality_function = analyze_alpha_fur_edge
 
-    png, vitmatte_meta = matte_function(
-        data,
-        model_name=model_name,
-        segmenter=segmenter,
-        debug_artifacts=debug_artifacts,
-    )
+    matte_kwargs = {
+        "model_name": model_name,
+        "segmenter": segmenter,
+        "debug_artifacts": debug_artifacts,
+    }
+    if stage_observer is not None and using_default_matte:
+        matte_kwargs["stage_observer"] = stage_observer
+    png, vitmatte_meta = matte_function(data, **matte_kwargs)
+    with archive_preparation_diagnostics.observe_stage(
+        stage_observer, "PNG_VALIDATE"
+    ):
+        quality = quality_function(png)
     diagnostics = {
-        **quality_function(png),
+        **quality,
         **vitmatte_meta,
         "refined": True,
         "refinement_type": "vitmatte",
@@ -83,6 +95,7 @@ async def generate_vitmatte_cutout(
     debug_artifacts: dict[str, bytes] | None = None,
     matte_function: Callable[..., tuple[bytes, dict[str, Any]]] | None = None,
     quality_function: Callable[[bytes], dict[str, Any]] | None = None,
+    stage_observer: archive_preparation_diagnostics.StageObserver | None = None,
 ) -> GeneratedCutout:
     """Async-shaped wrapper that deliberately preserves same-thread inference."""
     return generate_vitmatte_cutout_sync(
@@ -92,6 +105,7 @@ async def generate_vitmatte_cutout(
         debug_artifacts=debug_artifacts,
         matte_function=matte_function,
         quality_function=quality_function,
+        stage_observer=stage_observer,
     )
 
 
@@ -160,33 +174,47 @@ async def _prepare_original_cutout(
     *,
     user_id: str,
     original: pet_reference_service.PetReference,
+    stage_observer: archive_preparation_diagnostics.StageObserver | None = None,
 ) -> PreparedCutout:
-    original_bytes = await supabase_assets.download_asset_from_storage(
-        original.object_path, bucket=original.bucket
-    )
-    generated = await generate_vitmatte_cutout(original_bytes)
+    with archive_preparation_diagnostics.observe_stage(
+        stage_observer, "PRIVATE_DOWNLOAD"
+    ):
+        original_bytes = await supabase_assets.download_asset_from_storage(
+            original.object_path, bucket=original.bucket
+        )
+    with archive_preparation_diagnostics.observe_stage(stage_observer, "VITMATTE"):
+        generated = await generate_vitmatte_cutout(
+            original_bytes, stage_observer=stage_observer
+        )
     cutout = await record_strict_cutout(
         user_id=user_id,
         content_id=original.content_id,
         original=original,
         cutout_png=generated.png,
         diagnostics=generated.diagnostics,
+        stage_observer=stage_observer,
     )
     return PreparedCutout(original=original, cutout=cutout, generated=True)
 
 
 async def prepare_strict_cutouts(
-    *, user_id: str, pet_id: str
+    *,
+    user_id: str,
+    pet_id: str,
+    stage_observer: archive_preparation_diagnostics.StageObserver | None = None,
 ) -> PreparedCutoutSet:
     """Prepare every accepted original independently, retaining partial success."""
     uid = (user_id or "").strip()
     pid = (pet_id or "").strip()
     async with pet_reference_service.pet_input_gate(pid).shared():
-        refs = await pet_reference_service.list_references(user_id=uid, pet_id=pid)
-        originals = _preparation_originals(refs)
-        if not originals:
-            # Preserve the existing, stable missing-original error contract.
-            select_preparation_original(refs)
+        with archive_preparation_diagnostics.observe_stage(
+            stage_observer, "REFERENCE_LIST"
+        ):
+            refs = await pet_reference_service.list_references(user_id=uid, pet_id=pid)
+            originals = _preparation_originals(refs)
+            if not originals:
+                # Preserve the existing, stable missing-original error contract.
+                select_preparation_original(refs)
 
         pairs: list[PreparedCutout] = []
         failures: list[CutoutPreparationFailure] = []
@@ -208,13 +236,17 @@ async def prepare_strict_cutouts(
                 prepared = await _prepare_original_cutout(
                     user_id=uid,
                     original=original,
+                    stage_observer=stage_observer,
                 )
                 pairs.append(prepared)
                 # record_strict_cutout may have reactivated or replaced a row;
                 # use a fresh ledger for every subsequent reuse decision.
-                refs = await pet_reference_service.list_references(
-                    user_id=uid, pet_id=pid
-                )
+                with archive_preparation_diagnostics.observe_stage(
+                    stage_observer, "REFERENCE_LIST"
+                ):
+                    refs = await pet_reference_service.list_references(
+                        user_id=uid, pet_id=pid
+                    )
             except Exception as exc:
                 if first_error is None:
                     first_error = exc
@@ -234,9 +266,12 @@ async def prepare_strict_cutouts(
                 status=409,
             )
 
-        refreshed = await pet_reference_service.list_references(
-            user_id=uid, pet_id=pid
-        )
+        with archive_preparation_diagnostics.observe_stage(
+            stage_observer, "REFERENCE_LIST"
+        ):
+            refreshed = await pet_reference_service.list_references(
+                user_id=uid, pet_id=pid
+            )
         verified: list[PreparedCutout] = []
         for prepared in pairs:
             cutout = _valid_strict_cutout(refreshed, prepared.original)
@@ -268,6 +303,7 @@ async def record_strict_cutout(
     original: pet_reference_service.PetReference,
     cutout_png: bytes,
     diagnostics: dict[str, Any] | None = None,
+    stage_observer: archive_preparation_diagnostics.StageObserver | None = None,
 ) -> pet_reference_service.PetReference:
     """Persist one PNG cutout with an explicit, validated original parent."""
     uid = (user_id or "").strip()
@@ -344,35 +380,48 @@ async def record_strict_cutout(
                 f"{uid}/{cid}/references/"
                 f"cutout_{original.content_hash[:16]}_{cut_hash[:16]}.png"
             )
-        await supabase_assets.upload_asset_to_storage(cut_path, cutout_png, "image/png")
+        with archive_preparation_diagnostics.observe_stage(
+            stage_observer, "PRIVATE_UPLOAD"
+        ):
+            await supabase_assets.upload_asset_for_scope(
+                cut_path,
+                cutout_png,
+                "image/png",
+                bucket=original.bucket,
+                require_private=supabase_assets.active_requires_private(),
+            )
 
-    derived = await pet_reference_service.record_derived(
-        user_id=uid,
-        content_id=cid,
-        object_path=cut_path,
-        derived_kind="cutout_reference",
-        parent_reference_id=original.id,
-        mime_type="image/png",
-        diagnostics={
-            **(diagnostics or {}),
-            "content_hash": cut_hash,
-            "bytes_size": len(cutout_png),
-        },
-    )
-    if (
-        not derived.recorded
-        or not derived.id
-        or derived.parent_reference_id != original.id
-        or derived.user_id != uid
-        or derived.content_id != cid
-        or derived.pet_id != expected_pet_id
-        or derived.acceptance_state != accepted
+    with archive_preparation_diagnostics.observe_stage(
+        stage_observer, "DERIVED_REFERENCE_PERSIST"
     ):
-        raise pet_reference_service.PetReferenceError(
-            "PHASE1_CUTOUT_PERSIST_FAILED",
-            "The linked cutout reference could not be stored.",
-            status=503,
+        derived = await pet_reference_service.record_derived(
+            user_id=uid,
+            content_id=cid,
+            object_path=cut_path,
+            derived_kind="cutout_reference",
+            parent_reference_id=original.id,
+            bucket=original.bucket,
+            mime_type="image/png",
+            diagnostics={
+                **(diagnostics or {}),
+                "content_hash": cut_hash,
+                "bytes_size": len(cutout_png),
+            },
         )
+        if (
+            not derived.recorded
+            or not derived.id
+            or derived.parent_reference_id != original.id
+            or derived.user_id != uid
+            or derived.content_id != cid
+            or derived.pet_id != expected_pet_id
+            or derived.acceptance_state != accepted
+        ):
+            raise pet_reference_service.PetReferenceError(
+                "PHASE1_CUTOUT_PERSIST_FAILED",
+                "The linked cutout reference could not be stored.",
+                status=503,
+            )
     return derived
 
 

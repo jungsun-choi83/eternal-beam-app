@@ -36,6 +36,17 @@ def _mock_archive_backend(monkeypatch: pytest.MonkeyPatch):
     archive_intake_service.__reset_for_tests()
     archive_intake_preparation_service.__reset_for_tests()
     pet_generation_run_service.__reset_for_tests()
+
+    async def inline_enqueue(application_id: str):
+        prepared = await archive_intake_preparation_service.prepare_and_queue(application_id)
+        return prepared.intake
+
+    # These legacy endpoint tests assert the pre-async response body. The new
+    # worker/acknowledgement contract is covered by the dedicated async tests.
+    monkeypatch.setattr(
+        archive_intake_service, "enqueue_preparation", inline_enqueue
+    )
+
     yield
     pet_reference_service.__reset_for_tests()
     pet_registry.__reset_for_tests()
@@ -51,7 +62,7 @@ def uploads(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     paths: list[str] = []
     objects: dict[str, bytes] = {}
 
-    async def fake_upload(path: str, data: bytes, content_type: str) -> str:
+    async def fake_upload(path: str, data: bytes, content_type: str, **kwargs) -> str:
         paths.append(path)
         objects[path] = data
         return f"mock://{path}"
@@ -383,6 +394,11 @@ def test_metadata_is_persisted_in_mock_mode(client: ASGITestClient):
         "generation_run_id": ANY,
         "result_url": None,
         "last_error": None,
+        "preparation_stage": "COMPLETE",
+        "preparation_progress": 100,
+        "preparation_attempt": 1,
+        "preparation_lease_id": None,
+        "preparation_lease_expires_at": None,
         "created_at": ANY,
     }
 
@@ -631,10 +647,8 @@ def test_cutout_failure_preserves_original_and_records_safe_failure(
     response = _post(client, files=_photos(1))
 
     assert response.status_code == 503
-    assert response.json()["detail"] == {
-        "code": "SUBJECT_NOT_DETECTED",
-        "message": archive_intake_v1.WORKFLOW_RETRY_MESSAGE,
-    }
+    assert response.json()["detail"]["code"] == "ARCHIVE_PREPARATION_ENQUEUE_FAILED"
+    assert "provider secret" not in response.text
     intake = archive_intake_service.mock_get("application-123")
     assert intake["status"] == "GENERATION_FAILED"
     assert intake["generation_run_id"] is None
@@ -653,6 +667,11 @@ def test_cutout_failure_preserves_original_and_records_safe_failure(
     monkeypatch.setattr(
         pet_cutout_service, "generate_vitmatte_cutout", real_generate
     )
+    assert anyio.run(
+        lambda: archive_intake_service.request_preparation_recovery(
+            "application-123"
+        )
+    ).outcome == archive_intake_service.RECOVERY_QUEUED
     retried = _post(client, files=_photos(1))
 
     assert retried.status_code == 201
@@ -694,7 +713,7 @@ def test_generation_start_failure_keeps_cutout_and_retry_resumes(
     failed = _post(client, files=_photos(1))
 
     assert failed.status_code == 503
-    assert failed.json()["detail"]["code"] == "GENERATION_RUNS_UNAVAILABLE"
+    assert failed.json()["detail"]["code"] == "ARCHIVE_PREPARATION_ENQUEUE_FAILED"
     assert "raw provider failure" not in failed.text
     assert (
         archive_intake_service.mock_get("application-123")["status"]
@@ -713,6 +732,11 @@ def test_generation_start_failure_keeps_cutout_and_retry_resumes(
     monkeypatch.setattr(
         pet_generation_run_service, "start_generation_run", real_start
     )
+    assert anyio.run(
+        lambda: archive_intake_service.request_preparation_recovery(
+            "application-123"
+        )
+    ).outcome == archive_intake_service.RECOVERY_QUEUED
     retried = _post(client, files=_photos(1))
 
     assert retried.status_code == 201
@@ -784,6 +808,11 @@ def test_retry_reuses_successful_pairs_and_retries_only_missing_cutout(
     monkeypatch.setattr(
         pet_generation_run_service, "start_generation_run", real_start
     )
+    assert anyio.run(
+        lambda: archive_intake_service.request_preparation_recovery(
+            "application-123"
+        )
+    ).outcome == archive_intake_service.RECOVERY_QUEUED
     retried = _post(client, files=_photos(3))
 
     assert retried.status_code == 201
@@ -807,12 +836,14 @@ def test_retry_after_queue_receipt_write_failure_reuses_generation_run(
     real_mark_queued = archive_intake_service.mark_generation_queued
     mark_calls = 0
 
-    async def fail_first_mark(application_id: str, run_id: str):
+    async def fail_first_mark(
+        application_id: str, run_id: str, *, lease_id: str | None = None
+    ):
         nonlocal mark_calls
         mark_calls += 1
         if mark_calls == 1:
             raise RuntimeError("simulated Archive metadata write failure")
-        return await real_mark_queued(application_id, run_id)
+        return await real_mark_queued(application_id, run_id, lease_id=lease_id)
 
     monkeypatch.setattr(
         archive_intake_service, "mark_generation_queued", fail_first_mark
@@ -821,7 +852,7 @@ def test_retry_after_queue_receipt_write_failure_reuses_generation_run(
     assert failed.status_code == 503
     assert (
         failed.json()["detail"]["code"]
-        == "ARCHIVE_GENERATION_PREPARATION_FAILED"
+        == "ARCHIVE_PREPARATION_ENQUEUE_FAILED"
     )
     assert "simulated Archive metadata write failure" not in failed.text
     assert (
@@ -840,6 +871,11 @@ def test_retry_after_queue_receipt_write_failure_reuses_generation_run(
     assert cutout.parent_reference_id == original.id
     cutout_id = cutout.id
 
+    assert anyio.run(
+        lambda: archive_intake_service.request_preparation_recovery(
+            "application-123"
+        )
+    ).outcome == archive_intake_service.RECOVERY_QUEUED
     retried = _post(client, files=_photos(1))
 
     assert retried.status_code == 201
@@ -865,7 +901,7 @@ def test_business_qa_rejection_is_not_bypassed(
     response = _post(client, files=_photos(1))
 
     assert response.status_code == 503
-    assert response.json()["detail"]["code"] == "BUSINESS_QA_USER_TEST_NOT_ENROLLED"
+    assert response.json()["detail"]["code"] == "ARCHIVE_PREPARATION_ENQUEUE_FAILED"
     intake = archive_intake_service.mock_get("application-123")
     assert intake["status"] == "GENERATION_FAILED"
     assert intake["last_error"] == "BUSINESS_QA_USER_TEST_NOT_ENROLLED"
@@ -895,11 +931,8 @@ def test_preparing_without_generation_receipt_is_not_reported_as_success(
 
     response = _post(client, files=_photos(1))
 
-    assert response.status_code == 503
-    assert response.json()["detail"] == {
-        "code": "ARCHIVE_GENERATION_PREPARING",
-        "message": archive_intake_v1.WORKFLOW_RETRY_MESSAGE,
-    }
+    assert response.status_code == 201
+    assert response.json()["status"] == "PREPARING"
     intake = archive_intake_service.mock_get("application-123")
     assert intake["status"] == "PREPARING"
     assert intake["generation_run_id"] is None
@@ -962,7 +995,7 @@ def test_application_cannot_accumulate_more_than_three_references(
     monkeypatch.setattr(
         archive_intake_preparation_service, "prepare_and_queue", references_only
     )
-    assert _post(client, files=_photos(3)).status_code == 503
+    assert _post(client, files=_photos(3)).status_code == 201
 
     response = _post(client, files=_photos(1, start=10))
 
@@ -982,7 +1015,7 @@ def test_concurrent_requests_cannot_race_past_three_references(
     monkeypatch.setattr(
         archive_intake_preparation_service, "prepare_and_queue", references_only
     )
-    assert _post(client, files=_photos(2)).status_code == 503
+    assert _post(client, files=_photos(2)).status_code == 201
 
     from backend.services import supabase_assets
 
@@ -990,7 +1023,7 @@ def test_concurrent_requests_cannot_race_past_three_references(
     release_uploads = asyncio.Event()
     started = 0
 
-    async def synchronized_upload(path: str, data: bytes, content_type: str) -> str:
+    async def synchronized_upload(path: str, data: bytes, content_type: str, **kwargs) -> str:
         nonlocal started
         started += 1
         if started == 2:
@@ -1030,7 +1063,7 @@ def test_concurrent_requests_cannot_race_past_three_references(
 
     responses = anyio.run(scenario)
 
-    assert sorted(response.status_code for response in responses) == [409, 503]
+    assert sorted(response.status_code for response in responses) == [201, 409]
     refs = anyio.run(
         lambda: pet_reference_service.list_references(
             user_id="archive_application-123",

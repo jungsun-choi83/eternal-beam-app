@@ -23,6 +23,7 @@ from typing import Any, Optional
 
 from . import (
     action_keyframe_service,
+    archive_storage,
     business_qa,
     business_qa_user_test,
     archive_intake_service,
@@ -1088,7 +1089,7 @@ def _next_poll_iso() -> str:
 def _provider_state(run: PetGenerationRun) -> dict[str, Any]:
     """Refresh receipt summaries without discarding durable intent or inputs."""
     state = durable_provider_jobs.summary_for_run(run.id)
-    for key in ("_operator", "_business_qa_cutover"):
+    for key in ("_operator", "_business_qa_cutover", "_archive_storage"):
         value = dict(run.provider_state.get(key) or {})
         if value:
             state[key] = value
@@ -2119,6 +2120,13 @@ async def _execute(run: PetGenerationRun) -> PetGenerationRun:
                     pet_id=run.pet_id,
                     motion_version_id=motion.id,
                     candidate_id=packageable.id,
+                    timing_context={
+                        "application_id": run.user_id.removeprefix("archive_")
+                        if str(run.user_id or "").startswith("archive_")
+                        else None,
+                        "generation_run_id": run.id,
+                        "user_id": run.user_id,
+                    },
                 )
             except motion_delivery_service.MotionDeliveryError as exc:
                 raise PetGenerationRunError(exc.code, exc.message, status=exc.status) from exc
@@ -2356,8 +2364,9 @@ async def process_next_generation_run(
                 )
             # The run keeps the QA authority mode stamped at its creation; an
             # unstamped (older / in-flight) run stays on legacy authority.
-            with business_qa.qa_authority_scope(business_qa.run_qa_authority(run.provider_state)):
-                return await _execute(run)
+            with archive_storage.scope_for_run(run):
+                with business_qa.qa_authority_scope(business_qa.run_qa_authority(run.provider_state)):
+                    return await _execute(run)
 
 
 def _validate_request(motion_id: str, request_kind: str, idempotency_key: str) -> tuple[str, str, str]:
@@ -2403,6 +2412,7 @@ async def start_generation_run(
     product_key: Optional[str] = None,
     reservation_ledger_id: Optional[str] = None,
     credits_reserved: int = 0,
+    storage_bucket: Optional[str] = None,
     provider_state_extra: Optional[dict[str, Any]] = None,
 ) -> PetGenerationRun:
     uid = (user_id or "").strip()
@@ -2451,6 +2461,11 @@ async def start_generation_run(
         "lease_expires_at": None,
         "next_attempt_at": None,
     }
+    if storage_bucket:
+        row["provider_state"]["_archive_storage"] = {
+            "bucket": str(storage_bucket).strip(),
+            "private": True,
+        }
     if kind == REQUEST_PREMIUM_PRODUCT:
         # 상거래 맥락은 프리미엄 실행에만 싣는다 — FREE_HOME 행은 마이그레이션
         # (20261022) 이전 DB 에서도 예전 컬럼 집합 그대로 들어가야 한다.

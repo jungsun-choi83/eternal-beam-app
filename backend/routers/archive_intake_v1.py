@@ -8,12 +8,17 @@ import re
 from dataclasses import dataclass, replace
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from ..services import (
     archive_intake_preparation_service,
+    archive_browser_export,
+    archive_raw_video,
     archive_intake_service,
+    archive_storage,
     pet_reference_service,
+    supabase_assets,
 )
 
 
@@ -60,6 +65,7 @@ HEIF_BRANDS = {
     b"mif1",
     b"msf1",
 }
+ARCHIVE_VIDEO_MAX_BYTES = archive_browser_export.ARCHIVE_MAX_VIDEO_BYTES
 
 
 class ArchiveReferenceOut(BaseModel):
@@ -84,6 +90,14 @@ class ArchiveIntakeStatusResponse(BaseModel):
     status: str
     generation_run_id: str | None = None
     result_url: str | None = None
+    preparation_stage: str | None = None
+    preparation_progress: int | None = None
+    preparation_attempt: int | None = None
+    preparation_error_code: str | None = None
+
+
+class ArchivePreparationRecoveryResponse(ArchiveIntakeStatusResponse):
+    recovery_outcome: str
 
 @dataclass(frozen=True)
 class _PreparedPhoto:
@@ -118,6 +132,76 @@ def _require_archive_secret(provided: str | None) -> None:
             "ARCHIVE_INTAKE_FORBIDDEN",
             "Invalid Archive service token.",
         )
+
+
+def _require_archive_operator_secret(provided: str | None) -> None:
+    expected = os.getenv("ARCHIVE_OPERATOR_TOKEN")
+    if expected is None or not expected.strip():
+        raise _error(
+            503,
+            "ARCHIVE_RECOVERY_NOT_CONFIGURED",
+            "Archive operator recovery is not configured.",
+        )
+    if not hmac.compare_digest(provided or "", expected):
+        raise _error(
+            403,
+            "ARCHIVE_RECOVERY_FORBIDDEN",
+            "Archive operator authorization is required.",
+        )
+
+
+def _archive_identity_matches(intake: dict[str, object], application_id: str) -> bool:
+    expected_content_id = f"archive_{application_id}"
+    expected = {
+        "owner_id": f"archive_{application_id}",
+        "content_id": expected_content_id,
+        "pet_id": pet_reference_service.pet_id_for_content(expected_content_id),
+    }
+    return all(str(intake.get(key) or "") == value for key, value in expected.items())
+
+
+def _object_content_type(info: dict) -> str | None:
+    values = [
+        info.get("content_type"),
+        info.get("contentType"),
+        info.get("mime_type"),
+        info.get("mimetype"),
+        info.get("content-type"),
+    ]
+    metadata = info.get("metadata")
+    if isinstance(metadata, dict):
+        values.extend(
+            metadata.get(key)
+            for key in ("content_type", "contentType", "mime_type", "mimetype", "content-type")
+        )
+    for value in values:
+        if value:
+            return str(value).split(";", 1)[0].strip().lower()
+    return None
+
+
+def _object_size(info: dict) -> int | None:
+    values = [info.get("size"), info.get("content_length"), info.get("contentLength")]
+    metadata = info.get("metadata")
+    if isinstance(metadata, dict):
+        values.extend(
+            metadata.get(key)
+            for key in ("size", "content_length", "contentLength", "content-length")
+        )
+    for value in values:
+        try:
+            if value is not None:
+                size = int(value)
+                return size if size >= 0 else None
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _storage_object_missing(exc: Exception) -> bool:
+    if isinstance(exc, FileNotFoundError):
+        return True
+    return any(str(getattr(exc, key, "")).strip() == "404" for key in ("status_code", "status", "code"))
 
 
 def _valid_email(value: str) -> bool:
@@ -281,6 +365,44 @@ def _workflow_error_code(
         str(intake.get("last_error") or fallback)
     )
 
+
+def _status_response_fields(
+    application_id: str, intake: dict[str, object]
+) -> dict[str, object]:
+    return {
+        "application_id": application_id,
+        "status": str(
+            intake.get("status") or archive_intake_service.STATUS_REFERENCES_READY
+        ),
+        "generation_run_id": (
+            str(intake["generation_run_id"])
+            if intake.get("generation_run_id")
+            else None
+        ),
+        "result_url": str(intake["result_url"]) if intake.get("result_url") else None,
+        "preparation_stage": (
+            str(intake["preparation_stage"])
+            if intake.get("preparation_stage")
+            else None
+        ),
+        "preparation_progress": (
+            max(0, min(100, int(intake.get("preparation_progress") or 0)))
+            if intake.get("preparation_stage")
+            else None
+        ),
+        "preparation_attempt": (
+            max(0, int(intake.get("preparation_attempt") or 0))
+            if intake.get("preparation_stage")
+            else None
+        ),
+        "preparation_error_code": (
+            archive_intake_service.safe_error_code(str(intake.get("last_error") or ""))
+            if str(intake.get("status") or "")
+            == archive_intake_service.STATUS_GENERATION_FAILED
+            else None
+        ),
+    }
+
 @router.get(
     "/{application_id}/status",
     response_model=ArchiveIntakeStatusResponse,
@@ -319,22 +441,326 @@ async def get_archive_intake_status(
             "Archive intake was not found.",
         )
 
-    return ArchiveIntakeStatusResponse(
-        application_id=app_id,
-        status=str(
-            intake.get("status")
-            or archive_intake_service.STATUS_REFERENCES_READY
-        ),
-        generation_run_id=(
-            str(intake["generation_run_id"])
-            if intake.get("generation_run_id")
-            else None
-        ),
-        result_url=(
-            str(intake["result_url"])
-            if intake.get("result_url")
-            else None
-        ),
+    return ArchiveIntakeStatusResponse(**_status_response_fields(app_id, intake))
+
+
+@router.post(
+    "/{application_id}/preparation-recovery",
+    response_model=ArchivePreparationRecoveryResponse,
+)
+async def recover_archive_preparation(
+    application_id: str,
+    x_archive_operator_token: str | None = Header(default=None),
+):
+    """Operator-only requeue for a failed or abandoned preparation attempt."""
+    _require_archive_operator_secret(x_archive_operator_token)
+
+    app_id = (application_id or "").strip()
+    if not APPLICATION_ID_RE.fullmatch(app_id):
+        raise _error(
+            400,
+            "ARCHIVE_APPLICATION_ID_INVALID",
+            "application_id is invalid.",
+        )
+
+    try:
+        recovery = await archive_intake_service.request_preparation_recovery(app_id)
+    except Exception as exc:
+        logger.error("Could not recover Archive preparation (application=%s)", app_id)
+        raise _error(
+            503,
+            "ARCHIVE_PREPARATION_RECOVERY_UNAVAILABLE",
+            "Archive preparation recovery is temporarily unavailable.",
+        ) from exc
+
+    if not recovery.intake:
+        raise _error(
+            404,
+            "ARCHIVE_INTAKE_NOT_FOUND",
+            "Archive intake was not found.",
+        )
+    if recovery.outcome == archive_intake_service.RECOVERY_NOT_RECOVERABLE:
+        raise _error(
+            409,
+            "ARCHIVE_PREPARATION_NOT_RECOVERABLE",
+            "The Archive preparation is not eligible for operator recovery.",
+        )
+
+    return ArchivePreparationRecoveryResponse(
+        recovery_outcome=recovery.outcome,
+        **_status_response_fields(app_id, recovery.intake),
+    )
+
+
+@router.get("/{application_id}/video")
+async def get_archive_intake_video(
+    application_id: str,
+    x_archive_service_token: str | None = Header(default=None),
+    x_archive_generation_run_id: str | None = Header(default=None),
+):
+    """Return validated raw MP4 bytes for authenticated Archive preview only."""
+
+    _require_archive_secret(x_archive_service_token)
+
+    requested_run_id = (x_archive_generation_run_id or "").strip()
+    if not requested_run_id:
+        raise _error(
+            400,
+            "ARCHIVE_GENERATION_RUN_ID_REQUIRED",
+            "X-Archive-Generation-Run-ID is required.",
+        )
+
+    app_id = (application_id or "").strip()
+    if not APPLICATION_ID_RE.fullmatch(app_id):
+        raise _error(
+            400,
+            "ARCHIVE_APPLICATION_ID_INVALID",
+            "application_id is invalid.",
+        )
+
+    try:
+        intake = await archive_intake_service.get_intake(app_id)
+    except Exception as exc:
+        logger.exception("Could not load Archive video intake (application=%s)", app_id)
+        raise _error(
+            503,
+            "ARCHIVE_VIDEO_STATUS_UNAVAILABLE",
+            "Archive video status is temporarily unavailable.",
+        ) from exc
+
+    if not intake:
+        raise _error(404, "ARCHIVE_INTAKE_NOT_FOUND", "Archive intake was not found.")
+    if intake.get("status") != archive_intake_service.STATUS_COMPLETED:
+        raise _error(
+            409,
+            "ARCHIVE_VIDEO_NOT_READY",
+            "The Archive video is not ready.",
+        )
+
+    run_id = str(intake.get("generation_run_id") or "").strip()
+    if not run_id:
+        raise _error(
+            409,
+            "ARCHIVE_VIDEO_NOT_READY",
+            "The Archive video is not ready.",
+        )
+    if requested_run_id != run_id:
+        raise _error(
+            409,
+            "ARCHIVE_GENERATION_RUN_MISMATCH",
+            "The requested generation run does not match the Archive intake.",
+        )
+    if not _archive_identity_matches(intake, app_id):
+        raise _error(
+            409,
+            "ARCHIVE_IDENTITY_MISMATCH",
+            "The Archive intake identity is inconsistent.",
+        )
+
+    try:
+        run_intake = await archive_intake_service.get_intake_by_generation_run_id(run_id)
+    except Exception as exc:
+        logger.exception("Could not verify Archive generation run (application=%s)", app_id)
+        raise _error(
+            503,
+            "ARCHIVE_VIDEO_STATUS_UNAVAILABLE",
+            "Archive video status is temporarily unavailable.",
+        ) from exc
+
+    if (
+        not run_intake
+        or str(run_intake.get("archive_application_id") or "") != app_id
+        or str(run_intake.get("generation_run_id") or "") != run_id
+        or run_intake.get("status") != archive_intake_service.STATUS_COMPLETED
+        or not _archive_identity_matches(run_intake, app_id)
+    ):
+        raise _error(
+            409,
+            "ARCHIVE_GENERATION_RUN_MISMATCH",
+            "The Archive generation run does not match the intake.",
+        )
+
+    try:
+        raw_artifact = await archive_raw_video.resolve_selected_raw_video(
+            app_id,
+            run_id,
+        )
+    except archive_raw_video.ArchiveRawVideoResolutionError as exc:
+        logger.warning(
+            "Archive raw video resolution failed (application=%s code=%s)",
+            app_id,
+            exc.code,
+        )
+        status = 409
+        if exc.code in {
+            "ARCHIVE_RAW_GENERATION_UNAVAILABLE",
+            "ARCHIVE_RAW_LINEAGE_UNAVAILABLE",
+            "ARCHIVE_RAW_BUCKET_UNVERIFIED",
+        }:
+            status = 503
+        raise _error(
+            status,
+            exc.code,
+            exc.message,
+        ) from exc
+
+    bucket = raw_artifact.bucket
+    object_path = raw_artifact.storage_path
+
+    try:
+        info = await supabase_assets.get_private_asset_info_from_storage(
+            object_path,
+            bucket=bucket,
+        )
+    except Exception as exc:
+        if _storage_object_missing(exc):
+            raise _error(
+                404,
+                "ARCHIVE_RAW_VIDEO_NOT_AVAILABLE",
+                "The selected Archive raw video is not available.",
+            ) from exc
+        logger.exception("Could not inspect Archive video object (application=%s)", app_id)
+        raise _error(
+            503,
+            "ARCHIVE_VIDEO_STORAGE_UNAVAILABLE",
+            "Archive video storage is temporarily unavailable.",
+        ) from exc
+
+    if _object_content_type(info) != "video/mp4":
+        raise _error(
+            409,
+            "ARCHIVE_RAW_VIDEO_INCOMPATIBLE",
+            "The selected Archive raw video is not browser-compatible.",
+        )
+    object_size = _object_size(info)
+    if object_size is None:
+        raise _error(
+            409,
+            "ARCHIVE_RAW_VIDEO_INCOMPATIBLE",
+            "The selected Archive raw video has invalid metadata.",
+        )
+    if object_size > ARCHIVE_VIDEO_MAX_BYTES:
+        raise _error(
+            413,
+            "ARCHIVE_VIDEO_TOO_LARGE",
+            "The Archive video exceeds the permitted size.",
+        )
+
+    try:
+        video = await supabase_assets.download_private_asset_from_storage(
+            object_path,
+            bucket=bucket,
+        )
+    except Exception as exc:
+        if _storage_object_missing(exc):
+            raise _error(
+                404,
+                "ARCHIVE_RAW_VIDEO_NOT_AVAILABLE",
+                "The selected Archive raw video is not available.",
+            ) from exc
+        logger.exception("Could not download Archive video object (application=%s)", app_id)
+        raise _error(
+            503,
+            "ARCHIVE_VIDEO_STORAGE_UNAVAILABLE",
+            "Archive video storage is temporarily unavailable.",
+        ) from exc
+
+    if len(video) != object_size or len(video) > ARCHIVE_VIDEO_MAX_BYTES:
+        raise _error(
+            409,
+            "ARCHIVE_RAW_VIDEO_INCOMPATIBLE",
+            "The selected Archive raw video has invalid metadata.",
+        )
+
+    try:
+        await archive_browser_export.validate_archive_browser_mp4_bytes(
+            video,
+            bucket=bucket,
+            storage_path=object_path,
+        )
+    except archive_browser_export.ArchiveBrowserExportError as exc:
+        logger.warning("Archive video validation failed (application=%s code=%s)", app_id, exc.code)
+        if exc.code == "BROWSER_VIDEO_NOT_FASTSTART":
+            try:
+                video, repair_result = await archive_browser_export.prepare_browser_mp4_bytes(
+                    video,
+                    bucket=bucket,
+                    storage_path=object_path,
+                )
+                logger.info(
+                    "Archive video Fast Start fallback succeeded (application=%s remuxed=%s)",
+                    app_id,
+                    repair_result.remuxed,
+                )
+            except archive_browser_export.ArchiveBrowserExportError as repair_exc:
+                logger.warning(
+                    "Archive video Fast Start fallback failed (application=%s code=%s)",
+                    app_id,
+                    repair_exc.code,
+                )
+                if repair_exc.code in {
+                    "BROWSER_VIDEO_TOO_LARGE",
+                    "BROWSER_VIDEO_INCOMPATIBLE",
+                    "BROWSER_VIDEO_NOT_FASTSTART",
+                    "BROWSER_VIDEO_DURATION_TOO_LONG",
+                    "BROWSER_AUDIO_INCOMPATIBLE",
+                    "OPAQUE_FRAME_DECODE_FAILED",
+                    "FFMPEG_FASTSTART_FAILED",
+                }:
+                    raise _error(
+                        413 if repair_exc.code == "BROWSER_VIDEO_TOO_LARGE" else 409,
+                        (
+                            "ARCHIVE_VIDEO_TOO_LARGE"
+                            if repair_exc.code == "BROWSER_VIDEO_TOO_LARGE"
+                            else "ARCHIVE_RAW_VIDEO_INCOMPATIBLE"
+                        ),
+                        (
+                            "The Archive video exceeds the permitted size."
+                            if repair_exc.code == "BROWSER_VIDEO_TOO_LARGE"
+                            else "The selected Archive raw video is not browser-compatible."
+                        ),
+                    ) from repair_exc
+                raise _error(
+                    503,
+                    "ARCHIVE_RAW_VIDEO_VALIDATION_UNAVAILABLE",
+                    "The selected Archive raw video could not be validated.",
+                ) from repair_exc
+        else:
+            if exc.code == "BROWSER_VIDEO_TOO_LARGE":
+                raise _error(
+                    413,
+                    "ARCHIVE_VIDEO_TOO_LARGE",
+                    "The Archive video exceeds the permitted size.",
+                ) from exc
+            if exc.code in {
+                "BROWSER_VIDEO_INCOMPATIBLE",
+                "BROWSER_VIDEO_NOT_FASTSTART",
+                "BROWSER_VIDEO_DURATION_TOO_LONG",
+                "BROWSER_AUDIO_INCOMPATIBLE",
+                "OPAQUE_FRAME_DECODE_FAILED",
+            }:
+                raise _error(
+                    409,
+                    "ARCHIVE_RAW_VIDEO_INCOMPATIBLE",
+                    "The selected Archive raw video is not browser-compatible.",
+                ) from exc
+            raise _error(
+                503,
+                "ARCHIVE_RAW_VIDEO_VALIDATION_UNAVAILABLE",
+                "The selected Archive raw video could not be validated.",
+            ) from exc
+
+    return Response(
+        content=video,
+        media_type="video/mp4",
+        headers={
+            "Cache-Control": "private, no-store, max-age=0",
+            "Pragma": "no-cache",
+            "X-Content-Type-Options": "nosniff",
+            "X-Archive-Video-Readiness": "staff_preview_only",
+            "X-Archive-Customer-Delivery-Ready": "false",
+            "Content-Disposition": 'inline; filename="archive-video.mp4"',
+        },
     )
 
 @router.post("", response_model=ArchiveIntakeResponse, status_code=201)
@@ -385,6 +811,7 @@ async def create_archive_intake(
     owner_id = f"archive_{app_id}"
     content_id = f"archive_{app_id}"
     pet_id = pet_reference_service.pet_id_for_content(content_id)
+    archive_bucket = archive_storage.archive_storage_bucket()
 
     results: list[ArchiveReferenceOut] = []
 
@@ -433,6 +860,8 @@ async def create_archive_intake(
                         mime_type=photo.mime_type,
                         original_filename=photo.filename,
                         source=pet_reference_service.SOURCE_OPS,
+                        bucket=archive_bucket,
+                        require_private=True,
                     )
                 except pet_reference_service.PetReferenceError as exc:
                     raise _reference_error(exc) from exc
@@ -482,54 +911,16 @@ async def create_archive_intake(
             "The Archive intake metadata could not be stored.",
         ) from exc
 
-    # Cutout preparation is awaited because this repository has no durable
-    # cutout-preparation queue. The generation call itself only creates the
-    # existing durable run; its worker performs the expensive video stages.
+    # The durable preparation worker claims this row after the request returns.
+    # Never run YOLO/SAM2/ViTMatte in the intake request or an untracked task.
     try:
-        prepared_intake = await archive_intake_preparation_service.prepare_and_queue(
-            app_id
-        )
-        intake = prepared_intake.intake
-    except archive_intake_preparation_service.ArchivePreparationError as exc:
-        logger.warning(
-            "Archive intake preparation failed (application=%s code=%s)",
-            app_id,
-            exc.code,
-        )
-        try:
-            intake = await archive_intake_service.get_intake(app_id) or intake
-        except Exception:
-            logger.error(
-                "Could not reload failed Archive intake (application=%s)",
-                app_id,
-            )
-        raise _error(
-            503,
-            _workflow_error_code(intake, exc.code),
-            WORKFLOW_RETRY_MESSAGE,
-        ) from exc
+        intake = await archive_intake_service.enqueue_preparation(app_id)
     except Exception as exc:
-        # Preserve the stored intake and expose no exception/provider details.
-        logger.error(
-            "Archive intake preparation failed unexpectedly (application=%s)",
-            app_id,
-        )
-        try:
-            intake = await archive_intake_service.get_intake(app_id) or intake
-        except Exception:
-            pass
         raise _error(
             503,
-            _workflow_error_code(intake),
-            WORKFLOW_RETRY_MESSAGE,
+            "ARCHIVE_PREPARATION_ENQUEUE_FAILED",
+            "The Archive intake was stored but preparation could not be queued.",
         ) from exc
-
-    if not _workflow_succeeded(intake):
-        raise _error(
-            503,
-            _workflow_error_code(intake),
-            WORKFLOW_RETRY_MESSAGE,
-        )
 
     return ArchiveIntakeResponse(
         application_id=app_id,

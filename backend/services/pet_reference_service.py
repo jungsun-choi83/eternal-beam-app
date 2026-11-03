@@ -107,7 +107,7 @@ def _supabase():
 def _bucket() -> str:
     from . import supabase_assets
 
-    return supabase_assets.BUCKET
+    return supabase_assets.active_bucket()
 
 
 #: 테스트/스토리지 없는 환경용 인메모리 대장. pet_registry._MOCK_PETS 와 같은 역할.
@@ -906,6 +906,8 @@ async def record_original(
     diagnostics: Optional[dict[str, Any]] = None,
     acceptance_state: str = STATE_ACCEPTED,
     rejection_code: Optional[str] = None,
+    bucket: Optional[str] = None,
+    require_private: bool = False,
 ) -> PetReference:
     """
     원본을 스토리지에 영구 저장하고 대장에 기록한다. **바이트 기준으로 멱등하다.**
@@ -939,7 +941,14 @@ async def record_original(
     from . import supabase_assets
 
     # 업로드가 곧 durable 보장이다. 실패는 그대로 올린다.
-    await supabase_assets.upload_asset_to_storage(path, data, mime_type or "application/octet-stream")
+    target_bucket = (bucket or _bucket()).strip()
+    await supabase_assets.upload_asset_for_scope(
+        path,
+        data,
+        mime_type or "application/octet-stream",
+        bucket=target_bucket,
+        require_private=require_private or supabase_assets.active_requires_private(),
+    )
 
     # Close the in-process/mock race where another call reactivates an original
     # while this call is uploading. Production DB mutations are additionally
@@ -962,7 +971,7 @@ async def record_original(
         "source": source,
         "derived_kind": None,
         "parent_reference_id": None,
-        "bucket": _bucket(),
+        "bucket": target_bucket,
         "object_path": path,
         "original_filename": (original_filename or None),
         "mime_type": (mime_type or None),

@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional, Sequence
 
@@ -23,6 +24,14 @@ MODE_ALLOWLIST = "allowlist"
 MODE_ALL = "all"
 VALID_MODES = frozenset({MODE_OFF, MODE_ALLOWLIST, MODE_ALL})
 
+# This switch is deliberately separate from the normal live-generation gates.
+# It is for one approved synthetic pet in a dedicated test process only.  The
+# durable provider-job layer enforces the one-submission rule; this module
+# validates the process configuration that authorizes that rule.
+SINGLE_PAID_VIDEO_TEST_FLAG = "PHASE6_SINGLE_PAID_VIDEO_TEST"
+SINGLE_PAID_VIDEO_TEST_PET_ENV = "PHASE6_SINGLE_PAID_VIDEO_TEST_PET_ID"
+_TEST_PET_RE = re.compile(r"^[A-Za-z0-9_-]{1,200}$")
+
 FEEDBACK_CATEGORIES = frozenset({"IDENTITY", "ANATOMY", "MOTION", "OTHER"})
 _MOCK_FEEDBACK: dict[tuple[str, str], dict[str, Any]] = {}
 
@@ -33,6 +42,60 @@ class UserTestError(Exception):
         self.code = code
         self.message = message
         self.status = status
+
+
+class SinglePaidVideoTestConfigurationError(UserTestError):
+    """The test-only one-paid-video gate was enabled unsafely."""
+
+
+def single_paid_video_test_pet_id(pet_id: str) -> str | None:
+    """Validate and return the sole pet authorized for the test-only gate.
+
+    ``None`` means the gate is disabled and preserves normal production
+    behavior.  Any non-``0``/``1`` value, or any incomplete allowlist, fails
+    closed rather than silently broadening the scope.
+    """
+
+    raw_flag = os.getenv(SINGLE_PAID_VIDEO_TEST_FLAG, "0").strip().lower()
+    if raw_flag == "0":
+        return None
+    if raw_flag != "1":
+        raise SinglePaidVideoTestConfigurationError(
+            "SINGLE_PAID_VIDEO_TEST_CONFIG_INVALID",
+            f"{SINGLE_PAID_VIDEO_TEST_FLAG} must be exactly 0 or 1.",
+            status=503,
+        )
+
+    configured_pet = (os.getenv(SINGLE_PAID_VIDEO_TEST_PET_ENV) or "").strip()
+    cohort = cohort_pet_ids()
+    live_allowlist = {
+        value.strip()
+        for value in (os.getenv("PHASE6_LIVE_ALLOWLIST") or "").split(",")
+        if value.strip()
+    }
+    if (
+        mode() != MODE_ALLOWLIST
+        or len(cohort) != 1
+        or len(live_allowlist) != 1
+        or not configured_pet
+        or not _TEST_PET_RE.fullmatch(configured_pet)
+        or cohort != {configured_pet}
+        or live_allowlist != {configured_pet}
+    ):
+        raise SinglePaidVideoTestConfigurationError(
+            "SINGLE_PAID_VIDEO_TEST_CONFIG_INVALID",
+            "The single paid-video test requires one matching Business QA and live pet allowlist.",
+            status=503,
+        )
+
+    requested_pet = (pet_id or "").strip()
+    if requested_pet != configured_pet:
+        raise SinglePaidVideoTestConfigurationError(
+            "SINGLE_PAID_VIDEO_TEST_PET_NOT_ALLOWLISTED",
+            "This generation run is outside the approved single paid-video test pet.",
+            status=403,
+        )
+    return configured_pet
 
 
 def __reset_for_tests() -> None:
@@ -188,6 +251,20 @@ def readiness_report() -> dict[str, Any]:
     cohort = cohort_pet_ids()
     blockers: list[str] = []
     warnings: list[str] = []
+    single_gate_status: dict[str, Any] = {
+        "enabled": os.getenv(SINGLE_PAID_VIDEO_TEST_FLAG, "0").strip() != "0",
+        "valid": True,
+    }
+    if single_gate_status["enabled"]:
+        try:
+            single_gate_status["pet_id_configured"] = bool(
+                single_paid_video_test_pet_id(
+                    os.getenv(SINGLE_PAID_VIDEO_TEST_PET_ENV, "")
+                )
+            )
+        except SinglePaidVideoTestConfigurationError:
+            single_gate_status["valid"] = False
+            blockers.append("single_paid_video_test_gate_invalid")
 
     if configured_mode not in VALID_MODES:
         blockers.append("invalid_user_test_mode")
@@ -292,6 +369,7 @@ def readiness_report() -> dict[str, Any]:
                 getattr(customer_fallback_service, "resolve_best_safe_fallback", None)
             ),
             "publication_ownership_behavior": "unchanged",
+            "single_paid_video_test_gate": single_gate_status,
             "database": database,
         },
     }
@@ -299,7 +377,8 @@ def readiness_report() -> dict[str, Any]:
 
 def assert_worker_ready() -> dict[str, Any]:
     report = readiness_report()
-    if mode() != MODE_OFF and not report["ready_to_enable"]:
+    gate_requested = os.getenv(SINGLE_PAID_VIDEO_TEST_FLAG, "0").strip() != "0"
+    if (mode() != MODE_OFF or gate_requested) and not report["ready_to_enable"]:
         raise RuntimeError(
             "Business QA user-test is not ready: " + ", ".join(report["blockers"])
         )
