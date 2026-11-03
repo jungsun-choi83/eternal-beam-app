@@ -194,6 +194,8 @@ def test_product_key_maps_to_physical_motion_id():
     assert fulfillment.motion_id_for_product("idle:TAIL_WAGGING") == "TAIL_WAGGING"
     assert fulfillment.motion_id_for_product("action:COME_CLOSER") == "COME_CLOSER"
     assert fulfillment.motion_id_for_product("action:PET_HEAD") == "PET_HEAD"
+    assert fulfillment.motion_id_for_product("action:PAW_HELLO") == "PAW_HELLO"
+    assert "PAW_HELLO" in fulfillment.PREMIUM_MOTIONS
     assert fulfillment.motion_id_for_product("action:LOOK_UP") == "LOOK_UP"
     # 미판매 신모션은 매핑되지 않는다 — 카탈로그 결정 전까지 이행 불가.
     assert fulfillment.motion_id_for_product("idle:PET_HEAD") is None
@@ -536,7 +538,8 @@ def test_behavior_library_discovery_shows_legacy_keys_and_run_progress(
     # 레거시 카탈로그 키가 그대로 보인다 — 상품/가격 결정은 바뀌지 않았다.
     assert body["idle_events"] == ["BLINKING", "EAR_TWITCHING", "HEAD_TILTING", "TAIL_WAGGING"]
     assert body["action_events"] == [
-        "COME_CLOSER", "PET_HEAD", "LOOK_UP", "LIE_DOWN", "STAND_UP", "LIE_IDLE",
+        "COME_CLOSER", "PET_HEAD", "PAW_HELLO", "LOOK_UP",
+        "LIE_DOWN", "STAND_UP", "LIE_IDLE",
     ]
     assert body["prices"]["idle:BLINKING"] == 1
     assert body["prices"]["action:COME_CLOSER"] == 1
@@ -736,7 +739,7 @@ def test_purchase_without_phase1_intake_fails_closed(storage, monkeypatch):
 
 @pytest.mark.parametrize(
     "motion",
-    ["EAR_TWITCHING", "HEAD_TILTING", "TAIL_WAGGING", "COME_CLOSER", "PET_HEAD", "LOOK_UP",
+    ["EAR_TWITCHING", "HEAD_TILTING", "TAIL_WAGGING", "COME_CLOSER", "PET_HEAD", "PAW_HELLO", "LOOK_UP",
      "LIE_DOWN", "STAND_UP", "LIE_IDLE"],
 )
 def test_other_commercial_motions_flow_through_same_adapter(storage, monkeypatch, motion):

@@ -36,6 +36,14 @@ def _table() -> str:
 
 
 def _use_db() -> bool:
+    # The explicit local Exhibition preview still uses real Supabase JWT
+    # verification, but identity linking must remain process-local. This keeps
+    # a first local login from inserting into the configured project's
+    # user_identity_links table.
+    from .exhibition_prep_store import local_preview_enabled
+
+    if local_preview_enabled():
+        return False
     return os.getenv("HYBRID_USE_SUPABASE", "1").strip().lower() not in ("0", "false", "no")
 
 

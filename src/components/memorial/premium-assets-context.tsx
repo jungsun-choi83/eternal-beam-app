@@ -21,6 +21,11 @@ import { getPremiumAccessToken } from "@/lib/premium-auth-token";
 /** 생성이 도는 동안의 조회 주기 — 자산이 언제 READY 가 되는지 알아야 한다. */
 export const PREMIUM_ASSETS_POLL_MS = 15_000;
 
+// System companions are absent from `generating`. Briefly watch for their URL
+// after COME_CLOSER is ready, then back off if derivation/generation failed.
+export const COMPANION_REFRESH_MS = 30_000;
+export const COMPANION_REFRESH_WINDOW_MS = 10 * 60_000;
+
 /**
  * 생성이 없을 때의 **느린** 재확인 주기 (5분).
  *
@@ -117,20 +122,38 @@ export function PremiumAssetsProvider({
     };
   }, [refresh]);
 
-  // 주기적 재확인. **타이머는 언제나 하나**이고, 주기만 상태에 따라 달라진다:
-  //   생성 중 → 15초  (자산이 READY 가 되는 순간을 잡아야 한다)
-  //   그 외   → 5분    (구독 만료를 언젠가는 알아채야 한다)
+  // One refresh timer: generation 15s, missing companion 30s for up to 10min
+  // while visible, otherwise 5min. Schedule after completion to avoid overlap.
   //
   // GET 하나뿐이라 생성도 과금도 일으키지 않는다. 만료가 반영되는 순간
   // entitled=false 가 되고, 여기서 파생되는 적격성이 전부 비면서 프리미엄 행동이
   // 후보와 소스에서 함께 빠진다. BREATHING 은 이 경로 밖이라 계속 돈다.
   const generating = Boolean(assets?.generating.length);
+  const awaitingCompanion = Boolean(
+    assets?.readyAssets.COME_CLOSER?.url && !assets?.readyAssets.RETURN_HOME?.url
+  );
   useEffect(() => {
-    if (!enabled) return;
-    const period = generating ? PREMIUM_ASSETS_POLL_MS : ENTITLEMENT_REFRESH_MS;
-    const t = window.setInterval(() => void refresh(), period);
-    return () => window.clearInterval(t);
-  }, [generating, enabled, refresh]);
+    if (!enabled || !petId) return;
+    const companionDeadline = Date.now() + COMPANION_REFRESH_WINDOW_MS;
+    let stopped = false;
+    let timer: number;
+    const schedule = () => {
+      let period = generating ? PREMIUM_ASSETS_POLL_MS : ENTITLEMENT_REFRESH_MS;
+      if (!generating && awaitingCompanion && Date.now() < companionDeadline &&
+          document.visibilityState === "visible") {
+        period = COMPANION_REFRESH_MS;
+      }
+      timer = window.setTimeout(async () => {
+        await refresh();
+        if (!stopped) schedule();
+      }, period);
+    };
+    schedule();
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [generating, awaitingCompanion, enabled, petId, refresh]);
 
   // 탭이 다시 보이는 순간 한 번 확인한다.
   //

@@ -274,6 +274,15 @@ def should_call_vlm(
             sufficient=False,
         )
 
+    acceptance = (qa_result.get("motion_business_contract") or {}).get("acceptance") or {}
+    if resolved_stage == "MOTION" and acceptance.get("review_policy") in {
+        "hold_without_regeneration", "publish_with_advisory"
+    }:
+        return _finish(
+            record, decision=CALL, reasons=["motion_acceptance_requires_semantic_evidence"],
+            questions=["identity_anatomy", "motion_correctness", "temporal_integrity"], sufficient=False,
+        )
+
     checks = {str(name): _status(value) for name, value in dict(qa_result.get("checks") or {}).items()}
     reasons = {str(value) for value in (qa_result.get("reasons") or [])}
 

@@ -9,7 +9,7 @@ import pytest
 from fastapi import FastAPI
 
 from backend.routers import motion_videos_v1
-from backend.services import asset_url_refresh
+from backend.services import asset_url_refresh, business_qa
 from backend.services import motion_publication_service as publication
 from backend.services import motion_video_service as motions
 from backend.services import pet_registry
@@ -60,7 +60,10 @@ def _auth(user: str = USER) -> dict[str, str]:
     return {"Authorization": f"Bearer test:{user}"}
 
 
-def _seed(*, status: str = "complete", decision: str = "PASS", candidate: bool = True):
+def _seed(
+    *, status: str = "complete", decision: str = "PASS", candidate: bool = True,
+    qa_result: dict | None = None,
+):
     motions._MOCK_VERSIONS.append(
         {
             "id": VERSION_ID,
@@ -87,6 +90,7 @@ def _seed(*, status: str = "complete", decision: str = "PASS", candidate: bool =
                 "raw_bucket": BUCKET,
                 "raw_video_path": OBJECT_PATH,
                 "decision": decision,
+                "qa_result": qa_result or {"decision": decision},
                 "selected": True,
                 "created_at": "2026-09-03T00:00:00+00:00",
             }
@@ -136,6 +140,32 @@ def test_pass_publication_projects_existing_asset_for_browser(client: ASGITestCl
     assert pet.background_baked is False
     assert motions._MOCK_VERSIONS[0]["status"] == "complete"
     assert motions._MOCK_CANDIDATES[0]["decision"] == "PASS"
+
+
+def test_publishable_review_creates_registry_and_breathing_pointers(client: ASGITestClient):
+    qa_result = {
+        "decision": "REVIEW",
+        "checks": {"vlm_composition": "REVIEW"},
+        "business_qa": {
+            "version": business_qa.BUSINESS_QA_VERSION,
+            "integrity_status": "PASS",
+            "quality_status": "REVIEW",
+            "delivery_action": "DELIVER_WITH_ADVISORY",
+            "retry_action": "STOP",
+        },
+    }
+    _seed(decision="REVIEW", qa_result=qa_result)
+
+    response = _post(client)
+
+    assert response.status_code == 200, response.text
+    pet = _run(pet_registry.get(PET))
+    assert pet and pet.user_id == USER
+    assert pet.breathing_bucket == BUCKET
+    assert pet.breathing_object_path == OBJECT_PATH
+    assert pet_registry._MOCK_PETS[PET]["breathing_motion_version_id"] == VERSION_ID
+    assert publication._MOCK_PUBLICATIONS[0]["selected_candidate_id"] == CANDIDATE_ID
+    assert motions._MOCK_CANDIDATES[0]["decision"] == "REVIEW"
 
 
 @pytest.mark.parametrize(

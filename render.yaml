@@ -30,6 +30,14 @@ services:
         value: allowlist
       - key: PHASE6_LIVE_ALLOWLIST
         sync: false
+      # 테스트 단계 출력 기하(2026-10-22): 전역 16:9 · 480p(854×480). 생성 자산만
+      # 바뀐다 — 모션/QA/라우팅/상거래/런타임 불변. 테스트 후 720p/HD 로 되돌릴 땐
+      # 이 두 값만 바꾼다 (web + generation-worker 둘 다 같이). 비우면 코드 기본값
+      # (16:9 / 프로파일 720p)으로 돌아간다.
+      - key: PHASE6_ASPECT_RATIO
+        value: "16:9"
+      - key: PHASE6_RESOLUTION
+        value: 480p
       - key: BUSINESS_QA_SHADOW_TELEMETRY
         value: "1"
       - key: PET_VLM_IDENTITY_ENABLED
@@ -42,6 +50,15 @@ services:
         value: "1"
       - key: SUBSCRIPTION_MOCK
         value: "1"
+
+      # exhibition preparation
+
+      - key: ENABLE_EXHIBITION_PREP
+        value: "1"
+      - key: ETERNAL_BEAM_DEVICE_TOKENS
+        sync: false
+      - key: EXHIBITION_DEFAULT_ID
+        value: "expo-test-01"
       # ── 웹 정기결제 (Toss) ───────────────────────────────────────────────
       # 값은 대시보드에서 넣는다(sync:false) — 시크릿을 저장소에 커밋하지 않는다.
       - key: TOSS_CLIENT_KEY      # 공개 키 (test_ck_ / live_ck_)
@@ -167,7 +184,7 @@ services:
     plan: standard
     runtime: docker
     dockerfilePath: ./Dockerfile
-    dockerCommand: exec python -m backend.workers.pet_generation_worker
+    dockerCommand: python -m backend.workers.pet_generation_worker
     autoDeploy: true
     envVars:
       - key: PYTHONUNBUFFERED
@@ -211,6 +228,12 @@ services:
         value: allowlist
       - key: PHASE6_LIVE_ALLOWLIST
         sync: false
+      # 테스트 단계 출력 기하(2026-10-22): web 서비스와 **반드시 동일하게** 유지.
+      # 전역 16:9 · 480p(854×480). 테스트 후 720p/HD 로 되돌릴 땐 두 서비스 같이 바꾼다.
+      - key: PHASE6_ASPECT_RATIO
+        value: "16:9"
+      - key: PHASE6_RESOLUTION
+        value: 480p
       - key: BUSINESS_QA_USER_TEST_MODE
         value: allowlist
       - key: BUSINESS_QA_USER_TEST_PET_IDS
@@ -219,8 +242,6 @@ services:
         value: "1"
       - key: PET_VLM_IDENTITY_ENABLED
         value: "1"
-      - key: MOTION_DELIVERY_MATTE_BACKEND
-        value: "vitmatte"
       # 아래부터는 웹 서비스와 동일하게 맞춘 생성 파이프라인 설정.
       # 값이 갈라지면(예: 한쪽만 GENERATION_MOCK=1) 웹이 큐에 넣은 run 을
       # 워커가 다른 프로바이더 모드로 처리해버리는 불일치가 생긴다 — 값을
@@ -269,8 +290,55 @@ services:
       - key: LUMA_API_KEY
         sync: false
 
-# ── 월 정기결제 갱신 배치 ─────────────────────────────────────────────────────
-# 지금은 .github/workflows/billing-renewal.yml (무료) 이 담당한다.
+  - type: worker
+    name: eternal-beam-exhibition-worker 
+    region: singapore
+    plan: starter
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m backend.workers.exhibition_prep_worker
+    autoDeploy: true
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+
+      # Exhibition worker identity
+      - key: EXHIBITION_PREP_WORKER_ID
+        value: "render-exhibition-worker-1"
+
+      # Worker polling
+      - key: EXHIBITION_PREP_POLL_INTERVAL_SEC
+        value: "5"
+
+      # Recover stale jobs
+      - key: EXHIBITION_PREP_STALE_MINUTES
+        value: "15"
+
+      # Existing local pose gate
+      - key: EXHIBITION_POSE_GATE_MODE
+        value: "clip"
+
+      # Every Exhibition upload is standardized once before cutout/maps.
+      - key: EXHIBITION_POSE_NORMALIZATION_MODE
+        value: "gpt_image"
+
+      - key: OPENAI_API_KEY
+        sync: false
+
+      - key: OPENAI_IMAGE_MODEL
+        value: "gpt-image-2"
+
+      # Storage
+      - key: EXHIBITION_STORAGE_BUCKET
+        value: "user-assets"
+
+      - key: EXHIBITION_STORAGE_PREFIX
+        value: "exhibition"
+
+
 # Render 유료 플랜으로 올리면 아래 cron 서비스로 옮길 수 있다 — 서버 코드는
 # 그대로이고, 부르는 주체만 바뀐다.
 #

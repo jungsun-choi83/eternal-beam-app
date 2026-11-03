@@ -97,8 +97,16 @@ def test_constraint_does_not_leak_unknown_actions():
     제약이 파이썬이 모르는 값을 허용하고 있지 않은지 — 반대 방향 드리프트.
     (실패해도 데이터 손상은 아니지만, 지운 액션이 DB 에만 남았다는 신호다.)
     """
+    from backend.services import motion_delivery_service
+
     _, values = _effective_allowed_values()
-    known = set(ACTION_ORDER) | set(PREMIUM_ACTIONS)
+    # 시스템 소유 무료 모션(RETURN_HOME)도 파이썬이 아는 값이다 — 재생 포인터
+    # action_id 로 쓰이므로 CHECK 에 있어야 한다(상용이 아니라 PREMIUM_ACTIONS 엔 없다).
+    known = (
+        set(ACTION_ORDER)
+        | set(PREMIUM_ACTIONS)
+        | set(motion_delivery_service.SYSTEM_MOTIONS)
+    )
     unknown = values - known
     assert not unknown, f"CHECK 는 허용하는데 파이썬은 모르는 값: {sorted(unknown)}"
 

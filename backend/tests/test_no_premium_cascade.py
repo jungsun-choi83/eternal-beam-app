@@ -305,7 +305,7 @@ async def test_queue_utility_keeps_its_unrestricted_default():
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("action", ["PET_HEAD", "LOOK_UP"])
+@pytest.mark.parametrize("action", ["PET_HEAD", "PAW_HELLO", "LOOK_UP"])
 async def test_new_path_only_actions_fail_closed_on_the_legacy_path(provider, action):
     """새 경로 전용 액션은 레거시 이행이 지원하지 않는다 — 프롬프트가 없다.
 

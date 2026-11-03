@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import tailwindcss from '@tailwindcss/vite'
@@ -6,31 +6,37 @@ import react from '@vitejs/plugin-react'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-export default defineConfig({
-  plugins: [react(), tailwindcss()],
-  server: {
-    port: 5174,
-    strictPort: false,
-    host: true,
-    proxy: {
-      '/api': {
-        // 8000 에 죽은 핸들이 남아 바인딩이 막힐 때가 있어 로컬은 8001 사용
-        target: 'http://127.0.0.1:8001',
-        changeOrigin: true,
-      },
-      '/outputs': {
-        target: 'http://127.0.0.1:8001',
-        changeOrigin: true,
-      },
-      '/output': {
-        target: 'http://127.0.0.1:8001',
-        changeOrigin: true,
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '')
+  // Preserve the existing dev backend by default. Passport/local-preview can
+  // opt in to another backend without changing other developers' setup.
+  const devProxyTarget = (env.VITE_DEV_API_PROXY_TARGET || 'http://127.0.0.1:8001').replace(/\/+$/, '')
+
+  return {
+    plugins: [react(), tailwindcss()],
+    server: {
+      port: 5174,
+      strictPort: false,
+      host: true,
+      proxy: {
+        '/api': {
+          target: devProxyTarget,
+          changeOrigin: true,
+        },
+        '/outputs': {
+          target: devProxyTarget,
+          changeOrigin: true,
+        },
+        '/output': {
+          target: devProxyTarget,
+          changeOrigin: true,
+        },
       },
     },
-  },
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './src'),
+    resolve: {
+      alias: {
+        '@': path.resolve(__dirname, './src'),
+      },
     },
-  },
+  }
 })

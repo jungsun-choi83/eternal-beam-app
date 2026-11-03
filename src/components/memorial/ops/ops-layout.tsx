@@ -48,11 +48,11 @@ export function OpsLayout({
   const [navOpen, setNavOpen] = useState(false);
 
   const readToken = useCallback(() => {
-    void getPremiumAccessToken().then((r) => {
+    void getPremiumAccessToken({ allowLocalExhibitionPreview: active === "exhibition" }).then((r) => {
       setToken(r.token);
       setTokenLoaded(true);
     });
-  }, []);
+  }, [active]);
 
   useEffect(readToken, [readToken]);
 

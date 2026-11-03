@@ -1,0 +1,1523 @@
+{
+ "note": "Real Canonical v3 run (2026-10-12) of an apricot toy poodle-mix: 3 originals, overhead photo cropped at top edge. Storage paths/user removed.",
+ "input_references": [
+  {
+   "role": "PRIMARY_FACE",
+   "reference_id": "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+  },
+  {
+   "role": "PRIMARY_FULL_BODY",
+   "reference_id": "bb7b4904-ce8c-4b65-8763-2f43ba190c4d"
+  },
+  {
+   "role": "PRIMARY_TAIL",
+   "reference_id": "4c43dc2c-2242-4def-9d9f-51567069ec37"
+  }
+ ],
+ "visual_identity": {
+  "coat": {
+   "tone": "medium",
+   "length": {
+    "reason": "requires_semantic_analysis",
+    "status": "unknown"
+   },
+   "status": "measured",
+   "palette": [
+    {
+     "name": "tan",
+     "fraction": 0.4226,
+     "support_reference_ids": [
+      "4c43dc2c-2242-4def-9d9f-51567069ec37",
+      "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+      "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+     ]
+    },
+    {
+     "name": "brown",
+     "fraction": 0.225,
+     "support_reference_ids": [
+      "4c43dc2c-2242-4def-9d9f-51567069ec37",
+      "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+      "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+     ]
+    },
+    {
+     "name": "cream",
+     "fraction": 0.178,
+     "support_reference_ids": [
+      "4c43dc2c-2242-4def-9d9f-51567069ec37",
+      "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+      "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+     ]
+    },
+    {
+     "name": "red_brown",
+     "fraction": 0.0937,
+     "support_reference_ids": [
+      "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+     ]
+    },
+    {
+     "name": "dark_brown",
+     "fraction": 0.0806,
+     "support_reference_ids": [
+      "4c43dc2c-2242-4def-9d9f-51567069ec37"
+     ]
+    }
+   ],
+   "texture": {
+    "reason": "requires_semantic_analysis",
+    "status": "unknown"
+   },
+   "tone_evidence": {
+    "value": "medium",
+    "status": "fused",
+    "confidence": "high",
+    "support_reference_ids": [
+     "4c43dc2c-2242-4def-9d9f-51567069ec37",
+     "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+     "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+    ]
+   },
+   "mean_luminance": 130.3,
+   "dominant_colors": [
+    {
+     "name": "tan",
+     "fraction": 0.4226,
+     "confidence": "high",
+     "support_reference_ids": [
+      "4c43dc2c-2242-4def-9d9f-51567069ec37",
+      "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+      "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+     ]
+    },
+    {
+     "name": "brown",
+     "fraction": 0.225,
+     "confidence": "high",
+     "support_reference_ids": [
+      "4c43dc2c-2242-4def-9d9f-51567069ec37",
+      "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+      "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+     ]
+    }
+   ],
+   "secondary_colors": [
+    {
+     "name": "cream",
+     "fraction": 0.178,
+     "confidence": "high",
+     "support_reference_ids": [
+      "4c43dc2c-2242-4def-9d9f-51567069ec37",
+      "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+      "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+     ]
+    },
+    {
+     "name": "red_brown",
+     "fraction": 0.0937,
+     "confidence": "low",
+     "support_reference_ids": [
+      "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+     ]
+    },
+    {
+     "name": "dark_brown",
+     "fraction": 0.0806,
+     "confidence": "low",
+     "support_reference_ids": [
+      "4c43dc2c-2242-4def-9d9f-51567069ec37"
+     ]
+    }
+   ]
+  },
+  "ears": {
+   "reason": "requires_semantic_analysis",
+   "status": "unknown"
+  },
+  "eyes": {
+   "reason": "requires_semantic_analysis",
+   "status": "unknown"
+  },
+  "face": {
+   "reason": "requires_semantic_analysis",
+   "status": "unknown"
+  },
+  "paws": {
+   "reason": "requires_semantic_analysis",
+   "status": "unknown"
+  },
+  "tail": {
+   "reason": "requires_semantic_analysis",
+   "status": "unknown"
+  },
+  "status": "measured",
+  "coat_pattern": {
+   "value": "golden|tan|tan",
+   "status": "fused",
+   "confidence": "low",
+   "support_reference_ids": [
+    "bb7b4904-ce8c-4b65-8763-2f43ba190c4d"
+   ]
+  },
+  "body_markings": {
+   "value": "solid apricot, short-clipped curly coat with no markings / solid uniform apricot with no distinct markings; body coat clipped shorter while head, legs and tail retain longer wavy fur, slightly paler cream tone at the front paws",
+   "status": "fused",
+   "confidence": "low",
+   "support_reference_ids": [
+    "bb7b4904-ce8c-4b65-8763-2f43ba190c4d"
+   ]
+  },
+  "facial_markings": {
+   "value": "Uniform light apricot/cream face with slightly darker tan tones on the crown and around the eyes; lighter, almost white wispy hair on the beard and chin; no distinct blaze or patches",
+   "status": "fused",
+   "confidence": "low",
+   "support_reference_ids": [
+    "4c43dc2c-2242-4def-9d9f-51567069ec37"
+   ]
+  },
+  "semantic_traits": {
+   "model": "claude-opus-5",
+   "status": "vlm",
+   "traits": {
+    "coat": {
+     "length": "medium",
+     "marking_distribution": "solid uniform apricot with no distinct markings; body coat clipped shorter while head, legs and tail retain longer wavy fur, slightly paler cream tone at the front paws"
+    },
+    "ears": {
+     "shape": "floppy"
+    },
+    "species": "dog"
+   },
+   "analyzer": "vlm-identity-v1",
+   "image_count": 3,
+   "source_reference_ids": [
+    "4c43dc2c-2242-4def-9d9f-51567069ec37",
+    "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+    "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+   ]
+  },
+  "unique_features": {
+   "reason": "requires_semantic_analysis",
+   "status": "unknown"
+  },
+  "visual_embedding": {
+   "dim": 48,
+   "status": "fused",
+   "vector": [
+    0.154554,
+    0.147388,
+    0.141873,
+    0.154871,
+    0.142316,
+    0.132918,
+    0.151671,
+    0.1301,
+    0.113157,
+    0.152523,
+    0.129937,
+    0.1117,
+    0.176597,
+    0.158164,
+    0.143766,
+    0.195645,
+    0.161505,
+    0.137111,
+    0.149946,
+    0.112395,
+    0.084076,
+    0.139566,
+    0.127178,
+    0.117959,
+    0.194054,
+    0.165769,
+    0.144826,
+    0.183674,
+    0.160446,
+    0.145548,
+    0.14958,
+    0.119844,
+    0.097302,
+    0.140767,
+    0.139055,
+    0.137921,
+    0.167909,
+    0.15442,
+    0.144089,
+    0.15134,
+    0.135831,
+    0.125172,
+    0.155168,
+    0.133579,
+    0.117406,
+    0.141601,
+    0.139487,
+    0.13794
+   ],
+   "version": "identity-embed-v1-rgb-grid",
+   "confidence": "high",
+   "support_reference_ids": [
+    "4c43dc2c-2242-4def-9d9f-51567069ec37",
+    "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+    "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+   ],
+   "intra_reference_similarity": {
+    "max": 0.9896,
+    "min": 0.9861,
+    "mean": 0.9883,
+    "pair_count": 3
+   }
+  },
+  "distinctive_features": {
+   "items": [
+    {
+     "value": "Longer straight silky ear and head hair contrasting with the curly body coat",
+     "confidence": "low",
+     "support_reference_ids": [
+      "4c43dc2c-2242-4def-9d9f-51567069ec37"
+     ]
+    },
+    {
+     "value": "Rounded 'bob'-style haircut framing the face with long straight ear fringes",
+     "confidence": "low",
+     "support_reference_ids": [
+      "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+     ]
+    },
+    {
+     "value": "White chest blaze that splits into an upper patch and a lower patch separated by apricot fur",
+     "confidence": "low",
+     "support_reference_ids": [
+      "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+     ]
+    },
+    {
+     "value": "Wispy pale cream beard and mustache around the muzzle",
+     "confidence": "low",
+     "support_reference_ids": [
+      "4c43dc2c-2242-4def-9d9f-51567069ec37"
+     ]
+    }
+   ],
+   "status": "fused"
+  },
+  "primary_reference_id": "4c43dc2c-2242-4def-9d9f-51567069ec37",
+  "region_color_summary": {
+   "note": "horizontal thirds of subject bbox; orientation not asserted",
+   "left_third": {
+    "dominant": "cream"
+   },
+   "right_third": {
+    "dominant": "dark_brown"
+   },
+   "center_third": {
+    "dominant": "brown"
+   }
+  },
+  "same_individual_gate": {
+   "status": "ready",
+   "analyzer": "identity-fusion-v1",
+   "thresholds": {
+    "min_embedding_cosine_similarity": 0.72,
+    "min_signature_hist_intersection": 0.16
+   },
+   "reference_count": 3,
+   "signal_confidence": {
+    "signature": "high",
+    "coat_pattern": "low",
+    "body_markings": "low",
+    "facial_markings": "low",
+    "visual_embedding": "high",
+    "distinctive_features": "low"
+   },
+   "support_reference_ids": [
+    "4c43dc2c-2242-4def-9d9f-51567069ec37",
+    "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+    "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+   ],
+   "strict_lineage_reference_count": 3
+  }
+ },
+ "morphology": {
+  "version": 1,
+  "profile": {
+   "status": "fused",
+   "traits": {
+    "ear_form": {
+     "value": "floppy",
+     "status": "fused",
+     "evidence": "heuristic",
+     "confidence": "medium",
+     "support_reference_ids": [
+      "4c43dc2c-2242-4def-9d9f-51567069ec37",
+      "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+      "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+     ]
+    },
+    "body_size": {
+     "unit": "fraction_of_frame",
+     "class": "small_in_frame",
+     "value": 0.1385,
+     "caveat": "frame occupancy only; NOT real animal body size (camera distance/lens dominate)",
+     "status": "fused",
+     "evidence": "measured",
+     "measures": "frame_occupancy",
+     "confidence": "high",
+     "observation_count": 3,
+     "support_reference_ids": [
+      "4c43dc2c-2242-4def-9d9f-51567069ec37",
+      "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+      "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+     ],
+     "usable_as_body_size_class": false
+    },
+    "tail_form": {
+     "value": "short, held upright/curved over the back, covered in fluffy apricot wavy fur",
+     "status": "fused",
+     "evidence": "heuristic",
+     "confidence": "low",
+     "support_reference_ids": [
+      "bb7b4904-ce8c-4b65-8763-2f43ba190c4d"
+     ]
+    },
+    "body_build": {
+     "class": "slender",
+     "value": 0.6986,
+     "caveat": "silhouette solidity; pose/coat can affect estimate",
+     "status": "fused",
+     "evidence": "measured",
+     "confidence": "high",
+     "observation_count": 3,
+     "support_reference_ids": [
+      "4c43dc2c-2242-4def-9d9f-51567069ec37",
+      "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+      "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+     ]
+    },
+    "leg_proportion": {
+     "unit": "median_leg_length_over_bbox_height",
+     "class": "long",
+     "value": 0.7458,
+     "caveat": "heuristic pose geometry; near/far leg ambiguity",
+     "status": "fused",
+     "evidence": "heuristic",
+     "confidence": "medium",
+     "observation_count": 3,
+     "support_reference_ids": [
+      "4c43dc2c-2242-4def-9d9f-51567069ec37",
+      "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+      "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+     ]
+    },
+    "head_proportion": {
+     "unit": "head_height_over_bbox_height",
+     "class": "small",
+     "value": 0.026,
+     "caveat": "heuristic pose geometry",
+     "status": "fused",
+     "evidence": "heuristic",
+     "confidence": "medium",
+     "observation_count": 3,
+     "support_reference_ids": [
+      "4c43dc2c-2242-4def-9d9f-51567069ec37",
+      "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+      "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+     ]
+    },
+    "torso_proportion": {
+     "unit": "body_length_height_ratio",
+     "class": "compact",
+     "value": 0.778,
+     "caveat": "bbox ratio; pose-dependent",
+     "status": "fused",
+     "evidence": "measured",
+     "confidence": "high",
+     "observation_count": 3,
+     "support_reference_ids": [
+      "4c43dc2c-2242-4def-9d9f-51567069ec37",
+      "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+      "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+     ]
+    },
+    "muzzle_proportion": {
+     "unit": "nose_to_headtop_over_headtop_to_neck",
+     "class": "long",
+     "value": 2.357,
+     "caveat": "heuristic pose geometry",
+     "status": "fused",
+     "evidence": "heuristic",
+     "confidence": "medium",
+     "observation_count": 3,
+     "support_reference_ids": [
+      "4c43dc2c-2242-4def-9d9f-51567069ec37",
+      "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+      "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+     ]
+    }
+   },
+   "metadata": {
+    "notes": "breed metadata is optional and never used as a generation template",
+    "breed_estimate": {
+     "value": "Toy/Miniature Poodle or Poodle mix (e.g., Maltipoo)",
+     "status": "fused",
+     "evidence": "heuristic",
+     "confidence": "low",
+     "support_reference_ids": [
+      "bb7b4904-ce8c-4b65-8763-2f43ba190c4d"
+     ]
+    }
+   },
+   "primary_reference_id": "4c43dc2c-2242-4def-9d9f-51567069ec37"
+  },
+  "reference_observations": {
+   "4c43dc2c-2242-4def-9d9f-51567069ec37": {
+    "structural": {
+     "pose": {
+      "caveat": "heuristic silhouette geometry — placeholder per its own docs; never treat as authoritative skeleton",
+      "backend": "heuristic_mask_geometry",
+      "warnings": [],
+      "head_side": "right",
+      "keypoints": {
+       "neck": {
+        "x": 327.0,
+        "y": 9.0,
+        "visible": true,
+        "confidence": 0.55
+       },
+       "nose": {
+        "x": 367.0,
+        "y": 14.0,
+        "visible": true,
+        "confidence": 0.5
+       },
+       "head_top": {
+        "x": 357.0,
+        "y": 0.0,
+        "visible": true,
+        "confidence": 0.6
+       },
+       "tail_tip": {
+        "x": 190.0,
+        "y": 187.0,
+        "visible": true,
+        "confidence": 0.4
+       },
+       "spine_mid": {
+        "x": 241.0,
+        "y": 46.0,
+        "visible": true,
+        "confidence": 0.6
+       },
+       "tail_base": {
+        "x": 190.0,
+        "y": 329.0,
+        "visible": true,
+        "confidence": 0.5
+       },
+       "back_left_hip": {
+        "x": 245.0,
+        "y": 87.44,
+        "visible": true,
+        "confidence": 0.4
+       },
+       "back_left_paw": {
+        "x": 245.0,
+        "y": 503.0,
+        "visible": true,
+        "confidence": 0.45
+       },
+       "back_left_knee": {
+        "x": 245.0,
+        "y": 295.22,
+        "visible": true,
+        "confidence": 0.3
+       },
+       "back_right_hip": {
+        "x": 257.0,
+        "y": 81.44,
+        "visible": true,
+        "confidence": 0.4
+       },
+       "back_right_paw": {
+        "x": 257.0,
+        "y": 513.0,
+        "visible": true,
+        "confidence": 0.45
+       },
+       "front_left_paw": {
+        "x": 266.0,
+        "y": 518.0,
+        "visible": true,
+        "confidence": 0.45
+       },
+       "back_right_knee": {
+        "x": 257.0,
+        "y": 297.22,
+        "visible": true,
+        "confidence": 0.3
+       },
+       "front_right_paw": {
+        "x": 272.0,
+        "y": 518.0,
+        "visible": true,
+        "confidence": 0.45
+       },
+       "front_left_elbow": {
+        "x": 266.0,
+        "y": 298.72,
+        "visible": true,
+        "confidence": 0.3
+       },
+       "front_right_elbow": {
+        "x": 272.0,
+        "y": 298.22,
+        "visible": true,
+        "confidence": 0.3
+       },
+       "front_left_shoulder": {
+        "x": 266.0,
+        "y": 79.44,
+        "visible": true,
+        "confidence": 0.4
+       },
+       "front_right_shoulder": {
+        "x": 272.0,
+        "y": 78.44,
+        "visible": true,
+        "confidence": 0.4
+       }
+      },
+      "confidence": "low",
+      "head_height_fraction": 0.017
+     },
+     "status": "measured",
+     "silhouette": {
+      "bbox": [
+       115,
+       0,
+       367,
+       518
+      ],
+      "confidence": "measured",
+      "image_size": [
+       540,
+       720
+      ],
+      "area_fraction": 0.1603,
+      "border_contact": [
+       "top"
+      ],
+      "bbox_fill_ratio": 0.4746,
+      "bbox_aspect_ratio": 0.487,
+      "silhouette_solidity": 0.7263
+     },
+     "leg_proportions": {
+      "reason": "near_far_leg_ambiguity_v1",
+      "status": "unknown"
+     },
+     "tail_visibility": {
+      "reason": "not_determinable_from_silhouette_v1",
+      "status": "unknown"
+     },
+     "body_length_height_ratio": {
+      "value": 0.487,
+      "caveat": "bbox aspect ratio; assumes near-side view, pose-dependent",
+      "confidence": "measured"
+     }
+    },
+    "reference_id": "4c43dc2c-2242-4def-9d9f-51567069ec37",
+    "strict_lineage": true,
+    "semantic_traits": {
+     "model": "claude-opus-5",
+     "status": "present",
+     "traits": {
+      "body": {
+       "chest_markings": "unknown",
+       "torso_markings": "Even apricot curly coat across the back and sides with no distinct markings; slight lighter shading along the flanks"
+      },
+      "coat": {
+       "length": "medium",
+       "texture": "curly",
+       "dominant_colors": [
+        "light apricot",
+        "cream"
+       ],
+       "secondary_colors": [
+        "pale blonde",
+        "tan"
+       ],
+       "marking_distribution": "Solid single-color coat with no patches; body hair is dense and wavy/curly while head, ears and tail hair is longer, straighter and silkier; slightly paler cream on the chin, chest and lower legs"
+      },
+      "ears": {
+       "shape": "floppy",
+       "color_markings": "Long, straight silky hair in light golden-apricot, slightly lighter and more blonde than the body; drop ears hanging beside the cheeks"
+      },
+      "eyes": {
+       "color": "dark brown, nearly black",
+       "surrounding_markings": "Fur slightly darker apricot around the eye sockets; dark eyelid rims, no distinct rings or patches"
+      },
+      "face": {
+       "muzzle_color": "Pale cream to light apricot fur with a solid black nose and dark pigment around the lips",
+       "facial_markings": "Uniform light apricot/cream face with slightly darker tan tones on the crown and around the eyes; lighter, almost white wispy hair on the beard and chin; no distinct blaze or patches"
+      },
+      "paws": {
+       "colors_markings": "Light cream to pale apricot fluffy paws, no contrasting markings visible"
+      },
+      "tail": {
+       "appearance": "Held high and upright/curving forward, covered in long, slightly wavy apricot-blonde feathering, lighter than the body coat",
+       "tip_marking": "unknown"
+      },
+      "species": "dog",
+      "breed_estimate": "Small mixed-breed toy dog, likely a Maltipoo/Yorkie-poo type cross (poodle-mix with silky-coated toy breed)",
+      "unique_features": [
+       "Longer straight silky ear and head hair contrasting with the curly body coat",
+       "Wispy pale cream beard and mustache around the muzzle"
+      ],
+      "breed_confidence": "low"
+     },
+     "analyzer": "vlm-identity-v1"
+    },
+    "cutout_reference_id": "8fddca20-4153-40a3-b9ba-015a61cec7d4"
+   },
+   "bb7b4904-ce8c-4b65-8763-2f43ba190c4d": {
+    "structural": {
+     "pose": {
+      "caveat": "heuristic silhouette geometry — placeholder per its own docs; never treat as authoritative skeleton",
+      "backend": "heuristic_mask_geometry",
+      "warnings": [],
+      "head_side": "right",
+      "keypoints": {
+       "neck": {
+        "x": 360.0,
+        "y": 356.0,
+        "visible": true,
+        "confidence": 0.55
+       },
+       "nose": {
+        "x": 478.0,
+        "y": 413.0,
+        "visible": true,
+        "confidence": 0.5
+       },
+       "head_top": {
+        "x": 408.0,
+        "y": 339.0,
+        "visible": true,
+        "confidence": 0.6
+       },
+       "tail_tip": {
+        "x": 187.0,
+        "y": 420.0,
+        "visible": true,
+        "confidence": 0.4
+       },
+       "spine_mid": {
+        "x": 277.0,
+        "y": 419.0,
+        "visible": true,
+        "confidence": 0.6
+       },
+       "tail_base": {
+        "x": 197.0,
+        "y": 462.0,
+        "visible": true,
+        "confidence": 0.5
+       },
+       "back_left_hip": {
+        "x": 262.0,
+        "y": 444.08,
+        "visible": true,
+        "confidence": 0.4
+       },
+       "back_left_paw": {
+        "x": 262.0,
+        "y": 514.0,
+        "visible": true,
+        "confidence": 0.45
+       },
+       "back_left_knee": {
+        "x": 262.0,
+        "y": 479.03999999999996,
+        "visible": true,
+        "confidence": 0.3
+       },
+       "back_right_hip": {
+        "x": 272.0,
+        "y": 445.08,
+        "visible": true,
+        "confidence": 0.4
+       },
+       "back_right_paw": {
+        "x": 272.0,
+        "y": 519.0,
+        "visible": true,
+        "confidence": 0.45
+       },
+       "front_left_paw": {
+        "x": 369.0,
+        "y": 653.0,
+        "visible": true,
+        "confidence": 0.45
+       },
+       "back_right_knee": {
+        "x": 272.0,
+        "y": 482.03999999999996,
+        "visible": true,
+        "confidence": 0.3
+       },
+       "front_right_paw": {
+        "x": 381.0,
+        "y": 653.0,
+        "visible": true,
+        "confidence": 0.45
+       },
+       "front_left_elbow": {
+        "x": 369.0,
+        "y": 516.04,
+        "visible": true,
+        "confidence": 0.3
+       },
+       "front_right_elbow": {
+        "x": 381.0,
+        "y": 514.54,
+        "visible": true,
+        "confidence": 0.3
+       },
+       "front_left_shoulder": {
+        "x": 369.0,
+        "y": 379.08,
+        "visible": true,
+        "confidence": 0.4
+       },
+       "front_right_shoulder": {
+        "x": 381.0,
+        "y": 376.08,
+        "visible": true,
+        "confidence": 0.4
+       }
+      },
+      "confidence": "low",
+      "head_height_fraction": 0.052
+     },
+     "status": "measured",
+     "silhouette": {
+      "bbox": [
+       77,
+       339,
+       478,
+       665
+      ],
+      "confidence": "measured",
+      "image_size": [
+       540,
+       720
+      ],
+      "area_fraction": 0.1371,
+      "border_contact": [],
+      "bbox_fill_ratio": 0.4054,
+      "bbox_aspect_ratio": 1.229,
+      "silhouette_solidity": 0.5406
+     },
+     "leg_proportions": {
+      "reason": "near_far_leg_ambiguity_v1",
+      "status": "unknown"
+     },
+     "tail_visibility": {
+      "reason": "not_determinable_from_silhouette_v1",
+      "status": "unknown"
+     },
+     "body_length_height_ratio": {
+      "value": 1.229,
+      "caveat": "bbox aspect ratio; assumes near-side view, pose-dependent",
+      "confidence": "measured"
+     }
+    },
+    "reference_id": "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+    "strict_lineage": true,
+    "semantic_traits": {
+     "model": "claude-opus-5",
+     "status": "present",
+     "traits": {
+      "body": {
+       "chest_markings": "unknown",
+       "torso_markings": "solid apricot, short-clipped curly coat with no markings"
+      },
+      "coat": {
+       "length": "medium",
+       "texture": "curly",
+       "dominant_colors": [
+        "apricot",
+        "light tan"
+       ],
+       "secondary_colors": [
+        "cream"
+       ],
+       "marking_distribution": "solid uniform apricot with no distinct markings; body coat clipped shorter while head, legs and tail retain longer wavy fur, slightly paler cream tone at the front paws"
+      },
+      "ears": {
+       "shape": "floppy",
+       "color_markings": "solid apricot/light tan, longer wavy hair hanging down the side of the head"
+      },
+      "eyes": {
+       "color": "unknown",
+       "surrounding_markings": "unknown"
+      },
+      "face": {
+       "muzzle_color": "unknown",
+       "facial_markings": "unknown"
+      },
+      "paws": {
+       "colors_markings": "same apricot tone fading to paler cream at the feathered toes; no distinct markings visible"
+      },
+      "tail": {
+       "appearance": "short, held upright/curved over the back, covered in fluffy apricot wavy fur",
+       "tip_marking": "no distinct marking; same apricot color as body"
+      },
+      "species": "dog",
+      "breed_estimate": "Toy/Miniature Poodle or Poodle mix (e.g., Maltipoo)",
+      "unique_features": [],
+      "breed_confidence": "medium"
+     },
+     "analyzer": "vlm-identity-v1"
+    },
+    "cutout_reference_id": "f7749590-963e-4ce5-a28a-50daa89b881d"
+   },
+   "d83b660f-0bb0-4999-bff0-3da2fab19d51": {
+    "structural": {
+     "pose": {
+      "caveat": "heuristic silhouette geometry — placeholder per its own docs; never treat as authoritative skeleton",
+      "backend": "heuristic_mask_geometry",
+      "warnings": [
+       "근/원위 다리 구분 불가 — 동일 위치를 좌우에 복제(문서의 알려진 한계 참고)"
+      ],
+      "head_side": "left",
+      "keypoints": {
+       "neck": {
+        "x": 239.0,
+        "y": 183.0,
+        "visible": true,
+        "confidence": 0.55
+       },
+       "nose": {
+        "x": 134.0,
+        "y": 261.0,
+        "visible": true,
+        "confidence": 0.5
+       },
+       "head_top": {
+        "x": 214.0,
+        "y": 180.0,
+        "visible": true,
+        "confidence": 0.6
+       },
+       "tail_tip": {
+        "x": 281.0,
+        "y": 202.0,
+        "visible": true,
+        "confidence": 0.4
+       },
+       "spine_mid": {
+        "x": 238.0,
+        "y": 183.0,
+        "visible": true,
+        "confidence": 0.6
+       },
+       "tail_base": {
+        "x": 281.0,
+        "y": 322.0,
+        "visible": true,
+        "confidence": 0.5
+       },
+       "back_left_hip": {
+        "x": 264.0,
+        "y": 221.12,
+        "visible": true,
+        "confidence": 0.4
+       },
+       "back_left_paw": {
+        "x": 264.0,
+        "y": 515.0,
+        "visible": true,
+        "confidence": 0.45
+       },
+       "back_left_knee": {
+        "x": 264.0,
+        "y": 368.06,
+        "visible": true,
+        "confidence": 0.3
+       },
+       "back_right_hip": {
+        "x": 264.0,
+        "y": 221.12,
+        "visible": true,
+        "confidence": 0.4
+       },
+       "back_right_paw": {
+        "x": 264.0,
+        "y": 515.0,
+        "visible": true,
+        "confidence": 0.45
+       },
+       "front_left_paw": {
+        "x": 248.0,
+        "y": 514.0,
+        "visible": true,
+        "confidence": 0.45
+       },
+       "back_right_knee": {
+        "x": 264.0,
+        "y": 368.06,
+        "visible": true,
+        "confidence": 0.3
+       },
+       "front_right_paw": {
+        "x": 259.0,
+        "y": 516.0,
+        "visible": true,
+        "confidence": 0.45
+       },
+       "front_left_elbow": {
+        "x": 248.0,
+        "y": 366.06,
+        "visible": true,
+        "confidence": 0.3
+       },
+       "front_right_elbow": {
+        "x": 259.0,
+        "y": 368.06,
+        "visible": true,
+        "confidence": 0.3
+       },
+       "front_left_shoulder": {
+        "x": 248.0,
+        "y": 218.12,
+        "visible": true,
+        "confidence": 0.4
+       },
+       "front_right_shoulder": {
+        "x": 259.0,
+        "y": 220.12,
+        "visible": true,
+        "confidence": 0.4
+       }
+      },
+      "confidence": "low",
+      "head_height_fraction": 0.009
+     },
+     "status": "measured",
+     "silhouette": {
+      "bbox": [
+       134,
+       177,
+       343,
+       516
+      ],
+      "confidence": "measured",
+      "image_size": [
+       540,
+       720
+      ],
+      "area_fraction": 0.1182,
+      "border_contact": [],
+      "bbox_fill_ratio": 0.6436,
+      "bbox_aspect_ratio": 0.618,
+      "silhouette_solidity": 0.8289
+     },
+     "leg_proportions": {
+      "reason": "near_far_leg_ambiguity_v1",
+      "status": "unknown"
+     },
+     "tail_visibility": {
+      "reason": "not_determinable_from_silhouette_v1",
+      "status": "unknown"
+     },
+     "body_length_height_ratio": {
+      "value": 0.618,
+      "caveat": "bbox aspect ratio; assumes near-side view, pose-dependent",
+      "confidence": "measured"
+     }
+    },
+    "reference_id": "d83b660f-0bb0-4999-bff0-3da2fab19d51",
+    "strict_lineage": true,
+    "semantic_traits": {
+     "model": "claude-opus-5",
+     "status": "present",
+     "traits": {
+      "body": {
+       "chest_markings": "White patch centered on the chest, extending in an irregular elongated shape down toward the lower chest/belly between the front legs",
+       "torso_markings": "unknown"
+      },
+      "coat": {
+       "length": "medium",
+       "texture": "unknown",
+       "dominant_colors": [
+        "apricot",
+        "golden tan",
+        "cream"
+       ],
+       "secondary_colors": [
+        "white"
+       ],
+       "marking_distribution": "Mostly solid apricot/tan overall with a white patch on the chest extending down the front of the chest/belly area; slightly paler cream tones on the ear fringes and lower legs"
+      },
+      "ears": {
+       "shape": "floppy",
+       "color_markings": "Same apricot/golden tan as the body, long straight hair hanging down past the jawline, slightly lighter and more blonde at the tips"
+      },
+      "eyes": {
+       "color": "dark brown, nearly black, round and prominent",
+       "surrounding_markings": "no distinct markings; eyes framed by slightly darker apricot fur and overhanging face hair"
+      },
+      "face": {
+       "muzzle_color": "Apricot/light tan fur on the muzzle with a solid black nose; faint lighter cream shading around the lips and chin",
+       "facial_markings": "Uniform apricot-cream face with no distinct markings; slightly darker tan shading across the top of the head and around the eyes, wispy long hair falling over the forehead"
+      },
+      "paws": {
+       "colors_markings": "Front paws apricot/light tan, slightly paler cream at the toes; no distinct markings visible; hind paws not clearly visible"
+      },
+      "tail": {
+       "appearance": "unknown",
+       "tip_marking": "unknown"
+      },
+      "species": "dog",
+      "breed_estimate": "Small toy crossbreed, likely Maltipoo or Yorkie/Poodle-type mix (Maltese x Poodle or similar)",
+      "unique_features": [
+       "White chest blaze that splits into an upper patch and a lower patch separated by apricot fur",
+       "Rounded 'bob'-style haircut framing the face with long straight ear fringes"
+      ],
+      "breed_confidence": "low"
+     },
+     "analyzer": "vlm-identity-v1"
+    },
+    "cutout_reference_id": "2bb8f09a-9b5e-4c50-bc76-accc80d2ad9e"
+   }
+  }
+ },
+ "refset": {
+  "version": 1,
+  "morphology_profile_version": 1,
+  "source_reference_ids": [
+   "4c43dc2c-2242-4def-9d9f-51567069ec37",
+   "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+   "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+  ],
+  "reference_analysis": {
+   "4c43dc2c-2242-4def-9d9f-51567069ec37": {
+    "quality": {
+     "analyzer": "refset-quality-v1",
+     "components": {
+      "detection": null,
+      "sharpness": 1.0,
+      "resolution": 1.0,
+      "not_cropped": 0.4,
+      "person_free": null,
+      "segmentation": null,
+      "subject_size": 1.0
+     },
+     "base_quality": 0.8909,
+     "known_components": 4
+    },
+    "selectable": true,
+    "consistency": {
+     "label": "CONSISTENT",
+     "reason": "coat_distribution_overlap",
+     "analyzer": "refset-consistency-v1-hsv",
+     "mean_hist_intersection": 0.6988
+    },
+    "eligibility": {
+     "lineage": {
+      "reason": null,
+      "status": "strict_parent_linked",
+      "cutout_reference_id": "8fddca20-4153-40a3-b9ba-015a61cec7d4",
+      "original_reference_id": "4c43dc2c-2242-4def-9d9f-51567069ec37"
+     },
+     "reasons": [
+      "subject_cropped_by_frame"
+     ],
+     "analyzer": "eligibility-v2-lineage",
+     "signature": {
+      "phash": "db3c66e11cc3324a",
+      "version": "sig-v1-hsv64-phash64",
+      "hsv_hist": [
+       0.0026,
+       0.00918,
+       0.03306,
+       0.04797,
+       0.00639,
+       0.26156,
+       0.32477,
+       0.15274,
+       0.00939,
+       0.13098,
+       0.00944,
+       0.0,
+       0.00262,
+       0.00082,
+       0.0,
+       0.0,
+       3e-05,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0003,
+       0.0004,
+       8e-05,
+       8e-05,
+       8e-05,
+       0.0,
+       0.0,
+       0.0,
+       3e-05,
+       0.0,
+       0.0,
+       0.0,
+       8e-05,
+       0.0,
+       0.0,
+       0.0,
+       0.00369,
+       0.00103,
+       0.00011,
+       6e-05,
+       0.00167,
+       0.0,
+       0.0,
+       0.0,
+       0.0005,
+       0.0,
+       0.0,
+       0.0,
+       0.00034,
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     "face_usable": "unknown",
+     "animal_class": "unknown",
+     "tail_visible": "unknown",
+     "border_contact": [
+      "top"
+     ],
+     "subject_detected": "unknown",
+     "full_body_visible": "unlikely",
+     "mask_area_fraction": "unknown",
+     "rectangle_like_mask": "unknown",
+     "usable_for_identity": true,
+     "view_label_estimate": "unknown",
+     "detection_confidence": "unknown",
+     "person_contamination": "unknown",
+     "segmentation_quality_score": "unknown"
+    },
+    "reference_id": "4c43dc2c-2242-4def-9d9f-51567069ec37",
+    "classification": {
+     "model": "claude-opus-5",
+     "source": "vlm-view-pose-v1",
+     "pose_label": "STANDING",
+     "view_label": "TOP",
+     "visibility": {
+      "ears_visible": "yes",
+      "face_visible": "yes",
+      "paws_visible": "yes",
+      "tail_visible": "yes",
+      "heavy_occlusion": "no",
+      "full_body_visible": "yes",
+      "left_side_visible": "no",
+      "person_obstruction": "no",
+      "right_side_visible": "no",
+      "distinct_markings_visible": "no"
+     },
+     "pose_confidence": "high",
+     "view_confidence": "high"
+    }
+   },
+   "bb7b4904-ce8c-4b65-8763-2f43ba190c4d": {
+    "quality": {
+     "analyzer": "refset-quality-v1",
+     "components": {
+      "detection": null,
+      "sharpness": 1.0,
+      "resolution": 1.0,
+      "not_cropped": 1.0,
+      "person_free": null,
+      "segmentation": null,
+      "subject_size": 1.0
+     },
+     "base_quality": 1.0,
+     "known_components": 4
+    },
+    "selectable": true,
+    "consistency": {
+     "label": "CONSISTENT",
+     "reason": "coat_distribution_overlap",
+     "analyzer": "refset-consistency-v1-hsv",
+     "mean_hist_intersection": 0.6341
+    },
+    "eligibility": {
+     "lineage": {
+      "reason": null,
+      "status": "strict_parent_linked",
+      "cutout_reference_id": "f7749590-963e-4ce5-a28a-50daa89b881d",
+      "original_reference_id": "bb7b4904-ce8c-4b65-8763-2f43ba190c4d"
+     },
+     "reasons": [],
+     "analyzer": "eligibility-v2-lineage",
+     "signature": {
+      "phash": "809e7e7d7985848c",
+      "version": "sig-v1-hsv64-phash64",
+      "hsv_hist": [
+       0.0,
+       0.00038,
+       0.00991,
+       0.00357,
+       2e-05,
+       0.01272,
+       0.50922,
+       0.23098,
+       2e-05,
+       0.06523,
+       0.16423,
+       2e-05,
+       4e-05,
+       0.00368,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     "face_usable": "unknown",
+     "animal_class": "unknown",
+     "tail_visible": "unknown",
+     "border_contact": [],
+     "subject_detected": "unknown",
+     "full_body_visible": "likely",
+     "mask_area_fraction": "unknown",
+     "rectangle_like_mask": "unknown",
+     "usable_for_identity": true,
+     "view_label_estimate": "unknown",
+     "detection_confidence": "unknown",
+     "person_contamination": "unknown",
+     "segmentation_quality_score": "unknown"
+    },
+    "reference_id": "bb7b4904-ce8c-4b65-8763-2f43ba190c4d",
+    "classification": {
+     "model": "claude-opus-5",
+     "source": "vlm-view-pose-v1",
+     "pose_label": "STANDING",
+     "view_label": "LEFT",
+     "visibility": {
+      "ears_visible": "yes",
+      "face_visible": "no",
+      "paws_visible": "yes",
+      "tail_visible": "yes",
+      "heavy_occlusion": "no",
+      "full_body_visible": "yes",
+      "left_side_visible": "yes",
+      "person_obstruction": "no",
+      "right_side_visible": "no",
+      "distinct_markings_visible": "no"
+     },
+     "pose_confidence": "high",
+     "view_confidence": "medium"
+    }
+   },
+   "d83b660f-0bb0-4999-bff0-3da2fab19d51": {
+    "quality": {
+     "analyzer": "refset-quality-v1",
+     "components": {
+      "detection": null,
+      "sharpness": 1.0,
+      "resolution": 1.0,
+      "not_cropped": 1.0,
+      "person_free": null,
+      "segmentation": null,
+      "subject_size": 1.0
+     },
+     "base_quality": 1.0,
+     "known_components": 4
+    },
+    "selectable": true,
+    "consistency": {
+     "label": "CONSISTENT",
+     "reason": "coat_distribution_overlap",
+     "analyzer": "refset-consistency-v1-hsv",
+     "mean_hist_intersection": 0.7532
+    },
+    "eligibility": {
+     "lineage": {
+      "reason": null,
+      "status": "strict_parent_linked",
+      "cutout_reference_id": "2bb8f09a-9b5e-4c50-bc76-accc80d2ad9e",
+      "original_reference_id": "d83b660f-0bb0-4999-bff0-3da2fab19d51"
+     },
+     "reasons": [],
+     "analyzer": "eligibility-v2-lineage",
+     "signature": {
+      "phash": "d0ce331d0d26ef82",
+      "version": "sig-v1-hsv64-phash64",
+      "hsv_hist": [
+       0.005,
+       0.00934,
+       0.04261,
+       0.08571,
+       0.0074,
+       0.1192,
+       0.33116,
+       0.21984,
+       0.00666,
+       0.09416,
+       0.04398,
+       0.0,
+       0.00294,
+       0.00174,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0002,
+       0.00052,
+       9e-05,
+       0.00054,
+       7e-05,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.0,
+       0.00013,
+       0.0,
+       0.0,
+       0.0,
+       0.00568,
+       0.00191,
+       0.00046,
+       0.01693,
+       0.00252,
+       0.0,
+       0.0,
+       0.0,
+       0.00081,
+       0.0,
+       0.0,
+       0.0,
+       0.00041,
+       0.0,
+       0.0,
+       0.0
+      ]
+     },
+     "face_usable": "unknown",
+     "animal_class": "unknown",
+     "tail_visible": "unknown",
+     "border_contact": [],
+     "subject_detected": "unknown",
+     "full_body_visible": "likely",
+     "mask_area_fraction": "unknown",
+     "rectangle_like_mask": "unknown",
+     "usable_for_identity": true,
+     "view_label_estimate": "unknown",
+     "detection_confidence": "unknown",
+     "person_contamination": "unknown",
+     "segmentation_quality_score": "unknown"
+    },
+    "reference_id": "d83b660f-0bb0-4999-bff0-3da2fab19d51",
+    "classification": {
+     "model": "claude-opus-5",
+     "source": "vlm-view-pose-v1",
+     "pose_label": "SITTING",
+     "view_label": "FRONT",
+     "visibility": {
+      "ears_visible": "yes",
+      "face_visible": "yes",
+      "paws_visible": "yes",
+      "tail_visible": "no",
+      "heavy_occlusion": "no",
+      "full_body_visible": "no",
+      "left_side_visible": "no",
+      "person_obstruction": "no",
+      "right_side_visible": "no",
+      "distinct_markings_visible": "yes"
+     },
+     "pose_confidence": "high",
+     "view_confidence": "high"
+    }
+   }
+  }
+ },
+ "v3_prompt_sent": "Create a premium photorealistic canonical reference portrait of the exact same individual pet shown in the supplied reference photos. The photos are the authority for this pet's identity; the text below only adds constraints that were verified from those photos.\nPreserve the pet's exact recognizable identity: facial structure and proportions, eye shape and spacing, muzzle length and shape, ear shape and set, head-to-body ratio, leg length relative to the body, torso length, overall build, paws and tail appearance, and the exact coat — its natural hue and saturation, how its lighter and darker areas relate to each other, where each color sits on the body, and every marking in its real position and shape. Do not idealize the pet toward a breed standard; do not slim, bulk, lengthen or shorten the body or legs; do not smooth away asymmetries; do not shift coat colors toward a more typical shade. Do not invent markings, colors or features that the references do not show.\nPresentation may improve: show the pet well groomed, calm and alert, with clean studio-quality lighting. Show the full pet including all legs and paws, in the natural posture most strongly supported by the reference photos. Do not change a clearly standing pet into a sitting pose, or a clearly sitting pet into a standing pose. A different camera angle or a tidier pose than the originals is fine as long as the pet itself is unchanged. Show the pet from a front three-quarter angle, camera at the pet's eye level, no extreme perspective. All visible legs and anatomy must be natural and consistent; paws, ears and tail visible where the pet's anatomy and the references support it. Neutral expression.\nPlain solid neutral medium-dark gray background: a single flat tone with no gradient, no floor plane and no horizon line. Even neutral lighting. No contact shadow under the pet, no cast shadow on the background, no reflection and no darkening anywhere around the paws — the pet must be the only thing in the frame that is not the flat background. No accessories unless they are clearly part of the pet's identity in the references. No additional animals. No human. No objects. No text. No stylization.\nThe supplied references show, in order: face, full body, tail.\nReference photos, in the order supplied:\nReference 1 — face reference (front view): authority for facial identity: eye shape and spacing, muzzle length and shape, nose, facial markings; ear shape, set and markings; paw color and markings; the exact placement and shape of the distinctive markings.\nReference 2 — full-body reference (left side): authority for ear shape, set and markings; body proportions: leg length, torso length, head-to-body ratio and overall build; how the coat colors and markings are distributed along the body; the left side of the body and its markings; tail shape, length and carriage; paw color and markings.\nReference 3 — tail reference: authority for facial identity: eye shape and spacing, muzzle length and shape, nose, facial markings; ear shape, set and markings; body proportions: leg length, torso length, head-to-body ratio and overall build; how the coat colors and markings are distributed along the body; tail shape, length and carriage; paw color and markings.\nEach photo is authoritative for what it clearly shows. Combine them; do not let one photo override another on features it does not show, and do not borrow a feature from one photo's angle or lighting that the others contradict.\nVerified identity facts for this individual (from its own photos):\nCoat colors measured from the photos: tan, brown. Secondary tones: cream, red brown, dark brown. Keep these exact tones and their relative lightness; do not shift the hue.\nThe coat is not one flat color: across the body its regions read as golden, tan, tan — keep that regional variation where the references show it.\nThe pet is a dog.\nFacial markings seen in the photos: Uniform light apricot/cream face with slightly darker tan tones on the crown and around the eyes; lighter, almost white wispy hair on the beard and chin; no distinct blaze or patches.\nBody markings seen in the photos: solid apricot, short-clipped curly coat with no markings / solid uniform apricot with no distinct markings; body coat clipped shorter while head, legs and tail retain longer wavy fur, slightly paler cream tone at the front paws.\nDistinctive features to keep exactly: Longer straight silky ear and head hair contrasting with the curly body coat; Rounded 'bob'-style haircut framing the face with long straight ear fringes; White chest blaze that splits into an upper patch and a lower patch separated by apricot fur; Wispy pale cream beard and mustache around the muzzle.\nEar shape: floppy.\nTail: short, held upright/curved over the back, covered in fluffy apricot wavy fur.\nTail tip: no distinct marking; same apricot color as body.\nCoat length: medium.\nCoat texture: curly."
+}

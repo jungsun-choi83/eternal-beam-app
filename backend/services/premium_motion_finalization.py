@@ -47,11 +47,13 @@ logger = logging.getLogger(__name__)
 
 #: 기존 상용 모션만 — 새 모션(PET_HEAD, RUN …)은 카탈로그에 명시적으로 추가되기
 #: 전까지 이행 대상이 아니다 (기술적으로 생성 가능해도 판매되지 않는다).
-#: 포장 대상 목록(motion_delivery_service.PACKAGEABLE_MOTIONS)에서 무료 기본
-#: 모션(BREATHING)을 뺀 것과 정확히 같다 — 두 목록이 갈라지면 포장은 되는데
-#: 이행이 안 되는(또는 그 반대) 모션이 생긴다.
+#: 포장 대상 목록(motion_delivery_service.PACKAGEABLE_MOTIONS)에서 **시스템 소유
+#: 무료 모션**(SYSTEM_MOTIONS = BREATHING, RETURN_HOME)을 뺀 것이다 — 두 목록이
+#: 갈라지면 포장은 되는데 이행이 안 되는(또는 그 반대) 모션이 생긴다.
 PREMIUM_MOTIONS: tuple[str, ...] = tuple(
-    m for m in motion_delivery_service.PACKAGEABLE_MOTIONS if m != "BREATHING"
+    m
+    for m in motion_delivery_service.PACKAGEABLE_MOTIONS
+    if m not in motion_delivery_service.SYSTEM_MOTIONS
 )
 
 #: 발행/재생 포인터가 저장하는 서명 URL 수명 — 레거시 업로드 서명(7일)과 동일.
@@ -365,5 +367,100 @@ async def finalize_premium_motion(
         object_path=derived,
         delivery_format=motion_delivery_service.DELIVERY_PACKED_ALPHA,
         owned_source_job_id=owned_source_job_id,
+        deduplicated=deduplicated,
+    )
+
+
+async def finalize_system_motion(
+    *,
+    run_id: str,
+    user_id: str,
+    pet_id: str,
+    motion_id: str,
+    motion_version_id: str,
+    motion_version: int,
+    candidate_id: str,
+    sign_fn: Optional[Callable[[str, str], Optional[str]]] = None,
+) -> PremiumFinalization:
+    """무료·시스템 소유 모션(RETURN_HOME 등)의 이행 확정.
+
+    finalize_premium_motion 과 **같은 검증·발행·포인터** 경로를 쓰되 상거래 단계
+    (예약 확정/소유 기록)는 **건너뛴다** — system 모션은 크레딧이 없고(reservation 도
+    product_key 도 없다) 구매된 적도 없다. 결과는 재생 포인터(generated_motions) 하나다.
+    BREATHING 은 자신의 홈 발행 경로를 쓰므로 여기 대상이 아니다."""
+    mid = (motion_id or "").strip().upper()
+    if mid not in motion_delivery_service.SYSTEM_MOTIONS or mid == "BREATHING":
+        raise PremiumFinalizationError(
+            "MOTION_NOT_SYSTEM", f"{mid} 는 무료 시스템 이행 대상이 아닙니다.", status=409
+        )
+
+    try:
+        candidate = await motion_delivery_service._load_candidate(candidate_id)
+    except motion_delivery_service.MotionDeliveryError as exc:
+        raise PremiumFinalizationError(exc.code, exc.message, status=exc.status) from exc
+    if (
+        str(candidate.get("motion_version_id") or "") != motion_version_id
+        or str(candidate.get("user_id") or "") != user_id
+        or str(candidate.get("pet_id") or "") != pet_id
+        or str(candidate.get("motion_id") or "").upper() != mid
+    ):
+        raise PremiumFinalizationError(
+            "CANDIDATE_MISMATCH", "후보가 이 실행/펫/모션에 속하지 않습니다.", status=409
+        )
+    from . import motion_video_service
+
+    if not motion_video_service.candidate_is_publishable(candidate):
+        raise PremiumFinalizationError(
+            "CANDIDATE_NOT_PASS", "QA PASS(또는 무결성 게이트 통과) 후보만 이행할 수 있습니다.", status=409
+        )
+    derived = str(candidate.get("derived_video_path") or "").strip()
+    fmt = motion_delivery_service.candidate_delivery_format(candidate)
+    if not derived or fmt != motion_delivery_service.DELIVERY_PACKED_ALPHA:
+        raise PremiumFinalizationError(
+            "DELIVERY_NOT_PACKAGED",
+            "packed-alpha 파생물이 없습니다 — 이행 전에 포장(Phase 7F)이 필요합니다.",
+            status=409,
+        )
+    bucket = str(candidate.get("raw_bucket") or asset_url_refresh.default_bucket()).strip()
+    signed = (sign_fn or _sign_pointer_url)(bucket, derived)
+    if not signed:
+        raise PremiumFinalizationError(
+            "DELIVERY_ASSET_UNAVAILABLE", "포장된 스토리지 객체를 확인할 수 없습니다.", status=409
+        )
+
+    # 1) 발행 원장 (멱등 앵커) — 프리미엄과 같은 표.
+    publication_id, deduplicated = await _ensure_publication(
+        user_id=user_id,
+        pet_id=pet_id,
+        motion_id=mid,
+        motion_version_id=motion_version_id,
+        motion_version=motion_version,
+        candidate_id=candidate_id,
+        bucket=bucket,
+        object_path=derived,
+    )
+
+    # 2) 상거래 단계 없음 — 크레딧 확정/소유 기록을 건너뛴다. (무료 시스템 모션)
+
+    # 3) 현재 포인터 — 재생/디바이스가 읽는 유일한 표.
+    await generated_motions_service.record_pointer(
+        user_id=user_id,
+        pet_id=pet_id,
+        place_id=generated_motions_service.THEME_INDEPENDENT_PLACE_ID,
+        action_id=mid,
+        video_url=str(signed),
+    )
+
+    return PremiumFinalization(
+        publication_id=publication_id,
+        motion_id=mid,
+        motion_version_id=motion_version_id,
+        selected_candidate_id=candidate_id,
+        pet_id=pet_id,
+        video_url=str(signed),
+        bucket=bucket,
+        object_path=derived,
+        delivery_format=motion_delivery_service.DELIVERY_PACKED_ALPHA,
+        owned_source_job_id=f"system:{run_id}",
         deduplicated=deduplicated,
     )

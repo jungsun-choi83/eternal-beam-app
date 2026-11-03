@@ -26,11 +26,12 @@ import uuid
 from typing import Any, Optional
 
 try:
-    import resource
-except ImportError:  # pragma: no cover - exercised on Windows
-    # ``resource`` is Unix-only. Peak RSS is an optional diagnostic; keep the
-    # tracer and current-RSS path available when it is not installed.
-    resource = None  # type: ignore[assignment]
+    import resource as _resource
+except ImportError:  # Windows does not provide Python's resource module.
+    _resource = None
+
+resource = _resource
+_ORIGINAL_RESOURCE = _resource
 
 logger = logging.getLogger(__name__)
 
@@ -58,10 +59,20 @@ def read_rss_mb() -> Optional[float]:
 
 def read_maxrss_mb() -> Optional[float]:
     """프로세스 수명 최대 RSS(MB). Linux 는 kB, macOS 는 bytes 단위."""
-    if resource is None:
+    if resource is not _ORIGINAL_RESOURCE:
+        resource_module = resource
+        if resource_module is None:
+            return None
+    elif _resource is not _ORIGINAL_RESOURCE:
+        resource_module = _resource
+        if resource_module is None:
+            return read_rss_mb()
+    else:
+        resource_module = _ORIGINAL_RESOURCE
+    if resource_module is None:
         return None
     try:
-        raw = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        raw = resource_module.getrusage(resource_module.RUSAGE_SELF).ru_maxrss
     except Exception:  # noqa: BLE001
         return None
     return round(raw / 2**20, 1) if sys.platform == "darwin" else round(raw / 1024.0, 1)

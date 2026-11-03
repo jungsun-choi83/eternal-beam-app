@@ -229,7 +229,8 @@ def test_fal_wan_3_survives_end_frame_capability_filter(monkeypatch):
 
     resolved, available, requirements = mvs._resolve_providers_for_contract(contract)
 
-    assert requirements["required_all"] == ["supports_end_frame"]
+    assert requirements["required_all"] == []
+    assert requirements["preferred_any"] == ["supports_end_frame"]
     assert [provider.logical_model_id for provider in available] == ["wan_3_standard"]
     assert [provider.logical_model_id for provider in resolved] == ["wan_3_standard"]
     assert isinstance(resolved[0], vp.FalWan3StandardProvider)
@@ -256,18 +257,17 @@ def test_durable_worker_preserves_fal_model_order(monkeypatch):
     monkeypatch.setenv("MOTION_VENDOR_SEEDANCE", "fal")
     monkeypatch.setenv("MOTION_VENDOR_KLING_3", "fal")
     monkeypatch.setenv("MOTION_VENDOR_WAN_3_STANDARD", "runway")
+    monkeypatch.setenv("MOTION_MODEL_COME_CLOSER", "grok_imagine_lite")
     run = SimpleNamespace(id="run-1", user_id="user-1", pet_id="pet-1")
 
     interaction = runs._video_providers(run, "PET_HEAD")
     locomotion = runs._video_providers(run, "COME_CLOSER")
     assert [provider.logical_model_id for provider in interaction] == [
         "seedance",
-        "kling_3",
     ]
-    assert [provider.vendor_id for provider in interaction] == ["fal", "fal"]
+    assert [provider.vendor_id for provider in interaction] == ["fal"]
     assert [provider.logical_model_id for provider in locomotion] == [
-        "kling_3",
-        "wan_3_standard",
+        "grok_imagine_lite",
     ]
 
     contract = ms.motion_snapshot(ms.MOTIONS["LIE_DOWN"])
@@ -277,7 +277,6 @@ def test_durable_worker_preserves_fal_model_order(monkeypatch):
     )
     assert [provider.logical_model_id for provider in available] == [
         "kling_3",
-        "wan_3_standard",
     ]
     assert [provider.logical_model_id for provider in filtered] == ["kling_3"]
 
@@ -286,7 +285,6 @@ def test_durable_worker_preserves_fal_model_order(monkeypatch):
     micro = runs._video_providers(run, "BREATHING")
     assert [provider.logical_model_id for provider in micro] == [
         "wan_3_standard",
-        "seedance",
     ]
     assert micro[0].vendor_id == "fal"
     assert micro[0].adapter_id == "FalWan3StandardProvider"
@@ -297,12 +295,12 @@ def test_direct_adapter_is_not_admitted_to_durable_worker(monkeypatch):
     monkeypatch.setenv("KLING_SECRET_KEY", "secret")
     monkeypatch.setenv("RUNWAY_API_KEY", "runway")
     monkeypatch.setenv("MOTION_VENDOR_KLING_3", "kling")
+    monkeypatch.setenv("MOTION_MODEL_COME_CLOSER", "kling_3")
     run = SimpleNamespace(id="run-2", user_id="user-1", pet_id="pet-1")
 
-    providers = runs._video_providers(run, "COME_CLOSER")
-    assert [provider.logical_model_id for provider in providers] == [
-        "wan_3_standard"
-    ]
+    with pytest.raises(runs.PetGenerationRunError) as exc:
+        runs._video_providers(run, "COME_CLOSER")
+    assert exc.value.code == "DURABLE_PROVIDER_NOT_CONFIGURED"
 
 
 def test_native_direct_adapters_do_not_claim_durable_contract():

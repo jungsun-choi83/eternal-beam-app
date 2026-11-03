@@ -4,6 +4,19 @@ This module deliberately has no knowledge of the legacy Pi, UDP, Unity, or
 device-renderer implementations.  It owns only command delivery and ACK
 state.  Supabase is used for durable command/state records when configured;
 the in-memory store keeps local development and unit tests deterministic.
+
+── cross-process delivery ────────────────────────────────────────────────────
+_connections (the live WebSocket) only exists in whichever OS process accepted
+that socket (the uvicorn/API process). A sibling process that calls enqueue()
+— e.g. the Exhibition prep worker, or another uvicorn worker if the API is
+ever run with multiple processes — has its own empty _connections and can
+therefore only persist the device_commands row; it can never push to a
+device it did not itself register. sync_pending() is how the process holding
+the live socket catches up: called periodically from the WS loop, it re-reads
+the durable pending rows (the one thing every process shares) and sends
+anything this process hasn't already pushed down *this* socket. _delivered
+tracks that per-device "already pushed, awaiting ACK" set so the periodic
+check does not resend on every tick.
 """
 
 from __future__ import annotations
@@ -80,6 +93,10 @@ _connections: dict[str, WebSocket] = {}
 _states: dict[str, DeviceState] = {}
 _pending: dict[str, OrderedDict[str, dict[str, Any]]] = {}
 _acked: dict[str, set[str]] = {}
+#: command_ids already pushed down the *current* live socket for a device —
+#: lets sync_pending() poll the durable store without resending while a
+#: command is still awaiting ACK. Reset wholesale on every register().
+_delivered: dict[str, set[str]] = {}
 _lock = asyncio.Lock()
 
 
@@ -88,6 +105,7 @@ def __reset_for_tests() -> None:
     _states.clear()
     _pending.clear()
     _acked.clear()
+    _delivered.clear()
 
 
 def _state(device_id: str) -> DeviceState:
@@ -173,12 +191,16 @@ async def register(device_id: str, websocket: WebSocket) -> list[dict[str, Any]]
         _pending.setdefault(device_id, OrderedDict()).update(
             (str(command["command_id"]), command) for command in pending if command.get("command_id")
         )
+        replay = list(_pending.get(device_id, {}).values())
+        # Fresh socket, fresh delivery set — the caller is about to send every
+        # item in `replay` immediately, so sync_pending() must not repeat it.
+        _delivered[device_id] = {str(c["command_id"]) for c in replay if c.get("command_id")}
     if previous is not None and previous is not websocket:
         try:
             await previous.close(code=4001, reason="replaced by newer connection")
         except Exception:
             pass
-    return list(_pending.get(device_id, {}).values())
+    return replay
 
 
 async def unregister(device_id: str, websocket: WebSocket) -> None:
@@ -206,6 +228,7 @@ async def acknowledge(device_id: str, command_id: str) -> bool:
     async with _lock:
         known = cid in _pending.get(device_id, {}) or cid in _acked.get(device_id, set())
         _pending.setdefault(device_id, OrderedDict()).pop(cid, None)
+        _delivered.get(device_id, set()).discard(cid)
         _acked.setdefault(device_id, set()).add(cid)
         state = _state(device_id)
         state.last_ack = cid
@@ -226,6 +249,8 @@ async def enqueue(device_id: str, command: dict[str, Any]) -> dict[str, Any]:
     if websocket is not None:
         try:
             await websocket.send_json(command)
+            async with _lock:
+                _delivered.setdefault(device_id, set()).add(command_id)
         except Exception:
             await unregister(device_id, websocket)
     return command
@@ -234,6 +259,38 @@ async def enqueue(device_id: str, command: dict[str, Any]) -> dict[str, Any]:
 async def pending(device_id: str) -> list[dict[str, Any]]:
     async with _lock:
         return _load_pending(device_id)
+
+
+async def sync_pending(device_id: str) -> list[dict[str, Any]]:
+    """Push any durably-pending commands this process hasn't sent yet.
+
+    No-op if this process doesn't hold the live socket for device_id (the
+    normal case for every process except the one that accepted the
+    connection). Call this periodically from the WS loop while connected —
+    it is what lets a command persisted by *another* process (the Exhibition
+    worker, or a sibling API worker) reach an already-connected device
+    without waiting for a reconnect.
+    """
+    async with _lock:
+        websocket = _connections.get(device_id)
+        if websocket is None:
+            return []
+        delivered = _delivered.setdefault(device_id, set())
+        rows = _load_pending(device_id)
+        to_send = [row for row in rows if row.get("command_id") and str(row["command_id"]) not in delivered]
+        for row in to_send:
+            cid = str(row["command_id"])
+            _pending.setdefault(device_id, OrderedDict())[cid] = row
+            delivered.add(cid)
+    sent: list[dict[str, Any]] = []
+    for row in to_send:
+        try:
+            await websocket.send_json(row)
+            sent.append(row)
+        except Exception:
+            await unregister(device_id, websocket)
+            break
+    return sent
 
 
 def state_snapshot(device_id: str) -> dict[str, Any]:

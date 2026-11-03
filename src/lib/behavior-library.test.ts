@@ -10,7 +10,7 @@
  *
  * 그룹은 서버 레지스트리에서 온다:
  *   SPONTANEOUS = idleEvents (BLINKING/EAR_TWITCHING/HEAD_TILTING/TAIL_WAGGING)
- *   INTERACTIVE = actionEvents (COME_CLOSER)
+ *   INTERACTIVE = actionEvents (COME_CLOSER/PET_HEAD/PAW_HELLO)
  */
 
 import { test } from 'node:test'
@@ -28,6 +28,9 @@ import type { PremiumAssets } from './premium-assets.ts'
 
 const IDLE = ['BLINKING', 'EAR_TWITCHING', 'HEAD_TILTING', 'TAIL_WAGGING']
 const CC = 'COME_CLOSER'
+const PH = 'PET_HEAD'
+const PAW = 'PAW_HELLO'
+const ALL = [...IDLE, CC, PH, PAW]
 const url = (id: string) => `https://cdn.test/${id}.mp4`
 
 function assets(over: Partial<PremiumAssets> = {}): PremiumAssets {
@@ -36,10 +39,10 @@ function assets(over: Partial<PremiumAssets> = {}): PremiumAssets {
     ready: {},
     readyAssets: {},
     generating: [],
-    missing: [...IDLE, CC],
+    missing: ALL,
     idleEvents: IDLE,
-    actionEvents: [CC],
-    prices: { "idle:BUNDLE": 1, "action:COME_CLOSER": 1 },
+    actionEvents: [CC, PH, PAW],
+    prices: { "idle:BUNDLE": 1, "action:COME_CLOSER": 1, "action:PET_HEAD": 1, "action:PAW_HELLO": 1 },
     entitled: true,
     preferences: {},
     subscriptionStatus: 'active',
@@ -56,20 +59,38 @@ const itemOf = (s: BehaviorLibraryState, id: string) =>
 
 // ── 그룹 ─────────────────────────────────────────────────────────────────────
 
-test('PM 이 지정한 5종이 두 그룹으로 나뉜다', () => {
+test('상용 7종이 두 그룹으로 나뉘고 PAW_HELLO 는 Interactive Actions 에 있다', () => {
   const s = derive(assets())
   const spont = s.groups.find((g) => g.id === 'spontaneous')!
   const inter = s.groups.find((g) => g.id === 'interactive')!
   assert.deepEqual(spont.items.map((i) => i.id), IDLE)
-  assert.deepEqual(inter.items.map((i) => i.id), [CC])
-  assert.equal(s.totalCount, 5)
+  assert.deepEqual(inter.items.map((i) => i.id), [CC, PH, PAW])
+  assert.equal(s.totalCount, 7)
+})
+
+test('PAW_HELLO 는 Interactive Actions 에 Give Paw 로 표시되고 1 credit 이다', () => {
+  const s = derive(assets({ entitled: false, subscriptionRequired: false }), false)
+  const paw = itemOf(s, PAW)
+  assert.equal(paw.offerAccess, 'credit')
+  assert.equal(paw.priceCredits, 1)
+  const i18n = readFileSync('src/components/memorial/memorial-i18n.ts', 'utf8')
+  assert.match(i18n, /PAW_HELLO:\s*"Give Paw"/)
+})
+
+test('PET_HEAD 는 Interactive Actions 에 Pet Me 로 표시되고 1 credit 제안을 재사용한다', () => {
+  const s = derive(assets({ entitled: false, subscriptionRequired: false }), false)
+  const petHead = itemOf(s, PH)
+  assert.equal(petHead.offerAccess, 'credit')
+  assert.equal(petHead.priceCredits, 1)
+  const i18n = readFileSync('src/components/memorial/memorial-i18n.ts', 'utf8')
+  assert.match(i18n, /PET_HEAD:\s*"Pet Me"/)
 })
 
 test('서버 레지스트리의 내부 모션은 소비자 상품으로 자동 노출되지 않는다', () => {
   const five = [...IDLE, 'NOSE_WIGGLE']
-  const s = derive(assets({ idleEvents: five, missing: [...five, CC] }))
+  const s = derive(assets({ idleEvents: five, missing: [...five, CC, PH, PAW] }))
   assert.equal(s.groups.find((g) => g.id === 'spontaneous')!.items.length, 4)
-  assert.equal(s.totalCount, 5)
+  assert.equal(s.totalCount, 7)
   assert.equal(itemOf(s, 'NOSE_WIGGLE'), undefined)
 })
 
@@ -103,7 +124,7 @@ test('READY / GENERATING / MISSING 이 정확히 하나씩 배타적으로 나�
 test('판정은 premium-unlock 의 behaviorState 와 같은 함수다 — 두 곳이 갈리지 않는다', () => {
   const a = assets({ ready: { BLINKING: url('b') }, generating: [CC] })
   const s = derive(a)
-  for (const id of [...IDLE, CC]) {
+  for (const id of ALL) {
     assert.equal(itemOf(s, id).status, behaviorState(id, a), `${id} 판정이 어긋난다`)
   }
 })
@@ -128,16 +149,16 @@ test('GENERATING 도 다시 제출할 수 없다 — 중복 제출 방지', () =
 
 test('MISSING 만 생성 가능하다', () => {
   const s = derive(assets())
-  for (const id of [...IDLE, CC]) {
+  for (const id of ALL) {
     assert.equal(canGenerateBehavior(itemOf(s, id), s), true)
   }
 })
 
 test('전부 READY 면 만들 것이 없다', () => {
-  const ready = Object.fromEntries([...IDLE, CC].map((i) => [i, url(i)]))
+  const ready = Object.fromEntries(ALL.map((i) => [i, url(i)]))
   const s = derive(assets({ ready, missing: [] }))
   assert.deepEqual(s.missingIds, [])
-  assert.equal(s.readyCount, 5)
+  assert.equal(s.readyCount, 7)
   assert.equal(s.anyGenerating, false)
 })
 
@@ -146,7 +167,7 @@ test('전부 READY 면 만들 것이 없다', () => {
 test('멤버가 아니면 어떤 행동도 생성할 수 없다', () => {
   const s = derive(assets(), false)
   assert.equal(s.canGenerate, false)
-  for (const id of [...IDLE, CC]) {
+  for (const id of ALL) {
     assert.equal(canGenerateBehavior(itemOf(s, id), s), false, `${id} 가 비멤버에게 열렸다`)
   }
 })
@@ -157,7 +178,7 @@ test('멤버가 아니어도 이미 만든 것은 READY 로 남는다', () => {
   assert.equal(s.readyCount, 1)
 })
 
-test('자산이 없으면 빈 목록 — 임의로 5종을 만들어 내지 않는다', () => {
+test('자산이 없으면 빈 목록 — 임의로 상용 행동을 만들어 내지 않는다', () => {
   const s = derive(null)
   assert.equal(s.totalCount, 0)
   assert.deepEqual(s.missingIds, [])
@@ -226,7 +247,7 @@ test('선호는 status 와 별개다 — MISSING 인 행동에도 값이 있다'
 
 test('저장된 값이 없으면 켬 — 서버 기본값과 같다', () => {
   const s = derive(assets({ preferences: {} }))
-  for (const id of [...IDLE, CC]) assert.equal(itemOf(s, id).enabled, true)
+  for (const id of ALL) assert.equal(itemOf(s, id).enabled, true)
 })
 
 test('OFF 로 저장된 행동은 OFF 로 읽힌다', () => {

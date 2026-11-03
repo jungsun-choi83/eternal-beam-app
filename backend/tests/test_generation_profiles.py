@@ -99,8 +99,8 @@ def test_profile_never_shortens_below_spec_minimum(monkeypatch):
 def test_profile_invariants_hold_in_test_mode(monkeypatch):
     monkeypatch.setenv("PHASE6_GENERATION_PROFILE", "test")
     spec, _ = _spec_for("BLINKING")
-    # 프로파일이 바꿀 수 없는 것들: 종횡비·오디오·카메라.
-    assert spec["aspect_ratio"] == "9:16"
+    # 프로파일이 바꿀 수 없는 것들: 종횡비·오디오·카메라. (테스트 단계 전역 16:9.)
+    assert spec["aspect_ratio"] == "16:9"
     assert spec["audio"] is False
     assert spec["camera_fixed"] is True
 
@@ -161,7 +161,7 @@ def test_build_under_test_profile_sends_explicit_params(storage, monkeypatch):
     # 프로바이더가 스스로 해상도/길이를 고를 수 없다 — 요청에 명시된다.
     assert req.output_spec["resolution"] == "480p"
     assert req.output_spec["duration_sec"] == 4  # MICRO 고정 4.0s (v6)
-    assert req.output_spec["aspect_ratio"] == "9:16"
+    assert req.output_spec["aspect_ratio"] == "16:9"  # 테스트 단계 전역 16:9
     assert req.output_spec["audio"] is False
     assert v.output_spec["profile"] == "test"  # 버전 행에 프로파일이 박제된다
 

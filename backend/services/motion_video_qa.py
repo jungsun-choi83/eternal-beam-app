@@ -147,6 +147,63 @@ def _probe_duration(path: str) -> Optional[float]:
         return None
 
 
+def extract_frame_png(video_bytes: bytes, fraction: float) -> Optional[bytes]:
+    """영상의 `fraction` 지점 프레임을 **ffmpeg 로 직접 PNG 로 추출**해 그 바이트를
+    돌려준다 (손실 없는 PNG 인코딩 1회, numpy 왕복 없음). seek 계산은 sample_frames 와
+    **동일**하므로 sample_frames 가 평가한 바로 그 프레임과 픽셀 동일하다. ffmpeg/ffprobe
+    가 없거나 실패하면 None — 호출자는 numpy→PNG 로 폴백한다. 이미지 편집/리사이즈/크롭/
+    색보정/기하 변환은 하지 않는다 — 고른 프레임을 그대로 PNG 로 박제할 뿐이다."""
+    if not video_bytes:
+        return None
+    try:
+        with tempfile.TemporaryDirectory(prefix="eb_close_pos_") as td:
+            path = os.path.join(td, "input.mp4")
+            with open(path, "wb") as tmp:
+                tmp.write(video_bytes)
+            duration = _probe_duration(path)
+            if not duration or duration <= 0:
+                return None
+            if fraction >= 1.0:
+                tail_dir = os.path.join(td, "tail")
+                os.makedirs(tail_dir, exist_ok=True)
+                tail_sec = min(0.5, duration)
+                r = subprocess.run(
+                    ["ffmpeg", "-y", "-v", "quiet", "-sseof", f"-{tail_sec:.3f}",
+                     "-i", path, "-vsync", "0", os.path.join(tail_dir, "frame_%05d.png")],
+                    capture_output=True, timeout=60,
+                )
+                files = sorted(
+                    os.path.join(tail_dir, n) for n in os.listdir(tail_dir) if n.endswith(".png")
+                )
+                if r.returncode != 0 or not files:
+                    t = max(0.0, duration - _TRUE_LAST_OFFSET_SEC)
+                    out_path = os.path.join(td, "last.png")
+                    r = subprocess.run(
+                        ["ffmpeg", "-y", "-v", "quiet", "-ss", f"{t:.3f}", "-i", path,
+                         "-frames:v", "1", out_path],
+                        capture_output=True, timeout=60,
+                    )
+                    files = [out_path] if r.returncode == 0 and os.path.isfile(out_path) else []
+                if not files:
+                    return None
+                with open(files[-1], "rb") as fh:
+                    return fh.read()
+            t = min(duration * fraction, max(0.0, duration - _TRUE_LAST_OFFSET_SEC))
+            out_path = os.path.join(td, "frame.png")
+            r = subprocess.run(
+                ["ffmpeg", "-y", "-v", "quiet", "-ss", f"{t:.3f}", "-i", path,
+                 "-frames:v", "1", out_path],
+                capture_output=True, timeout=60,
+            )
+            if r.returncode != 0 or not os.path.isfile(out_path):
+                return None
+            with open(out_path, "rb") as fh:
+                return fh.read()
+    except Exception:
+        logger.warning("종단 프레임 PNG 추출 실패", exc_info=True)
+        return None
+
+
 def sample_frames(
     video_bytes: bytes, fractions: Optional[tuple[float, ...]] = None
 ) -> Optional[list[Optional[np.ndarray]]]:
@@ -222,6 +279,78 @@ def sample_frames(
             return frames if any(f is not None for f in frames) else None
     except Exception:
         logger.warning("프레임 샘플링 실패", exc_info=True)
+        return None
+
+
+def sample_dense_frames(
+    video_bytes: bytes,
+    *,
+    fps: float = 12.0,
+    max_frames: int = 72,
+) -> Optional[dict[str, Any]]:
+    """Decode a short generated clip once into a dense chronological QA scan.
+
+    Unlike :func:`sample_frames`, which seeks once per requested timestamp, this
+    uses one ffmpeg decode.  The dense frames stay local; callers select at most
+    a few full-resolution evidence frames for the existing VLM call.  No video
+    generation, upload, model call, crop, resize, or visual transformation is
+    performed.
+    """
+    from PIL import Image
+
+    if not video_bytes or fps <= 0 or max_frames < 2:
+        return None
+    try:
+        with tempfile.TemporaryDirectory(prefix="eb_motion_dense_qa_") as td:
+            path = os.path.join(td, "input.mp4")
+            with open(path, "wb") as tmp:
+                tmp.write(video_bytes)
+            duration = _probe_duration(path)
+            if not duration or duration <= 0:
+                return None
+            pattern = os.path.join(td, "frame_%05d.png")
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-y", "-v", "quiet", "-i", path,
+                    "-vf", f"fps={float(fps):.6f}",
+                    "-frames:v", str(int(max_frames)), pattern,
+                ],
+                capture_output=True,
+                timeout=90,
+            )
+            files = sorted(
+                os.path.join(td, name)
+                for name in os.listdir(td)
+                if name.startswith("frame_") and name.endswith(".png")
+            )
+            if result.returncode != 0 or len(files) < 2:
+                return None
+            frames: list[np.ndarray] = []
+            for file_path in files:
+                try:
+                    with Image.open(file_path) as image:
+                        frames.append(np.asarray(image.convert("RGB"), dtype=np.uint8))
+                except Exception:
+                    continue
+            if len(frames) < 2:
+                return None
+            # fps emits frames on a regular time grid. Fractions are approximate
+            # timestamps used for chronological labels and provenance only.
+            fractions = [
+                min(1.0, max(0.0, (index / float(fps)) / float(duration)))
+                for index in range(len(frames))
+            ]
+            covered_seconds = min(float(duration), (len(frames) - 1) / float(fps))
+            return {
+                "frames": frames,
+                "fractions": fractions,
+                "requested_fps": float(fps),
+                "decoded_frames": len(frames),
+                "duration_sec": float(duration),
+                "coverage_ratio": round(covered_seconds / float(duration), 4),
+            }
+    except Exception:
+        logger.warning("조밀 모션 QA 프레임 디코딩 실패", exc_info=True)
         return None
 
 
@@ -1428,8 +1557,27 @@ def evaluate_motion_video(
             checks["loop_return"] = "unknown"
             reasons.append("loop_return_unmeasurable")
 
-    # ── TRANSITION 시작/목표 도달 (결정론) ───────────────────────────────
-    if str(spec_contract.get("motion_class")) == "TRANSITION":
+    # ── 시작/목표 도달 (결정론) — TRANSITION + 필수 목표 키프레임 모션 ──────────
+    # TRANSITION(LIE_DOWN 등)뿐 아니라 **목표 키프레임이 필수인** 모든 모션이 이
+    # 끝점 판정을 공유한다: RETURN_HOME(파생 CLOSE_POSITION→STAND_READY)은 LOCOMOTION
+    # 이지만 START_END 쌍이므로 첫 프레임≈시작 키프레임, 끝 프레임≈목표 키프레임을
+    # 똑같이 본다. required_end_roles 가 계약(requirements.roles)에 있으면 필수 목표다.
+    _req_roles = (spec_contract.get("requirements") or {}).get("roles") or {}
+    _has_required_target = bool(_req_roles.get("required_end_roles"))
+    # 루프 same-start-end 아이들(MICRO loopable)이 **실제로** START_END 로 생성된
+    # 경우: 끝점도 전이와 동일한 판정기로 본다 — 첫≈시작 키프레임, 끝≈같은 시작
+    # 키프레임(목표 키프레임이 시작과 동일하게 걸렸다). 단일 시작 I2V 폴백에선
+    # video_strategy 가 START_END 가 아니라 이 블록이 돌지 않는다(끝 조건 없음 —
+    # 기존 loop_return 만 본다). 끝점 체크의 권위는 이 모션 계약에서 자문이다.
+    _loop_same_start_end = (
+        bool(spec_contract.get("loop_same_start_end"))
+        and str(spec_contract.get("video_strategy")) == "START_END_FRAME"
+    )
+    if (
+        str(spec_contract.get("motion_class")) == "TRANSITION"
+        or _has_required_target
+        or _loop_same_start_end
+    ):
         target_sig = _frame_signature(target_keyframe_rgb) if target_keyframe_rgb is not None else None
         first_sig, last_sig = (sigs[0] if sigs else None), (sigs[-1] if sigs else None)
 
@@ -1515,6 +1663,17 @@ JUDGEMENT_CHECKS = frozenset(
         "vlm_direction_travel",
         "vlm_interaction",
         "vlm_human_hand_policy",
+        "vlm_paw_lift",
+        "vlm_paw_offer",
+        "vlm_paw_hold",
+        "vlm_paw_support",
+        "vlm_paw_balance",
+        "vlm_paw_limb_count",
+        "vlm_paw_anatomy",
+        "vlm_paw_return",
+        "vlm_motion_integrity",
+        "vlm_critical_state",
+        "vlm_final_position",
         "temporal_breathing",
     }
 )
@@ -1711,6 +1870,25 @@ def apply_judgement(
             if val == "no":
                 reasons.append(f"vlm:{key}=no")
 
+        if str(spec_contract.get("motion_id") or "").upper() == "PAW_HELLO":
+            paw_fields = (
+                ("vlm_paw_lift", "paw_lift_visible"),
+                ("vlm_paw_offer", "paw_offer_toward_viewer"),
+                ("vlm_paw_hold", "paw_hold_visible"),
+                ("vlm_paw_support", "supporting_paws_grounded"),
+                ("vlm_paw_balance", "natural_balance"),
+                ("vlm_paw_limb_count", "limb_count_correct"),
+                ("vlm_paw_anatomy", "paw_anatomy_plausible"),
+                ("vlm_paw_return", "smooth_return_to_stand_ready"),
+            )
+            for check_name, key in paw_fields:
+                val = v(key)
+                checks[check_name] = (
+                    PASS if val == "yes" else (FAIL if val == "no" else UNKNOWN)
+                )
+                if val == "no":
+                    reasons.append(f"vlm:{key}=no")
+
         composition = PASS
         human_policy_failed = (
             motion_class == "INTERACTION"
@@ -1761,6 +1939,19 @@ def apply_judgement(
         elif v("single_pet") != "yes":
             composition = "unknown"
         checks["vlm_composition"] = composition
+
+        acceptance = (((spec_contract.get("requirements") or {}).get("qa") or {}).get("business") or {}).get("acceptance") or {}
+        if acceptance.get("review_policy") in {
+            "hold_without_regeneration", "publish_with_advisory"
+        }:
+            for name, key in (("vlm_motion_integrity", "severe_motion_defect"),
+                              ("vlm_critical_state", "critical_state_violation")):
+                val = v(key)
+                checks[name] = FAIL if val == "yes" else PASS if val == "no" else UNKNOWN
+                if val == "yes":
+                    reasons.append(f"vlm:{key}=yes")
+            val = v("final_position_verified")
+            checks["vlm_final_position"] = PASS if val == "yes" else REVIEW
 
         if motion_class == "TRANSITION":
             val = v("ends_in_target_pose")
@@ -1884,6 +2075,18 @@ def apply_judgement(
     # 명시적으로 advisory 로 분류한 REVIEW 는 증거/사유를 보존하되 PASS 자격을
     # 막지 않는다. UNKNOWN 및 비자문 REVIEW 는 계속 REVIEW 로 막는다.
     required_all = set(structural_required) | set(identity_required) | set(motion_required)
+    # 루프 same-start-end 아이들의 끝점 체크(첫/끝 ≈ 시작 키프레임)는 **진단 전용**
+    # 이다 — 측정/사유는 영수증에 남기되 전달 판정(decision)을 바꾸지 않는다. 아이들
+    # 루프 복귀는 loop_return(자문 SSIM)이 담당하고, 끝점은 기하 신호로만 둔다. 전이/
+    # RETURN_HOME 은 loop_same_start_end 가 아니고 이 끝점이 required_all 에 있어 그대로
+    # 하드 게이트다. (REVIEW·FAIL 둘 다 비차단 — 아이들에선 끝점이 과금/전달을 쥐지 않는다.)
+    _idle_endpoints: set[str] = set()
+    if bool(spec_contract.get("loop_same_start_end")):
+        _idle_endpoints = {
+            name
+            for name in ("starts_at_start_pose", "reaches_target_pose")
+            if name in checks and name not in required_all
+        }
     advisory_checks = set(structural_evidence.get("advisory_checks") or [])
     advisory_checks.update(
         name
@@ -1891,15 +2094,21 @@ def apply_judgement(
         if name not in required_all and checks.get(name) == REVIEW
     )
     advisory_checks.update(extra_advisory)
+    advisory_checks.update(_idle_endpoints)
     # FAIL 에서 강등된 REVIEW 는 절대 자문이 아니다.
     advisory_checks -= demoted_from_fail
     advisory_findings = list(structural_evidence.get("advisory_findings") or []) + extra_findings
 
-    failed = [name for name, value in checks.items() if value == FAIL]
+    failed = [
+        name for name, value in checks.items()
+        if value == FAIL and name not in _idle_endpoints
+    ]
     blocking_non_pass = [
         name
         for name, value in checks.items()
-        if value != PASS and not (value == REVIEW and name in advisory_checks)
+        if value != PASS
+        and name not in _idle_endpoints
+        and not (value == REVIEW and name in advisory_checks)
     ]
     if failed:
         decision = FAIL

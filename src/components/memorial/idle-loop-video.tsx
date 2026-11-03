@@ -940,6 +940,12 @@ export function IdleLoopVideo({
       const chainId = def.chainTo;
       const chainDef = chainId ? getRuntimeEvent(chainId) : null;
       const chainEl = chainId ? actionElFor(chainId) : null;
+      // A missing/failed or still unbuffered companion must keep COME_CLOSER's
+      // final frame for the existing hold-and-dissolve instead of stalling.
+      if (chainId === "RETURN_HOME" && (!chainEl || chainEl.error || chainEl.readyState < 3)) {
+        beginReturn();
+        return;
+      }
       if (chainDef && chainEl?.src) {
         if (import.meta.env.DEV) console.info(`[${def.id}] → ${chainDef.id} 체인`);
         startEvent(chainDef, def);

@@ -15,7 +15,15 @@ from backend.services import business_qa
 from backend.services import motion_spec
 from backend.services import motion_video_qa as qa
 
-_CONTRACT = motion_spec.motion_snapshot(motion_spec.MOTIONS["BREATHING"])
+# These are historical breathing-v2 receipts, before independent acceptance.
+# Keep their delivery/threshold compatibility coverage; beta policy has its own
+# regression matrix in test_motion_acceptance.py.
+_CONTRACT = copy.deepcopy(motion_spec.motion_snapshot(motion_spec.MOTIONS["BREATHING"]))
+_BUSINESS = _CONTRACT["requirements"]["qa"]["business"]
+_BUSINESS["version"] = "motion-qa-contract-v2"
+_BUSINESS.pop("acceptance")
+_BUSINESS["domains"].pop("acceptance")
+_BUSINESS["check_authority"].update(vlm_motion="DIAGNOSTIC_ONLY", vlm_composition="QUALITY_ADVISORY")
 _THRESHOLDS = qa._default_temporal_thresholds()
 
 #: A calm, torso-local breath (modelled on stored PASS candidates).

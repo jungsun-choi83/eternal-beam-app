@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field, replace
+from copy import deepcopy
+from types import SimpleNamespace
 from typing import Any, Optional
 
 from ..scenarios.pet_scenarios import IDLE_EVENTS, PET_ACTIONS
@@ -98,7 +100,7 @@ from .business_qa import (
 #      제품 계약의 정확한 문구로 고정하고, 전략/길이/provider 순서는 불변이다.
 #      ⚠️ v11 과 같은 주의: 이 범프로 v15 이하에 핀된 FAILED 런은 재시도 시
 #      _stale_motion_pin 이 언핀하고 현행 스펙으로 재생성한다(유료).
-MOTION_SPEC_VERSION = "motion-spec-v16"
+MOTION_SPEC_VERSION = "motion-spec-v17"
 # v2 (Phase 6.6): pet_motion_profile 추가 + motion_reference 가 라이브러리에서
 # 해석된 실제 자산/버전/호환성/출처를 담는다 (미해석 시 기존 v1 형태 + 경고 유지).
 # v3 (Phase 4): resolve 계약에 motion_type + requirements 를 동봉한다.
@@ -106,7 +108,9 @@ PHASE6_CONTRACT_VERSION = "phase6-contract-v3"
 MOTION_REGISTRY_CONTRACT_VERSION = "motion-registry-v1"
 # QA-only contract version.  Unlike MOTION_SPEC_VERSION, changing this must not
 # invalidate or repurchase an already generated video.
-MOTION_QA_CONTRACT_VERSION = "motion-qa-contract-v2"
+MOTION_QA_CONTRACT_VERSION = "motion-qa-contract-v3"
+MOTION_ACCEPTANCE_VERSION = "motion-acceptance-v1"
+MOTION_REVIEW_POLICY = "publish_with_advisory"
 
 CLASS_MICRO = "MICRO"
 CLASS_TRANSITION = "TRANSITION"
@@ -127,11 +131,12 @@ PROVIDER_WAN_3_STANDARD = "wan_3_standard"
 PROVIDER_SEEDANCE = "seedance"
 PROVIDER_KLING_3 = "kling_3"
 PROVIDER_MINIMAX_H3_MAX_TURBO = "minimax_h3_max_turbo"
+PROVIDER_GROK_IMAGINE_LITE = "grok_imagine_lite"
 
 MOTION_PROVIDER_ORDER_BY_CLASS: dict[str, tuple[str, ...]] = {
     CLASS_MICRO: (PROVIDER_WAN_3_STANDARD, PROVIDER_SEEDANCE),
-    CLASS_INTERACTION: (PROVIDER_SEEDANCE, PROVIDER_KLING_3),
-    CLASS_LOCOMOTION: (PROVIDER_KLING_3, PROVIDER_WAN_3_STANDARD),
+    CLASS_INTERACTION: (PROVIDER_WAN_3_STANDARD, PROVIDER_KLING_3),
+    CLASS_LOCOMOTION: (PROVIDER_WAN_3_STANDARD, PROVIDER_KLING_3),
     CLASS_TRANSITION: (PROVIDER_KLING_3, PROVIDER_WAN_3_STANDARD),
 }
 
@@ -139,13 +144,13 @@ MOTION_PROVIDER_ORDER_BY_CLASS: dict[str, tuple[str, ...]] = {
 # 예: "LOOK_UP": (PROVIDER_SEEDANCE, PROVIDER_WAN_3_STANDARD)
 MOTION_PROVIDER_ORDER_OVERRIDES: dict[str, tuple[str, ...]] = {}
 
-# 모션별 **1순위 모델**을 설정으로 고른다: env MOTION_MODEL_<MOTION_ID> 가
-# 아래 기본값보다 우선한다. 고른 모델은 기존 순서의 첫 칸을 대체할 뿐이고
-# (뒤 칸은 그대로), 값은 video_motion_providers 의 logical model id 여야 한다.
-# 예: MOTION_MODEL_BREATHING=wan_3_standard → (wan_3_standard, seedance)
+# A motion uses exactly one logical model: env > motion default > first class/override
+# entry. Capability adaptation and retries stay within that model.
 MOTION_MODEL_ENV_PREFIX = "MOTION_MODEL_"
 MOTION_MODEL_DEFAULTS: dict[str, str] = {
-    BREATHING_HOME_STATE: PROVIDER_MINIMAX_H3_MAX_TURBO,
+    # Change these assignments or MOTION_MODEL_<ID> to explicitly select a model.
+    BREATHING_HOME_STATE: PROVIDER_WAN_3_STANDARD,
+    "COME_CLOSER": PROVIDER_GROK_IMAGINE_LITE,
 }
 
 REF_NONE = "none"
@@ -171,11 +176,18 @@ class MotionSpecError(Exception):
 class MotionSpec:
     motion_id: str
     motion_class: str
-    #: 사람이 읽는 모션 서술 (Phase 6 프롬프트의 씨앗이 아니라 문서다).
+    #: Generation description. Retain this name for stored contracts/callers.
     description: str
-    start_keyframe_role: str
+    #: 역할 기반 시작 키프레임. start_from_derived 가 설정된 모션(RETURN_HOME)은
+    #: 역할 키프레임이 아니라 **런별 파생 이미지**에서 시작하므로 None 이다.
+    start_keyframe_role: Optional[str] = None
     target_keyframe_role: Optional[str] = None
     requires_target_keyframe: bool = False
+    #: 설정되면 시작 이미지가 역할 키프레임이 아니라 런별 파생 자산에서 온다
+    #: (close_position = COME_CLOSER 종단 프레임). resolve_video_generation_spec 는
+    #: start_image_override 를 받아 start_keyframe 페이로드를 구성한다. 현재
+    #: RETURN_HOME 하나만 쓴다. 역할 시작 모션(그 외 전부)은 None 이다.
+    start_from_derived: Optional[str] = None
     motion_reference_id: Optional[str] = None
     #: none | preferred | required.
     motion_reference_policy: str = REF_NONE
@@ -192,6 +204,8 @@ class MotionSpec:
     motion_type: str = "GENERIC"
     #: authoritative motion registry 요구사항 (Phase 4).
     requirements: dict[str, Any] = field(default_factory=dict)
+    #: Independent acceptance criteria; legacy motions retain their old QA text.
+    qa_acceptance_spec: dict[str, Any] = field(default_factory=dict)
 
 
 #: MICRO 는 클래스 전체가 **고정 4.0s** 다 (v6). 프로바이더 최소(Runway
@@ -214,18 +228,58 @@ MOTIONS: dict[str, MotionSpec] = {
     # ── MICRO — 기존 런타임 모션 id 그대로 ──────────────────────────────
     BREATHING_HOME_STATE: _micro(
         BREATHING_HOME_STATE,
-        "Calm, natural resting breathing only.",
+        "The pet is calm and relaxed, quietly alive in its natural standing pose. "
+        "Slow, soft resting breathing creates a very subtle natural movement through "
+        "the whole body, with the chest, shoulders, neck, head and fur all responding "
+        "gently and together. During the idle, occasional small natural signs of life "
+        "occur: a gentle blink, a tiny ear movement, and, if the pet has a tail, a slow, "
+        "relaxed tail sway once or twice, never a fast wag. These micro-movements are "
+        "sparse, unhurried and never happen all at once or repeat mechanically. The gaze "
+        "remains calm and stable. The mouth, jaw and tongue remain exactly as they "
+        "appear in the starting image",
         "STAND_READY", loopable=True,
     ),
-    "BLINKING": _micro("BLINKING", "자연스러운 눈 깜빡임 1~2회", "STAND_READY"),
-    "EAR_TWITCHING": _micro("EAR_TWITCHING", "귀 움찔거림", "STAND_READY"),
-    "HEAD_TILTING": _micro("HEAD_TILTING", "호기심 어린 고개 갸웃", "STAND_READY"),
-    "TAIL_WAGGING": _micro("TAIL_WAGGING", "부드러운 꼬리 흔들기", "STAND_READY"),
-    # ── MICRO — 새 모션 (기존 어디에도 없던 것만 새 id) ─────────────────
-    # v9: 상용화하며 전용 LOOK_UP 스틸 대신 홈 키프레임을 재사용 — 홈 자세에서
-    # 올려다보고 되돌아오는 모션이다(키프레임 재사용 원칙, 추가 생성 비용 0).
-    # v16 부터 그 홈 키프레임은 STAND_READY 다. 서술은 PET_HEAD v8 과 같은
-    # 긍정형 영어 장면 묘사.
+    "BLINKING": _micro(
+        "BLINKING",
+        "The only clearly visible intentional action is one complete, natural bilateral "
+        "blink. From the starting open-eyed gaze, both visible eyelids close fully "
+        "together, pause only for an instant, then reopen fully to the same gaze and "
+        "remain open. Preserve natural eye shape, iris color, facial identity and source "
+        "occlusion; do not substitute a wink, squint, facial twitch or head movement",
+        "STAND_READY",
+    ),
+    "EAR_TWITCHING": _micro(
+        "EAR_TWITCHING",
+        "The dominant action is one clearly visible, small, quick ear twitch. One "
+        "anatomically visible ear tip or ear body flicks briefly away from its resting "
+        "orientation and returns; both visible ears may twitch only when that is natural "
+        "for this pet. Preserve the source ear shape, size, fold, set and occlusion; do "
+        "not straighten, perk up, enlarge, invent or duplicate an ear, and do not "
+        "substitute a head shake or body shudder",
+        "STAND_READY",
+    ),
+    "HEAD_TILTING": _micro(
+        "HEAD_TILTING",
+        "The dominant action is one clearly visible, gentle sideways roll of the head, "
+        "roughly 10 to 20 degrees. One ear becomes slightly lower than the other while "
+        "the muzzle and gaze keep pointing in the same direction; this is not a left or "
+        "right turn, profile rotation or nod. The neck and upper chest may follow with "
+        "small connected secondary motion. The head then returns smoothly to its "
+        "original upright orientation. Preserve ear and neck anatomy while the tail, "
+        "paws and lower body remain calm",
+        "STAND_READY",
+    ),
+    "TAIL_WAGGING": _micro(
+        "TAIL_WAGGING",
+        "The dominant action is one gentle, natural tail wag. The anatomically evidenced "
+        "visible tail moves side to side from its base two or three times, then settles "
+        "smoothly back to its original resting carriage. Preserve the source tail's "
+        "length, thickness, curl, fur and occlusion; do not straighten, lengthen, invent "
+        "or duplicate it. The motion comes from the tail rather than a hip swing, torso "
+        "rotation or whole-body sway, while the head and planted paws remain calm",
+        "STAND_READY",
+    ),
+
     "LOOK_UP": _micro(
         "LOOK_UP",
         "The pet lifts its head and looks up attentively, as if hearing a "
@@ -255,16 +309,7 @@ MOTIONS: dict[str, MotionSpec] = {
         duration_range_sec=(2.5, 5.0), loopable=False,
         video_compat={"returns_to_start_pose": False, "motion_scale": "body"},
     ),
-    # ── 앉은 홈 ↔ STAND_READY 브리지 (Phase 4 이음매 수리) ──────────────
-    # NEUTRAL_IDLE 은 keyframe-spec-v2 부터 정본 자세를 물려받아 앉아 있을 수
-    # 있다. 그때 STAND_READY 시작 모션(COME_CLOSER/LIE_DOWN 등)으로의 하드 컷은
-    # 자세 점프가 보인다 — 이 두 브리지가 그 사이를 잇는다. START_END 라 양 끝이
-    # 실제 키프레임 이미지와 일치한다: 진입 컷은 홈 포즈끼리, 체인 컷은
-    # STAND_READY 포즈끼리 맞아 어떤 디졸브보다 깨끗하다. **수요 기반**이다:
-    # 홈이 이미 서 있는 펫은 생성할 이유가 없고(자산 없음 = 런타임이 직행),
-    # 생성 여부 결정이 곧 "브리지를 틀 것인가"의 신호다.
-    # v16: 홈이 항상 STAND_READY 라 두 브리지는 수요가 없다(자산 없음 = 런타임
-    # 직행). 정의는 바이트 단위로 그대로 둔다 — 앉은 자세 홈을 다시 들일 때 쓴다.
+
     "SIT_TO_STAND": MotionSpec(
         motion_id="SIT_TO_STAND", motion_class=CLASS_TRANSITION,
         description="From its current relaxed neutral pose, the pet smoothly "
@@ -314,15 +359,68 @@ MOTIONS: dict[str, MotionSpec] = {
     # ── LOCOMOTION ──────────────────────────────────────────────────────
     "COME_CLOSER": MotionSpec(
         motion_id="COME_CLOSER", motion_class=CLASS_LOCOMOTION,
-        description="카메라 쪽으로 다가오기 (기존 프리미엄 액션)",
+        description=(
+            "The pet runs naturally toward its owner, who is standing just behind the camera. "
+            "The camera stays completely still with no zoom or reframing. "
+            "{gait_text}. "
+            "Keep the exact same pet throughout the clip: same face, muzzle, eyes, ears, fur color, markings, and body proportions. "
+            "Use a natural grounded gait with clear ground contact. "
+            "No floating, sliding, limb merging, or morphing. "
+            "Keep the whole pet inside the frame, including the paws. "
+            "The pet becomes only slightly larger as it approaches, then slows down and stops calmly while remaining fully visible in the frame, front-facing or nearly front-facing."
+        ),
         start_keyframe_role="STAND_READY",
-        motion_reference_id="DOG_APPROACH", motion_reference_policy=REF_PREFERRED,
-        preferred_video_strategy=STRATEGY_I2V_MOTION_REF,
-        fallback_video_strategy=STRATEGY_I2V,
-        duration_range_sec=(3.0, 6.0),
+        # TEMP (2026-10-22): DOG_APPROACH 모션 레퍼런스를 **일시 제거**한다. COME_CLOSER 는
+        # 당분간 단일 시작 I2V 로만 생성한다 — 시작 이미지는 STAND_READY, 엔드 이미지 없음,
+        # 모션 레퍼런스 없음. 되돌릴 때는 motion_reference_id="DOG_APPROACH",
+        # motion_reference_policy=REF_PREFERRED, preferred_video_strategy=
+        # STRATEGY_I2V_MOTION_REF, fallback_video_strategy=STRATEGY_I2V 를 복원하면 된다.
+        # RETURN_HOME·파생 CLOSE_POSITION·QA·프로바이더 순서는 영향받지 않는다.
+        preferred_video_strategy=STRATEGY_I2V,
+        duration_range_sec=(5.0, 7.0),
         video_compat={"returns_to_start_pose": False, "motion_scale": "locomotion"},
         preferred_camera_view="FRONT",
         preferred_travel_direction="TOWARD_CAMERA",
+    ),
+    # RETURN_HOME — COME_CLOSER 의 시스템 소유 무료 동반 복귀 모션 (2026-10-22, 하이브리드).
+    # 구매 불가·Behavior Library 비노출·크레딧 0 (motion_delivery_service.SYSTEM_MOTIONS).
+    # 시작은 **런별 파생 CLOSE_POSITION** (COME_CLOSER 가 성공한 뒤 그 영상에서 고른
+    # 종단 프레임을 그대로 PNG 로 박제한 것 — close_position_service). 역할 키프레임이
+    # 아니므로 start_keyframe_role 은 None 이고 start_from_derived="close_position" 이다.
+    # 끝은 STAND_READY(HOME) 역할 키프레임. START_END 로 양끝이 생성을 규정하고 런타임은
+    # COME_CLOSER 뒤에 이 클립을 이어 홈으로 돌아간다. 이 단계에서는 신원 복원/이미지
+    # 편집을 하지 않는다 — 고른 프레임을 그대로 쓴다(기본 모션 흐름 검증용).
+    "RETURN_HOME": MotionSpec(
+        motion_id="RETURN_HOME", motion_class=CLASS_LOCOMOTION,
+        description=(
+            "The same pet performs RETURN_HOME in one continuous shot. "
+            "The camera remains completely stationary. "
+
+            "The pet begins at CLOSE_POSITION, near the camera, exactly as shown "
+            "in the supplied starting image. "
+
+            "The pet turns away from the camera and walks naturally toward HOME_IDLE. "
+            "It continues moving away without reversing direction. "
+            "As it retreats, it gradually becomes smaller while remaining centered. "
+
+            "Upon reaching its HOME_IDLE position, the pet stops walking. "
+            "It then turns in place to face the camera, without stepping forward "
+            "or changing its distance from the camera. "
+
+            "The final pose must be compatible with the supplied HOME_IDLE reference "
+            "and transition naturally into BREATHING. "
+            "The pet must remain at its home location after arriving. "
+
+            "There must be no second approach toward the camera, "
+            "no return to CLOSE_POSITION, and no forward movement after retreat. "
+        ),
+        start_from_derived="close_position",
+        target_keyframe_role="STAND_READY",
+        requires_target_keyframe=True, preferred_video_strategy=STRATEGY_START_END,
+        duration_range_sec=(6.0, 8.0),
+        video_compat={"returns_to_start_pose": False, "motion_scale": "locomotion"},
+        preferred_camera_view="FRONT",
+        preferred_travel_direction="AWAY_FROM_CAMERA",
     ),
     "RUN": MotionSpec(
         motion_id="RUN", motion_class=CLASS_LOCOMOTION,
@@ -369,24 +467,62 @@ MOTIONS: dict[str, MotionSpec] = {
     # ── INTERACTION — v1 은 사람 손을 키프레임에 요구하지 않는다 ─────────
     "PET_HEAD": MotionSpec(
         motion_id="PET_HEAD", motion_class=CLASS_INTERACTION,
-        # v8: 엔지니어링 메모("손의 등장 여부는 Phase 6 이 결정한다")가 프로바이더
-        # 프롬프트로 그대로 새고 있었다 — wan 라이브 테스트에서 발견. 서술은
-        # 모델에게 보내는 긍정형 장면 묘사만 담는다. 손 허용/복귀 문장은
-        # INTERACTION 빌더(allow_generated_hand)가 덧붙이므로 일부 중복되지만
-        # 무해하다 (BREATHING 의 선례와 동일).
-        description= "A gentle human hand may briefly enter the frame to pet the pet's head. "
-        "The pet responds naturally and contentedly"
-        "or slight lean into the hand. Keep the pet's entire head, face, ears and muzzle "
-        "fully visible inside the frame throughout the motion, with clear safe space above "
-        "the head. Do not raise the head far enough to leave the frame or crop any part of "
-        "the face. The pet then returns naturally to the starting pose.",
+        description=(
+            "The pet performs a clearly visible, gentle and affectionate head response. "
+            "Starting from its calm upright standing pose, the pet slowly lowers and "
+            "leans its head slightly forward and downward with a natural movement of "
+            "the neck. Its eyes soften or briefly close, and its facial expression "
+            "becomes peaceful and contented. The pet holds this relaxed expression "
+            "briefly while continuing subtle natural breathing, gentle ear adjustments "
+            "and small connected movements of the neck and upper body. The pet remains "
+            "naturally alive throughout the entire animation, never frozen or rigid. "
+            "The movement is an affectionate head dip, not a sideways head tilt, "
+            "repeated nodding or exaggerated bow. The pet then smoothly raises its "
+            "head, opens its eyes and returns to the exact original calm upright "
+            "standing pose. Keep all paws grounded and the pet's position unchanged. "
+            "Preserve the entire head, face, ears, muzzle, body and paws throughout. "
+            "Only the original pet is visible, with no additional subjects or objects"
+        ),
+        # The action hands the same approved HOME pose to Seedance as both
+        # endpoints.  The target remains non-required for QA purposes: it is a
+        # generation control that removes the PET_HEAD -> BREATHING seam, not a
+        # new transition acceptance policy.
         start_keyframe_role="STAND_READY",
-        preferred_video_strategy=STRATEGY_I2V,
+        target_keyframe_role="STAND_READY",
+        preferred_video_strategy=STRATEGY_START_END,
         duration_range_sec=(3.0, 5.0),
+        interruptible=False,
         video_compat={"returns_to_start_pose": True, "motion_scale": "micro",
                       "interaction": "head_touch", "requires_human_in_keyframe": False,
-                      # Phase 6: 영상 단계에서 부드러운 손이 화면 밖에서 들어와도 된다.
-                      "allow_generated_hand": True},
+                      "allow_generated_hand": False,
+                      "end_frame_conditioning_required": True},
+    ),
+    "PAW_HELLO": MotionSpec(
+        motion_id="PAW_HELLO", motion_class=CLASS_INTERACTION,
+        description=(
+            "Starting from the approved calm upright STAND_READY pose, the pet makes a "
+            "small natural weight transfer over the three supporting paws, then lifts "
+            "exactly one front paw cleanly from the ground and gently offers it a short "
+            "distance toward the viewer. The lifted paw remains anatomically connected, "
+            "relaxed and clearly readable. Hold the offered paw briefly, then retract and "
+            "lower it along one continuous natural path until it returns to its original "
+            "grounded placement. Maintain quiet natural breathing and subtle connected "
+            "head, ear, tail and torso responses while preserving realistic balance. The "
+            "other three supporting paws stay grounded without sliding. Preserve the "
+            "pet's identity, four-limb anatomy, joint structure and contact with the "
+            "ground. Finish in the exact original STAND_READY pose so BREATHING can resume "
+            "without a visible jump. Only the original pet is visible: no human, human "
+            "hand, person, leash, toy, platform or added object"
+        ),
+        start_keyframe_role="STAND_READY",
+        target_keyframe_role="STAND_READY",
+        preferred_video_strategy=STRATEGY_START_END,
+        duration_range_sec=(4.0, 5.0),
+        interruptible=False,
+        video_compat={"returns_to_start_pose": True, "motion_scale": "body-part",
+                      "interaction": "paw_hello", "requires_human_in_keyframe": False,
+                      "allow_generated_hand": False,
+                      "end_frame_conditioning_required": True},
     ),
 }
 
@@ -408,11 +544,13 @@ _MOTION_TYPES: dict[str, str] = {
     "FALL_ASLEEP": "STATE_TRANSITION_SLEEP",
     "WAKE_UP": "STATE_TRANSITION_WAKE",
     "COME_CLOSER": "APPROACH_LOCOMOTION",
+    "RETURN_HOME": "RETURN_LOCOMOTION",
     "RUN": "RUN_LOCOMOTION",
     "WALK": "WALK_LOCOMOTION",
     "ROLL_OVER": "ROLL_TRANSITION",
     "SIT_DOWN": "SIT_TRANSITION",
     "PET_HEAD": "HUMAN_INTERACTION_REACTION",
+    "PAW_HELLO": "PAW_OFFER_INTERACTION",
 }
 
 _MORPHOLOGY_SENSITIVITY: dict[str, str] = {
@@ -432,12 +570,34 @@ _MORPHOLOGY_SENSITIVITY: dict[str, str] = {
     "FALL_ASLEEP": "MEDIUM",
     "WAKE_UP": "MEDIUM",
     "COME_CLOSER": "HIGH",
+    "RETURN_HOME": "HIGH",
     "RUN": "HIGH",
     "WALK": "HIGH",
     "ROLL_OVER": "HIGH",
     "SIT_DOWN": "MEDIUM",
     "PET_HEAD": "MEDIUM",
+    "PAW_HELLO": "HIGH",
 }
+
+
+def is_loop_same_start_end(spec: MotionSpec) -> bool:
+    """루프 가능한 MICRO 아이들 모션은 **시작 역할 키프레임을 양끝**으로 쓴다.
+
+    규칙은 특정 모션(BREATHING)이나 특정 역할(STAND_READY)을 박지 않는다 —
+    클래스(MICRO)·loopable·returns_to_start_pose 세 속성만 본다. 해당하면
+    build 단계가 provider 능력을 보고 START_END(같은 키프레임을 start=end)로
+    올리거나, end-frame 미지원이면 기존 단일 시작 I2V 로 둔다. start_from_derived
+    (RETURN_HOME)·target_keyframe_role 을 선언한 모션은 자체 START_END 계약이
+    따로 있으므로 제외한다.
+    """
+    return (
+        spec.motion_class == CLASS_MICRO
+        and bool(spec.loopable)
+        and bool(spec.video_compat.get("returns_to_start_pose"))
+        and spec.start_from_derived is None
+        and spec.target_keyframe_role is None
+        and bool(spec.start_keyframe_role)
+    )
 
 
 def _class_default_qa(spec: MotionSpec) -> dict[str, Any]:
@@ -472,11 +632,31 @@ def _class_default_qa(spec: MotionSpec) -> dict[str, Any]:
             "temporal_stability",
             "vlm_composition",
         ]
+        if spec.motion_id == "PAW_HELLO":
+            motion_specific.extend([
+                "vlm_paw_lift", "vlm_paw_offer", "vlm_paw_hold",
+                "vlm_paw_support", "vlm_paw_balance", "vlm_paw_limb_count",
+                "vlm_paw_anatomy", "vlm_paw_return",
+            ])
 
     if bool(spec.video_compat.get("returns_to_start_pose")):
         motion_specific.append("loop_return")
     if spec.motion_id == BREATHING_HOME_STATE:
         motion_specific.append("temporal_breathing")
+
+    # 목표 키프레임이 필수인 비-TRANSITION 모션(RETURN_HOME: 파생 CLOSE_POSITION→
+    # STAND_READY)도 전이와 똑같이 시작/목표 도달을 하드 구조 게이트한다 — TRANSITION
+    # 분기가 쓰는 starts_at_start_pose / reaches_target_pose 판정기를 그대로 재사용한다.
+    if (
+        spec.motion_class != CLASS_TRANSITION
+        and spec.requires_target_keyframe
+        and spec.target_keyframe_role
+    ):
+        for _c in ("starts_at_start_pose", "reaches_target_pose"):
+            if _c not in structural_checks:
+                structural_checks.append(_c)
+        if "vlm_target_pose" not in motion_specific:
+            motion_specific.append("vlm_target_pose")
 
     return {
         "structural_anatomy": {
@@ -575,6 +755,21 @@ def _class_business_qa(spec: MotionSpec) -> dict[str, Any]:
                 },
             }
         )
+        # 루프 same-start-end 아이들: 끝점 QA(첫≈시작, 끝≈같은 시작)를 **진단 전용**
+        # 으로 둔다. 전역 레지스트리의 기본은 INTEGRITY_HARD(전이/RETURN_HOME 용)지만
+        # 아이들에선 전달/과금 판정을 바꾸지 않는다 — 기하 기반 끝점 신호는 아이들
+        # 루프에서 loop_return(자문 SSIM 게이트)이 이미 담당하고, 끝점은 영수증에
+        # 측정값으로만 남긴다. breathing 이 vlm_motion/temporal_breathing 을 진단으로
+        # 두는 설계(의미 신호만 제품 권위)와 일치한다. build 가 START_END 로 올린
+        # 생성에서만 산출되고, required 가 아니라 단일 I2V 폴백의 누락도 무해하다.
+        if is_loop_same_start_end(spec):
+            domains["loop_endpoints"] = {"required_checks": [], "applicable": True}
+            authority.update(
+                {
+                    "starts_at_start_pose": AUTHORITY_DIAGNOSTIC_ONLY,
+                    "reaches_target_pose": AUTHORITY_DIAGNOSTIC_ONLY,
+                }
+            )
         # BREATHING receives its specialized authority migration in Phase 5.
         if spec.motion_id == BREATHING_HOME_STATE:
             # Phase 5: preserve legacy temporal_breathing/vlm_motion evidence,
@@ -687,9 +882,44 @@ def _class_business_qa(spec: MotionSpec) -> dict[str, Any]:
                 "vlm_human_hand_policy": AUTHORITY_INTEGRITY_HARD,
             }
         )
+        if spec.motion_id == "PAW_HELLO":
+            paw_checks = [
+                "vlm_paw_lift", "vlm_paw_offer", "vlm_paw_hold",
+                "vlm_paw_support", "vlm_paw_balance", "vlm_paw_limb_count",
+                "vlm_paw_anatomy", "vlm_paw_return",
+            ]
+            domains["paw_hello"] = {"required_checks": paw_checks}
+            authority.update(dict.fromkeys(paw_checks, AUTHORITY_INTEGRITY_HARD))
+
+    # 목표 키프레임이 필수인 비-TRANSITION 모션(RETURN_HOME): 시작/목표 도달을 전이와
+    # 동일한 하드 게이트(INTEGRITY_HARD)로 올린다 — TRANSITION 의 start_state/target_pose
+    # 와 완전히 같은 계약이다. 위 클래스 분기가 더한 도메인은 그대로 두고 끝점만 보탠다.
+    if (
+        spec.motion_class != CLASS_TRANSITION
+        and spec.requires_target_keyframe
+        and spec.target_keyframe_role
+    ):
+        domains.setdefault("start_state", {"required_checks": ["starts_at_start_pose"]})
+        domains.setdefault(
+            "target_pose",
+            {"required_checks": ["reaches_target_pose", "vlm_target_pose"]},
+        )
+        authority.update(
+            {
+                "starts_at_start_pose": AUTHORITY_INTEGRITY_HARD,
+                "reaches_target_pose": AUTHORITY_INTEGRITY_HARD,
+                "vlm_target_pose": AUTHORITY_INTEGRITY_HARD,
+            }
+        )
+
+    acceptance = spec.qa_acceptance_spec
+    if acceptance.get("version") == MOTION_ACCEPTANCE_VERSION:
+        authority.update(acceptance["check_authority"])
+        domains["acceptance"] = {"required_checks": acceptance["required_checks"]}
 
     return {
         "version": MOTION_QA_CONTRACT_VERSION,
+        "acceptance": deepcopy(acceptance),
         "authority_profile": (
             BREATHING_AUTHORITY_VERSION
             if spec.motion_id == BREATHING_HOME_STATE
@@ -748,13 +978,16 @@ def _requirements_for(spec: MotionSpec) -> dict[str, Any]:
     degrade_target = spec.fallback_video_strategy
 
     if spec.preferred_video_strategy == STRATEGY_START_END:
-        provider_required_all.append("supports_end_frame")
-        degrade_allowed = False
-        degrade_target = None
+        if spec.video_compat.get("end_frame_conditioning_required"):
+            provider_required_all.append("supports_end_frame")
+            degrade_allowed = False
+            degrade_target = None
+        else:
+            provider_preferred_any.append("supports_end_frame")
+            degrade_target = STRATEGY_I2V
     if spec.preferred_video_strategy == STRATEGY_I2V_MOTION_REF:
         provider_preferred_any.append("supports_motion_reference")
-        if spec.motion_reference_policy == REF_REQUIRED:
-            provider_required_all.append("supports_motion_reference")
+        degrade_target = STRATEGY_I2V
 
     match_fields = _morphology_match_fields(spec)
 
@@ -772,7 +1005,9 @@ def _requirements_for(spec: MotionSpec) -> dict[str, Any]:
     return {
         "registry_contract_version": MOTION_REGISTRY_CONTRACT_VERSION,
         "roles": {
-            "required_start_roles": [spec.start_keyframe_role],
+            # start_from_derived 모션(RETURN_HOME)은 역할 시작 키프레임이 없다 —
+            # 시작이 런별 파생 자산이므로 required_start_roles 는 비어 있다.
+            "required_start_roles": [spec.start_keyframe_role] if spec.start_keyframe_role else [],
             "required_end_roles": required_end_roles,
             "optional_end_roles": optional_end_roles,
         },
@@ -808,6 +1043,294 @@ def _requirements_for(spec: MotionSpec) -> dict[str, Any]:
         "qa": _class_default_qa(spec),
     }
 
+
+# Only these beta motions change behavior. Other entries get an explicit legacy
+# acceptance snapshot, preserving their prompts, authority and delivery policy.
+_BETA_ACCEPTANCE = {
+    "BREATHING": {
+        "description": "The pet remains at HOME_IDLE with subtle, believable living motion.",
+        "expected_start_state": "HOME_IDLE: the approved home standing pose.",
+        "expected_end_state": "HOME_IDLE: compatible with repeating this idle loop.",
+        "blocking_criteria": [
+            "Clearly broken idle behavior, significant positional drift, or an unusable loop discontinuity.",
+            "Do not require exaggerated chest movement or a perfectly periodic breathing cycle.",
+        ],
+        "advisory_criteria": [
+            "Small rhythm variations, minor fur movement, subtle posture adjustments, slight asymmetry and minor temporal imperfections.",
+        ],
+        "check_authority": {"vlm_motion": AUTHORITY_INTEGRITY_HARD},
+    },
+    "COME_CLOSER": {
+        "description": (
+            "The pet visibly approaches the viewer. Walking, trotting, running or short bounding approaches are acceptable. "
+            "Turning before approaching and standing still after arrival are acceptable. "
+            "requested_motion_occurs assesses meaningful approach, not a running gait."
+        ),
+        "expected_start_state": "HOME_IDLE: the pet starts at its home position.",
+        "expected_end_state": (
+            "CLOSE_POSITION: ideally visibly closer than at the beginning. Meaningful approach with uncertain final distance "
+            "is advisory; it is not proof of failed motion or a critical state violation."
+        ),
+        "blocking_criteria": ["Clearly no meaningful approach or clearly incorrect travel direction."],
+        "advisory_criteria": [
+            "Imperfect gait, unidentifiable footfalls, short reorientation, minor speed changes, brief partial paw cropping, "
+            "slightly irregular scale progression, uncertain final distance, and a stationary final pose.",
+        ],
+        "check_authority": {"vlm_locomotion_form": AUTHORITY_QUALITY_ADVISORY},
+    },
+    "RETURN_HOME": {
+        "description": "The pet moves back toward its home location and settles into a pose compatible with BREATHING.",
+        "endpoint_reference_required": True,
+        "expected_start_state": "CLOSE_POSITION: the usable terminal frame of the successful COME_CLOSER clip.",
+        "expected_end_state": (
+            "HOME_IDLE: a calm home pose compatible with BREATHING. Exact pixel, framing or pose matching is not required. "
+            "A demonstrably significant endpoint mismatch that disrupts idle continuity is a critical state violation; "
+            "insufficient evidence of compatibility is unknown, not a demonstrated violation."
+        ),
+        "blocking_criteria": ["Clearly absent return movement or clearly incorrect return direction."],
+        "advisory_criteria": ["Minor gait/speed variations, small framing or endpoint discrepancies, and minor settling movement."],
+        "check_authority": {
+            "vlm_locomotion_form": AUTHORITY_QUALITY_ADVISORY,
+            # Pixel similarity is evidence, not proof of endpoint incompatibility.
+            "starts_at_start_pose": AUTHORITY_QUALITY_ADVISORY,
+            "reaches_target_pose": AUTHORITY_QUALITY_ADVISORY,
+            "vlm_target_pose": AUTHORITY_QUALITY_ADVISORY,
+        },
+    },
+    "PET_HEAD": {
+        "policy_revision": "pet-head-v1",
+        "description": (
+            "The pet performs a recognizable affectionate head response to a virtual gentle "
+            "touch: it visibly leans or lowers its head, softens its eyes, enjoys the affection "
+            "briefly, and returns naturally upright. No visible human or hand is required or allowed."
+        ),
+        "expected_start_state": (
+            "STAND_READY: the original calm upright standing pose, with quiet natural breathing."
+        ),
+        "expected_end_state": (
+            "STAND_READY compatible with the existing seam-aligned return to BREATHING. Exact "
+            "pixel matching and complete body stillness are not required."
+        ),
+        "blocking_criteria": [
+            "Reliable temporal evidence clearly shows no affectionate head response or a clearly wrong substituted action.",
+            "A human, hand, arm, person or added interaction object visibly contaminates the generated video.",
+        ],
+        "advisory_criteria": [
+            "The response is plausible but too subtle, occluded, or insufficiently sampled to confirm.",
+            "Minor aesthetic irregularity that does not alter identity or significant anatomy.",
+        ],
+        "allowed_secondary_motion": [
+            "natural breathing", "blinking", "small ear or facial movement",
+            "small connected neck or body adjustment",
+        ],
+        "temporal_evidence_policy": {
+            "absence_requires_reliable_coverage": True,
+            "sparse_non_observation": "REVIEW",
+            "subtle_or_ambiguous_response": "REVIEW",
+        },
+        "check_authority": {
+            "motion_temporal_integrity": AUTHORITY_QUALITY_ADVISORY,
+        },
+    },
+    "PAW_HELLO": {
+        "policy_revision": "paw-hello-v1",
+        "description": (
+            "From STAND_READY the pet visibly lifts exactly one front paw, gently offers it "
+            "toward the viewer, holds it briefly, and lowers it back to the same grounded "
+            "STAND_READY pose with realistic balance and intact four-limb anatomy."
+        ),
+        "expected_start_state": (
+            "STAND_READY: calm upright stance with all four paws naturally grounded."
+        ),
+        "expected_end_state": (
+            "STAND_READY: the offered paw is grounded again and the pose joins BREATHING "
+            "smoothly without a visible jump."
+        ),
+        "blocking_criteria": [
+            "Reliable evidence clearly shows no one-front-paw offer, or a different primary action replaces it.",
+            "More than one paw is offered, a limb is duplicated, missing, merged, detached or anatomically implausible.",
+            "The pet visibly falls, floats, collapses, or loses plausible support and balance.",
+            "A human, hand, arm, person, leash, toy, platform or other added object appears.",
+            "The lifted paw does not return to a grounded STAND_READY-compatible ending when the endpoint is clearly observable.",
+        ],
+        "advisory_criteria": [
+            "The lift, brief hold or offer toward the viewer is plausible but occluded, too subtle, or insufficiently sampled.",
+            "A minor weight shift or small final placement difference does not break balance or the BREATHING seam.",
+        ],
+        "allowed_secondary_motion": [
+            "natural breathing", "blinking", "subtle ear, head or tail response",
+            "small torso and weight adjustments needed for realistic balance",
+        ],
+        "temporal_evidence_policy": {
+            "brief_event": True,
+            "absence_requires_reliable_coverage": True,
+            "sparse_non_observation": "REVIEW",
+            "occlusion_or_perspective_uncertainty": "REVIEW",
+        },
+        "check_authority": {
+            "motion_temporal_integrity": AUTHORITY_QUALITY_ADVISORY,
+        },
+    },
+    "BLINKING": {
+        "policy_revision": "premium-micro-idle-v1",
+        "description": (
+            "The pet performs a recognizable natural blink. A visible eye may close and reopen naturally; "
+            "eyes hidden by fur, pose or source occlusion do not have to become visible."
+        ),
+        "expected_start_state": "HOME_IDLE: the pet keeps its natural resting appearance and visible-eye state.",
+        "expected_end_state": (
+            "HOME_IDLE after the blink. Exact pixel matching and complete body stillness are not required."
+        ),
+        "blocking_criteria": [
+            "Reliable temporal evidence clearly shows that the requested blink is absent or replaced by another primary action."
+        ],
+        "advisory_criteria": [
+            "Sampling or occlusion makes eyelid closure/reopening insufficiently visible.",
+            "Minor blink asymmetry or aesthetic imperfection that does not destroy a recognizable natural blink.",
+        ],
+        "allowed_secondary_motion": [
+            "natural breathing", "subtle ear movement", "small natural facial motion"
+        ],
+        "temporal_evidence_policy": {
+            "brief_event": True,
+            "absence_requires_reliable_coverage": True,
+            "sparse_non_observation": "REVIEW",
+            "occlusion_or_hidden_eyes": "REVIEW",
+        },
+        "check_authority": {
+            # Sparse adjacent-frame pixel differences support diagnosis but cannot
+            # prove a serious discontinuity. Semantic severe-defect/composition
+            # checks retain hard authority below through the common contract.
+            "motion_temporal_integrity": AUTHORITY_QUALITY_ADVISORY,
+        },
+    },
+    "EAR_TWITCHING": {
+        "policy_revision": "premium-micro-idle-v1",
+        "description": (
+            "A naturally visible ear performs a recognizable small flick appropriate to the pet's anatomy. "
+            "Erect, folded and floppy ears are all valid and must not be forced into another ear shape."
+        ),
+        "expected_start_state": "HOME_IDLE with the pet's original ear shape, set, fold and visibility.",
+        "expected_end_state": (
+            "HOME_IDLE after the ear flick. Exact pixel matching and complete body stillness are not required."
+        ),
+        "blocking_criteria": [
+            "Adequate temporal and visibility evidence clearly shows that the requested ear twitch did not happen."
+        ],
+        "advisory_criteria": [
+            "The relevant ear or its movement is insufficiently visible because of perspective, anatomy, occlusion or sampling.",
+            "Minor aesthetic irregularity that does not alter ear identity or significant anatomy.",
+        ],
+        "allowed_secondary_motion": [
+            "natural breathing", "small facial movement", "small connected head or body adjustment"
+        ],
+        "temporal_evidence_policy": {
+            "brief_event": True,
+            "absence_requires_reliable_coverage": True,
+            "sparse_non_observation": "REVIEW",
+            "occlusion_or_low_visibility": "REVIEW",
+        },
+        "check_authority": {
+            "motion_temporal_integrity": AUTHORITY_QUALITY_ADVISORY,
+        },
+    },
+    "HEAD_TILTING": {
+        "policy_revision": "premium-micro-idle-v1",
+        "description": (
+            "The head visibly rolls sideways with natural connected neck motion. The sideways roll must be recognizable, "
+            "but no exact 10-20 degree measurement is required. Pure yaw/turning or pure nodding is not a head tilt."
+        ),
+        "expected_start_state": "HOME_IDLE with the pet's original head, neck and ear anatomy.",
+        "expected_end_state": (
+            "The pet may return toward HOME_IDLE naturally; exact pixel matching and complete body stillness are not required."
+        ),
+        "blocking_criteria": [
+            "Reliable evidence clearly shows the head remains stationary, or only yaw/turning or nodding occurs instead.",
+        ],
+        "advisory_criteria": [
+            "A sideways tilt is plausible but angle, neck connection or temporal progression is ambiguous.",
+            "Minor aesthetic irregularity that does not alter identity or significant anatomy.",
+        ],
+        "allowed_secondary_motion": [
+            "natural breathing", "blinking", "small incidental body movement", "small incidental tail movement"
+        ],
+        "temporal_evidence_policy": {
+            "absence_requires_reliable_coverage": True,
+            "plausible_but_ambiguous": "REVIEW",
+        },
+        "check_authority": {
+            "motion_temporal_integrity": AUTHORITY_QUALITY_ADVISORY,
+        },
+    },
+    "TAIL_WAGGING": {
+        "policy_revision": "premium-micro-idle-v1",
+        "description": (
+            "The pet's original tail performs recognizable natural lateral wagging. Curled, straight and fluffy tails "
+            "retain their natural anatomy; mechanically exact oscillation counts are not required."
+        ),
+        "expected_start_state": "HOME_IDLE with the original tail anatomy, carriage and visibility.",
+        "expected_end_state": (
+            "The tail may settle naturally toward its resting carriage; exact pixel matching is not required."
+        ),
+        "blocking_criteria": [
+            "Reliable evidence clearly shows no lateral wag, only vertical tail lowering instead, or severe tail deformation.",
+        ],
+        "advisory_criteria": [
+            "Perspective, tail occlusion or temporal sampling makes lateral wagging difficult to confirm.",
+            "Minor rhythm, amplitude or oscillation-count variation and subtle natural hip response.",
+        ],
+        "allowed_secondary_motion": [
+            "natural breathing", "blinking", "ear adjustment", "subtle natural hip response"
+        ],
+        "temporal_evidence_policy": {
+            "absence_requires_reliable_coverage": True,
+            "perspective_or_occlusion_uncertainty": "REVIEW",
+        },
+        "check_authority": {
+            "motion_temporal_integrity": AUTHORITY_QUALITY_ADVISORY,
+        },
+    },
+}
+
+
+def _acceptance_for(spec: MotionSpec) -> dict[str, Any]:
+    beta = _BETA_ACCEPTANCE.get(spec.motion_id)
+    if beta is None:
+        return {"version": "motion-acceptance-legacy-v1", "motion_id": spec.motion_id,
+                "description": spec.description}
+    contract = deepcopy(beta)
+    required = ["vlm_same_pet", "vlm_anatomy", "vlm_composition", "vlm_motion",
+                "vlm_motion_integrity", "vlm_critical_state", "motion_temporal_integrity"]
+    if spec.motion_class == CLASS_LOCOMOTION:
+        required.append("vlm_direction_travel")
+    if spec.motion_class == CLASS_INTERACTION:
+        required.extend(["vlm_interaction", "vlm_human_hand_policy"])
+    if spec.motion_id == "PAW_HELLO":
+        required.extend([
+            "vlm_paw_lift", "vlm_paw_offer", "vlm_paw_hold",
+            "vlm_paw_support", "vlm_paw_balance", "vlm_paw_limb_count",
+            "vlm_paw_anatomy", "vlm_paw_return",
+        ])
+    contract.update({
+        "version": MOTION_ACCEPTANCE_VERSION,
+        "motion_id": spec.motion_id,
+        "required_checks": required,
+        "review_policy": MOTION_REVIEW_POLICY,
+        "blocking_criteria": [
+            "Significant identity inconsistency; severe anatomy deformation or demonstrably missing/broken body parts.",
+            "Obvious teleportation, major temporal discontinuities, clearly sustained sliding/floating, or unusable output.",
+            *contract["blocking_criteria"],
+        ],
+        "check_authority": {
+            **dict.fromkeys(required, AUTHORITY_INTEGRITY_HARD),
+            "vlm_final_position": AUTHORITY_QUALITY_ADVISORY,
+            **contract["check_authority"],
+        },
+    })
+    return contract
+
+
+MOTIONS = {mid: replace(spec, qa_acceptance_spec=_acceptance_for(spec)) for mid, spec in MOTIONS.items()}
 
 # authoritative registry 확장: 기존 모션 시스템을 유지하고 항목별 요구사항만 주입.
 MOTIONS = {
@@ -846,7 +1369,7 @@ def provider_order_for_class(motion_class: str) -> tuple[str, ...]:
 
 
 def provider_order_for_motion(motion_id: str) -> tuple[str, ...]:
-    """모션별 override > 클래스 기본. 알 수 없는 모션은 빈 순서로 닫힌다."""
+    """Select one authoritative model; trailing legacy entries are never fallbacks."""
     normalized = (motion_id or "").strip().upper()
     spec = MOTIONS.get(normalized)
     if not spec:
@@ -854,9 +1377,7 @@ def provider_order_for_motion(motion_id: str) -> tuple[str, ...]:
     override = MOTION_PROVIDER_ORDER_OVERRIDES.get(normalized)
     order = tuple(override) if override is not None else provider_order_for_class(spec.motion_class)
     model = configured_model_for_motion(normalized)
-    if not model:
-        return order
-    return (model, *(provider_id for provider_id in order[1:] if provider_id != model))
+    return (model,) if model else order[:1]
 
 
 def configured_model_for_motion(motion_id: str) -> Optional[str]:
@@ -901,6 +1422,7 @@ def motion_snapshot(spec: MotionSpec) -> dict[str, Any]:
         "motion_class": spec.motion_class,
         "motion_type": spec.motion_type,
         "description": spec.description,
+        "qa_acceptance_spec": deepcopy(spec.qa_acceptance_spec),
         "start_keyframe_role": spec.start_keyframe_role,
         "target_keyframe_role": spec.target_keyframe_role,
         "requires_target_keyframe": spec.requires_target_keyframe,
@@ -933,9 +1455,16 @@ def _assert_registry_valid() -> None:
 
     for spec in MOTIONS.values():
         assert spec.motion_class in MOTION_CLASSES, spec.motion_id
-        assert spec.start_keyframe_role in KEYFRAME_ROLES, (
-            f"{spec.motion_id}: 존재하지 않는 시작 키프레임 역할 {spec.start_keyframe_role}"
-        )
+        # start_from_derived 모션(RETURN_HOME)은 역할 시작 키프레임이 없다 — 시작이
+        # 런별 파생 자산이므로 start_keyframe_role 은 None 이고 start_from_derived 가 설정된다.
+        if spec.start_from_derived:
+            assert spec.start_keyframe_role is None, (
+                f"{spec.motion_id}: start_from_derived 와 start_keyframe_role 은 상호배타다"
+            )
+        else:
+            assert spec.start_keyframe_role in KEYFRAME_ROLES, (
+                f"{spec.motion_id}: 존재하지 않는 시작 키프레임 역할 {spec.start_keyframe_role}"
+            )
         if spec.target_keyframe_role:
             assert spec.target_keyframe_role in KEYFRAME_ROLES, spec.motion_id
         if spec.requires_target_keyframe:
@@ -957,7 +1486,8 @@ def _assert_registry_valid() -> None:
         ):
             assert k in req, f"{spec.motion_id}: requirements.{k} 누락"
         roles = req.get("roles") or {}
-        assert roles.get("required_start_roles") == [spec.start_keyframe_role], (
+        _expected_start_roles = [spec.start_keyframe_role] if spec.start_keyframe_role else []
+        assert roles.get("required_start_roles") == _expected_start_roles, (
             f"{spec.motion_id}: requirements 시작 역할 불일치"
         )
         if spec.requires_target_keyframe:
@@ -1045,6 +1575,28 @@ def _keyframe_payload(k: Any) -> dict[str, Any]:
     }
 
 
+def _derived_start_payload(override: dict[str, Any], *, role_label: str) -> dict[str, Any]:
+    """start_from_derived 모션(RETURN_HOME)의 시작 키프레임 페이로드를 **런별 파생
+    자산**에서 구성한다 — 역할 키프레임이 아니다. _keyframe_payload 와 같은 형태지만
+    raw 와 plate 가 모두 그 파생 object_path 를 가리킨다(하류 build_motion_video 가
+    plate 를 생성 입력으로 먹는다). 키프레임 QA 증거는 없다(파생 프레임이므로)."""
+    bucket = override.get("bucket")
+    object_path = override.get("object_path")
+    ref = {"bucket": bucket, "object_path": object_path}
+    return {
+        "role": role_label.upper(),
+        "keyframe_id": override.get("reference_id") or f"derived:{role_label}",
+        "version": override.get("version"),
+        "canonical_version_id": override.get("canonical_version_id"),
+        "candidate_id": override.get("reference_id"),
+        "raw": ref,
+        "cutout": None,
+        "plate": dict(ref),
+        "approved_qa_evidence": None,
+        "derived": True,
+    }
+
+
 async def _approved_keyframe(user_id: str, pet_id: str, role: str):
     """complete 상태 + 선택 후보가 있는 키프레임만. REVIEW 는 조용히 쓰지 않는다."""
     from . import action_keyframe_service
@@ -1069,14 +1621,14 @@ async def resolve_video_generation_spec(
     desired_view: Optional[str] = None,
     direction: Optional[str] = None,
     speed: Optional[str] = None,
+    start_image_override: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """
     Phase 6 의 정본 입력. 실패는 명시적이다:
       * 모르는 모션            → 422 UNKNOWN_MOTION
       * 승인된 시작 키프레임 없음 → 409 KEYFRAME_REQUIRED (어느 역할인지 함께)
       * 필수 목표 키프레임 없음  → 409 TARGET_KEYFRAME_REQUIRED
-      * 선호 모션 레퍼런스 없음  → 실패가 아니라 경고 + 폴백 전략
-      * 필수 모션 레퍼런스 없음  → 409 MOTION_REFERENCE_REQUIRED
+      * 모션 레퍼런스 없음       → 같은 모델의 프롬프트 조건으로 대체 + 경고
     Phase 6.6: 레퍼런스는 종+형태 프로필로 라이브러리에서 해석된다. 종 교차 없음.
     """
     spec = get_motion(motion_id)
@@ -1097,13 +1649,34 @@ async def resolve_video_generation_spec(
     )
 
     async def _resolve_keyframes():
-        start = await _approved_keyframe(user_id, pet_id, spec.start_keyframe_role)
-        if not start:
-            raise MotionSpecError(
-                "KEYFRAME_REQUIRED",
-                f"승인된 {spec.start_keyframe_role} 키프레임이 필요합니다 — 먼저 빌드/승인하세요.",
-                status=409,
+        # 시작: 역할 키프레임 또는 런별 파생 자산(start_from_derived). 반환은
+        # (start_payload, start_lineage, target_payload) — start_lineage 는 형태 프로필
+        # 계보 조회(canonical_version)와 계약의 canonical_version_id 에만 쓴다.
+        if spec.start_from_derived:
+            if not start_image_override or not start_image_override.get("object_path"):
+                raise MotionSpecError(
+                    "DERIVED_START_REQUIRED",
+                    f"{spec.motion_id} 은 런별 파생 시작 이미지({spec.start_from_derived})가 "
+                    "필요합니다 — start_image_override 가 전달되지 않았습니다.",
+                    status=409,
+                )
+            start_payload = _derived_start_payload(
+                start_image_override, role_label=spec.start_from_derived
             )
+            start_lineage = SimpleNamespace(
+                canonical_version_id=start_image_override.get("canonical_version_id"),
+                canonical_version=start_image_override.get("canonical_version"),
+            )
+        else:
+            start = await _approved_keyframe(user_id, pet_id, spec.start_keyframe_role)
+            if not start:
+                raise MotionSpecError(
+                    "KEYFRAME_REQUIRED",
+                    f"승인된 {spec.start_keyframe_role} 키프레임이 필요합니다 — 먼저 빌드/승인하세요.",
+                    status=409,
+                )
+            start_payload = _keyframe_payload(start)
+            start_lineage = start
         target_payload = None
         if spec.target_keyframe_role:
             target = await _approved_keyframe(user_id, pet_id, spec.target_keyframe_role)
@@ -1115,7 +1688,7 @@ async def resolve_video_generation_spec(
                     f"전이 모션 {spec.motion_id} 은 {spec.target_keyframe_role} 키프레임이 필요합니다.",
                     status=409,
                 )
-        return start, target_payload
+        return start_payload, start_lineage, target_payload
 
     async def _resolve_identity():
         try:
@@ -1127,7 +1700,7 @@ async def resolve_video_generation_spec(
     # 동시에 가져온다 — _resolve_identity 는 절대 예외를 내지 않으므로
     # gather 가 내는 예외는 항상 _resolve_keyframes 쪽 그대로다 (에러 코드/
     # 순서 불변).
-    (start, target_payload), identity_profile = await asyncio.gather(
+    (start_payload, start_lineage, target_payload), identity_profile = await asyncio.gather(
         _resolve_keyframes(), _resolve_identity()
     )
 
@@ -1150,11 +1723,11 @@ async def resolve_video_generation_spec(
     lineage_background: Optional[dict[str, Any]] = None
     try:
         canonical = None
-        if getattr(start, "canonical_version", None):
+        if getattr(start_lineage, "canonical_version", None):
             canonical = await canonical_pet_service.get_canonical(
                 user_id=user_id,
                 pet_id=pet_id,
-                version=int(getattr(start, "canonical_version")),
+                version=int(getattr(start_lineage, "canonical_version")),
             )
         if canonical is not None:
             from . import pet_background
@@ -1234,18 +1807,11 @@ async def resolve_video_generation_spec(
                 "asset": None,
                 "resolution": "unresolved",
             }
-            if spec.motion_reference_policy == REF_REQUIRED:
-                raise MotionSpecError(
-                    "MOTION_REFERENCE_REQUIRED",
-                    f"{spec.motion_id} 은 모션 레퍼런스가 필수지만 호환 레퍼런스가 없습니다.",
-                    status=409,
-                )
-            if spec.fallback_video_strategy:
-                warnings.append(
-                    f"motion_reference {spec.motion_reference_id} unavailable — "
-                    f"falling back to {spec.fallback_video_strategy}"
-                )
-                strategy = spec.fallback_video_strategy
+            warnings.append(
+                f"motion_reference {spec.motion_reference_id} unavailable — "
+                "using prompt conditioning with the assigned model"
+            )
+            strategy = STRATEGY_I2V
 
     return {
         "pet_motion_profile": pet_motion_profile,
@@ -1255,10 +1821,18 @@ async def resolve_video_generation_spec(
         "motion_id": spec.motion_id,
         "motion_class": spec.motion_class,
         "motion_type": spec.motion_type,
-        "start_keyframe": _keyframe_payload(start),
+        "start_keyframe": start_payload,
         "target_keyframe": target_payload,
         "motion_reference": motion_reference,
         "video_strategy": strategy,
+        "conditioning_fallbacks": (
+            ["supports_motion_reference"]
+            if spec.preferred_video_strategy == STRATEGY_I2V_MOTION_REF and strategy == STRATEGY_I2V
+            else []
+        ),
+        # 루프 MICRO 아이들: 시작 키프레임을 양끝으로 쓸 자격이 있는지(provider 능력
+        # 과 무관한 **스펙상** 자격). 실제 START_END 승격/폴백은 build 단계가 정한다.
+        "loop_same_start_end": is_loop_same_start_end(spec),
         "loopable": spec.loopable,
         "interruptible": spec.interruptible,
         "duration_range_sec": list(spec.duration_range_sec),
@@ -1266,11 +1840,12 @@ async def resolve_video_generation_spec(
         "provider_order": list(provider_order_for_motion(spec.motion_id)),
         "requirements": dict(spec.requirements),
         "qa_context": {
+            "acceptance": deepcopy(spec.qa_acceptance_spec),
             "expected_direction": direction or spec.preferred_travel_direction,
             "interaction_type": spec.video_compat.get("interaction"),
             "allow_generated_hand": bool(spec.video_compat.get("allow_generated_hand")),
         },
-        "canonical_version_id": start.canonical_version_id,
+        "canonical_version_id": getattr(start_lineage, "canonical_version_id", None),
         "background": lineage_background,
         "warnings": warnings,
     }

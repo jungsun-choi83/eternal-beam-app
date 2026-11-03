@@ -29,6 +29,7 @@ from ..scenarios.pet_scenarios import IDLE_EVENTS, PET_ACTIONS, THEME_INDEPENDEN
 from ..services import asset_url_refresh
 from ..services import behavior_preferences
 from ..services import generated_motions_service as motions_svc
+from ..services import motion_delivery_service
 from ..services import motion_publication_service
 from ..services import premium_entitlement
 from ..services import premium_purchase
@@ -210,6 +211,34 @@ async def get_premium_assets(
                 None, obj.path if obj else stored_url
             ),
         )
+
+    # ── 시스템 소유 무료 모션 (RETURN_HOME) — 재생용 URL 만 노출 ───────────────
+    # SYSTEM_MOTIONS 는 PREMIUM_ACTIONS 밖이라 asset_state 가 조회하지 않는다(구매/소유
+    # 개념이 없다). 그러나 발행된 재생 포인터는 존재하므로 재생을 위해 그 URL 을 ready/
+    # ready_assets 에만 싣는다. action_events/prices/preferences/missing/generating 에는
+    # 넣지 않는다 — 구매 UI/Behavior Library 에 노출되면 안 된다. 조회 실패는 발견을
+    # 막지 않는다(없으면 런타임이 디졸브로 폴백).
+    system_motions = [m for m in motion_delivery_service.SYSTEM_MOTIONS if m != "BREATHING"]
+    if system_motions:
+        try:
+            pet_motions = await motions_svc.list_motions_for_pet(user.user_id, pid)
+            for m in pet_motions:
+                aid = (m.action_id or "").upper()
+                if aid not in system_motions or not m.video_url or aid in ready_assets:
+                    continue
+                obj = asset_url_refresh.parse_storage_object(m.video_url)
+                fresh = (asset_url_refresh.sign_object(obj) if obj else None) or m.video_url
+                fresh_ready[aid] = fresh
+                ready_assets[aid] = ReadyAssetOut(
+                    url=fresh,
+                    delivery_format=motion_publication_service.delivery_format_for(
+                        None, obj.path if obj else m.video_url
+                    ),
+                )
+        except Exception:
+            logger.warning(
+                "시스템 모션 포인터 조회 실패 — 발견은 계속한다 (user=%s)", user.user_id
+            )
 
     return AssetsResponse(
         pet_id=pid,

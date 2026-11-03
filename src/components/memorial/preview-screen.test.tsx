@@ -10,6 +10,15 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const runPhase7Generation = vi.fn();
+const petIdleDisplay = vi.fn();
+const previewAssets = { value: null as any };
+vi.mock("@/components/memorial/premium-assets-context", () => ({
+  PremiumAssetsProvider: ({ children }: { children: React.ReactNode }) => children,
+  usePremiumAssetsContext: () => ({ assets: previewAssets.value }),
+}));
+vi.mock("@/components/memorial/use-idle-event-assets", () => ({
+  useIdleEventAssets: () => ({ urls: {}, formats: {}, availableIds: [] }),
+}));
 
 vi.mock("@/lib/phase7-generation-flow", async () => {
   const actual = await vi.importActual<typeof import("@/lib/phase7-generation-flow")>(
@@ -35,7 +44,7 @@ vi.mock("@/lib/pending-generation", async () => {
 });
 vi.mock("@/lib/pet-identity", () => ({ getEternalBeamPetId: () => "pet_preview_1" }));
 vi.mock("@/lib/eternal-beam-user", () => ({ getEternalBeamUserId: () => "alice@test" }));
-vi.mock("@/lib/pet-registry-api", () => ({ ensurePetRegistered: vi.fn(async () => {}) }));
+vi.mock("@/lib/pet-registry-api", () => ({ ensurePetRegistered: vi.fn(async () => ({ state: "REGISTERED" })) }));
 vi.mock("@/lib/supabase-auth", () => ({ onAuthStateChange: () => () => {} }));
 vi.mock("@/lib/device-connection-api", () => ({
   getDeviceConnectionState: vi.fn(async () => null),
@@ -44,7 +53,9 @@ vi.mock("@/lib/use-processing-clock", () => ({ useProcessingClock: () => ({ seco
 vi.mock("@/components/memorial/theme-background-video", () => ({
   ThemeBackgroundVideo: () => null,
 }));
-vi.mock("@/components/memorial/pet-idle-display", () => ({ PetIdleDisplay: () => null }));
+vi.mock("@/components/memorial/pet-idle-display", () => ({
+  PetIdleDisplay: (props: unknown) => { petIdleDisplay(props); return null; },
+}));
 vi.mock("@/components/memorial/pet-photo", () => ({ PetPhoto: () => null }));
 vi.mock("@/components/memorial/generation-progress-screen", () => ({
   GenerationProgressScreen: () => <div data-testid="generation-progress" />,
@@ -79,6 +90,8 @@ beforeEach(() => {
   sessionStorage.clear();
   localStorage.clear();
   runPhase7Generation.mockReset();
+  petIdleDisplay.mockClear();
+  previewAssets.value = null;
   // 실행은 시작만 하고 끝나지 않는다 — 화면은 진행 상태에 머문다.
   runPhase7Generation.mockImplementation(() => new Promise(() => {}));
 });
@@ -122,4 +135,25 @@ describe("PreviewScreen generation start", () => {
     await waitFor(() => expect(runPhase7Generation).toHaveBeenCalledTimes(1));
     assertNoQA();
   });
+});
+
+
+it.each([false, true])("passes the internal RETURN_HOME source and format to preview (baked=%s)", (baked) => {
+  previewAssets.value = {
+    entitled: true, generating: [], behaviors: [], ready: {},
+    readyAssets: { RETURN_HOME: { url: "/return-home.mp4", deliveryFormat: "packed_alpha" } },
+  };
+  render(<PreviewScreen
+    cutoutImage="data:image/png;base64,Y3V0b3V0" selectedTheme={1} language="en"
+    settings={{ scale: 1, posX: 0, posY: 0 }} onSettingsChange={() => {}}
+    onComplete={() => {}} onBack={() => {}} isLibraryFlow
+    libraryPublication={{ petId: "pet_preview_1", idleVideoUrl: "/breathing.mp4",
+      deliveryFormat: "packed_alpha", backgroundBaked: baked, motionId: "BREATHING" }}
+  />);
+  expect(petIdleDisplay).toHaveBeenCalled();
+  expect(petIdleDisplay.mock.lastCall?.[0]).toMatchObject({
+    extraEventSources: { RETURN_HOME: "/return-home.mp4" },
+    eventDeliveryFormats: { RETURN_HOME: "packed_alpha" },
+  });
+  expect(runPhase7Generation).not.toHaveBeenCalled();
 });

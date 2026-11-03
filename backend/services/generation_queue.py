@@ -36,6 +36,7 @@ GENERATION_ORDER: tuple[str, ...] = (
     # 사용자가 만지는 순간에만 없음이 드러난다. Behavior Library 의 단건 구매
     # (explicit_pick)는 이 순서를 무시하므로 실사용 영향은 자동 전진 순서뿐이다.
     "PET_HEAD",
+    "PAW_HELLO",
     "EAR_TWITCHING",
     "HEAD_TILTING",
     "TAIL_WAGGING",

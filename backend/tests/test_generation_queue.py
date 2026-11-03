@@ -63,7 +63,7 @@ def test_completion_starts_the_next_queued_job():
 
     # 둘 다 끝났다 → 다음 두 건.
     allowed = _who_may_submit(ready=["COME_CLOSER", "BLINKING"], active=[])
-    assert allowed == ["PET_HEAD", "EAR_TWITCHING"]
+    assert allowed == ["PET_HEAD", "PAW_HELLO"]
 
 
 def test_queue_drains_in_order_to_completion():
@@ -115,6 +115,7 @@ def test_ready_assets_are_skipped():
     assert not _allowed("COME_CLOSER", ready=["COME_CLOSER"], active=[])
     assert pending_actions(["COME_CLOSER", "BLINKING"], []) == [
         "PET_HEAD",
+        "PAW_HELLO",
         "EAR_TWITCHING",
         "HEAD_TILTING",
         "TAIL_WAGGING",

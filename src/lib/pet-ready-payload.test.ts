@@ -88,9 +88,9 @@ test('Phase 7: pet/content 신원이 어긋나면 거절 (Phase 7B 결정론 규
   }
 })
 
-test('M5-lite: 기기 프리로드 4종은 허용 — 각 본문이 자기 motion_id 를 싣는다', async () => {
+test('M5-lite: 기기 프리로드 5종은 허용 — 각 본문이 자기 motion_id 를 싣는다', async () => {
   const { buildPhase7PetReadyBody, DEVICE_PRELOAD_MOTIONS } = await import('./pet-ready-payload.ts')
-  assert.deepEqual([...DEVICE_PRELOAD_MOTIONS], ['BREATHING', 'PET_HEAD', 'LOOK_UP', 'COME_CLOSER'])
+  assert.deepEqual([...DEVICE_PRELOAD_MOTIONS], ['BREATHING', 'PET_HEAD', 'PAW_HELLO', 'LOOK_UP', 'COME_CLOSER'])
   for (const motionId of DEVICE_PRELOAD_MOTIONS) {
     const r = buildPhase7PetReadyBody({ ...PHASE7, motionId })
     assert.ok(r.ok, motionId)
@@ -127,18 +127,20 @@ const PRELOAD = {
   motions: [
     { motionId: 'BREATHING', packedUrl: 'https://s/b_packed.mp4?t=1', deliveryFormat: 'packed_alpha' },
     { motionId: 'PET_HEAD', packedUrl: 'https://s/ph_packed.mp4?t=2', deliveryFormat: 'packed_alpha' },
+    { motionId: 'PAW_HELLO', packedUrl: 'https://s/paw_packed.mp4?t=5', deliveryFormat: 'packed_alpha' },
     { motionId: 'LOOK_UP', packedUrl: 'https://s/lu_packed.mp4?t=3', deliveryFormat: 'packed_alpha' },
     { motionId: 'COME_CLOSER', packedUrl: 'https://s/cc_packed.mp4?t=4', deliveryFormat: 'packed_alpha' },
   ],
 }
 
-test('M5-lite 세트: 4종이 각자 본문으로 나오고 서로의 URL 을 덮지 않는다', async () => {
+test('M5-lite 세트: 5종이 각자 본문으로 나오고 서로의 URL 을 덮지 않는다', async () => {
   const { buildDeviceMotionPreloadBodies } = await import('./pet-ready-payload.ts')
   const out = buildDeviceMotionPreloadBodies(PRELOAD)
-  assert.equal(out.length, 4)
+  assert.equal(out.length, 5)
   const byId = Object.fromEntries(out.map((e) => [e.motionId, e.body]))
   assert.equal(byId.BREATHING.packed_url, 'https://s/b_packed.mp4?t=1')
   assert.equal(byId.PET_HEAD.packed_url, 'https://s/ph_packed.mp4?t=2')
+  assert.equal(byId.PAW_HELLO.packed_url, 'https://s/paw_packed.mp4?t=5')
   assert.equal(byId.LOOK_UP.packed_url, 'https://s/lu_packed.mp4?t=3')
   assert.equal(byId.COME_CLOSER.packed_url, 'https://s/cc_packed.mp4?t=4')
   for (const [id, body] of Object.entries(byId)) {
@@ -183,7 +185,7 @@ test('M5-lite 세트: 미허용 모션·신원 불일치는 본문을 만들지 
     ...PRELOAD,
     motions: [...PRELOAD.motions, { motionId: 'HAPPY', packedUrl: 'https://s/h_packed.mp4' }],
   })
-  assert.equal(withUnknown.length, 4, 'HAPPY 는 Phase 1 집합 밖이다')
+  assert.equal(withUnknown.length, 5, 'HAPPY 는 Phase 1 집합 밖이다')
   const badIdentity = buildDeviceMotionPreloadBodies({ ...PRELOAD, petId: 'pet_other' })
   assert.equal(badIdentity.length, 0, '신원 불일치는 세트 전체가 나가면 안 된다')
 })

@@ -19,7 +19,7 @@ import type { SideState } from "./premium-unlock.ts";
 /** 카드 한 장이 보여 주는 단 하나의 상태. */
 export type BehaviorStatus = SideState; // "missing" | "generating" | "ready"
 
-/** 자발적(스케줄러가 알아서) / 상호작용(더블탭) */
+/** 자발적(스케줄러가 알아서) / 상호작용(탭 제스처) */
 export type BehaviorGroupId = "spontaneous" | "interactive";
 
 /** 현재 소비자에게 판매하는 모션. 서버 레지스트리의 기술용 항목은 제외한다. */
@@ -29,6 +29,8 @@ export const COMMERCIAL_BEHAVIOR_IDS = [
   "HEAD_TILTING",
   "TAIL_WAGGING",
   "COME_CLOSER",
+  "PET_HEAD",
+  "PAW_HELLO",
 ] as const;
 
 const COMMERCIAL_BEHAVIOR_SET = new Set<string>(COMMERCIAL_BEHAVIOR_IDS);

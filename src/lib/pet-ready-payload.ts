@@ -42,6 +42,7 @@ export function buildPetReadyBody(payload: PetReadyRequest): Record<string, stri
 export const DEVICE_PRELOAD_MOTIONS = [
   'BREATHING',
   'PET_HEAD',
+  'PAW_HELLO',
   'LOOK_UP',
   'COME_CLOSER',
 ] as const

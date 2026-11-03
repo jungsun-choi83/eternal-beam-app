@@ -104,7 +104,6 @@ def test_supabase_worker_claim_sends_production_seven_argument_contract(monkeypa
     monkeypatch.setenv("HYBRID_USE_SUPABASE", "1")
     monkeypatch.setenv("BUSINESS_QA_USER_TEST_MODE", "allowlist")
     monkeypatch.setenv("BUSINESS_QA_USER_TEST_PET_IDS", "pet-b,pet-a")
-    monkeypatch.setenv("PET_GENERATION_WORKER_VERSION", "worker-build-42")
     calls = []
 
     class RpcResult:
@@ -122,15 +121,22 @@ def test_supabase_worker_claim_sends_production_seven_argument_contract(monkeypa
     monkeypatch.setenv("GENERATION_RUN_LEASE_SECONDS", "420")
     monkeypatch.setenv("GENERATION_RUN_MAX_LEASE_RECOVERIES", "3")
 
-    assert _run(runs._claim_next("worker-1")) is None
+    assert _run(
+        runs._claim_next(
+            "worker-1",
+            worker_hostname="test-host",
+            worker_pid=4242,
+            worker_version=runs.generation_worker_contract.WORKER_CONTRACT_VERSION,
+        )
+    ) is None
     assert len(calls) == 1
     name, params = calls[0]
     assert name == "claim_next_pet_generation_run"
     assert params == {
         "p_worker_id": "worker-1",
-        "p_worker_hostname": runs.socket.gethostname(),
-        "p_worker_pid": runs.os.getpid(),
-        "p_worker_version": "worker-build-42",
+        "p_worker_hostname": "test-host",
+        "p_worker_pid": 4242,
+        "p_worker_version": runs.generation_worker_contract.WORKER_CONTRACT_VERSION,
         "p_lease_seconds": 420,
         "p_max_lease_recoveries": 3,
         "p_pet_allowlist": ["pet-a", "pet-b"],

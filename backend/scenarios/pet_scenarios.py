@@ -187,7 +187,8 @@ IDLE_EVENTS: tuple[str, ...] = (
 #: LIE_IDLE 은 아이들 이벤트가 **아니다** — IDLE_EVENTS 에 넣으면 번들 구매와
 #: 자발 스케줄러에 끌려 들어간다. 자세 전용 홈 루프는 단건 액션으로만 판다.
 PET_ACTIONS: tuple[str, ...] = (
-    "COME_CLOSER", "PET_HEAD", "LOOK_UP", "LIE_DOWN", "STAND_UP", "LIE_IDLE",
+    "COME_CLOSER", "PET_HEAD", "PAW_HELLO", "LOOK_UP",
+    "LIE_DOWN", "STAND_UP", "LIE_IDLE",
 )
 
 #: 테마 독립 · ACTION_ORDER 밖인 모든 것. 저장 키·파일명 규칙이 동일하다.

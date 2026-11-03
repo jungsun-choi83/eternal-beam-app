@@ -436,12 +436,10 @@ def test_live_qa_version_constants_are_classified_as_qa_only():
 
 
 # ══════════════════════════════════════════════════════════════════════════
-# 8) 능력 미달 프로바이더가 유료 생성을 받아 가지 않는다
+# 8) Missing controls cannot redirect paid generation to another model.
 # ══════════════════════════════════════════════════════════════════════════
 #
-# 예전에는 `required_all` 을 아무도 만족하지 못하면 **걸러지지 않은 원래 목록을
-# 그대로 되돌렸다**. 요구사항 미충족이 "요구사항 없음"과 같은 결과를 냈고, 능력
-# 없는 프로바이더가 그대로 생성을 받았다.
+# Legacy capability requirements are adapted after selecting the assigned model.
 
 
 class _Cap:
@@ -450,8 +448,11 @@ class _Cap:
         for k, v in caps.items():
             setattr(self, k, v)
 
+    def available(self):
+        return True
 
-def test_unmet_required_capability_yields_no_provider_instead_of_all_of_them():
+
+def test_unmet_endpoint_capability_retains_only_assigned_provider():
     from backend.services import motion_video_service as mvs
 
     providers = [_Cap("a", supports_end_frame=False), _Cap("b", supports_end_frame=False)]
@@ -460,31 +461,27 @@ def test_unmet_required_capability_yields_no_provider_instead_of_all_of_them():
         "degrade_allowed": False,
         "degrade_to_strategy": None,
     }
-    assert mvs._apply_provider_capability_requirements(providers, requirements) == []
+    resolved, _, _ = mvs._resolve_providers_for_contract(
+        {"requirements": {"provider_capabilities": requirements}}, providers
+    )
+    assert resolved == providers[:1]
 
 
-def test_degrade_needs_both_the_flag_and_a_destination():
+def test_legacy_degrade_flags_do_not_reject_the_assigned_model():
     from backend.services import motion_video_service as mvs
 
     providers = [_Cap("a", supports_motion_reference=False)]
     base = {"required_all": ["supports_motion_reference"]}
 
-    # 플래그만 있고 목적지가 없다 → 허가가 아니라 미기재다.
-    assert mvs._apply_provider_capability_requirements(
-        providers, {**base, "degrade_allowed": True, "degrade_to_strategy": None}
-    ) == []
-    assert mvs._apply_provider_capability_requirements(
-        providers, {**base, "degrade_allowed": False, "degrade_to_strategy": "IMAGE_TO_VIDEO"}
-    ) == []
-
-    # 둘 다 명시됐을 때만 원래 목록으로 강등한다.
-    degraded = mvs._apply_provider_capability_requirements(
-        providers, {**base, "degrade_allowed": True, "degrade_to_strategy": "IMAGE_TO_VIDEO"}
-    )
-    assert [p.name for p in degraded] == ["a"]
+    for allowed, strategy in [(True, None), (False, "IMAGE_TO_VIDEO"), (False, None)]:
+        requirements = {**base, "degrade_allowed": allowed, "degrade_to_strategy": strategy}
+        resolved, _, _ = mvs._resolve_providers_for_contract(
+            {"requirements": {"provider_capabilities": requirements}}, providers
+        )
+        assert resolved == providers
 
 
-def test_capable_providers_are_still_preferred_and_ordered():
+def test_capabilities_cannot_promote_a_different_model():
     from backend.services import motion_video_service as mvs
 
     providers = [
@@ -492,23 +489,21 @@ def test_capable_providers_are_still_preferred_and_ordered():
         _Cap("end_only", supports_end_frame=True, supports_motion_reference=False),
         _Cap("end_and_ref", supports_end_frame=True, supports_motion_reference=True),
     ]
-    ranked = mvs._apply_provider_capability_requirements(
-        providers,
-        {
+    ranked, _, _ = mvs._resolve_providers_for_contract(
+        {"requirements": {"provider_capabilities": {
             "required_all": ["supports_end_frame"],
             "preferred_any": ["supports_motion_reference"],
             "degrade_allowed": False,
-        },
+        }}}, providers,
     )
-    # 능력 없는 프로바이더는 아예 빠지고, 선호 능력이 앞선다.
-    assert [p.name for p in ranked] == ["end_and_ref", "end_only"]
+    assert [p.name for p in ranked] == ["no_end"]
 
 
-def test_registry_start_end_motion_cannot_degrade():
-    """레지스트리 계약 자체가 강등을 막고 있다 — 코드와 레지스트리가 같은 말을 한다."""
+def test_registry_start_end_motion_allows_same_model_prompt_conditioning():
     from backend.services import motion_spec as ms
 
     caps = ms.MOTIONS["LIE_DOWN"].requirements["provider_capabilities"]
-    assert caps["required_all"] == ["supports_end_frame"]
-    assert caps["degrade_allowed"] is False
-    assert caps["degrade_to_strategy"] is None
+    assert caps["required_all"] == []
+    assert caps["preferred_any"] == ["supports_end_frame"]
+    assert caps["degrade_allowed"] is True
+    assert caps["degrade_to_strategy"] == "IMAGE_TO_VIDEO"
