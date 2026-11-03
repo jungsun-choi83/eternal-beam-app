@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import signal
 import socket
 
 from ..services import archive_intake_preparation_service, archive_intake_service, archive_preparation_diagnostics
@@ -28,6 +29,12 @@ def _single_application_id() -> str | None:
             "ARCHIVE_PREPARATION_TEST_APPLICATION_ID must be non-empty when set"
         )
     return application_id
+
+
+def _stop(signum: int, _frame: object) -> None:
+    global _STOP
+    logger.info("shutdown signal received (signum=%s); stopping after current intake", signum)
+    _STOP = True
 
 
 async def _heartbeat(application_id: str, lease_id: str, interval: float) -> None:
@@ -106,6 +113,8 @@ def main() -> None:
         level=os.getenv("ARCHIVE_PREPARATION_WORKER_LOG_LEVEL", "INFO"),
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+    signal.signal(signal.SIGINT, _stop)
+    signal.signal(signal.SIGTERM, _stop)
     asyncio.run(_run())
 
 
