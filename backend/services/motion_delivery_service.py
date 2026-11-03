@@ -52,6 +52,7 @@ import logging
 import os
 import subprocess
 import tempfile
+from time import perf_counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterator, Optional
@@ -1203,12 +1204,27 @@ def _download_raw(bucket: str, path: str) -> Optional[bytes]:
         return None
 
 
-async def _upload_derived(path: str, data: Any) -> None:
+async def _upload_derived(path: str, data: Any, *, bucket: str | None = None) -> None:
     """bytes 또는 storage3가 지원하는 로컬 파일 경로를 기존 업로더에 전달."""
     if _use_db() and supabase_assets.get_client():
-        await supabase_assets.upload_asset_to_storage(path, data, "video/mp4")
+        await supabase_assets.upload_asset_for_scope(
+            path,
+            data,
+            "video/mp4",
+            bucket=bucket or supabase_assets.active_bucket(),
+            require_private=supabase_assets.active_requires_private(),
+        )
         return
     _MOCK_DELIVERY_OBJECTS.add(path)
+
+
+async def _store_derived_for_bucket(path: str, data: Any, bucket: str) -> None:
+    """Keep legacy injected upload callbacks three-argument compatible."""
+
+    if bucket == supabase_assets.BUCKET and not supabase_assets.active_requires_private():
+        await _upload_derived(path, data)
+    else:
+        await _upload_derived(path, data, bucket=bucket)
 
 
 def _derived_exists(bucket: str, path: str) -> bool:
@@ -1237,6 +1253,7 @@ async def package_breathing_for_delivery(
     encode_fn: Optional[Callable[[list[np.ndarray], float], bytes]] = None,
     matte_fn: Optional[Callable[[list[np.ndarray]], tuple[list[np.ndarray], dict[str, Any]]]] = None,
     upload_fn: Optional[Callable[[str, bytes], Any]] = None,
+    timing_context: Optional[dict[str, Any]] = None,
 ) -> MotionDeliveryResult:
     """
     선택(또는 지정) Phase 6 후보 하나를 packed-alpha 파생물로 포장한다.
@@ -1244,6 +1261,15 @@ async def package_breathing_for_delivery(
     멱등: 이미 같은 포맷으로 포장돼 있고 객체가 존재하면 그대로 돌려준다
     (deduplicated=True). force=True 는 같은 결정론 경로에 다시 포장한다.
     """
+    timing_context = dict(timing_context or {})
+
+    def _timing(stage: str, started: float) -> None:
+        from . import qa_shadow_telemetry
+
+        qa_shadow_telemetry.log_pipeline_timing(
+            timing_context, stage, (perf_counter() - started) * 1000.0
+        )
+
     uid = (user_id or "").strip()
     pid = (pet_id or "").strip()
     version_id = (motion_version_id or "").strip()
@@ -1327,7 +1353,10 @@ async def package_breathing_for_delivery(
         )
 
     # ── 원본 로드 (불변 — 읽기만) ──────────────────────────────────────────
+    raw_download_started = perf_counter()
     raw = video_bytes if video_bytes is not None else _download_raw(bucket, raw_path)
+    if video_bytes is None:
+        _timing("delivery_raw_storage_download", raw_download_started)
     if not raw:
         raise MotionDeliveryError(
             "CANDIDATE_ASSET_UNAVAILABLE", "저장된 raw 영상을 불러오지 못했습니다.", status=503
@@ -1351,16 +1380,20 @@ async def package_breathing_for_delivery(
     async def stream_vitmatte_and_upload() -> StreamingPackResult:
         with tempfile.TemporaryDirectory(prefix="eb_delivery_stream_pack_") as td:
             packed_path = os.path.join(td, "out.mp4")
+            processing_started = perf_counter()
             streamed = stream_vitmatte_to_packed_file(
                 raw, packed_path, probe=reused_probe
             )
+            _timing("delivery_stream_matte_and_ffmpeg_encode", processing_started)
+            upload_started = perf_counter()
             if upload_fn is not None:
                 # 테스트/외부 주입 계약은 bytes를 유지한다. 운영 업로드는 아래에서
                 # 로컬 경로를 storage3에 넘겨 인코딩 결과 전체를 RAM에 올리지 않는다.
                 with open(packed_path, "rb") as f:
                     await _maybe_await(upload_fn(derived_path, f.read()))
             else:
-                await _upload_derived(derived_path, packed_path)
+                await _store_derived_for_bucket(derived_path, packed_path, bucket)
+            _timing("delivery_packed_storage_upload", upload_started)
         return streamed
 
     # bgmodel → 내부 구멍 QA → (실패 시) 같은 raw 를 ViTMatte 로 한 번만 다시 포장.
@@ -1426,11 +1459,15 @@ async def package_breathing_for_delivery(
             packed = build_packed_frames(frames, alphas)
             warnings = validate_packed_frames(packed)
 
+            encoding_started = perf_counter()
             packed_bytes = (encode_fn or encode_packed_video)(packed, fps)
+            _timing("delivery_batch_encode", encoding_started)
+            upload_started = perf_counter()
             if upload_fn is not None:
                 await _maybe_await(upload_fn(derived_path, packed_bytes))
             else:
-                await _upload_derived(derived_path, packed_bytes)
+                await _store_derived_for_bucket(derived_path, packed_bytes, bucket)
+            _timing("delivery_packed_storage_upload", upload_started)
             frame_count = len(frames)
 
     final_backend = str(matte_diag.get("backend", backend_name))

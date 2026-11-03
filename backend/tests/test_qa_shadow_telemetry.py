@@ -219,3 +219,18 @@ def test_rollout_metrics_can_be_limited_to_enrolled_user_test_runs():
     metrics = telemetry.aggregate_metrics([enrolled, control], cohort_only=True)
     assert metrics["run_count"] == 1
     assert metrics["average_candidates_per_run"] == 1.0
+
+
+
+def test_opt_in_pipeline_timing_log_has_archive_and_run_correlation(monkeypatch, caplog):
+    monkeypatch.setenv("HYBRID_USE_SUPABASE", "0")
+    monkeypatch.setenv("ETERNAL_BEAM_PIPELINE_TIMING", "1")
+    before = SimpleNamespace(**{**vars(_run()), "user_id": "archive_app-1", "current_stage": "QUEUED"})
+    after = SimpleNamespace(**{**vars(before), "current_stage": "CANONICAL", "updated_at": "2026-10-02T00:00:02+00:00"})
+    with caplog.at_level("INFO", logger=telemetry.__name__):
+        telemetry.observe_progress(before, after, {"current_stage": "CANONICAL"})
+    record = next(record for record in caplog.records if getattr(record, "event", None) == "eternal_beam_pipeline_timing")
+    assert record.application_id == "app-1"
+    assert record.generation_run_id == "run-1"
+    assert record.stage == "QUEUED"
+    assert record.measurement == "stage_wall_elapsed_includes_queue_and_provider_wait"

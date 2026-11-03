@@ -53,6 +53,7 @@ from .cutout_errors import (
     RectangleLikeMaskError,
     SubjectNotDetectedError,
 )
+from . import archive_preparation_diagnostics
 from . import rss_trace
 from .person_prompting import PersonAwareResult, apply_person_aware_prompting
 from .yolo_input import load_yolo, to_yolo_source
@@ -1469,6 +1470,7 @@ def matte_foreground_with_meta(
     segmenter: Optional[str] = None,
     sam2_model: Optional[str] = None,
     debug_artifacts: Optional[dict[str, bytes]] = None,
+    stage_observer: archive_preparation_diagnostics.StageObserver | None = None,
 ) -> tuple[bytes, dict]:
     """
     사진 → (RGBA PNG bytes, 진단 메타). 배경은 투명, 털 경계는 매팅 처리.
@@ -1526,6 +1528,7 @@ def matte_foreground_with_meta(
             bbox_pad_frac=bbox_pad_frac,
             collect_debug=collect_debug,
             debug_artifacts=debug_artifacts,
+            stage_observer=stage_observer,
         )
 
 
@@ -1545,6 +1548,7 @@ def _matte_foreground_traced(
     bbox_pad_frac: float,
     collect_debug: bool,
     debug_artifacts: Optional[dict[str, bytes]],
+    stage_observer: archive_preparation_diagnostics.StageObserver | None,
 ) -> tuple[bytes, dict]:
     """matte_foreground_with_meta 의 본체 — 디코드 이후 전 과정. 측정점만 추가됐다."""
     diag = Diagnostics(
@@ -1558,20 +1562,21 @@ def _matte_foreground_traced(
     )
 
     trace.mark("before_yolo", input_size=f"{w}x{h}")
-    detection = _detect_subject(img, resolved_yolo, conf=yolo_conf)
-    trace.mark("after_yolo", detected=detection is not None)
-    if detection is None:
-        logger.warning(
-            "cutout: no supported animal detected (yolo=%s, conf>=%.2f, size=%dx%d)",
-            resolved_yolo,
-            yolo_conf,
-            w,
-            h,
-        )
-        raise SubjectNotDetectedError(
-            "No supported pet was detected in the image.",
-            diagnostics=diag.to_dict(),
-        )
+    with archive_preparation_diagnostics.observe_stage(stage_observer, "YOLO"):
+        detection = _detect_subject(img, resolved_yolo, conf=yolo_conf)
+        trace.mark("after_yolo", detected=detection is not None)
+        if detection is None:
+            logger.warning(
+                "cutout: no supported animal detected (yolo=%s, conf>=%.2f, size=%dx%d)",
+                resolved_yolo,
+                yolo_conf,
+                w,
+                h,
+            )
+            raise SubjectNotDetectedError(
+                "No supported pet was detected in the image.",
+                diagnostics=diag.to_dict(),
+            )
 
     diag.subject_detected = True
     diag.subject_class = detection.class_name
@@ -1584,13 +1589,14 @@ def _matte_foreground_traced(
     diag.sam2_prompt_bbox = list(sam2_prompt_bbox)
     diag.crop_bbox = list(crop_bbox)
 
-    seg = _segment_foreground(
-        rgb,
-        sam2_prompt_bbox,
-        segmenter=resolved_segmenter,
-        sam2_model=resolved_sam2_model,
-        device=resolved_device,
-    )
+    with archive_preparation_diagnostics.observe_stage(stage_observer, "SAM2"):
+        seg = _segment_foreground(
+            rgb,
+            sam2_prompt_bbox,
+            segmenter=resolved_segmenter,
+            sam2_model=resolved_sam2_model,
+            device=resolved_device,
+        )
 
     # --- Phase 2B: 사람 인지 재프롬프팅 -------------------------------------
     # 박스 전용 결과를 기준선으로 두고, 사람이 겹칠 때만 음성 포인트를 붙여

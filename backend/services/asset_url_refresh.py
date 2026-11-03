@@ -58,7 +58,9 @@ class StorageObject:
 
 def default_bucket() -> str:
     """버킷을 함께 저장하지 못한 예전 행을 위한 폴백. supabase_assets 와 같은 값."""
-    return os.getenv("SUPABASE_STORAGE_BUCKET", "user-assets")
+    from . import supabase_assets
+
+    return supabase_assets.active_bucket()
 
 
 #: /storage/v1/object/<mode>/<bucket>/<object path>

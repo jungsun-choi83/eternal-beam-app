@@ -78,6 +78,26 @@ def _elapsed_ms(start: Any, end: Any) -> Optional[float]:
     return round(max(0.0, (b - a).total_seconds() * 1000.0), 3)
 
 
+def log_pipeline_timing(context: Mapping[str, Any], stage: str, duration_ms: float) -> None:
+    """Emit opt-in, correlation-safe pipeline timing without changing job state."""
+    if os.getenv("ETERNAL_BEAM_PIPELINE_TIMING", "0").strip() != "1":
+        return
+    user_id = str(context.get("user_id") or "")
+    application_id = context.get("application_id")
+    if not application_id and user_id.startswith("archive_"):
+        application_id = user_id.removeprefix("archive_")
+    logger.info(
+        "eternal_beam_pipeline_timing",
+        extra={
+            "event": "eternal_beam_pipeline_timing",
+            "application_id": str(application_id) if application_id else None,
+            "generation_run_id": str(context.get("generation_run_id") or "") or None,
+            "stage": str(stage),
+            "duration_ms": round(max(0.0, float(duration_ms)), 3),
+        },
+    )
+
+
 def _key(run_id: str, stage: str, candidate_id: Optional[str] = None) -> str:
     return f"{run_id}:{stage}:{candidate_id or 'aggregate'}"
 
@@ -238,6 +258,21 @@ def observe_progress(before: Any, after: Any, fields: Mapping[str, Any]) -> None
             previous["completed_at"] = now
             previous["duration_ms"] = _elapsed_ms(previous.get("started_at"), now)
             stages[previous_stage] = previous
+            if os.getenv("ETERNAL_BEAM_PIPELINE_TIMING", "0").strip() == "1":
+                user_id = str(getattr(after, "user_id", "") or "")
+                logger.info(
+                    "eternal_beam_pipeline_timing",
+                    extra={
+                        "event": "eternal_beam_pipeline_timing",
+                        "application_id": user_id.removeprefix("archive_") if user_id.startswith("archive_") else None,
+                        "generation_run_id": str(after.id),
+                        "stage": previous_stage,
+                        "duration_ms": previous["duration_ms"],
+                        "stage_started_at": previous.get("started_at"),
+                        "stage_completed_at": now,
+                        "measurement": "stage_wall_elapsed_includes_queue_and_provider_wait",
+                    },
+                )
         current = dict(stages.get(next_stage) or {})
         current.setdefault("started_at", now)
         stages[next_stage] = current

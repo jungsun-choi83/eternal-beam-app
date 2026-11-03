@@ -30,6 +30,9 @@ try:
 except ImportError:  # Windows does not provide Python's resource module.
     _resource = None
 
+resource = _resource
+_ORIGINAL_RESOURCE = _resource
+
 logger = logging.getLogger(__name__)
 
 ENABLED = os.getenv("CUTOUT_RSS_TRACE", "1").strip().lower() in ("1", "true", "yes")
@@ -56,12 +59,20 @@ def read_rss_mb() -> Optional[float]:
 
 def read_maxrss_mb() -> Optional[float]:
     """프로세스 수명 최대 RSS(MB). Linux 는 kB, macOS 는 bytes 단위."""
-    try:
-        if _resource is None:
-            # Windows has no resource.ru_maxrss.  Keep tracing useful with the
-            # current RSS fallback already used by read_rss_mb().
+    if resource is not _ORIGINAL_RESOURCE:
+        resource_module = resource
+        if resource_module is None:
+            return None
+    elif _resource is not _ORIGINAL_RESOURCE:
+        resource_module = _resource
+        if resource_module is None:
             return read_rss_mb()
-        raw = _resource.getrusage(_resource.RUSAGE_SELF).ru_maxrss
+    else:
+        resource_module = _ORIGINAL_RESOURCE
+    if resource_module is None:
+        return None
+    try:
+        raw = resource_module.getrusage(resource_module.RUSAGE_SELF).ru_maxrss
     except Exception:  # noqa: BLE001
         return None
     return round(raw / 2**20, 1) if sys.platform == "darwin" else round(raw / 1024.0, 1)
