@@ -1,6 +1,5 @@
 "use client";
 
-import { ArrowRight } from "lucide-react";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { LanguageToggle } from "./language-toggle";
 
@@ -16,16 +15,11 @@ interface GetStartedScreenProps {
 /**
  * 첫 방문(세션 없음) 진입 화면.
  *
- * 예전 1P 는 로고만 2초 보여 준 뒤 **타이머로** 회원가입으로 넘어갔다 — 기존
- * 사용자는 매번 가입 폼에 떨어져 로그인 탭을 찾아야 했다. 이제는 사용자가
- * 고른다: 시작하기(가입) / 이미 계정이 있어요(로그인). 자동 전환은 없다.
+ * SoulTrace 페이퍼 레이아웃: 언어 토글 → 라운드 히어로 → 세리프 문장 →
+ * 포레스트 CTA / 크림 아웃라인 로그인. 자동 전환은 없다.
  *
  * 로그인된 세션이 있으면 이 화면은 보이지 않는다 — EternalBeamApp 의
  * 인증-인지 시작 효과가 곧장 홈으로 보낸다.
- *
- * 레이아웃: 모바일은 세로 히어로 사진 위에 브랜드 문장 + CTA, 데스크톱은
- * 히어로(좌) / 문장·CTA(우) 분할. 언어 전환은 헤더 구석 한 곳 — 폼 위에 떠
- * 있는 토글은 없다.
  */
 export function GetStartedScreen({
   language = "ko",
@@ -36,22 +30,8 @@ export function GetStartedScreen({
   const a = memorialT(language).auth;
 
   return (
-    <div data-screen="getStarted" className="eb-entry eb-entry--start h-full min-h-0">
-      <div className="eb-entry__hero" aria-hidden>
-        <picture>
-          <source media="(min-width: 1024px)" srcSet="/auth/hero-landscape.jpg" />
-          <img
-            src="/auth/hero-portrait.jpg"
-            alt=""
-            className="eb-entry__hero-img"
-            draggable={false}
-            decoding="async"
-          />
-        </picture>
-        <div className="eb-entry__hero-veil" />
-      </div>
-
-      <div className="eb-entry__panel">
+    <div data-screen="getStarted" className="eb-entry eb-entry--start eb-paper h-full min-h-0">
+      <div className="eb-entry__column">
         <header className="eb-entry__top">
           <img
             src="/eternal-beam-logo-splash.png?v=1"
@@ -64,7 +44,18 @@ export function GetStartedScreen({
           ) : null}
         </header>
 
-        <div className="eb-entry__spacer" />
+        <div className="eb-entry__art" aria-hidden>
+          <picture>
+            <source media="(min-width: 1024px)" srcSet="/auth/hero-landscape.jpg" />
+            <img
+              src="/auth/hero-portrait.jpg"
+              alt=""
+              className="eb-entry__art-img"
+              draggable={false}
+              decoding="async"
+            />
+          </picture>
+        </div>
 
         <div className="eb-entry__content">
           <h1 className="eb-entry__statement">
@@ -81,7 +72,6 @@ export function GetStartedScreen({
               data-action="get-started"
             >
               <span className="memorial-btn-label">{a.getStarted}</span>
-              <ArrowRight className="w-5 h-5" strokeWidth={2.5} aria-hidden />
             </button>
             <button
               type="button"

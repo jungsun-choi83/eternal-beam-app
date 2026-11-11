@@ -1,9 +1,7 @@
 :root {
-  --font-body: 'SF Pro Text', 'SF Pro Display', -apple-system, BlinkMacSystemFont,
-    'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
-  --font-headline: 'SF Pro Display', 'SF Pro Text', -apple-system, BlinkMacSystemFont,
-    'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
-  --font-display: var(--font-headline);
+  --font-body: 'Noto Sans KR', 'Apple SD Gothic Neo', 'Malgun Gothic', system-ui, sans-serif;
+  --font-headline: 'Noto Serif KR', Georgia, 'Times New Roman', serif;
+  --font-display: 'Marcellus', Georgia, 'Times New Roman', serif;
 
   --letter-spacing-tight: 0;
   --letter-spacing-normal: 0;
@@ -49,9 +47,10 @@ h4,
 h5,
 h6 {
   font-family: var(--font-headline);
-  letter-spacing: 0;
-  font-weight: 600;
+  letter-spacing: -0.015em;
+  font-weight: 300;
   color: inherit;
+  word-break: keep-all;
 }
 
 h1 {

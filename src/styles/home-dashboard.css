@@ -43,9 +43,9 @@
   overflow: hidden;
   min-width: 0;
   border: 1px solid rgba(var(--eb-hairline-rgb), 0.08);
-  border-radius: 1.25rem;
-  background: rgba(253, 251, 247, 0.96);
-  box-shadow: 0 14px 40px -30px rgba(62, 45, 23, 0.38);
+  border-radius: 22px;
+  background: #f8f2e5;
+  box-shadow: 0 14px 34px -18px rgba(74, 52, 30, 0.38);
 }
 
 .eb-home__hero-media {
@@ -132,21 +132,21 @@
 .eb-home__hero-headline {
   max-width: 35rem;
   margin: 0;
-  color: #201b17;
+  color: var(--eb-text);
   font-family: var(--font-headline);
-  font-size: clamp(2rem, 10vw, 3rem);
-  font-weight: 500;
-  letter-spacing: -0.025em;
-  line-height: 1.04;
+  font-size: clamp(1.7rem, 8vw, 2.4rem);
+  font-weight: 300;
+  letter-spacing: -0.03em;
+  line-height: 1.22;
 }
 
 .eb-home__hero-copy {
   max-width: 31rem;
   margin: 0.75rem 0 0;
-  color: #504941;
-  font-family: var(--font-headline);
-  font-size: 1.05rem;
-  line-height: 1.5;
+  color: var(--eb-text-2);
+  font-family: var(--font-body);
+  font-size: 0.9375rem;
+  line-height: 1.65;
 }
 
 .eb-home__hero-actions {
@@ -159,8 +159,8 @@
 
 .eb-home__hero-cta {
   width: 100%;
-  min-height: 3.5rem;
-  border-radius: 0.9rem;
+  min-height: 3rem;
+  border-radius: 999px;
 }
 
 .eb-home__button-icon {

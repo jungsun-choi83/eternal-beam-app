@@ -68,7 +68,7 @@ test("brand.css 가 모든 스타일시트보다 먼저 로드된다 (fonts 다�
   assert.ok(brandAt < css.indexOf("foundation.css"));
 });
 
-test("최종 팔레트 토큰 — 아이보리 페이지 · 오프화이트 카드 · 차콜 텍스트 · 샴페인 골드 · 더스티 블루 · 세이지 · 테라코타", () => {
+test("최종 팔레트 토큰 — 아이보리 페이지 · 오프화이트 카드 · 포레스트 잉크 · 앤틱 골드 · 더스티 블루 · 세이지 · 테라코타", () => {
   const root = rootBlock(read(BRAND));
   for (const token of [
     "--eb-bg:",
@@ -81,6 +81,9 @@ test("최종 팔레트 토큰 — 아이보리 페이지 · 오프화이트 카�
     "--eb-text-2:",
     "--eb-text-3:",
     "--eb-text-on-gold:",
+    "--eb-text-on-forest:",
+    "--eb-forest:",
+    "--eb-forest-strong:",
     "--eb-hairline:",
     "--eb-hairline-strong:",
     "--eb-gold:",
@@ -108,9 +111,9 @@ test("최종 팔레트 토큰 — 아이보리 페이지 · 오프화이트 카�
   assert.match(root, /--eb-success:\s*var\(--eb-sage\)/);
   assert.match(root, /--eb-error:\s*var\(--eb-terracotta\)/);
   assert.match(root, /--eb-info:\s*var\(--eb-blue\)/);
-  // Page is light: ivory background, charcoal text.
-  assert.match(root, /--eb-bg:\s*#f7f2e9/i);
-  assert.match(root, /--eb-text:\s*#2a2622/i);
+  // Page is light: SoulTrace ivory, forest ink.
+  assert.match(root, /--eb-bg:\s*#fffaf0/i);
+  assert.match(root, /--eb-text:\s*#2f3a28/i);
 });
 
 test("간격 스케일은 4 / 8 / 12 / 16 / 24 / 32 / 48 / 64 하나뿐이다 — 옛 5·10 단계는 스케일 값으로 스냅된다", () => {
@@ -191,11 +194,11 @@ test("버튼 시스템 — Primary · Secondary · Ghost · Destructive, Loading
   // Legacy primary/secondary classes ride on the same rules.
   assert.match(css, /\.eb-btn--primary,\s*\.mem-btn-primary,\s*\.cta-gold\s*\{/);
   assert.match(css, /\.eb-btn--secondary,\s*\.mem-btn-secondary\s*\{/);
-  // Primary is a solid champagne fill with charcoal text — no gradient texture.
+  // Primary is a solid forest fill with cream text — no gradient texture.
   const primaryAt = css.indexOf(".eb-btn--primary,");
   const primaryRule = css.slice(primaryAt, css.indexOf("}", primaryAt));
-  assert.match(primaryRule, /background:\s*var\(--eb-gold\)/);
-  assert.match(primaryRule, /color:\s*var\(--eb-text-on-gold\)/);
+  assert.match(primaryRule, /background:\s*var\(--eb-forest\)/);
+  assert.match(primaryRule, /color:\s*var\(--eb-text-on-forest\)/);
   assert.doesNotMatch(primaryRule, /gradient/);
 
   const tsx = read(BUTTONS);
@@ -330,7 +333,7 @@ test("앱 셸과 로딩 페이지가 아이보리다 — 잉크 블랙 배경이
   assert.match(foundation.slice(surfaceAt, foundation.indexOf("}", surfaceAt)), /background:\s*var\(--eb-bg\)/);
   const html = read(HTML);
   assert.doesNotMatch(html, /background:\s*#000/);
-  assert.match(html, /#f7f2e9/i);
+  assert.match(html, /#fffaf0/i);
 });
 
 test("safe-area 는 한 번만 더해진다 — 표준 헤더/푸터 오프셋 토큰", () => {

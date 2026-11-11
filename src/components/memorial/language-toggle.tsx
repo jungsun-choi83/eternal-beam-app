@@ -8,7 +8,7 @@ interface LanguageToggleProps {
   className?: string;
 }
 
-/** KO / EN 언어 전환 (온보딩·인증·홈 등 공통) — brand.css .eb-segmented */
+/** KO | EN 언어 전환 — SoulTrace paper pill */
 export function LanguageToggle({
   language = "ko",
   onChange,
@@ -17,26 +17,26 @@ export function LanguageToggle({
   const active = memorialLang(language);
 
   return (
-    <div className={`eb-segmented shrink-0 ${className}`} role="group" aria-label="Language">
-      {(
-        [
-          { code: "ko" as const, label: "KR" },
-          { code: "en" as const, label: "EN" },
-        ] as const
-      ).map(({ code, label }) => {
-        const selected = active === code;
-        return (
-          <button
-            key={code}
-            type="button"
-            onClick={() => onChange(code)}
-            className="eb-segmented__item"
-            aria-pressed={selected}
-          >
-            {label}
-          </button>
-        );
-      })}
+    <div className={`eb-segmented font-display-en shrink-0 ${className}`} role="group" aria-label="Language">
+      <button
+        type="button"
+        onClick={() => onChange("ko")}
+        className="eb-segmented__item"
+        aria-pressed={active === "ko"}
+      >
+        KO
+      </button>
+      <span className="eb-segmented__rule" aria-hidden>
+        |
+      </span>
+      <button
+        type="button"
+        onClick={() => onChange("en")}
+        className="eb-segmented__item"
+        aria-pressed={active === "en"}
+      >
+        EN
+      </button>
     </div>
   );
 }

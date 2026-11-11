@@ -46,7 +46,7 @@ export function AppShell({ children, nav, mobileNav, wide = false, unframed = fa
           unframed ? " app-shell__stage--unframed" : ""
         }`}
       >
-        <div className="memorial-ui app-shell__surface">
+        <div className="memorial-ui eb-paper app-shell__surface">
           <MemorialSparkleField />
           <div className="relative z-[2] h-full w-full overflow-hidden">{children}</div>
         </div>

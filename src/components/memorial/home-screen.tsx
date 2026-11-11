@@ -17,8 +17,6 @@ import {
   Star,
 } from "lucide-react";
 import { useMemo } from "react";
-import { HolographicBackground } from "./holographic-background";
-import { HologramEffects } from "./hologram-effects";
 import { EternalBeamBrandMark } from "./eternal-beam-brand-mark";
 import { MediaFileTrigger } from "./media-file-trigger";
 import { PetPhoto } from "./pet-photo";
@@ -114,9 +112,7 @@ export function HomeScreen({
     index === activePetIndex && petName?.trim() ? petName.trim() : texts.petLabel(index + 1);
 
   return (
-    <div className="hologram-bg-active memorial-screen-shell h-full flex flex-col relative overflow-hidden min-h-0">
-      <HolographicBackground />
-      <HologramEffects />
+    <div className="eb-paper memorial-screen-shell h-full flex flex-col relative overflow-hidden min-h-0">
 
       {/* Header — mobile/tablet only; desktop identity lives in the top nav. */}
       <header className="px-6 pt-[var(--eb-header-top)] pb-4 relative z-10 shrink-0 lg:hidden">

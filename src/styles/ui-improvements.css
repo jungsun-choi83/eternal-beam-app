@@ -67,7 +67,7 @@ span {
   bottom: 0;
   border-radius: 50%;
   background: var(--eb-gold);
-  box-shadow: 0 0 6px rgba(184, 150, 62, 0.35);
+  box-shadow: 0 0 6px rgba(158, 119, 76, 0.28);
   animation: home-dot-rise var(--dot-dur, 8s) linear infinite;
   animation-delay: var(--dot-delay, 0s);
   will-change: transform, opacity;
@@ -79,7 +79,7 @@ span {
   z-index: 1;
   pointer-events: none;
   overflow: hidden;
-  opacity: 0.35;
+  opacity: 0.12;
 }
 
 .memorial-sparkle-field .home-dot {

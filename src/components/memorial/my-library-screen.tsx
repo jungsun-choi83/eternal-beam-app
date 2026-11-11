@@ -784,7 +784,7 @@ export function MyLibraryScreen({
 
   if (flowRestorePending) {
     return (
-      <div className="hologram-bg-active memorial-screen-shell my-library h-full flex flex-col min-h-0">
+      <div className="eb-paper memorial-screen-shell my-library h-full flex flex-col min-h-0">
         <ScreenHeader title={t.title} onBack={onBack} backLabel={common.back} />
         <div className="my-library__scroll flex-1 overflow-y-auto min-h-0 px-6 pb-[var(--eb-footer-bottom)]">
           <LoadingState label={t.loading} />
@@ -883,7 +883,7 @@ export function MyLibraryScreen({
   const visiblePetIds = petFilter === "all" ? resolvedPetIds : resolvedPetIds.filter((p) => p.petId === petFilter);
 
   return (
-    <div className="hologram-bg-active memorial-screen-shell my-library h-full flex flex-col min-h-0">
+    <div className="eb-paper memorial-screen-shell my-library h-full flex flex-col min-h-0">
       <ScreenHeader title={t.title} onBack={onBack} backLabel={common.back} />
 
       <div className="my-library__scroll flex-1 overflow-y-auto min-h-0 px-6 pb-[var(--eb-footer-bottom)]">
