@@ -216,7 +216,7 @@ export function AuthScreen({
   const refFor = (key: "name" | "email" | "password") => (key === firstInvalidKey ? firstInvalidRef : undefined);
 
   return (
-    <div data-screen={mode} className="eb-entry eb-entry--auth h-full min-h-0">
+    <div data-screen={mode} className="eb-entry eb-entry--auth eb-paper h-full min-h-0">
       {/* Desktop: brand hero on the left. Mobile: hidden — compact branding sits above the form. */}
       <div className="eb-entry__hero eb-entry__hero--desktop-only" aria-hidden>
         <img
@@ -247,12 +247,10 @@ export function AuthScreen({
           <div className="eb-entry__form-col">
             {/* Mobile-only compact branding. */}
             <div className="eb-entry__compact-brand">
-              <img
-                src="/eternal-beam-logo-splash.png?v=1"
-                alt="Eternal Beam"
-                className="eb-entry__logo eb-entry__logo--compact"
-                draggable={false}
-              />
+              <div className="eb-entry__auth-art" aria-hidden>
+                <img src="/auth/hero-portrait.jpg" alt="" draggable={false} decoding="async" />
+              </div>
+              <p className="eb-entry__wordmark">Eternal Beam</p>
               <p className="eb-entry__tagline eb-entry__tagline--compact">
                 {a.brandLine1} {a.brandLine2}
               </p>
