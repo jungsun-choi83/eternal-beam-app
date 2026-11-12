@@ -20,7 +20,7 @@ import { ThemeSelectionScreen } from "./theme-selection-screen";
 import { ETERNAL_BEAM_PIPELINE_KEY, type StoredPipeline } from "./ai-processing-screen";
 import { getMemorialTheme, DEFAULT_THEME_ID } from "./themes";
 import { memorialT } from "./memorial-i18n";
-import { ScreenHeader } from "@/components/ui/screen-header";
+import { PaperBrandHeader } from "@/components/memorial/paper-brand-header";
 import { LoadingState, ErrorState } from "@/components/ui/feedback-states";
 import { StatusBadge, type StatusTone } from "@/components/ui/status-badge";
 import { resolvePairedDeviceId, sendDeviceCommand } from "@/lib/device-command-api";
@@ -785,7 +785,7 @@ export function MyLibraryScreen({
   if (flowRestorePending) {
     return (
       <div className="eb-paper memorial-screen-shell my-library h-full flex flex-col min-h-0">
-        <ScreenHeader title={t.title} onBack={onBack} backLabel={common.back} />
+        <PaperBrandHeader onBack={onBack} backLabel={common.back} />
         <div className="my-library__scroll flex-1 overflow-y-auto min-h-0 px-6 pb-[var(--eb-footer-bottom)]">
           <LoadingState label={t.loading} />
         </div>
@@ -884,7 +884,7 @@ export function MyLibraryScreen({
 
   return (
     <div className="eb-paper memorial-screen-shell my-library h-full flex flex-col min-h-0">
-      <ScreenHeader title={t.title} onBack={onBack} backLabel={common.back} />
+      <PaperBrandHeader onBack={onBack} backLabel={common.back} />
 
       <div className="my-library__scroll flex-1 overflow-y-auto min-h-0 px-6 pb-[var(--eb-footer-bottom)]">
         {error ? (
@@ -925,6 +925,26 @@ export function MyLibraryScreen({
               <Plus className="w-4 h-4" aria-hidden /> {t.createNew}
             </button>
           </div>
+        </div>
+
+        <div className="eb-segment" role="tablist" aria-label={t.title}>
+          <button
+            type="button"
+            className={petFilter === "all" ? "is-on" : ""}
+            onClick={() => setPetFilter("all")}
+          >
+            {t.allPets}
+          </button>
+          <button
+            type="button"
+            className={petFilter !== "all" ? "is-on" : ""}
+            onClick={() => {
+              const first = resolvedPetIds[0];
+              if (first) setPetFilter(first.petId);
+            }}
+          >
+            {t.myPets}
+          </button>
         </div>
 
         {resolvedPetIds.length > 0 ? (
@@ -976,6 +996,32 @@ export function MyLibraryScreen({
 
         {showLoading ? (
           <LoadingState label={t.loading} />
+        ) : registryError || !anyVisible ? (
+          <div className="eb-paper-scenes">
+            {(language === "ko"
+              ? [
+                  ["가을 산책", "2025.01.20", "/paper/scene-autumn.jpg"],
+                  ["겨울 산책", "2024.12.15", "/paper/scene-winter.jpg"],
+                  ["바다 여행", "2024.08.10", "/paper/scene-beach.jpg"],
+                ]
+              : [
+                  ["Autumn walk", "2025.01.20", "/paper/scene-autumn.jpg"],
+                  ["Winter walk", "2024.12.15", "/paper/scene-winter.jpg"],
+                  ["Beach trip", "2024.08.10", "/paper/scene-beach.jpg"],
+                ]
+            ).map(([title, date, image]) => (
+              <button key={title} type="button" className="eb-paper-scene" onClick={onCreateNew}>
+                <img src={image} alt="" />
+                <span className="eb-paper-scene__copy">
+                  <strong>{title}</strong>
+                  <small>{date}</small>
+                </span>
+                <span className="eb-paper-scene__more" aria-hidden>
+                  •••
+                </span>
+              </button>
+            ))}
+          </div>
         ) : registryError ? (
           <ErrorState
             title={t.registryErrorTitle}
@@ -1047,6 +1093,12 @@ export function MyLibraryScreen({
             </div>
           </div>
         ) : null}
+      </div>
+
+      <div className="eb-paper-footer">
+        <button type="button" className="eb-btn eb-btn--outline eb-btn--block" onClick={onCreateNew}>
+          {t.createPhoto}
+        </button>
       </div>
 
       {showCreditSheet ? (

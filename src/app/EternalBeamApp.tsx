@@ -8,6 +8,9 @@ import { MobileNav } from '@/components/layout/mobile-nav'
 import { UserMenu } from '@/components/layout/user-menu'
 import { AuthScreen } from '@/components/memorial/auth-screen'
 import { GetStartedScreen } from '@/components/memorial/get-started-screen'
+import { SplashScreen } from '@/components/memorial/splash-screen'
+import { DeviceConnectScreen } from '@/components/memorial/device-connect-screen'
+import { LanguageToggle } from '@/components/memorial/language-toggle'
 import { ResetPasswordScreen } from '@/components/memorial/reset-password-screen'
 import { HomeScreen } from '@/components/memorial/home-screen'
 import { MyLibraryScreen } from '@/components/memorial/my-library-screen'
@@ -287,9 +290,11 @@ function restorePetSlots(activeIndex: number): PetIntakeSlot[] {
 }
 
 type Screen =
+  | 'splash'
   | 'getStarted'
   | 'signup'
   | 'login'
+  | 'deviceConnect'
   | 'resetPassword'
   | 'home'
   | 'library'
@@ -316,9 +321,11 @@ type Screen =
  * 전환을 헤더 구석에 갖고 있고, 인증 폼 위에는 떠 있는 토글이 없다.
  */
 const DESKTOP_NAV_HIDDEN_SCREENS = new Set<Screen>([
+  'splash',
   'getStarted',
   'signup',
   'login',
+  'deviceConnect',
   'resetPassword',
   'aiProcessing',
   'forestExperience',
@@ -354,10 +361,21 @@ function activeDesktopNavKeyFor(screen: Screen): DesktopNavKey | undefined {
  * 폰 폭 카드가 아니라 페이지 전체를 쓴다(데스크톱: 히어로 좌 / 폼 우 분할).
  * Home 과 같은 unframed.
  */
-const AUTH_ENTRY_SCREENS = new Set<Screen>(['getStarted', 'signup', 'login', 'resetPassword'])
+const AUTH_ENTRY_SCREENS = new Set<Screen>(['splash', 'getStarted', 'signup', 'login', 'deviceConnect', 'resetPassword'])
+const PAPER_FLOW_SCREENS = new Set<Screen>([
+  'photoUpload',
+  'themeSelection',
+  'preview',
+  'library',
+  'device',
+  'settings',
+  'nfcPlayback',
+  'gallery',
+  'customBackground',
+])
 
 function resolveInitialScreen(): Screen {
-  if (typeof window === 'undefined') return 'getStarted'
+  if (typeof window === 'undefined') return 'splash'
   // 비밀번호 재설정 링크 — 다른 durable 마커보다 먼저 본다. 방금 메일의
   // 링크를 누른 것은 가장 명시적인 사용자 행동이고, URL 해시는 supabase-js
   // 가 비동기로 처리하며 지운다(password-recovery.ts) — 여기서 동기로 먼저
@@ -391,10 +409,8 @@ function resolveInitialScreen(): Screen {
   // — 인증 확인을 기다리지 않고 곧장 라이브러리로 돌아간다. 실제 펫·모션은
   // MyLibraryScreen 이 서버 레지스트리와 대조한 뒤에만 되살린다.
   if (hasLibraryFlowMarker()) return 'library'
-  // 첫 방문(세션 없음) — Get Started. 사용자가 고른다: 시작하기(가입) /
-  // 이미 계정이 있어요(로그인). 자동 타이머 전환은 없다. 세션이 있으면 아래
-  // 인증-인지 시작 효과가 이 화면을 건너뛰고 곧장 홈으로 보낸다.
-  return 'getStarted'
+  // 첫 방문 — 스플래시에서 세션을 확인한 뒤 Get Started 또는 Home 으로 보낸다.
+  return 'splash'
 }
 
 type NavDirection = 'forward' | 'back'
@@ -592,6 +608,7 @@ export function EternalBeamApp() {
   const homePetSummaries = petSlots.map((slot, index) => ({
     index,
     previewImage: slot.cutoutImage ?? slot.uploadedImages[0] ?? null,
+    themeId: slot.selectedTheme,
   }))
 
   // 결제 왕복 표식 적용 — 자리(petSlots/activePetSlotIndex)는 위 useState
@@ -806,7 +823,7 @@ export function EternalBeamApp() {
       if (screen !== 'settings') openSettings(screen)
       return
     }
-    // 'create' — Home 히어로 "Create a Memory" 와 같은 규칙(startCreateMemory).
+    // 'create' — 이미 들어온 뒤의 사진 등록. 홈의 시작하기는 계정 → QR 다음이다.
     startCreateMemory()
   }
 
@@ -817,9 +834,18 @@ export function EternalBeamApp() {
   }
 
   /**
-   * Home "Create a Memory" / 데스크톱 'create' 탭 — 언제나 **업로드·펫 추가
-   * 흐름**으로 간다(미리보기가 아니다; 만들던 아이의 미리보기는 Library 에서
-   * 연다). 활성 자리가 비어 있으면 그 자리에, 아니면 비어 있는 자리를 골라
+   * 홈의 시작하기.
+   * 아직 계정이 없으면 회원가입, 이미 있으면 기기 QR로 간다.
+   * QR을 찍거나 건너뛴 뒤에 사진 등록(photoUpload)이 이어진다.
+   */
+  const beginOnboarding = async () => {
+    const { hasSession } = await import('@/lib/supabase-auth')
+    navigateTo((await hasSession()) ? 'deviceConnect' : 'signup')
+  }
+
+  /**
+   * 데스크톱 'create' 탭 — 이미 앱 안에 있을 때의 사진 등록.
+   * 활성 자리가 비어 있으면 그 자리에, 아니면 비어 있는 자리를 골라
    * 쓰고, 그것도 없으면 새 자리를 만든다. 세 자리가 모두 차 있으면 활성 아이의
    * 업로드 화면으로 간다 — 자리를 지어내지 않는다.
    */
@@ -1270,7 +1296,7 @@ export function EternalBeamApp() {
     setUserName(null)
     clearAllPetIntakeState()
     setPreviewSettings({ scale: 1, posX: 0, posY: 0 })
-    replaceScreen('getStarted')
+    replaceScreen('home')
     // Phase 9 — 로컬 상태만 지우고 실제 Supabase 세션은 그대로 두던 결함.
     // 그 상태로는 새로고침하는 순간 위 인증-인지 시작 효과가 세션을 다시
     // 찾아내 곧장 로그인 화면으로 되돌린다 — 로그아웃이 조용히 무효화된다.
@@ -1390,8 +1416,9 @@ export function EternalBeamApp() {
     <main className="w-full min-h-[100dvh] bg-[var(--eb-bg)] text-[var(--eb-text)] overflow-hidden">
 
       <AppShell
-        wide={screen === 'home' || screen === 'photoUpload' || screen === 'themeSelection' || screen === 'preview' || screen === 'device' || screen === 'library' || screen === 'settings'}
-        unframed={screen === 'home' || AUTH_ENTRY_SCREENS.has(screen)}
+        className={PAPER_FLOW_SCREENS.has(screen) ? 'app-shell--paper' : ''}
+        wide={screen === 'home'}
+        unframed={screen === 'home' || AUTH_ENTRY_SCREENS.has(screen) || PAPER_FLOW_SCREENS.has(screen)}
         nav={
           !DESKTOP_NAV_HIDDEN_SCREENS.has(screen) ? (
             <DesktopNav
@@ -1399,15 +1426,18 @@ export function EternalBeamApp() {
               onNavigate={handleDesktopNav}
               onHome={() => navigateTo('home')}
               right={
-                <UserMenu
-                  userName={userName ?? undefined}
-                  settingsLabel={memorialT(language).settings.title}
-                  logoutLabel={memorialT(language).settings.logout}
-                  onSettings={() => { if (screen !== 'settings') openSettings(screen) }}
-                  onLogout={handleLogout}
-                  language={language}
-                  onChangeLanguage={handleLanguageChange}
-                />
+                <>
+                  <LanguageToggle language={language} onChange={handleLanguageChange} />
+                  <UserMenu
+                    userName={userName ?? undefined}
+                    settingsLabel={memorialT(language).settings.title}
+                    logoutLabel={memorialT(language).settings.logout}
+                    onSettings={() => { if (screen !== 'settings') openSettings(screen) }}
+                    onLogout={handleLogout}
+                    language={language}
+                    onChangeLanguage={handleLanguageChange}
+                  />
+                </>
               }
             />
           ) : undefined
@@ -1441,7 +1471,7 @@ export function EternalBeamApp() {
                 initialMode="signup"
                 onAuthComplete={(name?: string, completedMode?: 'login' | 'signup') => {
                   if (name) setUserName(name)
-                  navigateTo(completedMode === 'login' ? 'home' : 'photoUpload')
+                  navigateTo(completedMode === 'login' ? 'home' : 'deviceConnect')
                 }}
               />
             </motion.div>
@@ -1463,10 +1493,21 @@ export function EternalBeamApp() {
                 initialMode="login"
                 onAuthComplete={(name?: string, completedMode?: 'login' | 'signup') => {
                   if (name) setUserName(name)
-                  navigateTo(completedMode === 'signup' ? 'photoUpload' : 'home')
+                  navigateTo(completedMode === 'signup' ? 'deviceConnect' : 'home')
                 }}
               />
             </motion.div>
+          )}
+
+          {screen === 'deviceConnect' && (
+            <div key="deviceConnect" className="h-full">
+              <DeviceConnectScreen
+                language={language}
+                onConnected={() => replaceScreen('photoUpload')}
+                onSkip={() => replaceScreen('photoUpload')}
+                onLanguageChange={handleLanguageChange}
+              />
+            </div>
           )}
 
           {screen === 'resetPassword' && (
@@ -1483,23 +1524,24 @@ export function EternalBeamApp() {
             </motion.div>
           )}
 
+          {screen === 'splash' && (
+            <div key="splash" className="h-full">
+              <SplashScreen
+                language={language}
+                onContinue={(next) => replaceScreen(next)}
+              />
+            </div>
+          )}
+
           {screen === 'getStarted' && (
-            <motion.div
-              key="getStarted"
-              custom={pageMotionCustom()}
-              variants={pageVariants}
-              initial="initial"
-              animate="animate"
-              exit="exit"
-              className="h-full"
-            >
+            <div key="getStarted" className="h-full">
               <GetStartedScreen
                 language={language}
                 onLanguageChange={handleLanguageChange}
                 onGetStarted={handleGetStarted}
                 onSignIn={handleGoToSignIn}
               />
-            </motion.div>
+            </div>
           )}
 
           {screen === 'home' && (
@@ -1523,7 +1565,9 @@ export function EternalBeamApp() {
                 onAddPet={startAddPet}
                 onLibrary={() => navigateTo('library')}
                 onDevice={() => navigateTo('device')}
+                onRegisterDevice={() => navigateTo('deviceConnect')}
                 onSettings={() => openSettings('home')}
+                onLanguageChange={handleLanguageChange}
                 onTryForest={
                   deviceDemo ? () => navigateTo('forestExperience') : undefined
                 }
@@ -1534,8 +1578,9 @@ export function EternalBeamApp() {
                     navigateTo('devicePlay')
                     return
                   }
-                  startCreateMemory()
+                  void beginOnboarding()
                 }}
+                onSignIn={handleGoToSignIn}
               />
             </motion.div>
           )}
@@ -1630,7 +1675,7 @@ export function EternalBeamApp() {
                   if (!canStartIntake) return
                   navigateTo('aiProcessing')
                 }}
-                onBack={() => navigateTo('signup', 'back')}
+                onBack={() => navigateTo('deviceConnect', 'back')}
               />
             </motion.div>
           )}
@@ -1746,6 +1791,7 @@ export function EternalBeamApp() {
                   })
                 }}
                 onOpenMembership={() => openSettings('preview', { focusMembership: true })}
+                onSaveToLibrary={() => navigateTo('library')}
                 onBack={() => navigateTo('themeSelection', 'back')}
               />
             </motion.div>

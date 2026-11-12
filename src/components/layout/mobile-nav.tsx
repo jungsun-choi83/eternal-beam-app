@@ -13,10 +13,10 @@ interface MobileNavItem {
 }
 
 const NAV_ITEMS: MobileNavItem[] = [
-  { key: "home", label: "Home", icon: <Home className="eb-mobile-nav__icon" aria-hidden /> },
-  { key: "library", label: "Library", icon: <Library className="eb-mobile-nav__icon" aria-hidden /> },
-  { key: "create", label: "Create", icon: <Plus className="eb-mobile-nav__icon" aria-hidden /> },
-  { key: "device", label: "My Beam", icon: <Radio className="eb-mobile-nav__icon" aria-hidden /> },
+  { key: "home", label: "홈", icon: <Home className="eb-mobile-nav__icon" aria-hidden /> },
+  { key: "library", label: "라이브러리", icon: <Library className="eb-mobile-nav__icon" aria-hidden /> },
+  { key: "create", label: "만들기", icon: <Plus className="eb-mobile-nav__icon" aria-hidden /> },
+  { key: "device", label: "기기", icon: <Radio className="eb-mobile-nav__icon" aria-hidden /> },
 ];
 
 interface MobileNavProps {

@@ -175,12 +175,11 @@
 .eb-title {
   font-family: var(--font-headline);
   font-size: var(--eb-type-title);
-  font-weight: 300;
-  line-height: 1.3;
-  letter-spacing: -0.015em;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
   color: var(--eb-text);
   margin: 0;
-  word-break: keep-all;
 }
 
 .eb-section-title {

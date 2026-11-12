@@ -10,10 +10,10 @@ interface DesktopNavItem {
 }
 
 const NAV_ITEMS: DesktopNavItem[] = [
-  { key: "home", label: "Home" },
-  { key: "library", label: "Library" },
-  { key: "create", label: "Create" },
-  { key: "device", label: "My Beam" },
+  { key: "home", label: "홈" },
+  { key: "library", label: "라이브러리" },
+  { key: "create", label: "만들기" },
+  { key: "device", label: "기기" },
 ];
 
 interface DesktopNavProps {

@@ -27,11 +27,11 @@ describe("고객 인증 진입", () => {
     assert.match(auth, /onAuthComplete\(label \|\| undefined, mode\)/);
   });
 
-  it("로그인은 홈으로, 회원가입은 사진 업로드로 이어진다", () => {
+  it("로그인은 홈으로, 회원가입은 기기 QR로 이어진다", () => {
     const signup = screenBlock("signup");
-    assert.match(signup, /completedMode === 'login' \? 'home' : 'photoUpload'/);
+    assert.match(signup, /completedMode === 'login' \? 'home' : 'deviceConnect'/);
 
     const login = screenBlock("login");
-    assert.match(login, /completedMode === 'signup' \? 'photoUpload' : 'home'/);
+    assert.match(login, /completedMode === 'signup' \? 'deviceConnect' : 'home'/);
   });
 });

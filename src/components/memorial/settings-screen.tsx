@@ -3,7 +3,6 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import {
-  ChevronLeft,
   ChevronRight,
   Globe,
   Wifi,
@@ -22,6 +21,7 @@ import { MEMBERSHIP_SECTION_ID, MembershipSection } from "@/components/memorial/
 import { IdleGenerationTestPanel } from "@/components/memorial/idle-generation-test-panel";
 import { SUBSCRIPTION_MOCK_ENABLED, IDLE_TEST_PANEL_ENABLED } from "@/lib/test-app-flags";
 import { DestructiveButton } from "@/components/ui/buttons";
+import { PaperBrandHeader, PaperFlowIntro } from "@/components/memorial/paper-brand-header";
 
 interface SettingsScreenProps {
   currentLanguage: string;
@@ -118,13 +118,9 @@ export function SettingsScreen({
   };
 
   return (
-    <div className="h-full flex flex-col relative overflow-hidden">
-      <header className="px-6 pt-[var(--eb-header-top)] pb-4 flex items-center relative shrink-0">
-        <button onClick={onBack} className="mem-icon-btn eb-back-btn -ml-2" aria-label="Back">
-          <ChevronLeft className="w-5 h-5" />
-        </button>
-        <h1 className="screen-title eb-title absolute left-1/2 -translate-x-1/2">{s.title}</h1>
-      </header>
+    <div className="eb-paper h-full flex flex-col relative overflow-hidden">
+      <PaperBrandHeader onBack={onBack} backLabel="Back" />
+      <PaperFlowIntro title={s.title} />
 
       <div className="flex-1 min-h-0 overflow-y-auto px-4 pb-[var(--eb-footer-bottom)]">
         <div className="w-full max-w-2xl mx-auto">

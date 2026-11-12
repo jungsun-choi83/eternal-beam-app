@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { Mail, Lock, User, Eye, EyeOff, ArrowRight, MailCheck } from "lucide-react";
+import { Eye, EyeOff, MailCheck } from "lucide-react";
+import { PaperBrandLockup } from "@/components/memorial/paper-brand-header";
+import { LanguageToggle } from "./language-toggle";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { setEternalBeamUserId } from "@/lib/eternal-beam-user";
 import {
@@ -41,7 +43,7 @@ interface AuthScreenProps {
 
 // Phase 10 — inputs are brand.css .eb-input (44px, off-white, hairline);
 // only the leading-icon inset is added here.
-const inputClass = "eb-input w-full pl-12 pr-4 text-sm font-medium";
+const inputClass = "eb-input w-full px-5 text-sm font-medium";
 
 /** Focus = gold hairline + soft gold wash; invalid = terracotta. Tokens only. */
 function fieldStyle(focused: boolean, invalid = false) {
@@ -64,8 +66,6 @@ function fieldStyle(focused: boolean, invalid = false) {
 }
 
 const ICON_IDLE = "var(--eb-text-3)";
-const ICON_FOCUSED = "var(--eb-gold)";
-const ICON_INVALID = "var(--eb-terracotta-text)";
 
 type Notice =
   | { kind: "error"; text: string }
@@ -88,6 +88,7 @@ export function AuthScreen({
   initialMode = "login",
   lockMode,
   language = "ko",
+  onLanguageChange,
   emailRedirectTo,
   onAuthComplete,
 }: AuthScreenProps) {
@@ -97,6 +98,8 @@ export function AuthScreen({
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [showConfirm, setShowConfirm] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<AuthFieldErrors>({});
   const [notice, setNotice] = useState<Notice | null>(null);
   const [isLoading, setIsLoading] = useState(false);
@@ -133,7 +136,7 @@ export function AuthScreen({
 
     // ── 검증: 빈/잘못된 자격 증명은 여기서 멈춘다 — 서버에도, 앱 안에도 못 들어간다.
     const errors = isSignup
-      ? validateSignup({ name, email, password })
+      ? validateSignup({ name, email, password, confirm })
       : validateLogin({ email, password });
     setFieldErrors(errors);
     setNotice(null);
@@ -204,56 +207,36 @@ export function AuthScreen({
     setNotice({ kind: "reset-sent", email: normalizedEmail });
   };
 
-  const iconColor = (key: string, invalid: boolean) =>
-    invalid ? ICON_INVALID : focusedField === key ? ICON_FOCUSED : ICON_IDLE;
-
   const errorId = (key: string) => `auth-${key}-error`;
 
   const nameError = fieldMessage(fieldErrors.name);
   const emailError = fieldMessage(fieldErrors.email);
   const passwordError = fieldMessage(fieldErrors.password);
-  const firstInvalidKey = fieldErrors.name ? "name" : fieldErrors.email ? "email" : fieldErrors.password ? "password" : null;
-  const refFor = (key: "name" | "email" | "password") => (key === firstInvalidKey ? firstInvalidRef : undefined);
+  const confirmError = fieldMessage(fieldErrors.confirm);
+  const firstInvalidKey = fieldErrors.name
+    ? "name"
+    : fieldErrors.email
+      ? "email"
+      : fieldErrors.password
+        ? "password"
+        : fieldErrors.confirm
+          ? "confirm"
+          : null;
+  const refFor = (key: "name" | "email" | "password" | "confirm") =>
+    key === firstInvalidKey ? firstInvalidRef : undefined;
 
   return (
     <div data-screen={mode} className="eb-entry eb-entry--auth eb-paper h-full min-h-0">
-      {/* Desktop: brand hero on the left. Mobile: hidden — compact branding sits above the form. */}
-      <div className="eb-entry__hero eb-entry__hero--desktop-only" aria-hidden>
-        <img
-          src="/auth/hero-landscape.jpg"
-          alt=""
-          className="eb-entry__hero-img"
-          draggable={false}
-          decoding="async"
-        />
-        <div className="eb-entry__hero-veil" />
-        <div className="eb-entry__hero-copy">
-          <img
-            src="/eternal-beam-logo-splash.png?v=1"
-            alt="Eternal Beam"
-            className="eb-entry__logo eb-entry__logo--hero"
-            draggable={false}
-          />
-          <p className="eb-entry__statement eb-entry__statement--hero">
-            <span className="eb-entry__line eb-entry__line--1">{a.brandLine1}</span>
-            <span className="eb-entry__line eb-entry__line--2">{a.brandLine2}</span>
-          </p>
-          <p className="eb-entry__tagline eb-entry__tagline--hero">{a.brandLine3}</p>
-        </div>
+      <div className="eb-langbar">
+        {onLanguageChange ? (
+          <LanguageToggle language={language} onChange={onLanguageChange} className="eb-entry__lang" />
+        ) : null}
       </div>
-
       <div className="eb-entry__panel eb-entry__panel--form">
         <div className="eb-entry__form-scroll hide-scrollbar">
           <div className="eb-entry__form-col">
-            {/* Mobile-only compact branding. */}
             <div className="eb-entry__compact-brand">
-              <div className="eb-entry__auth-art" aria-hidden>
-                <img src="/auth/hero-portrait.jpg" alt="" draggable={false} decoding="async" />
-              </div>
-              <p className="eb-entry__wordmark">Eternal Beam</p>
-              <p className="eb-entry__tagline eb-entry__tagline--compact">
-                {a.brandLine1} {a.brandLine2}
-              </p>
+              <PaperBrandLockup size={48} />
             </div>
 
             <header className="eb-entry__form-head">
@@ -285,24 +268,18 @@ export function AuthScreen({
             <form className="eb-entry__form" onSubmit={handleSubmit} noValidate>
               <div className="space-y-3">
                 {isSignup ? (
-                  <div>
-                    <label className="sr-only" htmlFor="auth-name">
+                  <div className="eb-entry__field">
+                    <label className="eb-entry__label" htmlFor="auth-name">
                       {a.name}
                     </label>
                     <div className="relative">
-                      <User
-                        className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 pointer-events-none"
-                        style={{ color: iconColor("name", Boolean(nameError)) }}
-                        strokeWidth={1.5}
-                        aria-hidden
-                      />
                       <input
                         id="auth-name"
                         ref={refFor("name")}
                         type="text"
                         name="name"
                         autoComplete="name"
-                        placeholder={a.name}
+                        placeholder={a.namePlaceholder}
                         value={name}
                         onChange={(e) => {
                           setName(e.target.value);
@@ -325,17 +302,11 @@ export function AuthScreen({
                   </div>
                 ) : null}
 
-                <div>
-                  <label className="sr-only" htmlFor="auth-email">
+                <div className="eb-entry__field">
+                  <label className="eb-entry__label" htmlFor="auth-email">
                     {a.email}
                   </label>
                   <div className="relative">
-                    <Mail
-                      className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 pointer-events-none"
-                      style={{ color: iconColor("email", Boolean(emailError)) }}
-                      strokeWidth={1.5}
-                      aria-hidden
-                    />
                     <input
                       id="auth-email"
                       ref={refFor("email")}
@@ -345,7 +316,7 @@ export function AuthScreen({
                       autoComplete="email"
                       autoCapitalize="none"
                       spellCheck={false}
-                      placeholder={a.email}
+                      placeholder={a.emailPlaceholder}
                       value={email}
                       onChange={(e) => {
                         setEmail(e.target.value);
@@ -367,24 +338,18 @@ export function AuthScreen({
                   ) : null}
                 </div>
 
-                <div>
-                  <label className="sr-only" htmlFor="auth-password">
+                <div className="eb-entry__field">
+                  <label className="eb-entry__label" htmlFor="auth-password">
                     {a.password}
                   </label>
                   <div className="relative">
-                    <Lock
-                      className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 pointer-events-none"
-                      style={{ color: iconColor("password", Boolean(passwordError)) }}
-                      strokeWidth={1.5}
-                      aria-hidden
-                    />
                     <input
                       id="auth-password"
                       ref={refFor("password")}
                       type={showPassword ? "text" : "password"}
                       name="password"
                       autoComplete={isSignup ? "new-password" : "current-password"}
-                      placeholder={a.password}
+                      placeholder={a.passwordPlaceholder}
                       value={password}
                       onChange={(e) => {
                         setPassword(e.target.value);
@@ -420,6 +385,55 @@ export function AuthScreen({
                     </p>
                   ) : null}
                 </div>
+
+                {isSignup ? (
+                  <div className="eb-entry__field">
+                    <label className="eb-entry__label" htmlFor="auth-confirm">
+                      {a.passwordConfirm}
+                    </label>
+                    <div className="relative">
+                      <input
+                        id="auth-confirm"
+                        ref={refFor("confirm")}
+                        type={showConfirm ? "text" : "password"}
+                        name="confirm"
+                        autoComplete="new-password"
+                        placeholder={a.passwordConfirmPlaceholder}
+                        value={confirm}
+                        onChange={(e) => {
+                          setConfirm(e.target.value);
+                          if (fieldErrors.confirm) setFieldErrors((f) => ({ ...f, confirm: undefined }));
+                        }}
+                        onFocus={() => setFocusedField("confirm")}
+                        onBlur={() => setFocusedField(null)}
+                        className={`${inputClass} pr-12`}
+                        style={fieldStyle(focusedField === "confirm", Boolean(confirmError))}
+                        aria-invalid={confirmError ? true : undefined}
+                        aria-describedby={confirmError ? errorId("confirm") : undefined}
+                        required
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowConfirm((v) => !v)}
+                        className="absolute right-0 top-1/2 -translate-y-1/2 w-11 h-11 flex items-center justify-center rounded-full"
+                        style={{ color: ICON_IDLE }}
+                        aria-label={showConfirm ? a.hidePassword : a.showPassword}
+                        aria-pressed={showConfirm}
+                      >
+                        {showConfirm ? (
+                          <EyeOff className="w-5 h-5" strokeWidth={1.5} aria-hidden />
+                        ) : (
+                          <Eye className="w-5 h-5" strokeWidth={1.5} aria-hidden />
+                        )}
+                      </button>
+                    </div>
+                    {confirmError ? (
+                      <p id={errorId("confirm")} className="auth-field-error mt-1 px-1">
+                        {confirmError}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
 
               {!isSignup ? (
@@ -455,10 +469,7 @@ export function AuthScreen({
                 {isLoading ? (
                   <span className="eb-btn__spinner" aria-hidden />
                 ) : (
-                  <>
-                    <span className="memorial-btn-label">{isSignup ? a.submitSignup : a.submitLogin}</span>
-                    <ArrowRight className="w-5 h-5" strokeWidth={2.5} aria-hidden />
-                  </>
+                  <span className="memorial-btn-label">{isSignup ? a.submitSignup : a.submitLogin}</span>
                 )}
               </button>
 
@@ -480,6 +491,8 @@ export function AuthScreen({
           </div>
         </div>
       </div>
+      <img src="/auth/flora-left.jpg" alt="" className="eb-flora eb-flora--left" draggable={false} />
+      <img src="/auth/flora-right.jpg" alt="" className="eb-flora eb-flora--right" draggable={false} />
     </div>
   );
 }

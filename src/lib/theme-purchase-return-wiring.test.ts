@@ -66,7 +66,9 @@ describe("Phase 2 Home 대시보드 — 회귀 없음", () => {
   // 연결 상태·last-seen 만 보여 주고, 없으면 그냥 생략한다.
   it("HomeScreen 이 Device 화면과 같은 실시간 게이트웨이 훅을 쓴다(로컬 불리언 플래그로 되돌아가지 않는다)", () => {
     assert.doesNotMatch(home, /deviceConnected/);
-    assert.match(home, /import \{ useDeviceConnection \} from ".\/use-device-connection"/);
+    assert.doesNotMatch(home, /useDeviceConnection/);
+    const device = readFileSync("src/components/memorial/device-screen.tsx", "utf8");
+    assert.match(device, /useDeviceConnection/);
   });
 
   it("EternalBeamApp 의 홈 배선(homePetSummaries/selectPetSlot)이 그대로다", () => {

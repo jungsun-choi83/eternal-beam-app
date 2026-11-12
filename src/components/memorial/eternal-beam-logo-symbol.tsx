@@ -25,10 +25,9 @@ export function EternalBeamLogoSymbol({
 
   const isSplash = variant === "splash";
   const isIcon = variant === "icon";
-  const viewW = isSplash ? 60 : 80;
-  const viewH = isSplash ? 44 : 72;
-  const viewX = isSplash ? 10 : 0;
-  const viewY = isSplash ? 18 : 0;
+  // Full petal viewBox on every variant — splash used to crop the mark.
+  const viewW = 80;
+  const viewH = 72;
   const width = size;
   const height = Math.round(size * (viewH / viewW));
 
@@ -36,8 +35,9 @@ export function EternalBeamLogoSymbol({
     <svg
       width={width}
       height={height}
-      viewBox={`${viewX} ${viewY} ${viewW} ${viewH}`}
+      viewBox={`0 0 ${viewW} ${viewH}`}
       fill="none"
+      overflow="visible"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
       aria-hidden

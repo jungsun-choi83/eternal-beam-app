@@ -8,16 +8,16 @@ const desktopNav = readFileSync("src/components/layout/desktop-nav.tsx", "utf8")
 const mediaTrigger = readFileSync("src/components/memorial/media-file-trigger.tsx", "utf8");
 const homeCss = readFileSync("src/styles/home-dashboard.css", "utf8");
 
-describe("홈 대시보드 — 나의 반려 / 라이브러리 / 마이 빔", () => {
-  it("펫 목록을 실제 슬롯 배열에서 받아 그린다(가짜 목록을 만들지 않는다)", () => {
+describe("홈 대시보드 — 환영 화면", () => {
+  it("펫 목록 prop 은 유지하고, 홈 본문에는 장면 목록을 그리지 않는다", () => {
     assert.match(home, /pets: HomePetSummary\[\]/);
-    assert.match(home, /pets\.map\(\(pet\)/);
-    assert.match(home, /onClick=\{\(\) => onSelectPet\(pet\.index\)\}/);
+    assert.doesNotMatch(home, /scenes\.map/);
+    assert.doesNotMatch(home, /onSelectPet\(pet\.index\)/);
   });
 
-  it("자리가 남아 있을 때만 반려 추가 카드를 보여 준다(MAX_PET_SLOTS 재사용)", () => {
-    assert.match(home, /import \{ MAX_PET_SLOTS \} from "@\/lib\/pet-slot-state"/);
-    assert.match(home, /const canAddPet = pets\.length < MAX_PET_SLOTS/);
+  it("홈에 반려 추가 카드를 두지 않는다", () => {
+    assert.doesNotMatch(home, /MAX_PET_SLOTS/);
+    assert.doesNotMatch(home, /canAddPet/);
   });
 
   it("Gallery 목업이 더 이상 홈의 진입점이 아니다", () => {
@@ -25,14 +25,14 @@ describe("홈 대시보드 — 나의 반려 / 라이브러리 / 마이 빔", ()
     assert.doesNotMatch(home, /Grid3X3/);
   });
 
-  it("My Library 는 실제 라이브러리 화면으로만 연결된다", () => {
+  it("라이브러리 바로가기는 홈 본문에서 빠졌다", () => {
     assert.match(home, /onLibrary\?:\s*\(\) => void/);
-    assert.match(home, /onClick=\{onLibrary\}/);
+    assert.doesNotMatch(home, /onClick=\{onLibrary\}/);
   });
 
-  it("My Beam 카드는 Device 화면과 같은 실시간 게이트웨이 상태만 쓰고 배터리·용량·펌웨어를 지어내지 않는다", () => {
-    assert.match(home, /import \{ useDeviceConnection \} from "\.\/use-device-connection"/);
-    assert.match(home, /resolvePairedDeviceId\(\)/);
+  it("홈은 기기 카드와 배터리·용량·펌웨어를 그리지 않는다", () => {
+    assert.doesNotMatch(home, /useDeviceConnection/);
+    assert.doesNotMatch(home, /resolvePairedDeviceId/);
     assert.doesNotMatch(home, /demoDeviceId\(\)/);
     assert.doesNotMatch(home, /battery/i);
     assert.doesNotMatch(home, /firmware/i);
@@ -40,7 +40,7 @@ describe("홈 대시보드 — 나의 반려 / 라이브러리 / 마이 빔", ()
   });
 
   it("데스크톱 Home 은 중복 stage 프레임 없이 hero 를 메인 패널로 쓴다", () => {
-    assert.match(app, /unframed=\{screen === 'home' \|\| AUTH_ENTRY_SCREENS\.has\(screen\)\}/);
+    assert.match(app, /unframed=\{screen === 'home' \|\| AUTH_ENTRY_SCREENS\.has\(screen\) \|\| PAPER_FLOW_SCREENS\.has\(screen\)\}/);
   });
 
   it("avatar 메뉴가 계정 진입을 제공하므로 데스크톱 nav 에 Profile 을 중복하지 않는다", () => {
@@ -184,7 +184,7 @@ describe("EternalBeamApp — 홈 대시보드 배선", () => {
     // 나란히 두는 화면이라 같은 옵트인에 합류한다.
     assert.match(
       app,
-      /wide=\{screen === 'home' \|\| screen === 'photoUpload' \|\| screen === 'themeSelection' \|\| screen === 'preview' \|\| screen === 'device' \|\| screen === 'library' \|\| screen === 'settings'\}/
+      /wide=\{screen === 'home'\}/
     );
   });
 });

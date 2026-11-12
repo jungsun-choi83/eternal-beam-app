@@ -3,7 +3,7 @@
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { motion } from "framer-motion";
 import { RotateCcw, PawPrint, ChevronDown, Palette, Play } from "lucide-react";
-import { BackButton } from "@/components/ui/screen-header";
+import { PaperBrandHeader, PaperFlowIntro } from "@/components/memorial/paper-brand-header";
 import { MemorialIconButton } from "@/components/memorial/memorial-chrome";
 import {
   ETERNAL_BEAM_PIPELINE_KEY,
@@ -134,6 +134,8 @@ interface PreviewScreenProps {
    * 부르는 일은 없다 — 사용자의 명시적 누름만이 기기로 나간다.
    */
   onPlayOnBeam?: () => Promise<{ ok: boolean; reason?: string; status?: number; commandId?: string }>;
+  /** 완성 장면을 라이브러리 화면에서 보게 한다. */
+  onSaveToLibrary?: () => void;
   /** 발행 뒤 멤버십(설정 > 멤버십)으로. 넘기지 않으면 버튼이 그려지지 않는다. */
   onOpenMembership?: () => void;
   /**
@@ -218,6 +220,7 @@ function PreviewScreenInner({
   onComplete,
   onBack,
   onPlayOnBeam,
+  onSaveToLibrary,
   onOpenMembership,
   onChangeMotion,
 }: PreviewScreenProps) {
@@ -1252,22 +1255,11 @@ function PreviewScreenInner({
   }
 
   return (
-    <div className="preview-composer h-full flex flex-col min-h-0 overflow-hidden">
-      {/* Header — Back (left) / title (+ subtitle) / Change Theme (right, desktop only).
-          "Change Theme" reuses the same onBack the screen already had — for both
-          flows, onBack already returns to Theme Selection with selectedPet/
-          selectedMotion (Library) or the pipeline (Create) preserved. Mobile hides
-          this trailing button and surfaces an equivalent theme row in the panel
-          instead (there isn't room for three header elements on a phone width). */}
-      <header className="eb-screen-header preview-composer__header">
-        <div className="eb-screen-header__leading">
-          <BackButton onClick={onBack} label={memorialT(language).common.back} />
-        </div>
-        <div className="preview-composer__heading">
-          <h1 className="eb-screen-header__title preview-composer__title">{p.title}</h1>
-          <p className="preview-composer__adjust-hint eb-caption">{p.adjustHint}</p>
-        </div>
-        <div className="eb-screen-header__trailing preview-composer__header-actions">
+    <div className="preview-composer eb-paper h-full flex flex-col min-h-0 overflow-hidden">
+      <PaperBrandHeader
+        onBack={onBack}
+        backLabel={memorialT(language).common.back}
+        trailing={
           <button
             type="button"
             onClick={onBack}
@@ -1276,8 +1268,12 @@ function PreviewScreenInner({
             <Palette className="w-4 h-4" strokeWidth={1.5} />
             {p.changeTheme}
           </button>
-        </div>
-      </header>
+        }
+      />
+      <PaperFlowIntro title={p.title} lead={p.adjustHint} />
+      {cutoutImage ? null : (
+        <img src="/auth/paper-hero.jpg" alt="" className="eb-paper-hero" />
+      )}
 
       <div className="preview-composer__body flex-1 min-h-0 flex flex-col overflow-y-auto">
       {/* Preview Area — 드래그·핀치로 직접 조절 */}
@@ -1549,9 +1545,14 @@ function PreviewScreenInner({
                 whileHover={beamStatus === "sending" ? undefined : { scale: 1.02 }}
                 whileTap={beamStatus === "sending" ? undefined : { scale: 0.98 }}
               >
-                {beamStatus === "sending" ? p.beamSending : p.playOnBeam}
+                {beamStatus === "sending" ? p.beamSending : p.nfcCta}
               </motion.button>
             </div>
+            {onSaveToLibrary ? (
+              <button type="button" className="eb-btn eb-btn--outline eb-btn--block" onClick={onSaveToLibrary}>
+                {p.saveLibraryCta}
+              </button>
+            ) : null}
 
             {beamStatus !== "idle" ? (
               <div className="preview-composer__status-row flex items-center gap-2 flex-wrap">
@@ -1623,9 +1624,14 @@ function PreviewScreenInner({
                 : hasIdle
                   ? deliveryMode === "shipping"
                     ? p.completeShipping
-                    : p.completeDevice
+                    : p.nfcCta
                   : p.confirmGenerate}
             </motion.button>
+            {onSaveToLibrary ? (
+              <button type="button" className="eb-btn eb-btn--outline eb-btn--block" onClick={onSaveToLibrary}>
+                {p.saveLibraryCta}
+              </button>
+            ) : null}
           </>
         )}
       </div>

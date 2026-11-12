@@ -30,9 +30,9 @@ function slice(src: string, from: string, len = 1500): string {
 }
 
 describe("1. 첫 방문 → Get Started", () => {
-  it("resolveInitialScreen 의 폴백은 getStarted 다 (qrConnection 스플래시는 없다)", () => {
+  it("resolveInitialScreen 의 폴백은 splash 다 (qrConnection 스플래시는 없다)", () => {
     const fn = slice(app, "function resolveInitialScreen", 2500);
-    assert.match(fn, /return 'getStarted'\n\}/);
+    assert.match(fn, /return 'splash'\r?\n\}/);
     assert.doesNotMatch(app, /qrConnection/);
   });
 
@@ -43,7 +43,7 @@ describe("1. 첫 방문 → Get Started", () => {
 
   it("Get Started 는 앱 셸 안에서 그려지고 데스크톱 내비게이션은 숨는다", () => {
     assert.match(app, /screen === 'getStarted' && \(/);
-    assert.match(slice(app, "const DESKTOP_NAV_HIDDEN_SCREENS", 200), /'getStarted',\n  'signup',\n  'login',/);
+    assert.match(slice(app, "const DESKTOP_NAV_HIDDEN_SCREENS", 240), /'getStarted',\r?\n  'signup',\r?\n  'login'/);
   });
 });
 
@@ -71,14 +71,14 @@ describe("2. Get Started → 회원가입 / 3. 기존 계정 → 로그인", () 
 });
 
 describe("4/5. 회원가입은 이름 · 이메일 · 비밀번호만 — 반려/기기 이름 요구 없음", () => {
-  it("AuthScreen 은 세 입력만 갖는다 (이름은 가입 모드에서만)", () => {
+  it("AuthScreen 은 이름·이메일·비밀번호·비밀번호 확인만 갖는다", () => {
     const ids = [...auth.matchAll(/id="auth-([a-z]+)"/g)].map((m) => m[1]);
-    assert.deepEqual(ids, ["name", "email", "password"]);
-    assert.match(auth, /\{isSignup \? \(\s*<div>\s*<label className="sr-only" htmlFor="auth-name">/);
+    assert.deepEqual(ids, ["name", "email", "password", "confirm"]);
+    assert.match(auth, /\{isSignup \? \(\s*<div className="eb-entry__field">\s*<label className="eb-entry__label" htmlFor="auth-name">/);
   });
 
   it("검증은 auth-form 의 순수 규칙을 쓴다", () => {
-    assert.match(auth, /validateSignup\(\{ name, email, password \}\)/);
+    assert.match(auth, /validateSignup\(\{ name, email, password, confirm \}\)/);
     assert.match(auth, /validateLogin\(\{ email, password \}\)/);
   });
 
@@ -119,9 +119,12 @@ describe("6. 가입은 반려/기기 이름 없이 성공한다", () => {
     assert.doesNotMatch(submit, /petName/);
   });
 
-  it("가입 완료는 사진 업로드로, 로그인 완료는 홈으로 간다 (기존 동선 유지)", () => {
-    assert.match(slice(app, "screen === 'signup' && (", 1200), /completedMode === 'login' \? 'home' : 'photoUpload'/);
-    assert.match(slice(app, "screen === 'login' && (", 1200), /completedMode === 'signup' \? 'photoUpload' : 'home'/);
+  it("가입 완료는 기기 QR로, 로그인 완료는 홈으로 간다", () => {
+    assert.match(slice(app, "screen === 'signup' && (", 1200), /completedMode === 'login' \? 'home' : 'deviceConnect'/);
+    assert.match(slice(app, "screen === 'login' && (", 1200), /completedMode === 'signup' \? 'deviceConnect' : 'home'/);
+    assert.match(app, /onConnected=\{\(\) => replaceScreen\('photoUpload'\)\}/);
+    assert.match(app, /onSkip=\{\(\) => replaceScreen\('photoUpload'\)\}/);
+    assert.match(readFileSync("src/components/memorial/device-connect-screen.tsx", "utf8"), /data-action="skip-device-qr"/);
   });
 });
 
@@ -137,9 +140,9 @@ describe("7. 기존 사용자는 그대로 로그인한다", () => {
     assert.match(auth, /await syncEternalBeamIdentity\(\)/);
   });
 
-  it("로그아웃은 Get Started 로 돌아가며 진짜 세션을 끝낸다", () => {
+  it("로그아웃은 홈으로 돌아가며 진짜 세션을 끝낸다", () => {
     const fn = slice(app, "const handleLogout = () => {", 700);
-    assert.match(fn, /replaceScreen\('getStarted'\)/);
+    assert.match(fn, /replaceScreen\('home'\)/);
     assert.match(fn, /m\.signOut\(\)/);
     assert.match(fn, /setUserName\(null\)/);
   });
@@ -237,8 +240,8 @@ describe("11. 한국어 / 영어 폼", () => {
     assert.equal(a.brandLine3, "Create. Preserve. Relive.");
   });
 
-  it("폼 위에 떠 있는 언어 토글이 없다 — Get Started 헤더 구석 한 곳뿐", () => {
-    assert.doesNotMatch(auth, /LanguageToggle/);
+  it("가입·로그인 상단과 Get Started 에 KO | EN 토글이 있다", () => {
+    assert.match(auth, /<LanguageToggle language=\{language\} onChange=\{onLanguageChange\} className="eb-entry__lang" \/>/);
     assert.match(start, /<LanguageToggle language=\{language\} onChange=\{onLanguageChange\} className="eb-entry__lang" \/>/);
   });
 });
@@ -248,9 +251,10 @@ describe("12. 예전 반려 이름이 없어도 아무것도 깨지지 않는다
     assert.match(petProfile, /localStorage\.getItem\(PET_NAME_KEY\)\?\.trim\(\) \?\? ""/);
   });
 
-  it("홈은 이름이 없으면 자리 번호 라벨로 대체하고 인사말은 userName 이 있을 때만 그린다", () => {
-    assert.match(home, /petName\?\.trim\(\) \? petName\.trim\(\) : texts\.petLabel\(index \+ 1\)/);
-    assert.match(home, /\{userName \? \(/);
+  it("홈은 이름을 지어내거나 자리 번호 라벨을 그리지 않는다", () => {
+    assert.doesNotMatch(home, /petName\?\.trim\(\)/);
+    assert.doesNotMatch(home, /\{userName \? \(/);
+    assert.doesNotMatch(home, /texts\.petLabel/);
     assert.match(app, /petName=\{getPetName\(\) \|\| undefined\}/);
   });
 

@@ -32,6 +32,8 @@ export interface SignupInput {
   name: string;
   email: string;
   password: string;
+  /** 가입 화면의 비밀번호 확인. 없으면 기존 세 칸 계약만 검사한다. */
+  confirm?: string;
 }
 
 export interface LoginInput {
@@ -71,6 +73,10 @@ export function validateSignup(input: SignupInput): AuthFieldErrors {
   else if (!isValidEmail(email)) errors.email = "email_invalid";
   if (!input.password) errors.password = "password_required";
   else if (input.password.length < MIN_PASSWORD_LENGTH) errors.password = "password_too_short";
+  if (input.confirm !== undefined) {
+    if (!input.confirm) errors.confirm = "confirm_required";
+    else if (!errors.password && input.confirm !== input.password) errors.confirm = "password_mismatch";
+  }
   return errors;
 }
 

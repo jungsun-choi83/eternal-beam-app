@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import {
-  ChevronLeft,
   Wifi,
   WifiOff,
   RefreshCw,
@@ -11,6 +10,7 @@ import {
   AlertTriangle,
   LogIn,
 } from "lucide-react";
+import { PaperBrandHeader, PaperFlowIntro } from "@/components/memorial/paper-brand-header";
 import { demoDeviceId } from "@/lib/device-command-api";
 import {
   getRecentBeamCommands,
@@ -76,16 +76,47 @@ export function DeviceScreen({ onBack, language = "ko" }: DeviceScreenProps) {
     displayStatus === "connected" ? Wifi : displayStatus === "reconnecting" ? Loader2 : WifiOff;
 
   return (
-    <div className="h-full flex flex-col relative overflow-hidden eb-beam">
-      <header className="px-6 pt-[var(--eb-header-top)] pb-4 flex items-center relative shrink-0">
-        <button onClick={onBack} className="mem-icon-btn eb-back-btn -ml-2" aria-label="Back">
-          <ChevronLeft className="w-5 h-5" />
-        </button>
-        <h1 className="screen-title eb-title absolute left-1/2 -translate-x-1/2">{t.title}</h1>
-      </header>
+    <div className="eb-paper h-full flex flex-col relative overflow-hidden eb-beam">
+      <PaperBrandHeader onBack={onBack} backLabel="Back" />
+      <PaperFlowIntro title={t.title} />
 
-      <div className="flex-1 min-h-0 overflow-y-auto px-4 pb-[var(--eb-footer-bottom)] eb-beam__scroll">
-        <div className="eb-beam__grid">
+      <div className="flex-1 min-h-0 overflow-y-auto pb-[var(--eb-footer-bottom)] eb-beam__scroll">
+        {/* 매트 블랙 마이 빔 히어로 — 기기 본체는 고정(모션 없음). */}
+        <figure className="eb-beam__hero">
+          <img
+            src="/home/EternalBeam_MyBeam_MatteBlack_Hero.jpg"
+            alt="Eternal Beam"
+            className="eb-beam__hero-img"
+            width={1024}
+            height={1024}
+            decoding="async"
+            loading="eager"
+            draggable={false}
+          />
+        </figure>
+
+        <div className="eb-beam__live-status">
+          <div className="eb-beam__live-status__row" role="status">
+            <div className="eb-beam__badge" data-tone={tone} aria-hidden>
+              <StatusIcon
+                className={`w-7 h-7 ${displayStatus === "reconnecting" ? "animate-spin" : ""}`}
+              />
+            </div>
+            <StatusBadge tone={tone}>{statusLabel}</StatusBadge>
+          </div>
+          <button
+            type="button"
+            onClick={retry}
+            disabled={isChecking}
+            aria-busy={isChecking || undefined}
+            className="eb-beam__live-retry eb-btn eb-btn--secondary mem-btn-secondary"
+          >
+            <RefreshCw className={`w-4 h-4 ${isChecking ? "animate-spin" : ""}`} />
+            <span>{retryLabel}</span>
+          </button>
+        </div>
+
+        <div className="eb-beam__grid px-4">
           {/* Connection overview */}
           <motion.div
             initial={{ opacity: 0, y: 20 }}

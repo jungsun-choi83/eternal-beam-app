@@ -2,8 +2,8 @@
 
 import { useState, useMemo } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, Wifi, Check } from "lucide-react";
-import { EternalBeamLogoIcon } from "@/components/memorial/eternal-beam-brand-mark";
+import { Wifi, Check } from "lucide-react";
+import { PaperBrandHeader, PaperFlowIntro } from "@/components/memorial/paper-brand-header";
 import { writeToNFCSlot } from "@/app/services/nfcManager";
 import { mapSlotToContent } from "@/app/services/supabaseContentService";
 import { memorialT } from "@/components/memorial/memorial-i18n";
@@ -27,15 +27,7 @@ interface NFCPlaybackScreenProps {
  * 유지한다. 셸이 더는 검정을 상속해 주지 않으므로 무대 바탕(inverse)을 스스로
  * 명시하고, 그 위의 크롬(칩·슬롯·CTA)만 토큰 시스템으로 맞춘다.
  */
-const STAGE =
-  "nfc-playback-screen h-full flex flex-col bg-[var(--eb-surface-inverse)] text-[var(--eb-text-on-inverse)]";
-
-/** 어두운 무대 위의 보조 버튼 — 옅은 흰 테두리. */
-const onDarkOutline = {
-  background: "transparent",
-  border: "1px solid rgba(255, 255, 255, 0.2)",
-  color: "var(--eb-text-on-inverse)",
-} as const;
+const STAGE = "nfc-playback-screen eb-paper h-full flex flex-col bg-[#fffaf0] text-[#2f3a28]";
 
 export function NFCPlaybackScreen({
   language = "ko",
@@ -51,7 +43,7 @@ export function NFCPlaybackScreen({
     [language]
   );
 
-  const [selectedSlot, setSelectedSlot] = useState<number | null>(null);
+  const [selectedSlot, setSelectedSlot] = useState<number | null>(1);
   const [isSending, setIsSending] = useState(false);
   const [isComplete, setIsComplete] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -125,7 +117,7 @@ export function NFCPlaybackScreen({
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.3 }}
           className="text-2xl font-light tracking-wider mb-4"
-          style={{ color: "var(--eb-text-on-inverse)" }}
+          style={{ color: "#2f3a28" }}
         >
           {n.completeTitle}
         </motion.h2>
@@ -135,7 +127,7 @@ export function NFCPlaybackScreen({
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.4 }}
           className="text-sm font-light text-center mb-14 max-w-[260px]"
-          style={{ color: "rgba(247, 242, 233, 0.7)" }}
+          style={{ color: "#7a6a58" }}
         >
           {premiumPhysical ? n.completeBodyShip : n.completeBody}
         </motion.p>
@@ -190,7 +182,7 @@ export function NFCPlaybackScreen({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           className="text-xl font-light tracking-wider mb-3"
-          style={{ color: "var(--eb-text-on-inverse)" }}
+          style={{ color: "#2f3a28" }}
         >
           {n.sending}
         </motion.h2>
@@ -199,7 +191,7 @@ export function NFCPlaybackScreen({
           animate={{ opacity: [0.4, 0.7, 0.4] }}
           transition={{ duration: 2, repeat: Infinity }}
           className="text-xs font-light"
-          style={{ color: "rgba(247, 242, 233, 0.7)" }}
+          style={{ color: "#7a6a58" }}
         >
           {n.sendingHint}
         </motion.p>
@@ -209,112 +201,26 @@ export function NFCPlaybackScreen({
 
   return (
     <div className={STAGE}>
-      <header className="px-6 pt-[var(--eb-header-top)] pb-4 flex items-center justify-between relative shrink-0">
-        <motion.button
-          initial={{ opacity: 0, x: -10 }}
-          animate={{ opacity: 1, x: 0 }}
-          onClick={onBack}
-          className="w-11 h-11 min-w-[var(--eb-touch)] min-h-[var(--eb-touch)] rounded-full flex items-center justify-center"
-          style={onDarkOutline}
-          whileTap={{ scale: 0.95 }}
-          aria-label="뒤로"
-        >
-          <ArrowLeft className="w-5 h-5" strokeWidth={1.5} />
-        </motion.button>
+      <PaperBrandHeader onBack={onBack} backLabel="뒤로" />
+      <PaperFlowIntro title={n.title} lead={n.readyLead} />
 
-        <motion.h1
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="text-xl font-light absolute left-1/2 -translate-x-1/2"
-          style={{ color: "var(--eb-text-on-inverse)" }}
-        >
-          {n.title}
-        </motion.h1>
-
-        <div className="w-11" aria-hidden />
-      </header>
-
-      <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar flex flex-col items-center justify-center px-8">
+      <div className="flex-1 min-h-0 overflow-y-auto hide-scrollbar flex flex-col items-center px-8">
         <div className="mx-auto flex w-full max-w-[420px] flex-col items-center">
-        <motion.div
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="relative mb-8 flex flex-col items-center"
-        >
-          <motion.div
-            animate={{ y: [0, 10, 0] }}
-            transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
-            className="mb-1"
-          >
-            <div
-              className="w-12 h-7 rounded-md flex items-center justify-center"
-              style={{
-                background: "var(--eb-gold)",
-                boxShadow: "var(--eb-shadow-gold)",
-              }}
-            >
-              <EternalBeamLogoIcon size={14} />
-            </div>
-          </motion.div>
-
-          <motion.div
-            animate={{ opacity: [0.3, 1, 0.3] }}
-            transition={{ duration: 1.6, repeat: Infinity, ease: "easeInOut" }}
-          >
-            <svg width="16" height="12" viewBox="0 0 16 12" fill="none">
-              <path
-                d="M8 0 L8 8 M4 5 L8 10 L12 5"
-                stroke="var(--eb-gold)"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </motion.div>
-
-          {/* 기기 실루엣 — 미디어 무대의 일부라 어둡게 남는다. */}
-          <div
-            className="mt-1 w-16 h-2 rounded-full"
-            style={{
-              background: "rgba(255, 255, 255, 0.08)",
-              border: "1px solid var(--eb-gold-line)",
-            }}
-          />
-          <div
-            className="w-20 h-5 rounded-b-lg"
-            style={{
-              background: "rgba(255, 255, 255, 0.05)",
-              border: "1px solid rgba(255, 255, 255, 0.12)",
-              borderTop: "none",
-            }}
-          />
-        </motion.div>
-
-        <motion.p
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.2 }}
-          className="text-sm font-light text-center max-w-[240px] mb-1"
-          style={{ color: "var(--eb-text-on-inverse)" }}
-        >
-          {n.insertCard}
-        </motion.p>
-        <motion.p
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.25 }}
-          className="text-xs font-light text-center max-w-[280px] mb-8"
-          style={{ color: "rgba(247, 242, 233, 0.55)" }}
-        >
+        <img
+          src="/auth/nfc-device.jpg"
+          alt=""
+          className="eb-paper-art__img mb-6 w-full max-w-[280px]"
+          draggable={false}
+        />
+        <p className="eb-paper-lead mb-6 text-center">
           {premiumPhysical ? n.premiumShipHint : n.insertHint}
-        </motion.p>
+        </p>
         {premiumPhysical && shipping ? (
           <motion.p
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             className="text-[11px] font-light text-center max-w-[280px] -mt-6 mb-8 leading-relaxed"
-            style={{ color: "rgba(247, 242, 233, 0.55)" }}
+            style={{ color: "#7a6a58" }}
           >
             {n.shippingTo(shipping.recipientName, shipping.addressLine1)}
           </motion.p>
@@ -347,7 +253,7 @@ export function NFCPlaybackScreen({
               <span
                 className="text-sm font-light tracking-wider"
                 style={{
-                  color: selectedSlot === slot.id ? "var(--eb-gold-soft)" : "var(--eb-text-on-inverse)",
+                  color: selectedSlot === slot.id ? "#3a452f" : "#2f3a28",
                 }}
               >
                 {slot.name}
@@ -355,7 +261,7 @@ export function NFCPlaybackScreen({
               {slot.occupied && (
                 <span
                   className="block text-[11px] mt-1"
-                  style={{ color: "rgba(247, 242, 233, 0.55)" }}
+                  style={{ color: "#7a6a58" }}
                 >
                   {n.inUse}
                 </span>
@@ -384,7 +290,7 @@ export function NFCPlaybackScreen({
           transition={{ delay: 0.5 }}
           onClick={handleSend}
           disabled={!selectedSlot}
-          className="eb-btn eb-btn--primary eb-btn--block mem-btn-primary w-full rounded-2xl text-[15px] tracking-wider"
+          className="eb-btn eb-btn--primary eb-btn--forest eb-btn--block w-full"
           whileTap={selectedSlot ? { scale: 0.98 } : {}}
         >
           {n.send}
@@ -402,8 +308,7 @@ export function NFCPlaybackScreen({
               <button
                 type="button"
                 onClick={onGoPreview}
-                className="eb-btn eb-btn--block w-full rounded-xl text-[13px] font-light"
-                style={onDarkOutline}
+                className="eb-btn eb-btn--outline eb-btn--block w-full"
               >
                 {n.goPreview}
               </button>

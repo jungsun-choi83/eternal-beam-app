@@ -270,9 +270,10 @@ describe("구조 고정 — 기존 진입 흐름 보존", () => {
     );
   });
 
-  it("기본 진입 화면은 Get Started(getStarted) 다", () => {
+  it("기본 진입 화면은 splash 이고 Get Started 는 유지된다", () => {
     const fn = eb.slice(eb.indexOf("function resolveInitialScreen"));
-    assert.ok(fn.slice(0, 900).includes("return 'getStarted'"), "기본 진입이 바뀌었다");
+    assert.ok(fn.slice(0, 2500).includes("return 'splash'"), "기본 진입이 바뀌었다");
+    assert.ok(eb.includes("screen === 'getStarted'"), "Get Started 가 없다");
   });
 
   it("Upload Pet 흐름을 새로 만들지 않는다 — 기존 화면 이름을 그대로 쓴다", () => {

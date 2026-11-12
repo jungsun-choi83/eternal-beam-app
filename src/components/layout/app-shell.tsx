@@ -21,6 +21,7 @@ interface AppShellProps {
   wide?: boolean;
   /** Remove the desktop stage frame for page-style dashboards such as Home. */
   unframed?: boolean;
+  className?: string;
 }
 
 /**
@@ -32,10 +33,10 @@ interface AppShellProps {
  * flex 로 뷰포트에 맞춰 늘고 줄어든다 — 짧은 노트북 화면에서 CTA/푸터가
  * 잘리지 않는다.
  */
-export function AppShell({ children, nav, mobileNav, wide = false, unframed = false }: AppShellProps) {
+export function AppShell({ children, nav, mobileNav, wide = false, unframed = false, className = "" }: AppShellProps) {
   return (
     <motion.div
-      className="app-shell"
+      className={`app-shell ${className}`.trim()}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] }}

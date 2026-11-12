@@ -2,14 +2,14 @@
 
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Upload, Check, Play, Pause, X, Pencil, AlertCircle, Plus, ArrowLeft } from "lucide-react";
-import { HologramEffects } from "./hologram-effects";
+import { Image as ImageIcon, Check, Play, Pause, X, Pencil, AlertCircle, Plus } from "lucide-react";
 import { createDisplayImageUrl } from "@/lib/display-image";
 import { memorialT } from "@/components/memorial/memorial-i18n";
 import { MediaFileTrigger } from "@/components/memorial/media-file-trigger";
 import { PhotoUploadGuide } from "@/components/memorial/photo-upload-guide";
 import { PetPhoto } from "@/components/memorial/pet-photo";
-import { MemorialIconButton, MemorialPrimaryButton } from "@/components/memorial/memorial-chrome";
+import { MemorialPrimaryButton } from "@/components/memorial/memorial-chrome";
+import { PaperBrandHeader, PaperFlowIntro } from "@/components/memorial/paper-brand-header";
 import type { MediaKind } from "@/lib/main-media-store";
 import { classifyIntakeBatch, clampToRoom, type IntakeRejectReason } from "@/lib/photo-intake-validation";
 import { CUTOUT_WARMUP_MAX_MS } from "@/lib/cutout-speed-mode";
@@ -259,7 +259,6 @@ export function PhotoUploadScreen({
     }
   };
 
-  const formatPills = ["HEIC", "JPG", "PNG", "MP4"];
   const canAddPet = petSlotsCount < Math.max(1, maxPetSlots);
 
   const statusLabel = (state?: { status: "pending" | "uploading" | "success" | "error"; error?: string | null }) => {
@@ -271,29 +270,9 @@ export function PhotoUploadScreen({
   };
 
   return (
-    <div className="memorial-screen h-full flex flex-col relative overflow-hidden">
-      <HologramEffects />
-
-      <header className="pet-intake__header px-6 relative z-10 shrink-0">
-        <div className="pet-intake__header-inner">
-          <MemorialIconButton
-            initial={{ opacity: 0, x: -10 }}
-            animate={{ opacity: 1, x: 0 }}
-            onClick={onBack}
-            aria-label={c.back}
-            className="eb-back-btn"
-          >
-            <ArrowLeft className="h-5 w-5" aria-hidden />
-          </MemorialIconButton>
-
-          <div className="flex-1 min-w-0 text-center">
-            <p className="memorial-eyebrow eb-eyebrow mb-1">01 · Photo</p>
-            <h1 className="upload-title eb-title m-0 leading-tight">{u.heading}</h1>
-          </div>
-
-          <div className="pet-intake__header-spacer" aria-hidden />
-        </div>
-      </header>
+    <div className="memorial-screen eb-paper h-full flex flex-col relative overflow-hidden">
+      <PaperBrandHeader onBack={onBack} backLabel={c.back} />
+      <PaperFlowIntro title={u.heading} lead={u.subtitle} />
 
       <div className="pet-intake__scroll flex-1 min-h-0 overflow-y-auto hide-scrollbar px-6 py-1 relative z-10">
         <motion.div
@@ -303,8 +282,6 @@ export function PhotoUploadScreen({
           className="pet-intake__layout relative z-10"
         >
           <div className="pet-intake__rail">
-            <p className="upload-subtitle eb-body-sm text-center mt-0 mb-0">{u.subtitle}</p>
-
             <div className="pet-intake__tabs" role="tablist" aria-label="Pet slots">
               {Array.from({ length: petSlotsCount }).map((_, index) => {
                 const active = index === activePetSlotIndex;
@@ -405,7 +382,7 @@ export function PhotoUploadScreen({
                 onDragOver={handleDragOver}
                 onDragLeave={handleDragLeave}
                 onDrop={handleDrop}
-                className={`upload-card relative overflow-hidden pet-intake__dropzone ${
+                className={`upload-card relative overflow-hidden pet-intake__dropzone eb-paper-drop ${
                   isDragging ? "drag-over" : ""
                 }`}
                 style={dropzoneStyle}
@@ -456,30 +433,18 @@ export function PhotoUploadScreen({
                     </div>
                   </>
                 ) : (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 px-6 py-8">
-                    <div className="upload-card__empty-icon">
-                      <Upload className="w-6 h-6" strokeWidth={1.5} aria-hidden />
-                    </div>
-                    <div className="text-center">
-                      <p className="eb-body font-medium leading-snug">
-                        {isDragging ? u.drop : u.drag}
-                      </p>
-                      <p className="memorial-caption eb-caption mt-2">{u.tapBrowse}</p>
-                      <p className="pet-intake__desktop-only memorial-caption eb-caption mt-1">
-                        {u.dragDropHint}
-                      </p>
-                    </div>
-                    <div className="upload-formats">
-                      {formatPills.map((f) => (
-                        <span key={f} className="upload-format-pill">
-                          {f}
-                        </span>
-                      ))}
-                    </div>
+                  <div className="eb-paper-drop-inner absolute inset-0 flex flex-col items-center justify-center gap-4 px-6 py-8">
+                    <ImageIcon className="eb-paper-drop-icon" strokeWidth={1.4} aria-hidden />
+                    <p className="eb-paper-drop-label">{isDragging ? u.drop : u.drag}</p>
                   </div>
                 )}
               </motion.div>
             </MediaFileTrigger>
+
+            <ul className="eb-tips">
+              <li>{u.tipFormat}</li>
+              <li>{u.tipFace}</li>
+            </ul>
 
             {photosLocked ? (
               <div className="eb-notice eb-notice--info" role="status">

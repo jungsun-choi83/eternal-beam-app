@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Check, Flower2, Lock } from "lucide-react";
-import { BackButton } from "@/components/ui/screen-header";
+import { PaperBrandHeader, PaperFlowIntro } from "@/components/memorial/paper-brand-header";
 import { memorialT, themeDisplayName } from "@/components/memorial/memorial-i18n";
 import {
   ETERNAL_BEAM_PIPELINE_KEY,
@@ -439,16 +439,12 @@ export function ThemeSelectionScreen({
   // 다음 화면의 장면 준비에서 일어난다.
 
   return (
-    <div className="theme-selection-screen flex h-full min-h-0 flex-col overflow-hidden">
-      <header className="eb-screen-header theme-select__header">
-        <div className="eb-screen-header__leading">
-          <BackButton onClick={onBack} label={memorialT(language).common.back} />
-        </div>
-        <h1 className="eb-screen-header__title theme-select__title">
-          {isLibraryFlow ? tc.changeThemeContext : tc.title}
-        </h1>
-        <div className="eb-screen-header__trailing" />
-      </header>
+    <div className="theme-selection-screen eb-paper flex h-full min-h-0 flex-col overflow-hidden">
+      <PaperBrandHeader onBack={onBack} backLabel={memorialT(language).common.back} />
+      <PaperFlowIntro
+        title={isLibraryFlow ? tc.changeThemeContext : tc.title}
+        lead={isLibraryFlow ? undefined : tc.subtitle}
+      />
 
       <div className="theme-select__body flex-1 min-h-0 flex flex-col overflow-hidden">
         {/* Create 흐름에서만 — My Library 의 "테마 변경"에는 업로드/처리 단계가
@@ -469,7 +465,6 @@ export function ThemeSelectionScreen({
             className="theme-select__scroll hide-scrollbar min-h-0 flex-1 overflow-y-auto"
           >
             <div className="theme-select__intro">
-              {!isLibraryFlow ? <p className="theme-select__subtitle eb-caption">{tc.subtitle}</p> : null}
 
               {ownership.balance != null ? (
                 <div className="theme-select__balance-row">
@@ -546,6 +541,37 @@ export function ThemeSelectionScreen({
                   {filterLabel(id)}
                 </button>
               ))}
+            </div>
+
+            <div className="eb-paper-themes">
+              {[
+                { id: 8, ko: "숲", en: "Forest", image: "/paper/theme-forest.jpg" },
+                { id: 1, ko: "눈", en: "Snow", image: "/paper/theme-snow.jpg" },
+                { id: 3, ko: "단풍", en: "Maple", image: "/paper/theme-maple.jpg" },
+                { id: 2, ko: "은하", en: "Galaxy", image: "/paper/theme-galaxy.jpg" },
+                { id: 9, ko: "바다", en: "Sea", image: "/paper/theme-sea.jpg" },
+                { id: 5, ko: "크리스마스", en: "Christmas", image: "/paper/theme-christmas.jpg" },
+              ].map((card) => {
+                const theme = getMemorialTheme(card.id);
+                const selected = activeTheme === card.id;
+                return (
+                  <button
+                    key={card.id}
+                    type="button"
+                    className={`eb-paper-theme${selected ? " is-on" : ""}`}
+                    onClick={() => theme && selectTheme(theme)}
+                    aria-pressed={selected}
+                  >
+                    <img src={card.image} alt="" />
+                    {selected ? (
+                      <span className="eb-paper-theme__check" aria-hidden>
+                        <Check className="w-3.5 h-3.5" strokeWidth={3} />
+                      </span>
+                    ) : null}
+                    <span>{language === "ko" ? card.ko : card.en}</span>
+                  </button>
+                );
+              })}
             </div>
 
             {visibleCards.length > 0 ? (
