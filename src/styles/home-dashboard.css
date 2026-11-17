@@ -132,6 +132,26 @@
   z-index: 1;
 }
 
+/* 활성 배경 — 영상처럼 아주 느린 호흡(Ken Burns) */
+.eb-home__hero-bg.is-on.is-live {
+  animation: eb-hero-live-breathe 22s ease-in-out infinite;
+  transform-origin: 50% 45%;
+}
+
+.eb-home__hero-media[data-paused="true"] .eb-home__hero-bg.is-live {
+  animation-play-state: paused;
+}
+
+@keyframes eb-hero-live-breathe {
+  0%,
+  100% {
+    transform: scale(1.02) translate3d(0, 0, 0);
+  }
+  50% {
+    transform: scale(1.045) translate3d(-0.6%, 0.4%, 0);
+  }
+}
+
 .eb-home__hero-media[data-paused="true"] .eb-home__hero-bg,
 .eb-home__hero-media[data-reduce="true"] .eb-home__hero-bg {
   transition: none;
@@ -155,6 +175,166 @@
   object-position: center center;
   pointer-events: none;
   filter: none;
+}
+
+/* ── 장면별 대기 FX (초원 꽃 / 바다 일렁 / 가을 낙엽 / 겨울 눈) ── */
+.eb-home__hero-fx {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.eb-home__hero-fx--behind {
+  z-index: 1;
+}
+
+.eb-home__hero-fx--front {
+  z-index: 3;
+}
+
+.eb-home__fx {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  transition: opacity 1.05s ease-in-out;
+  pointer-events: none;
+}
+
+.eb-home__fx.is-on {
+  opacity: 1;
+}
+
+.eb-home__hero-media[data-paused="true"] .eb-home__grass-wind,
+.eb-home__hero-media[data-paused="true"] .eb-home__maple,
+.eb-home__hero-media[data-paused="true"] .eb-home__hero-bg.is-live {
+  animation-play-state: paused;
+}
+
+/*
+  초원 — 꽃만 따로 흔들면 어지러움.
+  아래 풀밭 띠 하나만 아주 천천히 바람에 눕힌다 (영상 대기).
+*/
+.eb-home__grass-wind {
+  position: absolute;
+  inset: 0;
+  background-image: var(--eb-meadow-art);
+  background-size: cover;
+  background-position: center center;
+  background-repeat: no-repeat;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    transparent 62%,
+    rgba(0, 0, 0, 0.55) 78%,
+    #000 92%,
+    #000 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0%,
+    transparent 62%,
+    rgba(0, 0, 0, 0.55) 78%,
+    #000 92%,
+    #000 100%
+  );
+  transform-origin: 50% 100%;
+  animation: eb-hero-grass-wind 11s ease-in-out infinite;
+  will-change: transform;
+  opacity: 0.92;
+}
+
+@keyframes eb-hero-grass-wind {
+  0%,
+  100% {
+    transform: translate3d(-0.4%, 0, 0) skewX(-0.35deg) scaleY(1);
+  }
+  50% {
+    transform: translate3d(0.55%, 0, 0) skewX(0.4deg) scaleY(1.008);
+  }
+}
+
+/* 바다 — 부드러운 빛 얼룩만 (줄무늬 stroke 없음) */
+.eb-home__sea-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  transition: opacity 0.85s ease;
+  pointer-events: none;
+}
+
+.eb-home__sea-canvas.is-on {
+  opacity: 1;
+}
+
+/* 가을 — 단풍잎이 떨어져 내려옴 */
+.eb-home__maple {
+  position: absolute;
+  top: -4%;
+  opacity: 0;
+  display: block;
+  filter: blur(0.2px);
+  animation-name: eb-hero-maple-fall;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+  will-change: transform, opacity;
+}
+
+.eb-home__maple svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.eb-home__maple--a {
+  color: #d4652a;
+}
+.eb-home__maple--b {
+  color: #e0a030;
+}
+.eb-home__maple--c {
+  color: #c43a1a;
+}
+.eb-home__maple--d {
+  color: #c98a2e;
+}
+
+@keyframes eb-hero-maple-fall {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 0, 0) rotate(-12deg) scale(0.92);
+  }
+  12% {
+    opacity: 0.55;
+  }
+  40% {
+    transform: translate3d(12px, 130px, 0) rotate(40deg) scale(1);
+  }
+  70% {
+    opacity: 0.4;
+    transform: translate3d(-8px, 260px, 0) rotate(110deg) scale(0.96);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(6px, 400px, 0) rotate(180deg) scale(0.9);
+  }
+}
+
+/* 겨울 — 캔버스 눈 (CSS 애니와 무관하게 계속 낙하) */
+.eb-home__snow-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  transition: opacity 0.9s ease;
+  pointer-events: none;
+}
+
+.eb-home__snow-canvas.is-on {
+  opacity: 1;
 }
 
 .eb-home__hero-img {
@@ -1190,10 +1370,27 @@
     transition: none;
   }
 
-  /* 움직임이 줄어든 환경에서는 정지 원본만 남긴다. */
+  /* 예전 마스크 레이어만 끈다. 장면 FX는 아래 예외로 계속 돌린다. */
   .eb-home__hero-live,
   .eb-home__leaf {
     display: none;
+  }
+
+  /*
+    brand.css 가 animation-duration: 0.01ms 로 전부 죽이므로,
+    홈 히어로 대기 FX 는 스피너처럼 예외로 되살린다.
+  */
+  .eb-home__hero-bg.is-on.is-live {
+    animation: eb-hero-live-breathe 22s ease-in-out infinite !important;
+  }
+  .eb-home__grass-wind {
+    animation: eb-hero-grass-wind 11s ease-in-out infinite !important;
+  }
+  .eb-home__maple {
+    animation-name: eb-hero-maple-fall !important;
+    animation-timing-function: ease-in-out !important;
+    animation-iteration-count: infinite !important;
+    animation-duration: 16s !important;
   }
 }
 

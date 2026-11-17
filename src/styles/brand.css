@@ -1024,6 +1024,23 @@
     animation-iteration-count: infinite !important;
   }
 
+  /* Home hero ambient FX — keep living wallpaper motion. */
+  .eb-home__hero-bg.is-on.is-live,
+  .eb-home__grass-wind,
+  .eb-home__maple {
+    animation-iteration-count: infinite !important;
+  }
+
+  .eb-home__hero-bg.is-on.is-live {
+    animation-duration: 22s !important;
+  }
+  .eb-home__grass-wind {
+    animation-duration: 11s !important;
+  }
+  .eb-home__maple {
+    animation-duration: 16s !important;
+  }
+
   .eb-status-badge--generating::before,
   .eb-status-badge--waiting::before,
   .eb-status-badge--loading::before,
